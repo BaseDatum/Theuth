@@ -82,6 +82,13 @@ jobs:
       ref: ${{ steps.meta.outputs.ref }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
+      - name: Free disk space on Linux runner
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf             /usr/share/dotnet             /usr/local/lib/android             /opt/ghc             /opt/hostedtoolcache/CodeQL             /usr/share/swift             /usr/local/share/boost             /usr/local/share/chromium             /usr/local/graalvm             /usr/local/.ghcup || true
+          df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -188,8 +195,12 @@ jobs:
           restore-keys: bun-linux-x86_64-
 
       - name: Generate TypeScript bindings
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
         run: |
           set -euo pipefail
+          df -h /
           just ts-desktop
           test -d crates/desktop/ui/src/rpc/bindings
           test -n "$(ls -A crates/desktop/ui/src/rpc/bindings)"
@@ -372,6 +383,13 @@ jobs:
             runner: ubuntu-24.04-arm
             docker_platform: linux/arm64
     steps:
+      - name: Free disk space on Linux runner
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf             /usr/share/dotnet             /usr/local/lib/android             /opt/ghc             /opt/hostedtoolcache/CodeQL             /usr/share/swift             /usr/local/share/boost             /usr/local/share/chromium             /usr/local/graalvm             /usr/local/.ghcup || true
+          df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -870,6 +888,13 @@ jobs:
               type=raw,value=trixie
             fetch_iroh: false
     steps:
+      - name: Free disk space on Linux runner
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf             /usr/share/dotnet             /usr/local/lib/android             /opt/ghc             /opt/hostedtoolcache/CodeQL             /usr/share/swift             /usr/local/share/boost             /usr/local/share/chromium             /usr/local/graalvm             /usr/local/.ghcup || true
+          df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -953,6 +978,13 @@ jobs:
             file: deploy/computer/Dockerfile
             context: deploy/computer
     steps:
+      - name: Free disk space on Linux runner
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf             /usr/share/dotnet             /usr/local/lib/android             /opt/ghc             /opt/hostedtoolcache/CodeQL             /usr/share/swift             /usr/local/share/boost             /usr/local/share/chromium             /usr/local/graalvm             /usr/local/.ghcup || true
+          df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
