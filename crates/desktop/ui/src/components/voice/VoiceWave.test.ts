@@ -6,10 +6,10 @@ import { RecordingBox, VoiceWave } from '@/components/voice/VoiceWave'
 const wave = (state: Parameters<typeof VoiceWave>[0]['state']) => renderToStaticMarkup(createElement(VoiceWave, { source: null, state, label: 'L' }))
 
 describe('VoiceWave', () => {
-  it('paints the waveform in the accent colour, pulses only while thinking, and is labelled', () => {
+  it('paints the waveform in the text colour, pulses only while thinking, and is labelled', () => {
     const thinking = wave('thinking')
     expect(thinking).toContain('data-slot="waveform"')
-    expect(thinking).toContain('text-fg-accent')
+    expect(thinking).toContain('text-fg')
     expect(thinking).toContain('data-loading=""')
     expect(thinking).toContain('aria-label="L"')
     expect(thinking).toContain('<canvas')

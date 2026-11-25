@@ -539,7 +539,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                 variant="ghost"
                 className={cn(
                   'shrink-0 rounded-full',
-                  dict.dictating ? 'h-8 w-20 bg-fg-accent/10 p-0' : 'size-8',
+                  dict.dictating ? 'h-8 w-20 bg-transparent p-0' : 'size-8',
                   dict.reason && !dict.dictating && 'opacity-50',
                 )}
                 aria-label={dict.dictating ? 'Stop dictation' : 'Dictate'}

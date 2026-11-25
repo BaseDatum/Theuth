@@ -1411,7 +1411,7 @@ export function Composer({
                   <TooltipTrigger asChild>
                     <button
                       type="button"
-                      className="mt-1 flex h-9 w-full items-center overflow-hidden rounded-lg bg-fg-accent/10 px-1 text-fg-secondary hover:bg-fg-accent/15"
+                      className="mt-1 flex h-9 w-full items-center overflow-hidden rounded-lg bg-transparent px-1 text-fg-secondary"
                       aria-label="Stop dictation"
                       onClick={dictate}
                     >

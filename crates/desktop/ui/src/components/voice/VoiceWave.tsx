@@ -173,7 +173,7 @@ export function VoiceWave({ source, state, className, style, label }: { source: 
       data-slot="waveform"
       data-state={state}
       data-loading={thinking ? '' : undefined}
-      className={cn('text-fg-accent relative h-full w-full', className)}
+      className={cn('text-fg relative h-full w-full', className)}
       style={style}
     >
       <canvas ref={canvasRef} aria-hidden className="absolute inset-0 size-full" />
