@@ -56,11 +56,13 @@ export function Browse({ info }: { info: ConnInfo }) {
     keys: [queryKeys.secretExternal],
     onSuccess: (out, v) => notify.success(out.recoverable_until ? `Deleted ${v.ref}; restorable until ${day(out.recoverable_until)}` : `Deleted ${v.ref} permanently`),
   })
-  const [importName, setImportName] = useState('')
-  const importRef = useAction((v: { ref: string; name: string }) => api.import_external_secret(info.conn, v.ref, v.name, null), {
+  // Per row, so a name typed on one entry never carries to another.
+  const [importNames, setImportNames] = useState<Record<string, string>>({})
+  const setImportName = (row: string, name: string) => setImportNames((m) => ({ ...m, [row]: name }))
+  const importRef = useAction((v: { row: string; ref: string; name: string }) => api.import_external_secret(info.conn, v.ref, v.name, null), {
     keys: [queryKeys.secrets],
-    onSuccess: (s) => {
-      setImportName('')
+    onSuccess: (s, v) => {
+      setImportName(v.row, '')
       notify.success(`Imported as ${s.name} v${s.current}; {{secret:${s.name}}}`)
     },
   })
@@ -169,11 +171,12 @@ export function Browse({ info }: { info: ConnInfo }) {
                     onSubmit={(ev) => {
                       ev.preventDefault()
                       const key = defaultKey(e, info.backend)
-                      if (importName.trim()) importRef.mutate({ ref: key ? `${e.ref}#${key}` : e.ref, name: importName.trim() })
+                      const name = (importNames[e.ref] ?? '').trim()
+                      if (name) importRef.mutate({ row: e.ref, ref: key ? `${e.ref}#${key}` : e.ref, name })
                     }}
                   >
-                    <Input value={importName} onChange={(ev) => setImportName(ev.target.value)} placeholder="Local name" aria-label={`Local name for ${e.name}`} className="h-7 w-48 font-mono text-xs" spellCheck={false} />
-                    <Button type="submit" variant="outline" size="xs" disabled={!importName.trim() || importRef.isPending}>
+                    <Input value={importNames[e.ref] ?? ''} onChange={(ev) => setImportName(e.ref, ev.target.value)} placeholder="Local name" aria-label={`Local name for ${e.name}`} className="h-7 w-48 font-mono text-xs" spellCheck={false} />
+                    <Button type="submit" variant="outline" size="xs" disabled={!(importNames[e.ref] ?? '').trim() || importRef.isPending}>
                       Import to vault
                     </Button>
                     <span className="text-xs text-fg-tertiary">a snapshot; it does not follow rotations</span>
