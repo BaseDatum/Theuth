@@ -59,7 +59,7 @@
 .wb-card.dimmed > .wb-head, .wb-card.dimmed > .wb-clip { opacity: 0.4; filter: grayscale(0.7); }
 .wb-card.selected { outline: 2.5px solid var(--wb-accent); outline-offset: 3px; }
 .wb-card.entered { outline: 2.5px solid var(--wb-accent); outline-offset: 0; box-shadow: 0 0 0 6px color-mix(in oklab, var(--wb-accent) 18%, transparent), var(--wb-card-shadow); }
-.wb-card.placeholder { border: 1.5px dashed color-mix(in oklab, var(--wb-accent) 55%, var(--wb-card-border)); background: color-mix(in oklab, var(--wb-card-bg) 55%, transparent); box-shadow: none; }
+.wb-card.placeholder { border: 1.5px dashed color-mix(in oklab, var(--wb-accent) 55%, var(--wb-card-border)); background: color-mix(in oklab, var(--wb-card-bg) 88%, transparent); box-shadow: none; }
 .wb-card.spot { box-shadow: 0 0 0 4px var(--wb-accent), 0 0 40px color-mix(in oklab, var(--wb-accent) 45%, transparent); }
 
 .wb-head {
