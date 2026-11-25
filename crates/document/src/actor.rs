@@ -68,7 +68,7 @@ pub(crate) struct Open {
     log_count: usize,
     log_bytes: usize,
     /// Upper bound on the encoded state: snapshot + log bytes (§4.7 limit).
-    bytes: usize,
+    pub(crate) bytes: usize,
     idle_since: Instant,
     pub(crate) export_due: Option<Instant>,
     export_first: Option<Instant>,
@@ -276,6 +276,8 @@ pub struct DocumentActor {
     pub(crate) rehomed_for: Vec<mesh::EngineId>,
     /// This actor (set at start): tasks it spawns talk back to it, not to the registered name.
     me: Option<WeakActorRef<Self>>,
+    /// 218 §3.3: whiteboard turns, current whiteboards per session (in memory).
+    pub(crate) wb: crate::wb::engine::WbState,
 }
 
 impl kameo::Actor for DocumentActor {
@@ -313,28 +315,32 @@ impl DocumentActor {
             gate_latest: false,
             rehomed_for: Vec::new(),
             me: None,
+            wb: Default::default(),
         }
     }
 
-    /// Load `id` if it is not, and open its mirror in the helper.
+    /// Load `id` if it is not, and open its mirror in the helper (218: never for a whiteboard —
+    /// it has no XML fragment and no helper mirror).
     pub(crate) fn load(&mut self, id: &DocId) -> Result<&mut Open, String> {
         if !self.open.contains_key(id) {
             let l = self.store.load(id).map_err(|e| format!("{e:#}"))?;
-            let state = l
-                .doc
-                .transact()
-                .encode_state_as_update_v1(&StateVector::default());
-            self.helper.open(id, &state, &l.meta.fragment).log("open");
             let touched = Arc::new(Mutex::new(Vec::new()));
-            let sink = touched.clone();
-            l.doc
-                .get_or_insert_xml_fragment(l.meta.fragment.as_str())
-                .observe_deep("authors", move |txn, events| {
-                    let mut sink = sink.lock().unwrap_or_else(|p| p.into_inner());
-                    for e in events.iter() {
-                        touched_blocks(txn, e, &mut sink);
-                    }
-                });
+            if l.meta.kind != DocKind::Whiteboard {
+                let state = l
+                    .doc
+                    .transact()
+                    .encode_state_as_update_v1(&StateVector::default());
+                self.helper.open(id, &state, &l.meta.fragment).log("open");
+                let sink = touched.clone();
+                l.doc
+                    .get_or_insert_xml_fragment(l.meta.fragment.as_str())
+                    .observe_deep("authors", move |txn, events| {
+                        let mut sink = sink.lock().unwrap_or_else(|p| p.into_inner());
+                        for e in events.iter() {
+                            touched_blocks(txn, e, &mut sink);
+                        }
+                    });
+            }
             let agents = self.store.read_agents(id);
             self.open.insert(
                 id.clone(),
@@ -467,7 +473,8 @@ impl DocumentActor {
         o.bytes += update.len();
         o.idle_since = Instant::now();
         o.meta.updated_ms = now;
-        if !from_helper {
+        let whiteboard = o.meta.kind == DocKind::Whiteboard;
+        if !from_helper && !whiteboard {
             self.helper.update(doc, &update).log("update");
         }
         // The file already holds what a File import brought in; only other authors change the derived file.
@@ -503,6 +510,10 @@ impl DocumentActor {
         };
         // 69: the index row (`updated_ms`, `bytes`) is replicated; it moves at snapshot/export, not per keystroke.
         self.fan_out(doc, ev, by.conn());
+        // 218 R8: a whiteboard past 2 MiB bakes its old answered ink (a separate write).
+        if whiteboard && by != Principal::Helper {
+            self.wb_bake_if_due(doc);
+        }
         Ok(())
     }
 
@@ -557,6 +568,10 @@ impl DocumentActor {
         if self.imports.values().any(|i| i.doc == *doc) {
             return None;
         }
+        // 218: a whiteboard's file is written from the document, never imported.
+        if self.open.get(doc).is_some_and(|o| o.meta.kind == DocKind::Whiteboard) {
+            return None;
+        }
         let derived = match self.open.get(doc) {
             Some(o) => o
                 .meta
@@ -565,7 +580,7 @@ impl DocumentActor {
                 .then(|| o.meta.derived.clone())?,
             None => {
                 let m = self.store.read_meta(doc).ok()?;
-                m.last_export.is_none().then_some(m.derived)?
+                (m.last_export.is_none() && m.kind != DocKind::Whiteboard).then_some(m.derived)?
             }
         };
         let text = std::fs::read_to_string(self.data_dir.join(derived)).ok()?;
@@ -589,6 +604,11 @@ impl DocumentActor {
                 return;
             }
         };
+        // 218 §3.1: a whiteboard has no blocks; nothing imports into it.
+        if o.meta.kind == DocKind::Whiteboard {
+            finish_reply(reply, Err(crate::wb::DOC_REFUSAL.into()));
+            return;
+        }
         if mode == ImportMode::Diff && o.meta.last_export.as_deref() == Some(sha.as_str()) {
             finish_reply(
                 reply,
@@ -640,6 +660,11 @@ impl DocumentActor {
     ) {
         if let Err(e) = self.load(doc) {
             reply.send(Err(EditError::Other(e)));
+            return;
+        }
+        // 218 §3.1: a whiteboard is edited with the wb_* tools only.
+        if self.open.get(doc).is_some_and(|o| o.meta.kind == DocKind::Whiteboard) {
+            reply.send(Err(EditError::Other(crate::wb::DOC_REFUSAL.into())));
             return;
         }
         // 144 §3.1: a source's text is derived; only the helper (ingest, the insight job) edits it.
@@ -754,15 +779,21 @@ impl DocumentActor {
         o.export_first = None;
         let path = self.data_dir.join(&o.meta.derived);
         let kind = o.meta.kind;
+        // 218 §3.3: a whiteboard's derived file is its outline, rendered here; never the helper.
+        let outline = (kind == DocKind::Whiteboard).then(|| crate::wb::engine::export_text(o));
         let helper = self.helper.clone();
         let me = self.actor_ref();
         let doc = doc.clone();
         tokio::spawn(async move {
-            let result = match helper.markdown(&doc).await {
+            let text = match outline {
+                Some(text) => Ok(text),
+                None => helper.markdown(&doc).await.map_err(|e| e.to_string()),
+            };
+            let result = match text {
                 Ok(text) => write_atomic(&path, text.as_bytes())
                     .map(|()| (sha256(text.as_bytes()), title_of(kind, &text)))
                     .map_err(|e| format!("write {}: {e}", path.display())),
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e),
             };
             if let Some(done) = done {
                 let _ = done.send(result.as_ref().map(|_| ()).map_err(Clone::clone));
@@ -1636,9 +1667,17 @@ impl Message<Outline> for DocumentActor {
     async fn handle(&mut self, m: Outline, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.load(&m.doc) {
-            tx.send(Err(e));
-            return reply;
+        match self.load(&m.doc) {
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+            // 218 §3.1: no blocks, no helper.
+            Ok(o) if o.meta.kind == DocKind::Whiteboard => {
+                tx.send(Err(crate::wb::DOC_REFUSAL.into()));
+                return reply;
+            }
+            Ok(_) => {}
         }
         let helper = self.helper.clone();
         let authors = self.author_labels(&m.doc);
@@ -1710,6 +1749,14 @@ impl Message<Headings> for DocumentActor {
                 return reply;
             }
         };
+        // 218: a whiteboard has no headings and no helper mirror.
+        if kind == DocKind::Whiteboard {
+            tx.send(Ok(Some(DocHeadings {
+                kind,
+                headings: Vec::new(),
+            })));
+            return reply;
+        }
         let helper = self.helper.clone();
         tokio::spawn(async move {
             tx.send(
@@ -1776,9 +1823,17 @@ impl Message<Markdown> for DocumentActor {
     async fn handle(&mut self, m: Markdown, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.load(&m.doc) {
-            tx.send(Err(e));
-            return reply;
+        match self.load(&m.doc) {
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+            // 218 §3.1, §4.1: refused cleanly, never a helper call.
+            Ok(o) if o.meta.kind == DocKind::Whiteboard => {
+                tx.send(Err(crate::wb::DOC_REFUSAL.into()));
+                return reply;
+            }
+            Ok(_) => {}
         }
         let authors = if m.annotate {
             self.author_labels(&m.doc)
@@ -2103,6 +2158,12 @@ impl Message<Rename> for DocumentActor {
             None,
         );
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
+        // 218: a whiteboard's title lives in its meta only; the outline file follows at export.
+        if meta.kind == DocKind::Whiteboard {
+            self.schedule_export(&m.doc);
+            tx.send(Ok(()));
+            return reply;
+        }
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move { tx.send(retitle_heading(me, m.doc, title).await) });
         reply
@@ -2420,6 +2481,10 @@ impl Message<Restore> for DocumentActor {
         let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
             return reply;
         };
+        if self.open.get(&m.doc).is_some_and(|o| o.meta.kind == DocKind::Whiteboard) {
+            tx.send(Err("restoring a snapshot is not available for whiteboards; use undo on the canvas".into()));
+            return reply;
+        }
         let bytes = match self.store.read_snapshot(&m.doc, &m.snapshot) {
             Ok(b) => b,
             Err(e) => {

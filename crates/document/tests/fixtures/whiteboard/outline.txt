@@ -1,0 +1,13 @@
+<whiteboard id="01a2f3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b" title="Attention inbox" cards="5" links="1" marks="1">
+frame f1 "Variants" · phone 390×844
+  row 1: c1 c2 c3
+loose
+  row 1: c4 c5
+c1 image "Today" v1/1 · live
+c2 page "Mock A — grouped" v1/1 · dimmed "header kept; grouping rejected"
+c3 page "Mock B — flat list" v2/2 · live
+c4 sticky "Requirements" · live · 3 lines · #7419
+c5 diagram "Item lifecycle" · live · #dea4
+l1 c4 → c5 "drives"
+m4 on c3 v2 · sent · "page says: tab bar, item 3" · handwriting: "no third tab"
+</whiteboard>
