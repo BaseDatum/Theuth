@@ -195,3 +195,30 @@ Bugs this found and fixed:
   - Import `INK_COLOURS` / `inkCss` from `ink/colour.ts` so the native picker gets the ≥ 3 : 1 values.
   - `nearestInk` still maps the old hexes to `green` / `amber` (RGB distance under 40).
 - **Orchestrator:** B3's tree has no `218-TEMP(wire)` cast and does not import `wire.ts`.
+
+## Fix round (review M1)
+
+The problem: `Y.UndoManager` merged the chunks of a bulk write into one stack item and replayed it as one transaction. Undoing a lasso erase of heavy ink therefore produced one update over the 48 KiB cap, and the provider closed.
+
+The fix:
+- **`undo.ts`:**
+  - `captureTimeout: 0`, so stack items never merge.
+  - Each chunk carries a `wb-group` id in its transaction meta.
+  - `createUndo` now returns a wrapper (`undo`/`redo`/`canUndo`/`canRedo`/`stopCapturing`/`destroy`/`manager`). Its `undo()`/`redo()` replay every stack item of the top group, one transaction each: one press for the owner, every update under the cap.
+- **`ops.ts`:**
+  - `chunked` tags all its chunks with one group.
+  - It takes an optional `inverse` byte estimate per op, because a delete's own update is tiny but its undo re-inserts the content. `eraseStrokes` passes `pts.length + 200` per stroke, so chunks are sized for the undo too.
+  - `addStrokes` groups the parts of one split stroke.
+  - `removeLink` joins a held group.
+  - New `holdGroup()` makes several writes one undo step: one eraser drag (pointer path and page relay), and the lasso Delete (archive + remove + erase).
+  - Before, those steps merged only through the 500 ms capture window.
+
+Tests (`canvas/ops.test.ts`):
+- **`review M1: undo and redo of a bulk erase …`:** 60 strokes × 4 000 points (≈ 1.4 MB) are erased, undone and redone, then undone again. Each undo/redo is one press, the replay spans more than one update, and every update is ≤ 48 KiB base64.
+- **`an eraser drag (a held group) is one undo step`.**
+
+Checks:
+- `bun x vitest run src/components/whiteboard/canvas src/components/whiteboard/ink` exited 0: 15 files, 84 tests, all pass.
+- `bun run check` shows no B3 lines.
+
+Not re-verified in a browser.
