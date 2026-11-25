@@ -6,7 +6,7 @@
 import './glass.css'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Check, X } from 'lucide-react'
+import { Check, ChevronRight, X } from 'lucide-react'
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from 'zustand'
 import { useNoteTitle } from '@/components/notes/NotePage'
@@ -42,6 +42,7 @@ import { createWhiteboardStore } from './canvas/store'
 import { useBoard } from './canvas/useBoard'
 import { clusterTimer } from './cluster-timer'
 import { createHost } from './host'
+import { type EdgeMark, FOLLOW_PAUSE_MS, edgeMarks } from './edges'
 import { type NativeConnection, connectNativeInk } from './native-ink'
 import { sendWhiteboard, withoutImage } from './send/send'
 import { type WbTurnInfo, wbRpc } from './wire'
@@ -245,6 +246,54 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
     )
   }, [running, session, rpc, doc])
   const anchor = bubble ? bubbleAnchor(bubble.turn, board) : null
+
+  // ── Off-screen work (design §4.5): placeholders and the cards the target session's latest turn touched, when out
+  // of view, get an edge chevron; tap → pan there. The turn is re-read while the agent works (board changes, ~1 s).
+  const [turnCards, setTurnCards] = useState<string[]>([])
+  useEffect(() => {
+    if (!rpc || !session) return setTurnCards([])
+    const t = setTimeout(() => {
+      rpc.turn(doc, session).then(
+        (turn) => setTurnCards(turn && !turn.undone ? turn.cards : []),
+        () => {},
+      )
+    }, 900)
+    return () => clearTimeout(t)
+  }, [rpc, doc, session, board, running])
+  const work = useMemo(() => {
+    const ids = new Set(turnCards)
+    for (const c of Object.values(board.cards)) if (c.placeholder !== undefined && c.by !== 'owner') ids.add(c.id)
+    return [...ids].filter((id) => board.cards[id] && board.cards[id]?.state !== 'archived')
+  }, [turnCards, board])
+  const [edges, setEdges] = useState<EdgeMark[]>([])
+  const edgeFrame = useRef(0)
+  const recomputeEdges = useCallback(() => {
+    cancelAnimationFrame(edgeFrame.current)
+    edgeFrame.current = requestAnimationFrame(() => {
+      const h = handle.current
+      if (!h || work.length === 0) return setEdges([])
+      const frame = h.frameRect()
+      const targets = work.flatMap((id) => {
+        const r = h.screenRectOf(id)
+        return r ? [{ id, rect: r }] : []
+      })
+      setEdges(edgeMarks(frame, targets))
+    })
+  }, [work])
+  useEffect(() => {
+    recomputeEdges()
+    return () => cancelAnimationFrame(edgeFrame.current)
+  }, [recomputeEdges])
+
+  // ── Follow: any finger or mouse touch on the canvas turns it off for 60 s, then it comes back (design §4.5).
+  const followPause = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => clearTimeout(followPause.current ?? undefined), [])
+  useEffect(() => store.subscribe((s, p) => s.follow !== p.follow && clearTimeout(followPause.current ?? undefined)), [store])
+  const pauseFollow = (e: React.PointerEvent) => {
+    if (e.pointerType === 'pen' || !store.getState().follow) return
+    store.getState().set({ follow: false })
+    followPause.current = setTimeout(() => store.getState().set({ follow: true }), FOLLOW_PAUSE_MS)
+  }
   const undoTurn = async () => {
     if (!bubble?.turn || !rpc) return
     setUndoing(true)
@@ -541,7 +590,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
         </div>
       ) : null}
       {/* The canvas stays mounted under the outline (its handle feeds the composer and the native bridge). */}
-      <div className={outline ? 'invisible absolute inset-0' : 'absolute inset-0'} aria-hidden={outline}>
+      <div className={outline ? 'invisible absolute inset-0' : 'absolute inset-0'} aria-hidden={outline} onPointerDownCapture={pauseFollow}>
         <Suspense fallback={<div className="size-full bg-background" />}>
           <Canvas
             ref={handle}
@@ -558,12 +607,30 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
             }}
             onPenActivity={(down) => down && timer.pen()}
             onViewChange={(view, phase) => {
+              recomputeEdges()
               if (phase === 'end') native.current?.viewEnd(view, handle.current?.frameRect() ?? new DOMRect())
             }}
             onCardOpen={setOpenCard}
           />
         </Suspense>
       </div>
+      {!outline &&
+        edges.map((m) => {
+          const c = board.cards[m.id]
+          return (
+            <button
+              key={m.id}
+              type="button"
+              aria-label={`Off screen: ${c?.title || 'a card'}${c?.placeholder !== undefined ? ' (being made)' : ''}. Show it`}
+              title={c?.title}
+              onClick={() => handle.current?.focus(m.id, { animate: !matchMedia('(prefers-reduced-motion: reduce)').matches })}
+              className="wb-glass absolute z-10 grid size-9 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full"
+              style={{ left: m.x, top: m.y }}
+            >
+              <ChevronRight className="size-4" style={{ transform: `rotate(${m.angle}deg)` }} aria-hidden />
+            </button>
+          )
+        })}
       {!outline && clusterOpen && !composerOpen && (
         <Cluster
           store={store}

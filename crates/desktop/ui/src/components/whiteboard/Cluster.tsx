@@ -4,6 +4,7 @@
 
 import {
   Clipboard,
+  Crosshair,
   Ellipsis,
   Eraser,
   FileText,
@@ -138,6 +139,7 @@ function InkTools({ store, onActivity }: { store: WbStore; onActivity(): void })
 
 export function Cluster(p: ClusterProps) {
   const mode = useStore(p.store, (s) => s.mode)
+  const follow = useStore(p.store, (s) => s.follow)
   const [addOpen, setAddOpen] = useState(false)
   const toggle = (m: Mode) => {
     p.store.getState().set({ mode: mode === m ? 'idle' : m })
@@ -195,6 +197,16 @@ export function Cluster(p: ClusterProps) {
       </ClusterButton>
       <ClusterButton label="Outline view" onClick={p.onOutline}>
         <ListTree className="size-5" />
+      </ClusterButton>
+      <ClusterButton
+        label="Follow the agent"
+        on={follow}
+        onClick={() => {
+          p.store.getState().set({ follow: !follow })
+          p.onActivity()
+        }}
+      >
+        <Crosshair className="size-5" />
       </ClusterButton>
       <ClusterButton label="Undo" onClick={p.onUndo} disabled={!p.canUndo}>
         <Undo2 className="size-5" />
