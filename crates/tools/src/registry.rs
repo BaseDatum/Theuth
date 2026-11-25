@@ -1244,7 +1244,8 @@ impl ToolRegistry {
                             ToolSource::Mcp { .. } => self
                                 .effective_category_of(name)
                                 .map(|id| categories::tool_category_key(&id)),
-                            ToolSource::Native { .. } => None,
+                            // 216: plugin tools carry no tool category in v1.
+                            ToolSource::Native { .. } | ToolSource::Plugin { .. } => None,
                         })
                     });
                     if key.as_ref().is_some_and(|k| h.contains(k)) {
@@ -1278,6 +1279,8 @@ impl ToolRegistry {
                     .unwrap_or_else(|| categories::default_category_for_builtin(name).to_owned()),
             ),
             ToolSource::Mcp { server, .. } => self.categories.mcp_assignments.get(&server).cloned(),
+            // 216: plugin tools carry no tool category in v1.
+            ToolSource::Plugin { .. } => None,
         }
     }
 
@@ -1301,7 +1304,7 @@ impl ToolRegistry {
                         ToolSource::Native { .. } => self
                             .effective_category_of(name)
                             .map(|id| categories::tool_category_key(&id)),
-                        ToolSource::Mcp { .. } => None,
+                        ToolSource::Mcp { .. } | ToolSource::Plugin { .. } => None,
                     })
                 })
                 .clone()
