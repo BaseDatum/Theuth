@@ -5,7 +5,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import {
-  AudioLines,
   ChevronRight,
   CircleAlert,
   FileUp,
@@ -89,6 +88,8 @@ import { ApprovalShield, ComposerMeta, ContextButton, useComposerMeta } from './
 import { ComposerModel } from './ModelMenu'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
+import { TalkGlyph, TalkLiveGlyph } from '@/components/voice/VoiceIcons'
+import { useTalkWave } from '@/components/talk/wave'
 import { tapOrLevels } from '@/lib/visual-source'
 import { QueuedChips, withdrawInto } from './QueuedChips'
 import { COMMANDS, type Ctx, FRESH, type HarnessMenu, type SlashItem, draftSkill, isCommand, run, sendRaw, slashMenu } from './slash'
@@ -508,6 +509,8 @@ export function Composer({
   /** B3: the talk runs on this very session and this is the chat view of it (the talk view's own composer is read-only). */
   const talkHere = talking.phase !== 'off' && session !== null && talking.session === session && !readOnly
   const talkTitle = useSessionField(talking.session ?? '', 'title')
+  /** The running talk's live frames, for the indicator's waveform (as the talk view's band). */
+  const { wave: talkWaveState, source: talkSource } = useTalkWave(talkHere, talking.state)
   /** Uploading + transcribing a finished note. */
   const [transcribing, setTranscribing] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -1625,7 +1628,7 @@ export function Composer({
                     aria-label="Talk running — open"
                     onClick={() => void navigate({ to: '/talk/$session', params: { session } })}
                   >
-                    <AudioLines className="size-5 motion-safe:animate-pulse" />
+                    <TalkLiveGlyph className="size-5" source={talkSource} active={talkWaveState === 'listening' || talkWaveState === 'speaking'} />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Talking here — open</TooltipContent>
@@ -1655,7 +1658,7 @@ export function Composer({
                     )
                   }
                 >
-                  <AudioLines className="size-5" />
+                  <TalkGlyph className="size-5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{talkElsewhere ? `Talking in ${talkTitle || 'another chat'} — open` : 'Talk'}</TooltipContent>

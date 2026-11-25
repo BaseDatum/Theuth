@@ -12,17 +12,14 @@ import { Header } from '@/components/chat/Header'
 import { Transcript } from '@/components/chat/Transcript'
 import { CodeMapPane } from '@/components/codemap/CodeMapHost'
 import { Orb } from '@/components/talk/Orb'
-import { VoiceWave, type VoiceState, useVoiceSource } from '@/components/voice/VoiceWave'
+import { VoiceWave } from '@/components/voice/VoiceWave'
+import { useTalkWave } from '@/components/talk/wave'
 import { Subtitles } from '@/components/talk/Subtitles'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useApi } from '@/lib/rpc'
-import { createFrameRelay } from '@/lib/audio/frame-source'
-import type { VisualFrame } from '@/lib/audio/types'
-import * as speech from '@/lib/speech'
 import * as talk from '@/lib/talk'
-import { type VisualSource, analyserNodeSource, tapOrLevels } from '@/lib/visual-source'
 import { cn } from '@/lib/utils'
 import { useSessionLoad } from '@/routes/c.$session'
 import { useSessionField } from '@/store/sessions'
@@ -46,27 +43,6 @@ function saveTranscriptPref(session: string, open: boolean): void {
     all[session] = open
     localStorage.setItem(PREF, JSON.stringify(all))
   } catch {}
-}
-
-/**
- * 83 §1: the agent's voice — an analyser on speech.ts's output node, every TTS packet this client plays. The node
- * exists from the talk's `unlock`; the relay covers a view opened before it (then a silent tap is a flat line, as
- * a `device`-sink talk, whose audio never reaches this client, is).
- */
-function speakerSource(): VisualSource {
-  const relay = createFrameRelay<VisualFrame>()
-  let tap: VisualSource | null = null
-  const off = speech.onOutputReady((node) => {
-    tap = analyserNodeSource(node.context, node)
-    relay.setSource(tap.source)
-  })
-  return {
-    source: relay,
-    dispose: () => {
-      off()
-      tap?.dispose()
-    },
-  }
 }
 
 function TalkRoute() {
@@ -102,11 +78,8 @@ function TalkRoute() {
   const elsewhere = t.phase !== 'off' && t.session !== null && t.session !== session
   const state = here ? t.state : 'idle'
   const orb = talk.orbState(state)
-  // 82 §D: the band under the orb. The mic feeds it while the user may speak (the relay tap's analyser, else the
-  // engine's level packets); `thinking` pulses; `speaking` shows the agent's voice off speech.ts's output node (83 §1).
-  const wave: VoiceState = state === 'listening' || state === 'interrupted' || state === 'holding' ? 'listening' : state === 'thinking' || state === 'speaking' ? state : 'idle'
-  const mic = useVoiceSource(here, () => tapOrLevels(talk.currentTap(), talk.onLevels))
-  const voice = useVoiceSource(here && wave === 'speaking', speakerSource)
+  // 82 §D: the band under the orb, off the talk's live frames (`components/talk/wave.ts`).
+  const { wave, source } = useTalkWave(here, state)
 
   const toggle = () => {
     if (here) void talk.stop(api)
@@ -197,7 +170,7 @@ function TalkRoute() {
             {phase}
           </p>
           <Orb state={orb} size={size} onClick={toggle} label={label} />
-          <VoiceWave state={wave} source={wave === 'listening' ? mic : wave === 'speaking' ? voice : null} label="Voice level" className={cn('shrink-0', size >= 320 ? 'h-16' : 'h-14')} style={{ width: size }} />
+          <VoiceWave state={wave} source={source} label="Voice level" className={cn('shrink-0', size >= 320 ? 'h-16' : 'h-14')} style={{ width: size }} />
           <Subtitles agent={here ? t.subs.agent : ''} user={here ? t.subs.user : ''} caption={caption} />
           <p className={cn('h-[1lh] text-center text-xs text-fg-tertiary transition-opacity duration-150 motion-reduce:transition-none', hint ? 'opacity-100' : 'opacity-0')}>
             {hint}

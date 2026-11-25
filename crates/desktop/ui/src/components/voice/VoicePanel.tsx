@@ -11,14 +11,12 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LoaderCircle, Lock, Square } from 'lucide-react'
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
-import type { VisualFrame } from '@/lib/audio/types'
-import { createFrameRelay } from '@/lib/audio/frame-source'
 import * as dictation from '@/lib/dictation'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import * as speech from '@/lib/speech'
 import { islandHide, islandPlace, islandShow, isTauri } from '@/lib/tauri'
 import { cn } from '@/lib/utils'
-import { type VisualSource, analyserNodeSource, tapOrLevels } from '@/lib/visual-source'
+import { tapOrLevels } from '@/lib/visual-source'
 import {
   DEFAULT_HINT,
   HINT_USES,
@@ -44,23 +42,6 @@ const PAD = 12
 /** `islandShow` once per settled size; `Island.tsx`'s `MOVE_SAVE_MS` for the drag end. */
 const SHOW_MS = 40
 const MOVE_SAVE_MS = 300
-
-/** 83 §1 (as `routes/talk.$session.tsx`): an analyser on speech.ts's output node — every TTS packet this webview plays. */
-function speakerSource(): VisualSource {
-  const relay = createFrameRelay<VisualFrame>()
-  let tap: VisualSource | null = null
-  const off = speech.onOutputReady((node) => {
-    tap = analyserNodeSource(node.context, node)
-    relay.setSource(tap.source)
-  })
-  return {
-    source: relay,
-    dispose: () => {
-      off()
-      tap?.dispose()
-    },
-  }
-}
 
 /** Bring the main window to the desk's chat (the tray's `navigate` route, `App.tsx`). */
 async function openChat(desk: string): Promise<void> {
@@ -148,7 +129,7 @@ export function VoicePanel() {
 
   const listening = s.phase === 'listening'
   const micSource = useVoiceSource(listening && dict.phase === 'dictating', () => tapOrLevels(dictation.tap(), dictation.onLevels))
-  const speakerWave = useVoiceSource(s.phase === 'speaking', speakerSource)
+  const speakerWave = useVoiceSource(s.phase === 'speaking', speech.speakerSource)
 
   if (s.phase === 'idle') return null
   return (

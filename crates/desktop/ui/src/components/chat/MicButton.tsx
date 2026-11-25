@@ -4,7 +4,7 @@
 // hands-free (the row becomes Delete · timer · wave · Send); slide left → cancel; release anywhere → send.
 // Pointer events with capture, so the finger is followed wherever it goes.
 
-import { Mic } from 'lucide-react'
+import { MicGlyph } from '@/components/voice/VoiceIcons'
 import { type PointerEvent as ReactPointerEvent, type RefObject, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -208,7 +208,7 @@ export function MicButton({
               onPointerCancel={cancel}
               onContextMenu={(e) => e.preventDefault()}
             >
-              <Mic className="size-5" />
+              <MicGlyph className="size-5" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>{reason ?? 'Dictation (Ctrl+D) · hold to record a voice note · slide up to lock, left to cancel'}</TooltipContent>

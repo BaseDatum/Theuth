@@ -17,6 +17,9 @@ import type { FinishReason } from "@/rpc/bindings/event.voice_2eevents.output"
 import type { ModelState } from "@/rpc/bindings/method.talk.output"
 import { useConnection } from '@/store/connection'
 import { on, useSessions } from '@/store/sessions'
+import { createFrameRelay } from '@/lib/audio/frame-source'
+import type { VisualFrame } from '@/lib/audio/types'
+import { type VisualSource, analyserNodeSource } from '@/lib/visual-source'
 import { decode } from './base64'
 
 /** PCM rate `ptts` produces and the packets decode to (43 §0.5). */
@@ -44,6 +47,27 @@ export function onOutputReady(cb: (node: AudioNode) => void): () => void {
   else outSubs.add(cb)
   return () => {
     outSubs.delete(cb)
+  }
+}
+
+/**
+ * 83 §1: the agent's voice — an analyser on the output node, every TTS packet this client plays. The node exists
+ * from the first `unlock`; the relay covers a view opened before it (then a silent tap is a flat line, as a
+ * `device`-sink talk, whose audio never reaches this client, is).
+ */
+export function speakerSource(): VisualSource {
+  const relay = createFrameRelay<VisualFrame>()
+  let tap: VisualSource | null = null
+  const off = onOutputReady((node) => {
+    tap = analyserNodeSource(node.context, node)
+    relay.setSource(tap.source)
+  })
+  return {
+    source: relay,
+    dispose: () => {
+      off()
+      tap?.dispose()
+    },
   }
 }
 let dec: OpusDecoder<OpusDecoderSampleRate> | null = null
