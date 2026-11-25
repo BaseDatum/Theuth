@@ -1884,12 +1884,13 @@ impl ToolRegistry {
         risk: Risk,
         mentions: bool,
         protected: bool,
+        args: Option<&serde_json::Value>,
     ) -> PolicyAction {
         if session.is_some_and(|s| self.capped(s, name, risk).is_some()) {
             return PolicyAction::Deny;
         }
         let tool = self.tools.get(name);
-        let human_only = tool.is_some_and(|t| t.human_only());
+        let human_only = self.human_only(name, args);
         let always = self.always(session, name, risk, protected);
         if (human_only || always) && session.is_some_and(|s| self.owner_absent(s)) {
             return PolicyAction::Deny;
@@ -1959,17 +1960,28 @@ impl ToolRegistry {
         }
     }
 
-    /// Whether `name` is a registered [`crate::Tool::HUMAN_ONLY`] tool.
-    fn human_only(&self, name: &str) -> bool {
-        self.tools.get(name).is_some_and(|t| t.human_only())
+    /// Whether `name` is a registered [`crate::Tool::HUMAN_ONLY`] tool, for this call's `args`
+    /// when there is one ([`crate::ErasedTool::human_only_for`]).
+    fn human_only(&self, name: &str, args: Option<&serde_json::Value>) -> bool {
+        self.tools.get(name).is_some_and(|t| match args {
+            Some(a) => t.human_only_for(a),
+            None => t.human_only(),
+        })
     }
 
     /// Why a `Deny` from [`Self::effective`] happened, for the model: the cap
     /// names its ceiling so the subagent knows the refusal is not the policy's.
-    fn denied(&self, session: SessionId, name: &str, risk: Risk, protected: bool) -> String {
+    fn denied(
+        &self,
+        session: SessionId,
+        name: &str,
+        risk: Risk,
+        protected: bool,
+        args: &serde_json::Value,
+    ) -> String {
         match self.capped(session, name, risk) {
             Some(cap) => format!("denied: subagent is capped at {cap}"),
-            None if self.human_only(name) && self.owner_absent(session) => {
+            None if self.human_only(name, Some(args)) && self.owner_absent(session) => {
                 "denied: only the owner can approve this, and this conversation is not the owner's (a contact's turn or a non-owner chat thread)".to_owned()
             }
             None if self.always(Some(session), name, risk, protected) && self.owner_absent(session) => {
@@ -1991,10 +2003,11 @@ impl ToolRegistry {
         risk: Risk,
         mentions: bool,
         protected: bool,
+        args: &serde_json::Value,
     ) -> Result<Option<ActorRef<Approval>>, String> {
-        match self.effective(Some(session), name, risk, mentions, protected) {
+        match self.effective(Some(session), name, risk, mentions, protected, Some(args)) {
             PolicyAction::Allow => Ok(None),
-            PolicyAction::Deny => Err(self.denied(session, name, risk, protected)),
+            PolicyAction::Deny => Err(self.denied(session, name, risk, protected, args)),
             PolicyAction::Ask => self.approval_actor().map(Some),
         }
     }
@@ -2019,13 +2032,14 @@ impl ToolRegistry {
         mentions: bool,
         risk: Option<Risk>,
         protected: bool,
+        args: Option<&serde_json::Value>,
     ) -> ToolInspection {
         let mut spec = tool.spec();
         if let Some(risk) = risk {
             spec.risk = risk;
         }
         ToolInspection {
-            action: self.effective(session, &spec.name, spec.risk, mentions, protected),
+            action: self.effective(session, &spec.name, spec.risk, mentions, protected, args),
             identity: identity(tool, &spec),
             source: tool.source(),
             spec,
@@ -2090,15 +2104,22 @@ impl ToolRegistry {
         let protected = self.protected_write(call.session, name, spec.risk, &call.args)
             || self.external_always(Some(call.session), &tool, name, &call.args);
         let mut card = None;
-        match self.effective(Some(call.session), name, spec.risk, mentions, protected) {
+        match self.effective(
+            Some(call.session),
+            name,
+            spec.risk,
+            mentions,
+            protected,
+            Some(&call.args),
+        ) {
             PolicyAction::Allow => {}
             PolicyAction::Deny => {
-                let why = self.denied(call.session, name, spec.risk, protected);
+                let why = self.denied(call.session, name, spec.risk, protected, &call.args);
                 return Err(Unavailable(format!("{name}: {why}")));
             }
             PolicyAction::Ask => match activation {
                 // 210 §7.2: an app press is not the owner's approval of a human-only call.
-                _ if tool.human_only() => {
+                _ if tool.human_only_for(&call.args) => {
                     return Err(Unavailable(format!(
                         "{name}: only the owner can approve this tool, in theuth itself; an app cannot run it"
                     )));
@@ -2254,7 +2275,14 @@ impl Message<InspectTool> for ToolRegistry {
             self.protected_write(m.session, &m.name, risk.unwrap_or(Risk::ReadOnly), a)
                 || self.external_always(Some(m.session), &tool, &m.name, a)
         });
-        Ok(self.inspect(&tool, Some(m.session), mentions, risk, protected))
+        Ok(self.inspect(
+            &tool,
+            Some(m.session),
+            mentions,
+            risk,
+            protected,
+            m.args.as_ref(),
+        ))
     }
 }
 
@@ -2270,7 +2298,7 @@ impl Message<DescribeTools> for ToolRegistry {
             .tools
             .iter()
             .filter(|(name, _)| !session.is_some_and(|s| self.is_hidden(s, name)))
-            .map(|(_, t)| self.inspect(t, session, false, None, false))
+            .map(|(_, t)| self.inspect(t, session, false, None, false, None))
             .filter(|i| session.is_none_or(|s| self.capped(s, &i.spec.name, i.spec.risk).is_none()))
             .collect();
         out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
@@ -2288,7 +2316,7 @@ impl Message<ExternalApproval> for ToolRegistry {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let approval = match self.gate(m.session, &m.tool, m.risk, false, false) {
+        let approval = match self.gate(m.session, &m.tool, m.risk, false, false, &m.args) {
             Ok(None) => {
                 tx.send(ExternalVerdict::plain(Decision::Allow));
                 return reply;
@@ -2300,7 +2328,7 @@ impl Message<ExternalApproval> for ToolRegistry {
                 return reply;
             }
         };
-        let human_only = self.human_only(&m.tool);
+        let human_only = self.human_only(&m.tool, Some(&m.args));
         let always_ask = self.always(Some(m.session), &m.tool, m.risk, false);
         tokio::spawn(async move {
             let req = RequestApproval {
@@ -3287,7 +3315,14 @@ impl ToolRegistry {
         spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
         let protected = self.protected_write(call.session, &call.name, spec.risk, &call.args)
             || self.external_always(Some(call.session), &tool, &call.name, &call.args);
-        let card = match self.gate(call.session, &call.name, spec.risk, mentions, protected) {
+        let card = match self.gate(
+            call.session,
+            &call.name,
+            spec.risk,
+            mentions,
+            protected,
+            &call.args,
+        ) {
             Ok(a) => a.map(|approval| Card {
                 approval,
                 always_ask: self.always(Some(call.session), &call.name, spec.risk, protected),
@@ -3504,7 +3539,7 @@ async fn invoke(
             always_ask,
         };
         let suspended = suspend();
-        let human_only = tool.human_only();
+        let human_only = tool.human_only_for(&call.args);
         let answer = if human_only {
             approval
                 .ask(RequestHumanOnly(req))
@@ -7321,6 +7356,73 @@ pub(crate) mod tests {
         let out = reg.ask(Invoke(call("publish", thread))).await.unwrap();
         assert!(out.content.contains("approval required"), "{out:?}");
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// 221 D17: a tool whose owner-only rule depends on the call (`secret_send_create` reads the
+    /// named connection's `send_owner_only`).
+    struct PerCall(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Tool for PerCall {
+        const NAME: &'static str = "per_call";
+        const RISK: Risk = Risk::Destructive;
+        const HUMAN_ONLY_PER_CALL: bool = true;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn human_only(&self) -> bool {
+            true
+        }
+        fn human_only_for(&self, args: &serde_json::Value) -> bool {
+            args["owner_only"].as_bool().unwrap_or(true)
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolOutput::ok("ran"))
+        }
+    }
+
+    /// In a non-owner thread with every policy `allow`, the same tool is refused for a call it
+    /// marks owner-only and runs for one it does not; with no call (inspection) it stays
+    /// owner-only.
+    #[tokio::test]
+    async fn human_only_is_decided_per_call() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let all_allow = Policy {
+            read_only: PolicyAction::Allow,
+            mutating: PolicyAction::Allow,
+            destructive: PolicyAction::Allow,
+        };
+        let reg = registry_with(vec![Arc::new(PerCall(runs.clone()))], None, all_allow, None);
+        let thread = SessionId::new();
+        reg.tell(SetNonOwnerThread {
+            session: thread,
+            on: true,
+        })
+        .await
+        .unwrap();
+        let with = |owner_only: bool| ToolCall {
+            args: serde_json::json!({ "owner_only": owner_only }),
+            ..call("per_call", thread)
+        };
+        let out = reg.ask(Invoke(with(true))).await.unwrap();
+        assert!(
+            out.is_error && out.content.contains("not the owner's"),
+            "{out:?}"
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let out = reg.ask(Invoke(with(false))).await.unwrap();
+        assert_eq!(out.content, "ran", "{out:?}");
+        let i = reg
+            .ask(InspectTool {
+                session: thread,
+                name: "per_call".into(),
+                args: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(i.action, PolicyAction::Deny);
     }
 
     /// What [`Human`] saw: per card, `(always_ask, double's ResolveBy accepted)`.
