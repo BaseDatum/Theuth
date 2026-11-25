@@ -1083,6 +1083,25 @@ pub(crate) mod tests {
         assert_eq!(b64["o"], "{{secret:fake/c/x}}");
     }
 
+    /// R22: `#field:<name>` (a name with spaces, and with `:-N`) reaches the backend as the key
+    /// `field:<name>`; the Bitwarden backend maps it to that custom field.
+    #[tokio::test]
+    async fn field_reference_reaches_the_backend_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let (hook, _vault) = hook(dir.path()).await;
+        let mut args = json!({"cmd": "{{secret:fake/c/x#field:API token}}"});
+        let fetched = hook.resolve_external(&args, cx()).await.unwrap();
+        hook.expand_with(&mut args, &fetched).unwrap();
+        assert_eq!(args["cmd"], format!("field:API token={VALUE}"));
+        let c = placeholder_re()
+            .captures("{{secret:bw/conn/Item#field:API token:-1}}")
+            .unwrap();
+        assert_eq!(
+            (&c[1], &c[2], &c[3], &c[5]),
+            ("bw", "conn/Item", "field:API token", "1")
+        );
+    }
+
     /// 221 §13 B2 (b): an unknown connection, an unknown backend or a missing entry fails the
     /// whole call; without a resolve, an external placeholder never expands.
     #[tokio::test]
