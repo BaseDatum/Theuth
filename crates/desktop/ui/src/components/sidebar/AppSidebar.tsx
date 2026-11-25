@@ -10,7 +10,7 @@ import { requirements as costsRequirements } from '@/components/costs/requiremen
 import { broadcastRequirements } from '@/components/chat/requirements'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { AudioLines, Bot, ChartColumn, Inbox, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
+import { AudioLines, Bot, ChartColumn, Inbox, Library, Megaphone, PanelLeft, Plus, Settings, SquarePen, StickyNote, Users } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
@@ -50,7 +50,7 @@ import { takeReveal, useSidebarReveal } from '@/lib/sidebar-reveal'
 import { cn } from '@/lib/utils'
 import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import { Desks } from './Desks'
-import { RAIL_ITEM, RailSections, useSettledRail } from './Rail'
+import { ICON_COUNT, ICON_MARK, ICON_PLUS, RAIL_ITEM, RailSections, useSettledRail } from './Rail'
 import { SearchTrigger } from './SearchTrigger'
 import { SessionList } from './SessionList'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
@@ -191,8 +191,10 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <Capability required={attentionRequirements} hide>
               <RailTip label="Inbox">
                 <Link to="/attention" aria-label="Inbox" className={RAIL_ITEM} data-active={section === 'attention' || undefined} data-tour="nav-inbox">
-                  <Inbox />
-                  <AttentionBadge className="absolute -top-0.5 -right-0.5 ml-0 h-4 min-w-4 px-1 text-center text-[10px] leading-4 ring-2 ring-sidebar" />
+                  <span className="relative inline-flex">
+                    <Inbox />
+                    <AttentionBadge className={ICON_COUNT} />
+                  </span>
                 </Link>
               </RailTip>
             </Capability>
@@ -205,8 +207,10 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                   data-active={section === 'talk' || undefined}
                   onClick={() => openTalk((session) => navigate({ to: '/talk/$session', params: { session } }))}
                 >
-                  <AudioLines />
-                  {live && <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-success ring-2 ring-sidebar" aria-label="talk running" />}
+                  <span className="relative inline-flex">
+                    <AudioLines />
+                    {live && <span className={cn(ICON_MARK, 'bg-success')} aria-label="talk running" />}
+                  </span>
                 </button>
               </RailTip>
             </Capability>
@@ -215,7 +219,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 <button type="button" aria-label="New note" className={RAIL_ITEM} disabled={createNoteAndOpen.isPending} onClick={() => createNoteAndOpen.mutate(false)}>
                   <span className="relative inline-flex">
                     <StickyNote className="size-[18px]" />
-                    <Plus className={cn('absolute -top-1.5 -right-1.5 size-3', NOTE_PLUS)} strokeWidth={3.5} aria-hidden />
+                    <Plus className={cn(ICON_PLUS, NOTE_PLUS)} strokeWidth={3.5} aria-hidden />
                   </span>
                 </button>
               </RailTip>
@@ -227,8 +231,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               <RailTip label="Meeting">
                 <Link to="/meetings/new" aria-label="Meeting" className={RAIL_ITEM} data-active={section === 'meeting' || undefined}>
                   <span className="relative inline-flex">
-                    <Mic className="size-[18px]" />
-                    <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-danger" aria-hidden />
+                    <Users className="size-[18px]" />
+                    <span className={cn(ICON_MARK, 'bg-danger')} aria-hidden />
                   </span>
                 </Link>
               </RailTip>
@@ -360,10 +364,10 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           <Capability required={noteRequirements} hide><SidebarMenuItem className="group/popout-row">
             <SidebarMenuButton asChild className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <button type="button" aria-label="New note" disabled={createNoteAndOpen.isPending} onClick={() => createNoteAndOpen.mutate(false)}>
-                {/* Label in a span (see the Meeting row); the plus overhangs the icon wrapper like the Meeting dot. */}
+                {/* Label in a span (see the Meeting row); the plus sits on the icon wrapper, same corner as the Meeting dot. */}
                 <span className="relative inline-flex">
                   <StickyNote className="size-4" />
-                  <Plus className={cn('absolute -top-1.5 -right-1.5 size-3', NOTE_PLUS)} strokeWidth={3.5} aria-hidden />
+                  <Plus className={cn(ICON_PLUS, NOTE_PLUS)} strokeWidth={3.5} aria-hidden />
                 </span>
                 <span>Note</span>
               </button>
@@ -377,8 +381,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 <Link to="/meetings/new">
                   {/* The label is a span so the menu button's `[&>span:last-child]:truncate` (overflow hidden) hits it, not the icon wrapper whose dot overhangs. */}
                   <span className="relative inline-flex">
-                    <Mic className="size-4" />
-                    <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-danger" aria-hidden />
+                    <Users className="size-4" />
+                    <span className={cn(ICON_MARK, 'bg-danger')} aria-hidden />
                   </span>
                   <span>Meeting</span>
                 </Link>
