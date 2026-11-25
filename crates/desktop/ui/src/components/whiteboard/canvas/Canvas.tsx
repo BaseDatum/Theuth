@@ -335,7 +335,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const inkByCard = useMemo(() => indexInk(board.ink), [board.ink])
   // A pen on an entered live page inks or erases exactly when it would anywhere else on the pointer path (§8.4).
   const pagePen = useZustand(store, (s) => {
-    const r = routePointer('pen', { mode: s.mode, fingerInk: s.fingerInk, nativeInk: s.nativeInk && s.inkEngine === 'auto', readOnly, penDown: false, palmUntil: 0, now: 0 })
+    const r = routePointer('pen', { mode: s.mode, fingerInk: s.fingerInk, readOnly, penDown: false, palmUntil: 0, now: 0 })
     return r === 'ink' || r === 'erase'
   })
   const pagePenRef = useRef(pagePen)
@@ -527,7 +527,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     const stateNow = (e?: PointerEvent) => {
       const s = store.getState()
       const pan = !!e && e.pointerType === 'mouse' && (space || e.button !== 0)
-      return { mode: s.mode, fingerInk: s.fingerInk, nativeInk: s.nativeInk && s.inkEngine === 'auto', readOnly: propsRef.current.readOnly, penDown: s.penDown, palmUntil: palmUntil.current, now: performance.now(), pan }
+      return { mode: s.mode, fingerInk: s.fingerInk, readOnly: propsRef.current.readOnly, penDown: s.penDown, palmUntil: palmUntil.current, now: performance.now(), pan }
     }
     const isControl = (t: EventTarget | null) => t instanceof Element && t.closest(CONTROL) !== null
     const onPane = (t: EventTarget | null) => t instanceof Element && t.closest('.react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__nodesselection') === null
@@ -586,7 +586,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       e.stopPropagation()
       if (route === 'ignore' || route === 'swallow') {
         if (kind === 'pen' && route === 'swallow') {
-          // Native ink draws it; the palm rule and the cluster still follow the pen.
+          // A read-only pen: nothing is drawn, but the palm rule and the cluster still follow the pen.
           store.getState().set({ penDown: true })
           propsRef.current.onPenActivity?.(true)
         }
@@ -909,12 +909,6 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       const cards = new Set<Id>()
       for (const s of f.inView) if (s.card) cards.add(s.card)
       return { fresh: f.inView.length + f.offScreen.length, freshInView: f.inView.length, inkedCards: [...cards] }
-    },
-    async commitCaptured(strokes) {
-      const ids: Id[] = []
-      for (const c of strokes) ids.push(...commit(c))
-      await nextFrame()
-      return ids
     },
     planSend: (opts) => plan(boardRef.current, { view: worldView(), offScreen: opts?.offScreen, captions, windowRect: (w) => windowRect(w) }),
     composeImage: (image, maxSide) => {

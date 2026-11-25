@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { loader, recognizeText } from '@/lib/ink-native'
 import type { SendPlan } from '../canvas/api'
 import { type SendDeps, type SendInput, sendBody, sendWhiteboard, withoutImage } from './send'
 
@@ -83,6 +84,21 @@ describe('sendWhiteboard', () => {
     await sendWhiteboard(deps, input())
     expect(deps.recognize).toHaveBeenCalledTimes(1)
     expect(commitSend).toHaveBeenCalledWith(PLAN, { to: 'NEW-SESSION', hw: { M2: 'no third tab' }, blobs: ['M1', 'M2'] })
+  })
+
+  it('handwriting goes with the plugin present and nothing attached: `recognize_text` is the only plugin call', async () => {
+    const real = { ...loader }
+    const plugin: string[] = []
+    loader.tauri = () => true
+    loader.core = async () => ({ Channel: class {}, invoke: async (cmd: string) => (plugin.push(cmd), { text: 'call Ana', confidence: 0.9 }) }) as never
+    try {
+      const { deps, commitSend } = rig({ recognize: recognizeText })
+      await sendWhiteboard(deps, input())
+      expect(plugin).toEqual(['plugin:ink|recognize_text'])
+      expect(commitSend).toHaveBeenCalledWith(PLAN, expect.objectContaining({ hw: { M2: 'call Ana' } }))
+    } finally {
+      Object.assign(loader, real)
+    }
   })
 
   it('no session (R1): context keyed by the whiteboard alone, send_input(null) creates the session, nothing is bound', async () => {

@@ -1,6 +1,6 @@
 // Pencil over an entered live page (pointer-ink path). A sandboxed, opaque-origin frame receives the pen's events
 // itself; the host cannot filter them. So the page relays them: while the host has switched capture on (the card is
-// entered, the pen inks or erases, native ink is not drawing), the relay script takes `pointerType === 'pen'` events —
+// entered, the pen inks or erases), the relay script takes `pointerType === 'pen'` events —
 // never touch or mouse, so fingers keep scrolling and tapping the page — and posts their points to the host, which
 // draws and commits them like any other stroke. Only whiteboard page cards carry the relay (`withPenRelay`, applied
 // after `injectBootstrap`); chat pages are unchanged.

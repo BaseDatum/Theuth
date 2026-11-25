@@ -11,7 +11,7 @@ export type PointerKind = 'pen' | 'touch' | 'mouse'
 /**
  * What a pointer-down does:
  * - `ink` / `erase`: B3's ink layer takes it (capture, no pan/select).
- * - `swallow`: stopped before React Flow and nothing happens (native ink draws it, or a read-only pen).
+ * - `swallow`: stopped before React Flow and nothing happens (a read-only pen).
  * - `pass`: React Flow handles it (pan, select, drag, handles, link taps).
  * - `ignore`: stopped and dropped (palm window).
  */
@@ -20,7 +20,6 @@ export type Route = 'ink' | 'erase' | 'swallow' | 'pass' | 'ignore'
 export type RouteState = {
   mode: Mode
   fingerInk: boolean
-  nativeInk: boolean
   readOnly: boolean
   penDown: boolean
   /** ms until which touches are ignored (last pen-up + 500 ms) */
@@ -71,7 +70,6 @@ export function routePointer(kind: PointerKind, s: RouteState): Route {
       if (s.readOnly) return 'swallow'
       if (s.mode === 'link') return 'pass' // the Pencil is a pointer in link mode only
       if (s.mode === 'erase') return 'erase'
-      if (s.nativeInk) return 'swallow' // the plugin delivers the stroke
       return 'ink'
     case 'touch':
       if (palmActive(s)) return 'ignore'

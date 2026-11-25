@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { MultiTap, PALM_MS, pickInkTool, routePointer, type RouteState } from './input'
 
-const base: RouteState = { mode: 'idle', fingerInk: false, nativeInk: false, readOnly: false, penDown: false, palmUntil: 0, now: 10_000 }
+const base: RouteState = { mode: 'idle', fingerInk: false, readOnly: false, penDown: false, palmUntil: 0, now: 10_000 }
 const s = (p: Partial<RouteState>): RouteState => ({ ...base, ...p })
 
 describe('input routing (§8.4)', () => {
@@ -13,15 +13,10 @@ describe('input routing (§8.4)', () => {
 
   it('pen never reaches pan: every pen route other than link mode is taken before React Flow', () => {
     for (const mode of ['idle', 'draw', 'erase', 'select', 'frame'] as const) {
-      for (const nativeInk of [false, true]) for (const readOnly of [false, true]) {
-        expect(routePointer('pen', s({ mode, nativeInk, readOnly }))).not.toBe('pass')
+      for (const readOnly of [false, true]) {
+        expect(routePointer('pen', s({ mode, readOnly }))).not.toBe('pass')
       }
     }
-  })
-
-  it('native ink swallows pen events (the plugin draws) except with the eraser', () => {
-    expect(routePointer('pen', s({ nativeInk: true }))).toBe('swallow')
-    expect(routePointer('pen', s({ nativeInk: true, mode: 'erase' }))).toBe('erase')
   })
 
   it('read-only: no ink from any pointer', () => {
@@ -44,9 +39,8 @@ describe('input routing (§8.4)', () => {
     for (const mode of ['idle', 'select', 'frame'] as const) expect(routePointer('mouse', s({ mode }))).toBe('pass')
   })
 
-  it('desktop (no Pencil): the mouse inks with the pen tool even with fingerInk off and no native ink', () => {
-    expect(routePointer('mouse', s({ mode: 'draw', fingerInk: false, nativeInk: false }))).toBe('ink')
-    expect(routePointer('mouse', s({ mode: 'draw', nativeInk: true }))).toBe('ink')
+  it('desktop (no Pencil): the mouse inks with the pen tool even with fingerInk off', () => {
+    expect(routePointer('mouse', s({ mode: 'draw', fingerInk: false }))).toBe('ink')
   })
 
   it('a mouse pan gesture (Space held, middle button) passes to React Flow even with the pen tool', () => {
