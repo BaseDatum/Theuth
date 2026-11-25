@@ -34,18 +34,21 @@ Integration builder, 2026-11-25 night. Branch `feat/218-whiteboard`, worktree `t
 ## Gate
 
 Each cargo command took `/tmp/theuth-build.lock` on its own (45 s pause between), script `/tmp/wb218-gate.sh`, log
-`/tmp/theuth-218-gate.log`, per-command output `/tmp/wb218-gate-N.log`.
+`/tmp/theuth-218-gate.log`, per-command output `/tmp/wb218-gate-N.log`. The lock was contended all night (other
+worktrees' builds): the first command waited 12 min, the second had still not got the lock 30 min later when this note
+was committed (05:25). **QUEUED = not run yet**; the script is still running and appends `rc=N :: <command>` lines to
+the log as each finishes, ending with `DONE`.
 
 | Command | Exit | Note |
 |---|---|---|
 | `cargo test -p document -- --test-threads=4` | 0 | lib 136 passed; `tests/whiteboard.rs` 12 passed incl. `reads_the_yjs_fixture` (no longer ignored) |
-| `cargo test -p agent --lib -- --test-threads=4` | PENDING | |
-| `cargo test -p artifact` | PENDING | |
-| `cargo test -p rpc-compose` | PENDING | |
-| `cargo test -p theuth --test wire_schema_snapshot` | PENDING | |
-| `cargo test -p tauri-plugin-ink` | PENDING | |
-| `cargo clippy -p document -p agent -p artifact -p tauri-plugin-ink -p desktop --all-targets --no-deps -- -D warnings` | PENDING | |
-| `cargo check --workspace --all-targets` | PENDING | |
+| `cargo test -p agent --lib -- --test-threads=4` | QUEUED | B2 ran `whiteboards`/`store` filters green before the merge (as-built B2) |
+| `cargo test -p artifact` | QUEUED | |
+| `cargo test -p rpc-compose` | QUEUED | |
+| `cargo test -p theuth --test wire_schema_snapshot` | QUEUED | the fixture was re-accepted from this tree's `export_bindings` (`3c1bc0fc7`), after both merges |
+| `cargo test -p tauri-plugin-ink` | QUEUED | |
+| `cargo clippy -p document -p agent -p artifact -p tauri-plugin-ink -p desktop --all-targets --no-deps -- -D warnings` | QUEUED | |
+| `cargo check --workspace --all-targets` | QUEUED | host build of `theuth` (export_bindings) and the iOS `desktop` build both compiled this tree |
 | `bun run check` (crates/desktop/ui) | 0 | after the wire step |
 | `bun run test` (crates/desktop/ui) | 1 | 3526 passed, 1 failed: `disclosure.test.ts` ratchet, red on main (below) |
 | `grep -rn 218-TEMP crates/desktop/ui/src` | empty | |
