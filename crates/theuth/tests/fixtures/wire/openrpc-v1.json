@@ -26987,7 +26987,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "221 §7.3: where the answer is stored when not (only) the local vault."
+                "description": "221 §7.3: where the answer is stored when not (only) the local vault. Boxed: the\nview is large and most requests have none (`large_enum_variant`)."
               },
               "expires": {
                 "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
@@ -27998,7 +27998,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "221 §7.3: where the answer is stored when not (only) the local vault."
+                "description": "221 §7.3: where the answer is stored when not (only) the local vault. Boxed: the\nview is large and most requests have none (`large_enum_variant`)."
               },
               "expires": {
                 "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
@@ -30267,7 +30267,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "221 §7.3: where the answer is stored when not (only) the local vault."
+                "description": "221 §7.3: where the answer is stored when not (only) the local vault. Boxed: the\nview is large and most requests have none (`large_enum_variant`)."
               },
               "expires": {
                 "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
@@ -31018,7 +31018,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "221 §7.3: where the answer is stored when not (only) the local vault."
+                "description": "221 §7.3: where the answer is stored when not (only) the local vault. Boxed: the\nview is large and most requests have none (`large_enum_variant`)."
               },
               "expires": {
                 "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
@@ -126319,6 +126319,11 @@
             "const": "password",
             "description": "Email + master password + 2FA (B5b).",
             "type": "string"
+          },
+          {
+            "const": "sso",
+            "description": "The organisation's SSO, then the master password on the unlock card (§9.6).",
+            "type": "string"
           }
         ]
       },
@@ -126429,7 +126434,15 @@
                   }
                 ],
                 "default": "api_key",
-                "description": "`api_key` | `password`."
+                "description": "`api_key` | `password` | `sso`."
+              },
+              "org_identifier": {
+                "default": null,
+                "description": "`sso`: the organisation's SSO identifier (`connection_sso_begin` may set it).",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "server": {
                 "allOf": [
@@ -126766,6 +126779,26 @@
           }
         ]
       },
+      "method.secrets.output.BwLogin": {
+        "description": "How a Bitwarden connection logs in (§6.2).",
+        "oneOf": [
+          {
+            "const": "api_key",
+            "description": "Personal API key (default).",
+            "type": "string"
+          },
+          {
+            "const": "password",
+            "description": "Email + master password + 2FA (B5b).",
+            "type": "string"
+          },
+          {
+            "const": "sso",
+            "description": "The organisation's SSO, then the master password on the unlock card (§9.6).",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.output.ConnInfo": {
         "description": "§6.3: one connection as the UIs show it.",
         "properties": {
@@ -126784,6 +126817,18 @@
           "conn": {
             "description": "The connection name.",
             "type": "string"
+          },
+          "login": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.BwLogin"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Bitwarden: how it logs in (`None` for AWS)."
           },
           "settings": {
             "allOf": [
@@ -126812,7 +126857,8 @@
           "status",
           "summary",
           "ask",
-          "settings"
+          "settings",
+          "login"
         ],
         "type": "object"
       },
@@ -127722,6 +127768,32 @@
           }
         ]
       },
+      "method.secrets.output.SsoBegin": {
+        "description": "§9.6: what `connection_sso_begin` hands the UI. `authorize_url` carries no secret (the PKCE\nverifier stays in the engine).",
+        "properties": {
+          "authorize_url": {
+            "description": "Open this in the browser: the identity server's authorize URL.",
+            "type": "string"
+          },
+          "redirect_port": {
+            "description": "The browser comes back to `http://localhost:<redirect_port>`.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "description": "Pass back to `connection_sso_complete`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorize_url",
+          "state",
+          "redirect_port"
+        ],
+        "type": "object"
+      },
       "method.secrets.output.UnlockRequestView": {
         "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
         "properties": {
@@ -127859,6 +127931,26 @@
           }
         ]
       },
+      "method.secrets.receiver.BwLogin": {
+        "description": "How a Bitwarden connection logs in (§6.2).",
+        "oneOf": [
+          {
+            "const": "api_key",
+            "description": "Personal API key (default).",
+            "type": "string"
+          },
+          {
+            "const": "password",
+            "description": "Email + master password + 2FA (B5b).",
+            "type": "string"
+          },
+          {
+            "const": "sso",
+            "description": "The organisation's SSO, then the master password on the unlock card (§9.6).",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.receiver.ConnInfo": {
         "description": "§6.3: one connection as the UIs show it.",
         "properties": {
@@ -127877,6 +127969,18 @@
           "conn": {
             "description": "The connection name.",
             "type": "string"
+          },
+          "login": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.BwLogin"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Bitwarden: how it logs in (`None` for AWS)."
           },
           "settings": {
             "allOf": [
@@ -128764,6 +128868,32 @@
             "type": "string"
           }
         ]
+      },
+      "method.secrets.receiver.SsoBegin": {
+        "description": "§9.6: what `connection_sso_begin` hands the UI. `authorize_url` carries no secret (the PKCE\nverifier stays in the engine).",
+        "properties": {
+          "authorize_url": {
+            "description": "Open this in the browser: the identity server's authorize URL.",
+            "type": "string"
+          },
+          "redirect_port": {
+            "description": "The browser comes back to `http://localhost:<redirect_port>`.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "description": "Pass back to `connection_sso_complete`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorize_url",
+          "state",
+          "redirect_port"
+        ],
+        "type": "object"
       },
       "method.secrets.receiver.UnlockRequestView": {
         "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
@@ -142729,6 +142859,128 @@
             "$ref": "#/components/schemas/method.secrets.input.LoginForm"
           },
           "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.LoginStep"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.LoginStep"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "connection_sso_begin",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "org_identifier",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "orgIdentifier"
+          ]
+        },
+        {
+          "name": "redirect_port",
+          "required": false,
+          "schema": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "redirectPort"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.SsoBegin"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.SsoBegin"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "connection_sso_complete",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "state",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "code_or_redirect_url",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "codeOrRedirectUrl"
+          ]
+        },
+        {
+          "name": "two_factor",
+          "required": false,
+          "schema": {
+            "items": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "maxItems": 2,
+            "minItems": 2,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "twoFactor"
+          ]
         }
       ],
       "result": {
