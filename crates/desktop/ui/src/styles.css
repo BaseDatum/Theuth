@@ -96,9 +96,9 @@
   --border-subtle: #2a241c99;
   --border-default: #2a241c; /* basalt */
   --border-strong: #3a3228; /* char */
-  --status-danger-bg: #8f2f1f26;
-  --status-danger-border: #8f2f1f;
-  --status-danger-fg: #8f2f1f; /* carnelian: the logo's pen bar, the same in both themes */
+  --status-danger-bg: #d9503826;
+  --status-danger-border: #d95038;
+  --status-danger-fg: #d95038; /* carnelian lifted for soot: 4.66 : 1 on #12100e, 4.30 : 1 on #1c1915 */
   --status-info-bg: #5b8f8a26;
   --status-info-border: #5b8f8a;
   --status-info-fg: #5b8f8a; /* faience-bright */
@@ -110,7 +110,7 @@
   --status-warning-fg: #52a2cc; /* Egyptian blue */
   --sidebar: #1c1915;
   --project-ochre: #52a2cc;
-  --project-carnelian: #8f2f1f;
+  --project-carnelian: #d95038;
   --project-malachite: #4f9c7c;
   --project-faience: #5b8f8a;
   --project-lapis: #6f8fc0;

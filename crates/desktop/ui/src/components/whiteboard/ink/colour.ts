@@ -4,8 +4,8 @@ import type { InkColour } from '../canvas/model'
 
 export const INK_COLOURS = {
   ink: ['#1a1612', '#e8dcc8'],
-  // The logo's carnelian in both themes (owner's call): below 3 : 1 on soot, the one named ink exempt from A1 there.
-  red: ['#8f2f1f', '#8f2f1f'],
+  // The logo's carnelian on bone; lifted to #d95038 on soot (4.66 : 1) to keep A1.
+  red: ['#8f2f1f', '#d95038'],
   blue: ['#1f6feb', '#6ea8ff'],
   // Light green and amber are darkened from the contract's #2f9e44 (2.54 : 1) and #b7791f (2.69 : 1), same hue, to keep
   // ≥ 3 : 1 on bone (design A1); `readable()` of the contract values gives exactly these.
