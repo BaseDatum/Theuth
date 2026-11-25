@@ -113,6 +113,8 @@ export type NativeConnection = {
   viewEnd(view: View, frame: DOMRect): void
   /** The whiteboard is (not) the visible surface: disables capture while hidden. */
   visible(on: boolean): void
+  /** On-device handwriting recognition (Vision), for a free mark's image (R6). */
+  recognize(png: string): Promise<{ text: string; confidence: number } | null>
   dispose(): void
 }
 
@@ -175,6 +177,7 @@ export async function connectNativeInk(o: {
   })
   return {
     viewEnd: (view, frame) => ink.setViewport({ tx: view.x + frame.left, ty: view.y + frame.top, zoom: view.zoom }),
+    recognize: (png) => ink.recognizeText(png),
     visible: (on) => {
       shown = on
       push()
