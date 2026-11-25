@@ -54,7 +54,7 @@ test('the dot matrix: connection and needs-you only', () => {
   expect(dotOf('closed', 0, 0)).toEqual({ tone: 'down', pulse: false })
 })
 
-test('open: malachite, ochre with needs-you; an error notice never turns it red', async () => {
+test('open: malachite, the warning blue with needs-you; an error notice never turns it carnelian', async () => {
   const { host, root } = await mount()
   expect(dot(host).dataset.tone).toBe('ok')
   await act(async () => void notify.error('boom'))

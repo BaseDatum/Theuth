@@ -21,11 +21,11 @@ const TOKENS: DiagramTokens = {
   mutedForeground: '#666',
   border: '#ccc',
   card: '#fafafa',
-  accent: '#b4531e',
-  success: '#2f5d4a',
-  danger: '#9b2d1f',
+  accent: '#1d5f82',
+  success: '#265c47',
+  danger: '#8f2f1f',
   font: 'sans-serif',
-  series: ['#b4531e', '#2f5d4a', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'],
+  series: ['#1d5f82', '#265c47', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'],
 }
 const RUST = new URL('../../../../../../surface/fixtures/json-render/', import.meta.url)
 const load = (file: string): SequenceData => {
@@ -73,15 +73,15 @@ test('notes sit beside the arrow with the full text in a title; state colours th
   expect(html).toContain('<title>path + message</title>path + message</text>')
   expect(html).toContain('<title>final=true</title>final=true</text>')
   const danger = step(html, 2)
-  expect(danger).toContain('stroke="#9b2d1f" stroke-width="1.25" stroke-dasharray="6 4" marker-end="url(#m-closed-danger)"')
-  expect(danger).toContain('r="5.5" fill="#9b2d1f" stroke="#9b2d1f"')
+  expect(danger).toContain('stroke="#8f2f1f" stroke-width="1.25" stroke-dasharray="6 4" marker-end="url(#m-closed-danger)"')
+  expect(danger).toContain('r="5.5" fill="#8f2f1f" stroke="#8f2f1f"')
   const done = step(html, 4)
-  expect(done).toContain('stroke="#2f5d4a" stroke-width="1.25" marker-end="url(#m-closed-success)"')
+  expect(done).toContain('stroke="#265c47" stroke-width="1.25" marker-end="url(#m-closed-success)"')
   expect(step(html, 0)).toContain('stroke="#111" stroke-width="1.25"')
   // a step's own danger wins over a highlight elsewhere; the rest go muted
   const lit = svg(data, { highlight: [0] })
-  expect(step(lit, 0)).toContain('stroke="#b4531e" stroke-width="2.4"')
-  expect(step(lit, 2)).toContain('stroke="#9b2d1f"')
+  expect(step(lit, 0)).toContain('stroke="#1d5f82" stroke-width="2.4"')
+  expect(step(lit, 2)).toContain('stroke="#8f2f1f"')
   expect(step(lit, 1)).toContain('stroke="#666" stroke-width="1.25"')
 })
 

@@ -2,7 +2,7 @@
 // and the panel's `screen_context` request so the stamped image matches the screen. Kept import-free: the overlay
 // webview boots with nothing but this and the Tauri listeners (so the trail mode is read straight from storage).
 
-export const TRAIL_FALLBACK = '#2f5d4a'
+export const TRAIL_FALLBACK = '#265c47'
 
 /** `--status-success-fg` as `#rrggbb` (the stylesheet writes hex; anything else falls back). */
 export function trailColor(): string {

@@ -188,13 +188,13 @@ it, then the block.
 ## Mermaid styling: outline, never fill
 Diagrams render on light and dark themes and on phones; filled node backgrounds fight the theme's text color and become unreadable. Encode meaning in the **stroke**, never the fill:
 - Every `classDef` uses `fill:none` (or `fill:transparent`), a colored `stroke`, and `stroke-width:2.5px`. Add `stroke-dasharray:6 3` for a secondary/soft category (e.g. advisory or non-gating).
-- Palette (mid-saturation, legible on both themes): red `#dc2626` = human gate / blocker, blue `#2563eb` = mutating action, amber `#d97706` = warning / non-gating, green `#16a34a` = verified / done, gray `#6b7280` = external or out of scope. Two or three classes per diagram, not five.
+- Palette (legible on both themes): carnelian `#8f2f1f` = human gate / blocker, blue `#2563eb` = mutating action, Egyptian blue `#52a2cc` (always dashed) = warning / non-gating, green `#16a34a` = verified / done, gray `#6b7280` = external or out of scope. Two or three classes per diagram, not five.
 - In `sequenceDiagram`, use `rect rgba(0,0,0,0)` for stage grouping so the band is a boundary, not a tint; notes carry the label.
-- Never rely on color alone: put the category into the node text (PREFLIGHT, HEALTH — shim, exit 2) and finish with a one-line legend: "red outline = gates · blue outline = mutations · amber dashed = non-gating".
+- Never rely on color alone: put the category into the node text (PREFLIGHT, HEALTH — shim, exit 2) and finish with a one-line legend: "carnelian outline = gates · blue outline = mutations · light-blue dashed = non-gating".
 
 Example:
-    classDef gate fill:none,stroke:#dc2626,stroke-width:2.5px;
-    classDef soft fill:none,stroke:#d97706,stroke-width:2.5px,stroke-dasharray:6 3;
+    classDef gate fill:none,stroke:#8f2f1f,stroke-width:2.5px;
+    classDef soft fill:none,stroke:#52a2cc,stroke-width:2.5px,stroke-dasharray:6 3;
     classDef mut  fill:none,stroke:#2563eb,stroke-width:2.5px;
     class PRE,CONF gate;
     class HLT,SMK soft;

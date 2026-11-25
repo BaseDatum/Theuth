@@ -21,10 +21,10 @@ import { useCardSwipe } from './swipe'
 import { ItemError } from './ItemError'
 import { Reply } from './Reply'
 
-/** 132 D1/D4: `urgent` and `high` show a chip after the kind chip (gold-ochre · the warning hue); medium/low show nothing. */
+/** 132 D1/D4: `urgent` (carnelian) and `high` (Egyptian blue, the warning hue) show a chip after the kind chip; medium/low show nothing. */
 export function PriorityChip({ priority }: { priority: AttentionItem['priority'] | undefined }) {
   if (priority !== 'urgent' && priority !== 'high') return null
-  return <span className={cn('w-fit shrink-0 rounded-full border px-1.5 text-[10px] font-medium uppercase tracking-wide', priority === 'urgent' ? 'border-fg-accent text-fg-accent' : 'border-warning text-warning')}>{priority}</span>
+  return <span className={cn('w-fit shrink-0 rounded-full border px-1.5 text-[10px] font-medium uppercase tracking-wide', priority === 'urgent' ? 'border-danger-border text-danger' : 'border-warning text-warning')}>{priority}</span>
 }
 
 /** A stopped session whose turn failed or timed out reads as a problem; a clean finish or a cancel does not. */

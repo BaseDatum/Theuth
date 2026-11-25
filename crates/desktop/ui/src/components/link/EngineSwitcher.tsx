@@ -32,7 +32,7 @@ function useLocalPresence(): Presence {
   return state === 'open' ? 'online' : state === 'closed' ? 'offline' : 'connecting'
 }
 
-/** Presence dot: green online, amber connecting, muted offline. */
+/** Presence dot: green online, Egyptian blue connecting, muted offline. */
 export function Dot({ presence }: { presence: Presence }) {
   return <span className={cn('size-2 shrink-0 rounded-full', DOT[presence])} />
 }

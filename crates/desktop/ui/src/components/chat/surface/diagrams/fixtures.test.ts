@@ -24,10 +24,10 @@ vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { message: vi.fn
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
 vi.mock('@/components/ui/tooltip', () => ({ Tooltip: ({ children }: { children: unknown }) => children, TooltipTrigger: ({ children }: { children: unknown }) => children, TooltipContent: () => null }))
 vi.mock('@/lib/theme', () => ({ subscribeDark: () => () => {} }))
-const TOKENS: DiagramTokens = { background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#b4531e', success: '#2f5d4a', danger: '#9b2d1f', font: 'sans-serif', series: ['#b4531e', '#2f5d4a', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'] }
+const TOKENS: DiagramTokens = { background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#1d5f82', success: '#265c47', danger: '#8f2f1f', font: 'sans-serif', series: ['#1d5f82', '#265c47', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'] }
 // hoisted above `TOKENS`: the factory must not close over it
 vi.mock('@/lib/diagram-theme', () => ({
-  diagramTokens: () => ({ background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#b4531e', success: '#2f5d4a', danger: '#9b2d1f', font: 'sans-serif', series: ['#b4531e', '#2f5d4a', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'] }),
+  diagramTokens: () => ({ background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#1d5f82', success: '#265c47', danger: '#8f2f1f', font: 'sans-serif', series: ['#1d5f82', '#265c47', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'] }),
 }))
 const RUST = new URL('../../../../../../../surface/fixtures/json-render/', import.meta.url)
 

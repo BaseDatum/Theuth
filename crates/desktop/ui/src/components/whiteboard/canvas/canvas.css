@@ -13,11 +13,11 @@
   --wb-accent: var(--fg-accent);
   --wb-shimmer: color-mix(in oklab, var(--wb-accent) 22%, transparent);
   /* Light twins keep ≥ 3 : 1 on bone #e8dcc8 (ink/colour.ts INK_COLOURS; green and amber darkened from the contract, A1). */
-  --wb-pinned: #aa701d;
+  --wb-pinned: var(--fg-accent);
   --wb-blue: #1f6feb;
   --wb-green: #2a8e3d;
   --wb-amber: #aa701d;
-  --wb-red: #d9480f;
+  --wb-red: #8f2f1f;
   --wb-violet: #7048e8;
   background: var(--bg-page);
   touch-action: none;
@@ -30,11 +30,10 @@
   --wb-sticky-bg: #4a3f12;
   --wb-sticky-border: #6b5a1a;
   --wb-sticky-fg: #f3e7b0;
-  --wb-pinned: #f2c14e;
   --wb-blue: #6ea8ff;
   --wb-green: #5fd27a;
   --wb-amber: #f2c14e;
-  --wb-red: #ff7a45;
+  --wb-red: #8f2f1f;
   --wb-violet: #a78bfa;
 }
 .wb-canvas .react-flow {

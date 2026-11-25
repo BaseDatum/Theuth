@@ -28,7 +28,7 @@
 @custom-variant outside-openui (&:not([data-streamdown="openui"], [data-streamdown="openui"] *));
 
 /* theuth palette: warm ink on bone (docs/design/25-desktop.md §2.4). No pure #000/#FFF; accents are
-   mineral (ochre, malachite, faience, carnelian). Status washes are the status colour at low alpha. */
+   mineral (Egyptian blue, malachite, faience, carnelian). Status washes are the status colour at low alpha. */
 :root {
   color-scheme: light;
   --bg-page: #e8dcc8; /* bone */
@@ -40,28 +40,28 @@
   --fg-secondary: #6b5e4f; /* ash */
   --fg-tertiary: #8f7f6a; /* dust */
   --fg-inverse: #e8dcc8;
-  --fg-accent: #b4531e; /* ochre */
-  --fg-accent-hover: #8a3e16; /* ochre-dim */
+  --fg-accent: #1d5f82; /* Egyptian blue */
+  --fg-accent-hover: #154863; /* Egyptian blue, dim */
   --border-subtle: #d4c4a880;
   --border-default: #d4c4a8; /* limestone */
   --border-strong: #c9b48a; /* papyrus */
-  --status-danger-bg: #9b2d1f1f;
-  --status-danger-border: #9b2d1f;
-  --status-danger-fg: #9b2d1f; /* carnelian */
+  --status-danger-bg: #8f2f1f1f;
+  --status-danger-border: #8f2f1f;
+  --status-danger-fg: #8f2f1f; /* carnelian: the logo's pen bar */
   --status-info-bg: #3d6b661f;
   --status-info-border: #3d6b66;
   --status-info-fg: #3d6b66; /* faience */
-  --status-success-bg: #2f5d4a1f;
-  --status-success-border: #2f5d4a;
-  --status-success-fg: #2f5d4a; /* malachite */
-  --status-warning-bg: #b4531e1f;
-  --status-warning-border: #b4531e;
-  --status-warning-fg: #8a3e16; /* ochre-dim: the palette has no separate warning hue */
+  --status-success-bg: #265c471f;
+  --status-success-border: #265c47;
+  --status-success-fg: #265c47; /* malachite */
+  --status-warning-bg: #1d5f821f;
+  --status-warning-border: #1d5f82;
+  --status-warning-fg: #1d5f82; /* Egyptian blue: soft, informational cautions; risk is carnelian */
   --sidebar: #f3eadf;
-  /* project icon palette (25 §2.4 as-built): mineral hues at ochre darkness, ≥3:1 on --sidebar */
-  --project-ochre: #b4531e;
-  --project-carnelian: #9b2d1f;
-  --project-malachite: #2f5d4a;
+  /* project icon palette (25 §2.4 as-built): mineral hues, ≥3:1 on --sidebar. `ochre` is a legacy key: Egyptian blue. */
+  --project-ochre: #1d5f82;
+  --project-carnelian: #8f2f1f;
+  --project-malachite: #265c47;
   --project-faience: #3d6b66;
   --project-lapis: #3c5a86;
   --project-nile: #6b7a24;
@@ -69,11 +69,11 @@
   --project-slate: #566472;
   --project-sand: #8a6f42;
   --project-plum: #7d3f5c;
-  /* 160 D2: chart series (shadcn `--chart-N`), the project minerals in this order; never ochre or carnelian (warning / danger). */
+  /* 160 D2: chart series (shadcn `--chart-N`), the project minerals in this order; never the accent or carnelian (warning / danger). */
   --chart-1: #3d6b66; /* faience */
   --chart-2: #8a6f42; /* sand */
   --chart-3: #3c5a86; /* lapis */
-  --chart-4: #2f5d4a; /* malachite */
+  --chart-4: #265c47; /* malachite */
   --chart-5: #7d3f5c; /* plum */
   --chart-6: #566472; /* slate */
   --chart-7: #6b7a24; /* nile */
@@ -91,27 +91,27 @@
   --fg-secondary: #c9b89a; /* bone-dim */
   --fg-tertiary: #9a8b72; /* sand */
   --fg-inverse: #12100e;
-  --fg-accent: #c47a2c; /* gold-ochre */
-  --fg-accent-hover: #a36220; /* gold-ochre-dim */
+  --fg-accent: #52a2cc; /* Egyptian blue */
+  --fg-accent-hover: #408cb5; /* Egyptian blue, dim */
   --border-subtle: #2a241c99;
   --border-default: #2a241c; /* basalt */
   --border-strong: #3a3228; /* char */
-  --status-danger-bg: #c45a4826;
-  --status-danger-border: #c45a48;
-  --status-danger-fg: #c45a48; /* carnelian-bright */
+  --status-danger-bg: #8f2f1f26;
+  --status-danger-border: #8f2f1f;
+  --status-danger-fg: #8f2f1f; /* carnelian: the logo's pen bar, the same in both themes */
   --status-info-bg: #5b8f8a26;
   --status-info-border: #5b8f8a;
   --status-info-fg: #5b8f8a; /* faience-bright */
-  --status-success-bg: #4a8a6e26;
-  --status-success-border: #4a8a6e;
-  --status-success-fg: #4a8a6e; /* malachite-bright */
-  --status-warning-bg: #c47a2c26;
-  --status-warning-border: #c47a2c;
-  --status-warning-fg: #c47a2c; /* gold-ochre */
+  --status-success-bg: #4f9c7c26;
+  --status-success-border: #4f9c7c;
+  --status-success-fg: #4f9c7c; /* malachite-bright */
+  --status-warning-bg: #52a2cc26;
+  --status-warning-border: #52a2cc;
+  --status-warning-fg: #52a2cc; /* Egyptian blue */
   --sidebar: #1c1915;
-  --project-ochre: #c47a2c;
-  --project-carnelian: #c45a48;
-  --project-malachite: #4a8a6e;
+  --project-ochre: #52a2cc;
+  --project-carnelian: #8f2f1f;
+  --project-malachite: #4f9c7c;
   --project-faience: #5b8f8a;
   --project-lapis: #6f8fc0;
   --project-nile: #98a145;
@@ -122,7 +122,7 @@
   --chart-1: #5b8f8a; /* faience */
   --chart-2: #b89a63; /* sand */
   --chart-3: #6f8fc0; /* lapis */
-  --chart-4: #4a8a6e; /* malachite */
+  --chart-4: #4f9c7c; /* malachite */
   --chart-5: #b0708f; /* plum */
   --chart-6: #8a9aaa; /* slate */
   --chart-7: #98a145; /* nile */

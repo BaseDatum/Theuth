@@ -181,7 +181,7 @@ export function ContextLine({ estimate, error }: { estimate: ContextEstimate | u
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pt-2 text-[11px] text-fg-tertiary" data-testid="context-line">
       <span className="min-w-0">
         {estimate.empty ? (
-          <span className="text-amber-700">{parts[0]}</span>
+          <span className="text-warning">{parts[0]}</span>
         ) : (
           <>
             in context:{' '}

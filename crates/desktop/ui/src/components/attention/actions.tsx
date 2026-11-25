@@ -26,7 +26,7 @@ import { setItemError, useAttentionBulk, useBulkPending, useInboxActions } from 
 export type Size = 'xs' | 'sm' | 'default'
 
 /**
- * The detail pane's action colours (207 follow-up): affirmative answers are green, refusals red, Snooze amber; the
+ * The detail pane's action colours (207 follow-up): affirmative answers are green, refusals carnelian, Snooze Egyptian blue; the
  * list cards (xs) keep the quiet default/outline/ghost buttons. Navigation and submits keep their existing look.
  */
 export const TONE_SUCCESS = 'border border-success-border bg-success-bg text-success hover:bg-success-bg/80 hover:text-success'
@@ -46,7 +46,7 @@ export const SNOOZE_PRESETS = [
 
 /** Snooze ▾ — an hour · tomorrow 09:00 · a week; `onPick` gets the instant. */
 export function SnoozeMenu({ size, disabled, label = 'Snooze', onPick }: { size: Size; disabled?: boolean; label?: string; onPick: (until: number) => void }) {
-  // The detail pane's actions are tinted per action (Snooze = waiting amber); the list cards keep the quiet ghost.
+  // The detail pane's actions are tinted per action (Snooze = waiting, Egyptian blue); the list cards keep the quiet ghost.
   const pane = size !== 'xs'
   return (
     <DropdownMenu>

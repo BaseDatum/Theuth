@@ -132,7 +132,7 @@ export function PairList({ pairs, busy, onAnswer }: { pairs: Pair[]; busy: boole
                   <span className="text-fg-tertiary">
                     {shortSha(p.candidate)} vs {shortSha(p.incumbent)}
                   </span>
-                  <span className={cn('ml-auto rounded-full px-2 py-px font-semibold', p.outcome === 'a' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : p.outcome === 'b' ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300' : 'bg-layer-2 text-fg-secondary')}>
+                  <span className={cn('ml-auto rounded-full px-2 py-px font-semibold', p.outcome === 'a' ? 'bg-success-bg text-success' : p.outcome === 'b' ? 'bg-danger-bg text-danger' : 'bg-layer-2 text-fg-secondary')}>
                     {WORD[p.outcome]}
                   </span>
                 </div>

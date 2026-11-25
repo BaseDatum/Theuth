@@ -36,7 +36,7 @@ const observed = (state: ObservedMeta['state']): ObservedMeta => (receiveCompone
 }))
 const dot = (r: AgentInfo) => renderToStaticMarkup(createElement(StripDot, { row: r, leaving: false }))
 
-test('a native strip dot is the green/amber circle titled by its state', () => {
+test('a native strip dot is the malachite/warning circle titled by its state', () => {
   const html = dot(row({ beat: 3 }))
   expect(html).toContain('title="NapA · running · anthropic/claude-fable-5-1 · 22s"')
   expect(html).toContain('bg-success')

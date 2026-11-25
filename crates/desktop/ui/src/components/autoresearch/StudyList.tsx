@@ -73,7 +73,7 @@ export function StudyList({ q, active, showInner: initialInner = false }: { q: s
   )
 }
 
-/** D6: a draft without a study — dashed amber dot, `Setting up · n of m settled`, Discard on hover (the label says the consequence; no second confirmation). */
+/** D6: a draft without a study — dashed warning-blue dot, `Setting up · n of m settled`, Discard on hover (the label says the consequence; no second confirmation). */
 function DraftRow({ draft: d, active }: { draft: DraftSummary; active: boolean }) {
   const api = useApi()
   // §4.6: the chat hears about the discard too, so the agent stops drafting.

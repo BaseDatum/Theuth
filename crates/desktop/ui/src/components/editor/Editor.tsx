@@ -70,7 +70,7 @@ const SLASH_KEYS: Record<string, true> = {
 }
 
 /** Remote-cursor palette for owner devices (59 §8.5); the agent's colour comes from `meta.agent.color`. */
-const CURSOR_COLORS = ['#b4531e', '#1e6fb4', '#2e8b57', '#b41e7a', '#8a6d1e', '#1e8a8a']
+const CURSOR_COLORS = ['#1d5f82', '#8f2f1f', '#265c47', '#b41e7a', '#8a6d1e', '#1e8a8a']
 
 const hhmm = (d: Date) => d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 

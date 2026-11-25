@@ -14,7 +14,7 @@ vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
 vi.mock('@/components/ui/tooltip', () => ({ Tooltip: ({ children }: { children: unknown }) => children, TooltipTrigger: ({ children }: { children: unknown }) => children, TooltipContent: () => null }))
 vi.mock('@/lib/theme', () => ({ subscribeDark: () => () => {} }))
 vi.mock('@/lib/diagram-theme', () => ({
-  diagramTokens: () => ({ background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#b4531e', success: '#2f5d4a', danger: '#9b2d1f', font: 'sans-serif', series: ['#b4531e', '#2f5d4a', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'] }),
+  diagramTokens: () => ({ background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#1d5f82', success: '#265c47', danger: '#8f2f1f', font: 'sans-serif', series: ['#1d5f82', '#265c47', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'] }),
 }))
 
 const RUST = new URL('../../../../../../surface/fixtures/json-render/', import.meta.url)
@@ -208,12 +208,12 @@ test('Sequence (valid-sequence fixture): one focusable button per step with its 
 
 test('Sequence highlight: the active step goes accent 2.4 with an accent dot, every other step goes muted; onSelect makes steps pointers', () => {
   const data = { actors: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], steps: [{ from: 'a', to: 'b', label: 'x' }, { from: 'b', to: 'a', label: 'y', style: 'async' as const }] }
-  const t: DiagramTokens = { background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#b4531e', success: '#2f5d4a', danger: '#9b2d1f', font: 'sans-serif', series: ['#b4531e', '#2f5d4a', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'] }
+  const t: DiagramTokens = { background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#1d5f82', success: '#265c47', danger: '#8f2f1f', font: 'sans-serif', series: ['#1d5f82', '#265c47', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'] }
   const html = renderToStaticMarkup(createElement(SequenceSvg, { data, tokens: t, markerId: 'm', highlight: [1], onSelect: () => {} }))
   const step = (i: number) => /<g data-step="I"[^>]*>(.*?)<\/g>/.exec(html.replace(`data-step="${i}"`, 'data-step="I"'))?.[1] ?? ''
-  expect(step(1)).toContain('stroke="#b4531e" stroke-width="2.4"')
+  expect(step(1)).toContain('stroke="#1d5f82" stroke-width="2.4"')
   expect(step(1)).toContain('marker-end="url(#m-open-accent)"')
-  expect(step(1)).toContain('<circle cx="276" cy="188" r="5.5" fill="#b4531e"')
+  expect(step(1)).toContain('<circle cx="276" cy="188" r="5.5" fill="#1d5f82"')
   expect(step(0)).toContain('stroke="#666" stroke-width="1.25"')
   expect(step(0)).toContain('marker-end="url(#m-closed-muted)"')
   expect(html.match(/cursor:pointer/g)).toHaveLength(2)

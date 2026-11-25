@@ -54,7 +54,7 @@ export const theuthOpenUITheme = createTheme({
   textBrand: 'var(--fg-accent)',
   textWhite: 'var(--fg-inverse)',
   textBlack: 'var(--fg-primary)',
-  // On the ochre accent, the inverted ink reads best in both modes.
+  // On the Egyptian blue accent, the inverted ink reads best in both modes.
   textAccentPrimary: 'var(--fg-inverse)',
   textAccentSecondary: 'color-mix(in oklab, var(--fg-inverse) 60%, transparent)',
   textAccentTertiary: 'color-mix(in oklab, var(--fg-inverse) 30%, transparent)',
@@ -71,7 +71,7 @@ export const theuthOpenUITheme = createTheme({
   textInfoPrimary: 'var(--status-info-fg)',
   textInfoInverted: 'var(--fg-inverse)',
 
-  // Interactive: ochre is the accent (theuth's `--ring`, underlined links), carnelian the destructive.
+  // Interactive: Egyptian blue is the accent (theuth's `--ring`, underlined links), carnelian the destructive.
   interactiveAccentDefault: 'var(--fg-accent)',
   interactiveAccentHover: 'var(--fg-accent-hover)',
   interactiveAccentPressed: 'var(--fg-accent-hover)',
@@ -101,7 +101,7 @@ export const theuthOpenUITheme = createTheme({
   borderDanger: 'color-mix(in oklab, var(--status-danger-fg) 20%, transparent)',
   borderDangerEmphasis: 'var(--status-danger-border)',
 
-  // Charts: the shadcn `--chart-1..8` series in the same order (160 D2) — the project minerals, never ochre or
+  // Charts: the shadcn `--chart-1..8` series in the same order (160 D2) — the project minerals, never the accent or
   // carnelian (warning / danger). `var()` composes with the two-level indirection the chart renderer builds
   // (`--color-<series>: var(--chart-3)`, then `fill: var(--color-<series>)`); the per-chart-type palettes fall back
   // to this one (`useChartPalette`).

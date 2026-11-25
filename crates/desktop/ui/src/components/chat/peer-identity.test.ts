@@ -59,12 +59,12 @@ test('initials follow the mock: a short first word as written, else its first le
   expect(['z4-183', 'r183-sec', 'Notes on mesh', 'sky', ''].map(initials)).toEqual(['Z4', 'R', 'N', 'S', '?'])
 })
 
-test('colour: one stable project-palette class per sender, never ochre, carnelian or umber', () => {
+test('colour: one stable project-palette class per sender, never the warning blue (`ochre` key), carnelian or umber', () => {
   const keys = Array.from({ length: 400 }, (_, i) => `session:${i.toString(16).padStart(8, '0')}-8e10-7757-afd9-db253e4f5e73`)
   const colours = keys.map(senderColor)
   expect(keys.map(senderColor)).toEqual(colours)
   for (const c of colours) expect(c).toMatch(/^bg-project-(lapis|faience|malachite|plum|sand|slate|nile)$/)
-  // Ochre and carnelian mean warning and danger; umber reads as ochre in the dark theme.
+  // The `ochre` key (Egyptian blue) and carnelian mean warning and danger; umber sits beside carnelian in the dark theme.
   for (const banned of ['ochre', 'carnelian', 'umber']) expect(colours).not.toContain(`bg-project-${banned}`)
   // The hash spreads: every allowed mineral is used.
   expect(new Set(colours).size).toBe(7)
