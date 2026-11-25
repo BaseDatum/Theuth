@@ -29,6 +29,23 @@ export const GLYPH: Record<AgentState['state'], ReactNode> = {
   cancelled: '■',
 }
 
+/** The time a row's `ago` counts from (what `SubagentRow` shows). */
+const agoFrom = (row: { activity?: { last_active?: string | null } | null; started_at?: string | null; finished_at?: string | null }) =>
+  row.activity?.last_active ?? row.started_at ?? row.finished_at ?? null
+
+/**
+ * How often a tree's `ago` labels must re-render: `null` with no rows, every second while one reads seconds (under a
+ * minute), else every 30 s (minutes and up move no faster).
+ */
+export function agoStep(rows: Record<string, Parameters<typeof agoFrom>[0]> | undefined, now: number, some: boolean): number | null {
+  if (!some || !rows) return null
+  const seconds = Object.values(rows).some((r) => {
+    const at = agoFrom(r)
+    return at !== null && now - Date.parse(at) < 60_000
+  })
+  return seconds ? 1_000 : 30_000
+}
+
 /** `3m`, `2h`, `5d` since `iso`; empty when unknown. */
 export function ago(iso: string | null, now = Date.now()): string {
   if (!iso) return ''
@@ -138,7 +155,7 @@ export const SubagentRow = memo(function SubagentRow({
           {shortModel(row.model)}
         </span>
       )}
-      <span className="shrink-0 tabular-nums text-fg-tertiary">{ago(row.activity?.last_active ?? row.started_at ?? row.finished_at, now)}</span>
+      <span className="shrink-0 tabular-nums text-fg-tertiary">{ago(agoFrom(row), now)}</span>
     </Link>
   )
   return popout ? (
@@ -204,11 +221,6 @@ export function AgentTree({ session, active, liveOnly = false }: { session: stri
   const children = useSessionField(session, 'children')
   // The sidebar keeps `list_sessions` warm; it lends `updated_at`/`created_at` to the ranking.
   const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
-  const [now, setNow] = useState(Date.now())
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
-    return () => window.clearInterval(timer)
-  }, [])
   useEffect(() => {
     api.list_agents(session).then(
       (a) => useSessions.getState().setChildren(session, a),
@@ -222,6 +234,15 @@ export function AgentTree({ session, active, liveOnly = false }: { session: stri
     const kept = wanted ? all.filter((r) => wanted.has(r.id)) : all
     return { byParent: childrenOf(kept), keep: withAncestors(rows, active ? [active] : []), some: kept.length > 0 }
   }, [children, liveOnly, active])
+  // The rows' `ago`: a tree per desk, per tree row and in the rail popover, so each clock re-renders its whole tree.
+  // It runs only while rows show, by the second only while one of them reads seconds, never in a hidden window.
+  const [now, setNow] = useState(Date.now())
+  const step = agoStep(children, now, some)
+  useEffect(() => {
+    if (step === null) return
+    const timer = window.setInterval(() => document.visibilityState !== 'hidden' && setNow(Date.now()), step)
+    return () => window.clearInterval(timer)
+  }, [step])
   const { data: cost } = useQuery({
     queryKey: queryKeys.sessionCost(session),
     queryFn: () => api.session_cost(session),

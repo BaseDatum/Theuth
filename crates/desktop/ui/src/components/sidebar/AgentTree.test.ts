@@ -69,3 +69,14 @@ test('the shared Agents-page row does not gain sidebar-only chrome', async () =>
   expect(document.querySelector('a[href="/c/child"]')).not.toBeNull()
   expect(document.querySelector('button[aria-label="Open in new window"]')).toBeNull()
 })
+
+test('the tree clock: none without rows, by the second while a row reads seconds, else every 30 s', async () => {
+  const { agoStep } = await import('./AgentTree')
+  const now = Date.parse('2026-11-25T00:10:00Z')
+  const row = (at: string) => ({ started_at: at }) as never
+  expect(agoStep(undefined, now, false)).toBeNull()
+  expect(agoStep({ a: row('2026-11-25T00:09:30Z') }, now, false)).toBeNull()
+  expect(agoStep({ a: row('2026-11-25T00:09:30Z') }, now, true)).toBe(1_000)
+  expect(agoStep({ a: row('2026-11-25T00:01:00Z') }, now, true)).toBe(30_000)
+  expect(agoStep({ a: row('2026-11-25T00:01:00Z'), b: { activity: { last_active: '2026-11-25T00:09:55Z' } } as never }, now, true)).toBe(1_000)
+})
