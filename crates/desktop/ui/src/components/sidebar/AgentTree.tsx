@@ -56,11 +56,11 @@ export function ago(iso: string | null, now = Date.now()): string {
   return `${Math.floor(s / 86400)}d`
 }
 
-/** The sidebar's state colour (shared with the Attention graph, 208 §8.5): running tinted and pulsing, approval and
+/** The sidebar's state colour (shared with the Attention graph, 208 §8.5): running pulsing in malachite, approval and
  * awaiting in the approval tone, errors in danger, everything else muted. */
 export function stateTone(state: AgentState): string {
   return state.state === 'running'
-    ? cn(backgroundColors.subagents.text, 'animate-pulse')
+    ? 'animate-pulse text-success'
     : state.state === 'approval' || state.state === 'awaiting'
       ? backgroundColors.approval.text
       : state.state === 'error'

@@ -127,7 +127,7 @@ export function chartOutcome(tag: string): Outcome {
 
 const OUTCOME_WORDS: Record<Outcome, string> = { kept: 'kept', no_gain: 'no gain', worse: 'worse', failed: 'failed', reverted: 'reverted by review', lost: 'interrupted', open: 'in flight' }
 
-/** Tailwind classes of the badge (theme tokens only: malachite / carnelian / ochre). */
+/** Tailwind classes of the badge (theme tokens only: malachite / carnelian / Egyptian blue). */
 export const OUTCOME_CLASS: Record<Outcome, string> = {
   kept: 'bg-success-bg text-success',
   no_gain: 'bg-layer-2 text-fg-secondary',

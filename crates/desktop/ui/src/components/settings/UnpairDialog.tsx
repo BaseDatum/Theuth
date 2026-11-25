@@ -134,7 +134,7 @@ export function UnpairBody({
             <li key={`off-${m}`}>{nameOf(m)} is offline: it gets the new key when it reconnects</li>
           ))}
           {p.old_build.map((m) => (
-            <li key={`old-${m}`} className="text-warning">
+            <li key={`old-${m}`} className="text-danger">
               {nameOf(m)} runs an older theuth: it cannot read secrets after this until it is upgraded
             </li>
           ))}
@@ -282,15 +282,15 @@ export function RotationProgress({
         <ul className="flex flex-col gap-0.5 text-[13px]">
           {s.peers.map((p) => (
             <li key={p.id} className="flex items-center gap-2">
-              <span className={cn('size-1.5 shrink-0 rounded-full', p.has_key ? 'bg-success' : p.old_build ? 'bg-warning' : 'ring-1 ring-fg-tertiary ring-inset')} aria-hidden="true" />
+              <span className={cn('size-1.5 shrink-0 rounded-full', p.has_key ? 'bg-success' : p.old_build ? 'bg-danger' : 'ring-1 ring-fg-tertiary ring-inset')} aria-hidden="true" />
               <span className="font-medium">{peerName(nameOf)(p)}</span>
-              <span className={p.old_build && !p.has_key ? 'text-warning' : 'text-fg-secondary'}>{peerLine(p)}</span>
+              <span className={p.old_build && !p.has_key ? 'text-danger' : 'text-fg-secondary'}>{peerLine(p)}</span>
             </li>
           ))}
         </ul>
       )}
       {s.rows_stuck.length > 0 && (
-        <p className="text-[13px] text-warning">
+        <p className="text-[13px] text-danger">
           {s.rows_stuck.length} {s.rows_stuck.length === 1 ? 'secret' : 'secrets'} could not be re-encrypted: {s.rows_stuck.join(', ')} · set {s.rows_stuck.length === 1 ? 'it' : 'them'} again
         </p>
       )}

@@ -71,7 +71,7 @@ const CODE_RE = /^[\w./~-]+(\s|$)|^(sudo|brew|curl|apt|usermod)\b/
 /**
  * Host readiness (79 §5.1). Green: the runtime, virtualization, the host's cores / memory / free disk and the derived
  * defaults. Red: one sentence per blocker (`message`), its `fix` as an instruction line, and **Set up runtime** when a
- * blocker is `installable` or the embedded runtime is not extracted yet (the first create does it too). Amber: warnings,
+ * blocker is `installable` or the embedded runtime is not extracted yet (the first create does it too). Blue: warnings,
  * which never disable anything.
  */
 export function SandboxPreflightCard({ preflight: p, onInstall, installing }: { preflight: Preflight; onInstall: () => void; installing: boolean }) {

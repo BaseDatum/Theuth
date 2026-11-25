@@ -163,7 +163,7 @@ function Card() {
 
 const CARD = 'rounded-xl border border-border-subtle bg-elevated/70 shadow-xs'
 
-/** Done: a filled ochre check. Not done: an empty ring (ochre for the one to do next). A status, not a control. */
+/** Done: a filled accent check. Not done: an empty ring (accent for the one to do next). A status, not a control. */
 function Status({ done, next }: { done: boolean; next: boolean }) {
   return (
     <span
@@ -218,7 +218,7 @@ function Row({ item, done, next, onShow }: { item: ChecklistItem; done: boolean;
   )
 }
 
-/** Progress as a small ochre ring. */
+/** Progress as a small accent ring. */
 function Ring({ done, total }: { done: number; total: number }) {
   const r = 7
   const c = 2 * Math.PI * r

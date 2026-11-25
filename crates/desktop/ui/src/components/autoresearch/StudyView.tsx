@@ -367,7 +367,7 @@ function Stat({ label, sub, children }: { label: string; sub?: string; children:
   )
 }
 
-/** Three thin bars: money, time, experiments; the fill is the accent, past 85 % ochre, full carnelian. */
+/** Three thin bars: money, time, experiments; the fill is the accent, past 85 % the warning blue, full carnelian. */
 export function Bars({ bars }: { bars: Bar[] }) {
   return (
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">

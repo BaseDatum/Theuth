@@ -1,6 +1,6 @@
 import type { MeterZone, MeterZoneName } from "@/lib/audio/types";
 
-/** Green below −20 dBFS, amber from −20, red from −9: the thresholds streamers know. */
+/** Green below −20 dBFS, warn from −20, clip from −9: the thresholds streamers know. */
 export const DEFAULT_ZONES: MeterZone[] = [
   { fromDb: Number.NEGATIVE_INFINITY, zone: "ok" },
   { fromDb: -20, zone: "warn" },

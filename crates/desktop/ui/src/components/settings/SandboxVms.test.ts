@@ -64,7 +64,7 @@ test('ok host: green summary with runtime, virtualization, host facts and defaul
   expect(html).toContain('defaults 4 CPUs (up to 16) · 8 GiB (up to 32 GiB) · 20 GiB disk')
   expect(html).not.toContain('Set up runtime')
   expect(html).not.toMatch(/aria-label="Add a sandbox VM"[^>]*disabled/)
-  // The docker warning is amber text, not a blocker.
+  // The docker warning is warning-blue text, not a blocker.
   expect(html).toContain('Docker is not installed')
 })
 

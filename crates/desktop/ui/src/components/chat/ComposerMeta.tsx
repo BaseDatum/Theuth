@@ -38,7 +38,7 @@ export function costGlance(bucket: CostBucket): { short: string; exact: string }
   return { short: costBallpark(value, prefix), exact }
 }
 
-/** Context % tone: muted, amber from 75 %, red from 90 % (the meter's bands). */
+/** Context % tone: muted, Egyptian blue from 75 %, carnelian from 90 % (the meter's bands). */
 const PCT_TONE = { normal: '', warning: 'text-warning', danger: 'text-danger', critical: 'text-danger' } as const
 
 const ktok = (n: number) => `${Math.round(n / 1000)}k`
@@ -118,12 +118,12 @@ export function shieldState(waiting: number, off: boolean): ShieldState {
 
 const SHIELD = {
   on: { icon: ShieldCheck, tone: 'text-fg-tertiary', label: 'Approvals on: asks before risky tools' },
-  off: { icon: ShieldOff, tone: 'text-warning', label: 'Approvals off: runs freely' },
+  off: { icon: ShieldOff, tone: 'text-danger', label: 'Approvals off: runs freely' },
   waiting: { icon: Shield, tone: 'text-danger motion-safe:animate-pulse', label: 'Waiting on your approval' },
 } as const
 
 /**
- * The shield and its popover, without data: the state's icon (muted shield-check, amber struck shield, filled red and
+ * The shield and its popover, without data: the state's icon (muted shield-check, carnelian struck shield, filled carnelian and
  * pulsing while an approval waits), and the levels the engine has (`approvalsChoice`). `waiting` puts a jump row first.
  * 219 §6.1: `alwaysAsk` tools that ask even with approvals off add a line that opens the chat's Tools sheet.
  */

@@ -33,7 +33,7 @@ async function render(tab: ComponentType): Promise<string> {
   return paint()
 }
 
-test('Calendars: ICS rows by name with sync age or the amber error, the EventKit row drives the state line, and no URL appears anywhere', async () => {
+test('Calendars: ICS rows by name with sync age or the warning error, the EventKit row drives the state line, and no URL appears anywhere', async () => {
   const html = await render(CalendarSources)
   expect(html).toContain('Work')
   expect(html).toContain('synced 3 min ago')

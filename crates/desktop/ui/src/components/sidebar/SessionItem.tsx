@@ -77,10 +77,12 @@ export function SessionActivity({ id, here, running }: { id: string; here: boole
   // 212 §12: the agent's own status line, when it reported one, names the activity (not while compacting).
   const status = statusLine(activity, reported)
   const label = status || word
-  // The lucide glyphs pulse; the loading-dev ones (thinking, harvesting) animate on their own.
+  // The lucide glyphs pulse in malachite (every pulsing sidebar glyph is); the loading-dev ones (thinking, harvesting)
+  // animate on their own and keep the info tone.
+  const pulsing = activity !== 'thinking' && activity !== 'harvesting'
   const glyph = (
     <Icon
-      className={cn('size-3.5 shrink-0 text-info', activity !== 'thinking' && activity !== 'harvesting' && 'animate-pulse')}
+      className={cn('size-3.5 shrink-0', pulsing ? 'animate-pulse text-success' : 'text-info')}
       aria-label={label}
       role="img"
     />
@@ -112,9 +114,9 @@ export function SessionPending({ id }: { id: string }) {
   const pty = terminalLabel(open, live)
   return (
     <>
-      {jobs > 0 && <Cog className={cn('size-3.5 shrink-0 animate-pulse', backgroundColors.jobs.text)} aria-label={`${jobs} background job${jobs === 1 ? '' : 's'}`} role="img" />}
+      {jobs > 0 && <Cog className="size-3.5 shrink-0 animate-pulse text-success" aria-label={`${jobs} background job${jobs === 1 ? '' : 's'}`} role="img" />}
       {open > 0 && (
-        <PtyIcon live={live > 0} className={cn('size-3.5 shrink-0', backgroundColors.terminals.text)} aria-label={pty} role="img">
+        <PtyIcon live={live > 0} className={cn('size-3.5 shrink-0', live > 0 ? 'text-success' : backgroundColors.terminals.text)} aria-label={pty} role="img">
           <title>{pty}</title>
         </PtyIcon>
       )}
@@ -165,7 +167,9 @@ export function SessionSubagents({ subagents = NONE }: { subagents: readonly Ses
   const observedApproval = useSessions((s) => subagents.some((d) => (s.sessions[d.id]?.observed ?? d.observed)?.state === 'requires_action'))
   if (n === 0) return null
   const label = `${n} subagent${n === 1 ? '' : 's'} running`
-  return <Network className={cn('size-3.5 shrink-0 animate-pulse', backgroundColors[approval || observedApproval ? 'approval' : 'subagents'].text)} aria-label={label} role="img" />
+  // Running pulses in malachite; an approval in the subtree holds still in the approval tone.
+  const waiting = approval || observedApproval
+  return <Network className={cn('size-3.5 shrink-0', waiting ? backgroundColors.approval.text : 'animate-pulse text-success')} aria-label={label} role="img" />
 }
 
 /** Submenu body: the other known projects, then a new one (typed inline). Mounted only while the submenu is open. */

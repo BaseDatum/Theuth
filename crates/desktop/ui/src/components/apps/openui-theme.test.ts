@@ -22,7 +22,7 @@ test('every mapped colour is a theuth token reference or a wash of one', () => {
   }
 })
 
-test('the chart series is the shadcn --chart-1..8 order, never ochre or carnelian', () => {
+test('the chart series is the shadcn --chart-1..8 order, never the accent blue or carnelian', () => {
   expect(theuthOpenUITheme.defaultChartPalette).toEqual([
     'var(--chart-1)',
     'var(--chart-2)',

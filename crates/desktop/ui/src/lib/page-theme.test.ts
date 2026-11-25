@@ -83,11 +83,11 @@ test('maps_all_forty_names', () => {
 })
 
 test('accent_is_the_brand_token', () => {
-  stubRoot(false, () => ({ '--accent': 'neutral-wash', '--fg-accent': 'ochre', '--fg-inverse': 'bone' }))
+  stubRoot(false, () => ({ '--accent': 'neutral-wash', '--fg-accent': 'egyptian-blue', '--fg-inverse': 'bone' }))
   const t = pageThemeFor('light')
-  expect(t.variables['--accent']).toBe('ochre')
+  expect(t.variables['--accent']).toBe('egyptian-blue')
   expect(t.variables['--accent-foreground']).toBe('bone')
-  expect(t.variables['--chart-1']).toBe('ochre')
+  expect(t.variables['--chart-1']).toBe('egyptian-blue')
 })
 
 test('pageThemeFor lifts the class for the other appearance and puts it back', () => {

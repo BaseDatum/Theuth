@@ -150,7 +150,7 @@ export function initials(name: string): string {
   return (word.length <= 2 ? word : word.slice(0, 1)).toUpperCase() || '?'
 }
 
-/** The project palette minus ochre and carnelian (warning and danger) and umber, which reads as ochre in the dark theme.
+/** The project palette minus the Egyptian blue (`ochre` key) and carnelian (warning and danger) and umber, which reads close to carnelian in the dark theme.
  * Classes are safelisted in styles.css. */
 const CIRCLES = ['lapis', 'faience', 'malachite', 'plum', 'sand', 'slate', 'nile'] as const
 

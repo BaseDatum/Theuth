@@ -188,7 +188,7 @@ function RowText({ title, saved, md, summary, kind, context }: { title: string; 
         )}
         {kind === 'meeting_note' && <span className="rounded-md bg-layer-2 px-1.5 text-fg-secondary">meeting note</span>}
         {kind === 'board' && <span className="rounded-md bg-layer-2 px-1.5 text-fg-secondary">board</span>}
-        {context?.status === 'truncated' && <span className="rounded-full border border-amber-600/50 px-1.5 text-amber-700">truncated</span>}
+        {context?.status === 'truncated' && <span className="rounded-full border border-warning-border/50 px-1.5 text-warning">truncated</span>}
         {context?.status === 'omitted' && <span className="rounded-full border border-border-subtle px-1.5">omitted</span>}
       </span>
     </>

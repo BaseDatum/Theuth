@@ -61,14 +61,14 @@ export function SourceCard({ source, notebook, readOnly, onOpen, context }: { so
         {originLine(source)}
         {source.changed_since !== null &&
           (readOnly ? (
-            <span className={cn(PILL, 'border-orange-700/50 text-orange-700')}>changed since</span>
+            <span className={cn(PILL, 'border-warning-border/50 text-warning')}>changed since</span>
           ) : (
-            <Refetch id={id} className={cn(PILL, 'border-orange-700/50 text-orange-700 hover:bg-layer-2')}>
+            <Refetch id={id} className={cn(PILL, 'border-warning-border/50 text-warning hover:bg-layer-2')}>
               changed since · re-fetch
             </Refetch>
           ))}
         {source.error && <span className={cn(PILL, 'max-w-full truncate border-danger/50 text-danger')}>{source.error}</span>}
-        {context?.status === 'truncated' && <span className={cn(PILL, 'border-amber-600/50 text-amber-700')}>truncated</span>}
+        {context?.status === 'truncated' && <span className={cn(PILL, 'border-warning-border/50 text-warning')}>truncated</span>}
         {context?.status === 'omitted' && <span className={cn(PILL, 'border-border-subtle')}>omitted</span>}
       </div>
       {!readOnly && notebook && <Dial notebook={notebook} item={id} kind="source" context={context} className="mt-1.5" />}

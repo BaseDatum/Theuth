@@ -196,7 +196,7 @@ function DeskTile({
             className={cn(
               'relative h-9 justify-center rounded-[10px] bg-sidebar-accent/50 p-0 text-[13px] font-semibold shadow-[inset_0_0_0_1px_var(--sidebar-border)] pointer-coarse:h-11',
               'data-[active=true]:font-semibold data-[active=true]:shadow-[inset_0_0_0_1.5px_var(--sidebar-ring)]',
-              open.isPending && 'animate-pulse',
+              open.isPending && 'animate-pulse text-success',
             )}
           >
             {id === null ? (

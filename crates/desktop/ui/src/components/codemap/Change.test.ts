@@ -14,11 +14,11 @@ const TOKENS: DiagramTokens = {
   mutedForeground: '#6b5e4f',
   border: '#d4c4a8',
   card: '#f3eadf',
-  accent: '#b4531e',
-  success: '#2f5d4a',
-  danger: '#9b2d1f',
+  accent: '#1d5f82',
+  success: '#265c47',
+  danger: '#8f2f1f',
   font: 'sans-serif',
-  series: ['#b4531e', '#2f5d4a', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'],
+  series: ['#1d5f82', '#265c47', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'],
 }
 
 const change = fixture as unknown as ChangeLens

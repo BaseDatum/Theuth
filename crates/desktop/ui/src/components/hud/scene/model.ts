@@ -19,7 +19,7 @@ import { type Spend, spend } from '../model'
 
 /** Palette tokens — the only colours a scene element may carry. */
 export const C = {
-  accent: 'var(--fg-accent)', // gold-ochre: NEEDS YOU
+  accent: 'var(--fg-accent)', // Egyptian blue: NEEDS YOU
   success: 'var(--status-success-fg)', // malachite: landed
   info: 'var(--status-info-fg)', // faience: in flight
   danger: 'var(--status-danger-fg)', // carnelian: errors only
@@ -478,7 +478,7 @@ export function needsYou(attention: readonly AttentionItem[], g: Geom = geom()):
   return { needs, more: sorted.length - drawn.length }
 }
 
-/** The gold flows of the drawn needs: dot → the agent's ring (when one is named) → the arc at `at_ms` → a label. */
+/** The accent flows of the drawn needs: dot → the agent's ring (when one is named) → the arc at `at_ms` → a label. */
 export function needFlows(needs: readonly Need[], rings: readonly Ring[], now: number): Omit<Flow, 'end' | 'd'>[] {
   return needs.map((n) => ({
     id: `need:${n.item.id}`,

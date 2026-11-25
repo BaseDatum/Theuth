@@ -34,7 +34,7 @@
   color: var(--fg-primary);
 }
 .theuth-tour .driver-popover-title::before {
-  /* A short ochre rule over the title: the app's accent, quietly. */
+  /* A short Egyptian blue rule over the title: the app's accent, quietly. */
   content: '';
   display: block;
   width: 20px;

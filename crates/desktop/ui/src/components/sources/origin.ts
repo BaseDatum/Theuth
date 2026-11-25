@@ -9,7 +9,7 @@ export const LEVELS: readonly ContextLevel[] = ['off', 'mention', 'summary', 'fu
 export function originGlyph(origin: SourceOrigin): { text: string; className: string } {
   switch (origin.kind) {
     case 'file':
-      return origin.ext.toLowerCase() === 'pdf' ? { text: 'PDF', className: 'bg-orange-700' } : { text: 'FILE', className: 'bg-zinc-500' }
+      return origin.ext.toLowerCase() === 'pdf' ? { text: 'PDF', className: 'bg-[#1d5f82]' } : { text: 'FILE', className: 'bg-zinc-500' }
     case 'url':
       return { text: 'WEB', className: 'bg-blue-700' }
     case 'meeting':
@@ -21,7 +21,7 @@ export function originGlyph(origin: SourceOrigin): { text: string; className: st
     case 'mcp':
       return origin.label === 'jira' ? { text: 'JIRA', className: 'bg-blue-700' } : origin.label === 'confluence' ? { text: 'CONF', className: 'bg-blue-700' } : { text: 'MCP', className: 'bg-zinc-500' }
     case 'youtube':
-      return { text: 'YT', className: 'bg-red-700' }
+      return { text: 'YT', className: 'bg-[#8f2f1f]' }
     case 'audio':
       return { text: 'AUD', className: 'bg-purple-700' }
     case 'video':

@@ -57,19 +57,19 @@ afterEach(async () => {
   document.body.innerHTML = ''
 })
 
-test('sidebar categories match the dot palette without changing their shapes, pulse or labels; thinking stays info', async () => {
+test('every pulsing sidebar glyph is malachite; still glyphs keep their category colour; thinking stays info', async () => {
   await mount()
   expect(glyph('2 background jobs').getAttribute('class')).toContain('lucide-cog')
-  expect(glyph('2 background jobs').getAttribute('class')).toContain('text-project-lapis')
+  expect(glyph('2 background jobs').getAttribute('class')).toContain('text-success')
   expect(glyph('2 background jobs').getAttribute('class')).toContain('animate-pulse')
-  expect(glyph('Terminal running').getAttribute('class')).toContain('text-project-faience')
+  expect(glyph('Terminal running').getAttribute('class')).toContain('text-success')
   expect(glyph('Terminal running').getAttribute('class')).toContain('pty-live')
   expect(glyph('Terminal running').querySelector('.pty-cursor')).not.toBeNull()
   expect(glyph('1 reminder pending').getAttribute('class')).toContain('lucide-timer')
   expect(glyph('1 reminder pending').getAttribute('class')).toContain('text-project-plum')
   expect(glyph('1 reminder pending').getAttribute('class')).not.toContain('animate-pulse')
   expect(glyph('1 subagent running').getAttribute('class')).toContain('lucide-network')
-  expect(glyph('1 subagent running').getAttribute('class')).toContain('text-project-malachite')
+  expect(glyph('1 subagent running').getAttribute('class')).toContain('text-success')
   expect(glyph('1 subagent running').getAttribute('class')).toContain('animate-pulse')
   expect(glyph('Thinking').getAttribute('class')).toContain('text-info')
 })
@@ -98,15 +98,16 @@ test("a child's quiet terminal puts no terminal glyph on the root row", async ()
   expect(document.querySelector('.lucide-square-terminal')).toBeNull()
 })
 
-test('only an approval in this subtree turns the network glyph warning; resolving restores malachite', async () => {
+test('only an approval in this subtree turns the network glyph warning and stills it; resolving restores the malachite pulse', async () => {
   await mount()
   await act(async () => useApprovals.getState().add({ type: 'ApprovalRequested', id: 'other', session: 'unrelated', tool: 'shell', args: {}, risk: 'mutating', human_only: false }))
-  expect(glyph('1 subagent running').getAttribute('class')).toContain('text-project-malachite')
+  expect(glyph('1 subagent running').getAttribute('class')).toContain('text-success')
   await act(async () => useApprovals.getState().add({ type: 'ApprovalRequested', id: 'approval', session: 'child', tool: 'shell', args: {}, risk: 'mutating', human_only: false }))
   expect(glyph('1 subagent running').getAttribute('class')).toContain('text-warning')
-  expect(glyph('1 subagent running').getAttribute('class')).toContain('animate-pulse')
+  expect(glyph('1 subagent running').getAttribute('class')).not.toContain('animate-pulse')
   await act(async () => useApprovals.getState().resolve('approval'))
-  expect(glyph('1 subagent running').getAttribute('class')).toContain('text-project-malachite')
+  expect(glyph('1 subagent running').getAttribute('class')).toContain('text-success')
+  expect(glyph('1 subagent running').getAttribute('class')).toContain('animate-pulse')
 })
 
 test('watch-only subagents use warning for requires_action, including live updates', async () => {
@@ -114,7 +115,7 @@ test('watch-only subagents use warning for requires_action, including live updat
   await mount([{ ...child, kind: 'observed', observed }])
   expect(glyph('1 subagent running').getAttribute('class')).toContain('text-warning')
   await act(async () => useSessions.setState((s) => ({ sessions: { ...s.sessions, child: { ...s.sessions.child!, observed: { ...observed, state: 'running' } } } })))
-  expect(glyph('1 subagent running').getAttribute('class')).toContain('text-project-malachite')
+  expect(glyph('1 subagent running').getAttribute('class')).toContain('text-success')
 })
 
 test('a session hover action opens its chat without row selection, navigation or drag', async () => {

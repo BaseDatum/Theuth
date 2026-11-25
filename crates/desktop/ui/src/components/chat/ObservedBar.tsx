@@ -25,7 +25,8 @@ const DOT: Record<Exclude<ObservedState, 'completed'>, string> = {
 /**
  * The state mark every watch-only surface shares (tree row, strip, roster, bar): colour by the harness's state, a
  * `✓` once finished (Q1: `idle` is not finished). Re-keyed on `beat` so the one-shot `subagent-blink` restarts per
- * streaming event (93) — only while the state is live, a resting row sits still. `sr-only` text names the state.
+ * streaming event (93) — only while running (malachite: every pulsing sidebar mark is); `requires_action` and a
+ * resting row sit still. `sr-only` text names the state.
  */
 export function WatchDot({ state, beat, className }: { state: ObservedState; beat?: number; className?: string }) {
   if (state === 'completed')
@@ -34,7 +35,7 @@ export function WatchDot({ state, beat, className }: { state: ObservedState; bea
         ✓<span className="sr-only"> finished</span>
       </span>
     )
-  const live = state === 'running' || state === 'requires_action'
+  const live = state === 'running'
   return (
     <span className={cn('inline-flex w-2 shrink-0 items-center justify-center', className)}>
       <span key={live ? (beat ?? 0) : 0} className={cn('subagent-dot block size-2 rounded-full', DOT[state], live && beat !== undefined && 'subagent-blink')} />

@@ -20,7 +20,7 @@ import { useUsageLimits } from '@/lib/costs/queries'
 
 const WARN = 'var(--status-warning-fg)'
 const DANGER = 'var(--status-danger-fg)'
-/** Series colour for a used share: `base` below `warn`, ochre from `warn`, carnelian from `danger`. */
+/** Series colour for a used share: `base` below `warn`, the warning blue from `warn`, carnelian from `danger`. */
 const heat = (share: number, warn: number, danger: number, base = 'var(--chart-1)'): string => (share >= danger ? DANGER : share >= warn ? WARN : base)
 const clampPct = (share: number): number => Math.min(100, Math.max(0, share * 100))
 

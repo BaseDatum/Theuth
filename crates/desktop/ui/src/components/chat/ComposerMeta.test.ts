@@ -47,14 +47,15 @@ function mount(props: Partial<Parameters<typeof ApprovalShieldView>[0]> = {}) {
 
 const shield = () => document.querySelector<HTMLButtonElement>('[data-shield]')!
 
-test('the three shield states: muted shield-check, amber struck shield, filled red pulsing', () => {
+test('the three shield states: muted shield-check, carnelian struck shield, filled carnelian pulsing', () => {
   mount({ state: 'on' })
   expect(shield().dataset.shield).toBe('on')
   expect(shield().className).toContain('text-fg-tertiary')
   expect(shield().querySelector('svg')?.getAttribute('fill')).toBe('none')
   act(() => root!.unmount())
   mount({ state: 'off' })
-  expect(shield().className).toContain('text-warning')
+  expect(shield().className).toContain('text-danger')
+  expect(shield().className).not.toContain('animate-pulse')
   expect(shield().getAttribute('aria-label')).toMatch(/off/)
   act(() => root!.unmount())
   mount({ state: 'waiting', waiting: 1 })
@@ -130,7 +131,7 @@ test('the row exists for an existing session with a reading only (never the draf
 
 const META = { pct: 78, estimated: false, ctxTitle: '780k / 1000k tokens\nCache 75%', cost: { short: '~$131', exact: '$131.40', title: '$131.40' } }
 
-test('the row: both numbers always shown, right-aligned 16 px, the % banded amber from 75, red from 90; the cost opens the breakdown', () => {
+test('the row: both numbers always shown, right-aligned 16 px, the % banded Egyptian blue from 75, carnelian from 90; the cost opens the breakdown', () => {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)

@@ -33,7 +33,7 @@ test('unhomed: the chip names the holder', () => {
   expect(html(provider({ home: null, server: 'S' }))).toContain('On studio-mac')
 })
 
-test('home offline: grey chip with `· offline` and the amber banner', () => {
+test('home offline: grey chip with `· offline` and the warning banner', () => {
   const h = html(provider({ server: 'S' }))
   expect(h).toContain('bg-fg-tertiary')
   expect(h).toContain('On xeus · offline')
