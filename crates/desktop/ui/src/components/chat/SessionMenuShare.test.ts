@@ -21,6 +21,7 @@ const answers: Record<string, () => unknown> = {
   mesh_status: () => ({ self_id: 'me', self_name: 'me', peers: [] }),
   get_approvals: () => ({ global: true, session: true }),
   get_communication: () => ({ global: true, effective: true, scope: 'owner', alias: null }),
+  get_always_ask: () => ({ global: [], session: [], inherited: [] }),
 }
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
