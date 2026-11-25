@@ -12,7 +12,8 @@ import { useStore } from 'zustand'
 import { useNoteTitle } from '@/components/notes/NotePage'
 import { useDocument } from '@/components/editor/useDocument'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { putAttachment } from '@/lib/files'
+import { extFor, putAttachment } from '@/lib/files'
+import { noteText } from '@/lib/voice-note'
 import { usePointerCoarse } from '@/lib/mobile'
 import { notify } from '@/lib/notify'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -23,6 +24,9 @@ import { useConnection } from '@/store/connection'
 import { useNotices } from '@/store/notices'
 import { statusLine, useSessionField, useSessions } from '@/store/sessions'
 import { useTerminals } from '@/components/chat/TerminalViewer'
+import { MicButton } from '@/components/chat/MicButton'
+import { useNoteRecorder } from '@/components/chat/use-note-recorder'
+import { CancelHint, DeleteNote, RecordingMeta, type Stage } from '@/components/chat/VoiceHold'
 import { type AddKind, Cluster } from './Cluster'
 import { Bubble } from './Bubble'
 import { CardSheet } from './CardSheet'
@@ -258,7 +262,8 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
   }
   const openSession = (s: string | null = session) => s && void navigate({ to: '/c/$session', params: { session: s } })
 
-  const send = async () => {
+  /** `spoken`: a voice note from the pill's mic — it goes with a fresh plan (the marks in view), the typed text stays. */
+  const send = async (spoken?: string) => {
     const h = handle.current
     if (!h || !rpc || sending) return
     setSending(true)
@@ -279,14 +284,14 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           doc,
           title: title || 'Whiteboard',
           cards: cardsOf(board),
-          text,
+          text: spoken ?? text,
           session,
           running,
           bound: !!session && boundList.some((b) => b.session === session),
           vision: !noVision,
           selection: store.getState().selection,
           clientId: crypto.randomUUID(),
-          plan,
+          plan: spoken !== undefined && !store.getState().composerOpen ? undefined : plan,
           frameOf: (c) => board.cards[c]?.frame,
         },
       )
@@ -296,7 +301,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
         useSessions.getState().ensure(r.session)
       }
       refreshBound()
-      setText('')
+      if (spoken === undefined) setText('')
       closeComposer()
     } catch (e) {
       notify.error(e instanceof Error ? e.message : String(e))
@@ -304,6 +309,67 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
       setSending(false)
     }
   }
+
+  // ── Hold-to-talk (89 VOICE-HOLD, the recorder shared with the chat composer): a voice note is transcribed and sent
+  // with the whiteboard as `[voice note, N s] …`; a tap opens the sheet for system dictation.
+  const [stage, setStage] = useState<Stage>('idle')
+  const [secs, setSecs] = useState(0)
+  const [transcribing, setTranscribing] = useState(false)
+  const hint = useRef<HTMLSpanElement>(null)
+  const voice = useNoteRecorder((blob) => {
+    setTranscribing(true)
+    void (async () => {
+      try {
+        const t = await api.transcribe(await putAttachment(api, blob, extFor(blob)))
+        if (!t.text.trim()) notify('Nothing recognized')
+        else await send(noteText(t.text, Number(t.duration_ms)))
+      } catch (e) {
+        notify.error(e instanceof Error ? e.message : String(e))
+      } finally {
+        setTranscribing(false)
+      }
+    })()
+  })
+  useEffect(() => {
+    if (!voice.recording) return
+    setSecs(0)
+    const tick = setInterval(() => setSecs((s) => s + 1), 1000)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      voice.stop(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      clearInterval(tick)
+      window.removeEventListener('keydown', onKey)
+      voice.dropWave()
+    }
+    // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the recording flag, as the composer's
+  }, [voice.recording])
+  const mic = (
+    <MicButton
+      recording={voice.recording}
+      source={voice.source}
+      hint={hint}
+      onStage={setStage}
+      disabled={sending || transcribing}
+      reason={null}
+      onTap={() => openComposer(true)}
+      onRecord={() => void voice.record()}
+      onStop={voice.stop}
+    />
+  )
+  const recordingRow =
+    stage !== 'idle' ? (
+      <>
+        {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
+        {stage === 'locked' && <DeleteNote onClick={() => voice.stop(true)} />}
+        <RecordingMeta secs={secs} stage={stage} />
+      </>
+    ) : transcribing ? (
+      <span className="wb-muted truncate text-[14px]">Listening back…</span>
+    ) : undefined
 
   // ── Add.
   const terminals = useTerminals(session ?? '')
@@ -544,7 +610,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           autoFocus={focusField}
         />
       ) : (
-        <Pill pick={pick} status={status} onGrabber={() => timer.grabber()} onOpen={() => openComposer()} onMic={() => openComposer(true)} />
+        <Pill pick={pick} status={status} onGrabber={() => timer.grabber()} onOpen={() => openComposer()} mic={mic} recording={recordingRow} />
       )}
       {card && <CardSheet card={card} phone={phone} blobUrl={host.blobUrl} onClose={() => setOpenCard(null)} onSession={(s) => openSession(s)} />}
       {chooser && <ChooserDialog c={chooser} onDone={() => setChooser(null)} />}

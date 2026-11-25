@@ -3,7 +3,7 @@
 // agent's one-line status while it works (dot pulses), mic (→ the sheet, focused, for system dictation).
 
 import { useQuery } from '@tanstack/react-query'
-import { Check, Link2, Mic, Plus, Unlink } from 'lucide-react'
+import { Check, Link2, Plus, Unlink } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useApi } from '@/lib/rpc'
@@ -88,14 +88,18 @@ export function Pill({
   status,
   onGrabber,
   onOpen,
-  onMic,
+  mic,
+  recording,
 }: {
   pick: SessionPick
   /** The one-line status (agent working, or a notice while full-window); null → the placeholder. */
   status: string | null
   onGrabber(): void
   onOpen(): void
-  onMic(): void
+  /** The hold-to-talk mic (tap: the sheet for system dictation; hold: a voice note sent with the whiteboard). */
+  mic: ReactNode
+  /** While a voice note is held or locked: what replaces the placeholder (cancel hint, delete, timer). */
+  recording?: ReactNode
 }) {
   return (
     <div role="group" aria-label="Composer" className="wb-glass wb-corner absolute z-20 flex h-11 w-[min(330px,calc(100vw-48px))] items-center gap-2 rounded-full pr-1.5 pl-1">
@@ -103,14 +107,16 @@ export function Pill({
         <span className="h-5 w-[5px] rounded-full bg-current opacity-35" />
       </button>
       <SessionChip p={pick} />
-      <button type="button" onClick={onOpen} aria-label={status ? `${status}. Write a message` : 'Write a message'} className="h-full min-w-0 flex-1 truncate text-left text-[14px]">
-        <span className={status ? '' : 'wb-muted'} aria-live="polite">
-          {status ?? 'Ask…'}
-        </span>
-      </button>
-      <button type="button" aria-label="Dictate" onClick={onMic} className="wb-chip grid size-8 shrink-0 place-items-center rounded-full">
-        <Mic className="size-4" />
-      </button>
+      {recording ? (
+        <div className="relative flex h-full min-w-0 flex-1 items-center justify-end">{recording}</div>
+      ) : (
+        <button type="button" onClick={onOpen} aria-label={status ? `${status}. Write a message` : 'Write a message'} className="h-full min-w-0 flex-1 truncate text-left text-[14px]">
+          <span className={status ? '' : 'wb-muted'} aria-live="polite">
+            {status ?? 'Ask…'}
+          </span>
+        </button>
+      )}
+      <div className="grid size-9 shrink-0 place-items-center">{mic}</div>
     </div>
   )
 }
