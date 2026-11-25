@@ -968,8 +968,9 @@ pub struct WbCall {
     pub op: Op,
 }
 
-/// The operations behind the tools.
+/// The operations behind the tools (fields as the tools' arguments of the same names).
 #[derive(Clone, Debug)]
+#[allow(missing_docs)]
 pub enum Op {
     /// Only make `doc` the current whiteboard (after `wb_create`).
     Touch,

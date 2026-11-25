@@ -406,7 +406,8 @@ async fn update_answers_sent_marks() {
     ok(&call(&WbPlaceTool(w.clone()), json!({"whiteboard": wb.doc.to_string(), "kind": "page", "title": "B",
         "source": {"t": "page", "call_id": "toolu_1"}}), s).await);
     let card = id_of(&snapshot(&actor, &wb.doc).await, "c1");
-    let (m_sent, m_pinned) = (model::ulid(), model::ulid());
+    // Aliases follow ULID order: the sent mark is minted first.
+    let (m_sent, m_pinned) = (model::ulid_at(1_000), model::ulid_at(2_000));
     owner_edit(&actor, &wb.doc, |m, t| {
         put_mark(m, t, &m_sent, &card, 1, "sent", 1, &[]);
         put_mark(m, t, &m_pinned, &card, 1, "pinned", 1, &[]);
