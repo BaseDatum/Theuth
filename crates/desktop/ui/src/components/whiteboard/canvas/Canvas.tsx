@@ -29,6 +29,7 @@ import { FreeInk, indexInk } from './InkLayer'
 import { MultiTap, PALM_MS, pointerKind, routePointer, type PointerKind } from './input'
 import { LinkEdge } from './LinkEdge'
 import { assignLod, emptyLodState, type Lod } from './lod'
+import { beside } from './beside'
 import { WB_SCHEMA, type Board, type Box, type Id, type Port, type Stroke } from './model'
 import { addCard, addFrame, addLink, addStrokes, eraseStrokes, holdGroup, moveItems, pinMark, raise, setSnap, archive, removeLink, removeFrame, dim } from './ops'
 import { lassoSelect } from './lasso'
@@ -63,21 +64,20 @@ const portOf = (h: string | null | undefined): Port | undefined => {
 type Wet = { id: number; kind: PointerKind; erase: boolean; pts: Pt[]; t0: number; hasPressure: boolean }
 type Rubber = { id: number; x0: number; y0: number; x1: number; y1: number }
 
-/** B4's anchored nodes (the reply bubble): at a card's right-top in screen space, flipped left when `reserve` px (the
- *  bubble, plus the control cluster while it is up) do not fit at the right edge. */
-function Anchored({ items, board, width, reserve }: { items: NonNullable<WhiteboardCanvasProps['anchored']>; board: Board; width: number; reserve: number }) {
+/** B4's anchored nodes (the reply bubble, 262 px wide): beside a card in screen space, on the first side that stays
+ *  in the frame (minus `right`, the raised cluster) and covers no other card (`beside.ts`). */
+function Anchored({ items, board, size, right }: { items: NonNullable<WhiteboardCanvasProps['anchored']>; board: Board; size: { w: number; h: number }; right: number }) {
   const { x, y, zoom } = useViewport()
+  const screen = (c: { x: number; y: number; w: number; h: number }) => ({ x: c.x * zoom + x, y: c.y * zoom + y, w: c.w * zoom, h: c.h * zoom })
   return (
     <>
       {items.map((a) => {
         const c = a.card ? board.cards[a.card] : undefined
         if (!c || c.state === 'archived') return null
-        const right = (c.x + c.w) * zoom + x
-        const top = c.y * zoom + y
-        const flip = right + reserve > width
-        const left = flip ? c.x * zoom + x - 12 : right + 12
+        const others = Object.values(board.cards).filter((o) => o.id !== c.id && o.state !== 'archived').map(screen)
+        const at = beside(screen(c), { w: 262, h: 120 }, others, { ...size, right })
         return (
-          <div key={a.key} className="absolute z-10" style={{ left, top, transform: flip ? 'translateX(-100%)' : undefined }}>
+          <div key={a.key} className="absolute z-10" style={{ left: at.x, top: at.y }}>
             {a.node}
           </div>
         )
@@ -1040,7 +1040,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
               </a>
             </Panel>
           )}
-          {anchored && anchored.length > 0 && <Anchored items={anchored} board={board} width={size.w} reserve={clusterOpen ? 380 : 300} />}
+          {anchored && anchored.length > 0 && <Anchored items={anchored} board={board} size={size} right={clusterOpen ? 94 : 24} />}
         </ReactFlow>
         <canvas ref={wetCanvas} className="wb-wet" aria-hidden />
         {rubber && <RubberBand r={rubber} />}
