@@ -1,4 +1,4 @@
-//! 219 cell nudge: a short shell/python fence the reply asks the user to run, written without
+//! 220 cell nudge: a short shell/python fence the reply asks the user to run, written without
 //! a `#|` header, is promoted to a user cell in place. This module is the pure half: the fence
 //! scanner, the detector ([`detect`]), the repair side call's prompt ([`REPAIR_SYSTEM`],
 //! [`repair_user`]), the acceptance checks of its answer ([`accept`]) and the per-session
@@ -73,7 +73,7 @@ pub enum Repair {
     Rejected(String),
 }
 
-/// 219: the automatic nudges of one session — how many were spent and the digest of every
+/// 220: the automatic nudges of one session — how many were spent and the digest of every
 /// fence tried, so a fence is tried once. An attempt that never got the model's verdict
 /// (timeout, provider error, a turn started) is given back. In memory only.
 #[derive(Debug, Default)]
@@ -120,7 +120,7 @@ pub fn reply_text(content: &MessageContent) -> String {
 }
 
 /// The runnable language of an info string (`surface::cell::lang_of`), JS/TS excluded: those
-/// never promote (219 Vocabulary).
+/// never promote (220 Vocabulary).
 pub fn runnable(info: &str) -> Option<Lang> {
     cell::lang_of(info).filter(|l| !matches!(l, Lang::Javascript | Lang::Typescript))
 }
@@ -242,7 +242,7 @@ fn same_body(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
-/// The plain fence of `text` a caller means (219 build notes, ordinal drift guard): without
+/// The plain fence of `text` a caller means (220 build notes, ordinal drift guard): without
 /// `body`, the fence at `ordinal`; with it, the fence at `ordinal` when its body matches, else
 /// the first plain fence whose body matches — the ordinal only breaks ties between identical
 /// bodies, so a client whose scanner numbers fences differently never rewrites the wrong one.
@@ -352,7 +352,7 @@ fn placeholder(body: &str) -> bool {
         || body.lines().any(|l| matches!(l.trim(), "..." | "…"))
 }
 
-/// 219: the first plain fence of `text` that is short (≤ 5 non-blank lines), has no
+/// 220: the first plain fence of `text` that is short (≤ 5 non-blank lines), has no
 /// placeholder, whose introducing clause is no illustration ("for example", "you could", …),
 /// and that carries a run-me signal: prose asking the user to run it (300 chars before, 200
 /// after, the windows stopping at the neighbouring fences) or a bare `Run this:` right before
@@ -431,7 +431,7 @@ fn comparable(code: &str) -> String {
     lines.join("\n").trim_matches('\n').to_owned()
 }
 
-/// 219: check the repair answer against `fence`. `OK` or nothing → [`Repair::Declined`]. One
+/// 220: check the repair answer against `fence`. `OK` or nothing → [`Repair::Declined`]. One
 /// closed fence and nothing around it, a cell header (`surface::cell::parse`) of only
 /// [`ALLOWED_KEYS`] and no invisible characters, the fence's language, no `validate` error in
 /// chat and no changing command without `label`/`danger`, `#| danger` when the fence changes

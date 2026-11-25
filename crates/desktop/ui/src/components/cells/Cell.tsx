@@ -264,7 +264,7 @@ function LiveTerminal({ run, code, label }: { run: CellRun; code: string; label:
   )
 }
 
-/** 219: copy the cell's code as on screen (the user's edit, else the fence), without its `#|` header (`copyText`). */
+/** 220: copy the cell's code as on screen (the user's edit, else the fence), without its `#|` header (`copyText`). */
 function CopyCell({ lang, code }: { lang: string; code: string }) {
   const [done, setDone] = useState(false)
   const copy = async () => {

@@ -1,4 +1,4 @@
-// 219 (Make runnable): the only module that touches the generated `cell_promote` binding.
+// 220 (Make runnable): the only module that touches the generated `cell_promote` binding.
 import { notify } from '@/lib/notify'
 import { routed } from '@/lib/owner'
 import type { Api, MethodMap } from '@/rpc/bindings/client'

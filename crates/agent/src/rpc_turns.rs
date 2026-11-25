@@ -22,7 +22,7 @@ use rpc_core::{Server, ASK_FAILED, UNAUTHORIZED, ask, lookup, peer, send};
 use runtime::{InputId, SessionId};
 use tools::Retention;
 
-/// What `cell_promote` (design doc 219) did with the fence.
+/// What `cell_promote` (design doc 220) did with the fence.
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, kameo::Reply,
 )]
@@ -231,7 +231,7 @@ pub trait TurnsApi {
     async fn regenerate(&self, session: SessionId, turn: i64) -> RpcResult<()>;
     /// Rewrite a plain fence of the assistant row `entry` (its stored message seq, the
     /// `HistoryEntry` context target) as a user cell via the cell-nudge side call, in place
-    /// (design doc 219). `fence` is the 0-based ordinal among the reply's plain runnable fences;
+    /// (design doc 220). `fence` is the 0-based ordinal among the reply's plain runnable fences;
     /// `body` the fence body the client saw: the fence whose body matches wins, the ordinal
     /// only breaks ties between identical bodies. Refused (`stale`) while a turn runs; a
     /// `ContextChanged { reason: "cell_nudge" }` follows a conversion.

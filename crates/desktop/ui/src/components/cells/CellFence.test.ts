@@ -92,7 +92,7 @@ test('ordinals follow document order; identical cells get distinct ordinals', ()
   expect(o.claim('c', body)).toBeNull()
 })
 
-test('219: plain fences are numbered from 0 among closed, runnable, header-less fences; claims go by language and body', () => {
+test('220: plain fences are numbered from 0 among closed, runnable, header-less fences; claims go by language and body', () => {
   const text = [
     '```bash\necho a\n```',
     '```bash\n#| cwd: /tmp\necho cell\n```',
@@ -119,7 +119,7 @@ test('219: plain fences are numbered from 0 among closed, runnable, header-less 
   expect(o.claimPlain('d', 'rust', 'fn main() {}')).toBeNull()
 })
 
-test('219: the plain-fence scanner is strict CommonMark, as the engine counts', () => {
+test('220: the plain-fence scanner is strict CommonMark, as the engine counts', () => {
   const bodies = (text: string) => plainFences(text).map((p) => `${p.lang}:${p.body}`)
   expect(bodies('~~~bash\necho tilde\n~~~')).toEqual(['bash:echo tilde'])
   expect(bodies('~~~bash\necho x\n```\n~~~')).toEqual(['bash:echo x\n```'])
@@ -138,7 +138,7 @@ test('219: the plain-fence scanner is strict CommonMark, as the engine counts', 
   ])
 })
 
-test('219: a snippet’s per-line copy maps line N to streamdown’s Nth rendered line, blank lines included', () => {
+test('220: a snippet’s per-line copy maps line N to streamdown’s Nth rendered line, blank lines included', () => {
   const code = '\necho a\n\n  echo <b> && x\n\n'
   const html = render(md(`\`\`\`bash\n${code}\`\`\`\n`, withCells))
   const inner = /<code[^>]*>([\s\S]*?)<\/code>/.exec(html)?.[1] ?? ''
@@ -150,7 +150,7 @@ test('219: a snippet’s per-line copy maps line N to streamdown’s Nth rendere
   expect(html).toContain('aria-label="Copy line 2"')
 })
 
-test('219: Make runnable shows only on plain runnable fences of a stored, settled reply in a live session', () => {
+test('220: Make runnable shows only on plain runnable fences of a stored, settled reply in a live session', () => {
   const text = 'Run this yourself:\n\n```bash\nsudo systemctl restart x\n```\n\n```bash\n#| cwd: /tmp\n#| label: Go\necho go\n```\n\n```python\nprint(1)\n```\n'
   const marks = (html: string) => [...html.matchAll(/data-make-runnable="(\d+)"/g)].map((m) => m[1])
   useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' } })

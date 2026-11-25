@@ -2723,7 +2723,7 @@ impl Store {
         ))
     }
 
-    /// 219: the reply text ([`crate::cell_nudge::reply_text`]) of the visible assistant row
+    /// 220: the reply text ([`crate::cell_nudge::reply_text`]) of the visible assistant row
     /// `seq`; `None` when the row is gone, hidden or not an assistant reply.
     pub async fn assistant_text(&self, id: SessionId, seq: i64) -> anyhow::Result<Option<String>> {
         let mut conn = self.read.acquire().await?;
@@ -2735,7 +2735,7 @@ impl Store {
             .map(|r| crate::cell_nudge::reply_text(&r.message.content)))
     }
 
-    /// 219 cell nudge: replace the text of the visible assistant row `seq` with `new_text`,
+    /// 220 cell nudge: replace the text of the visible assistant row `seq` with `new_text`,
     /// compare-and-swap: refused (`Ok(None)`) when the row is gone, hidden, not an assistant
     /// reply, or its current text (text parts joined, [`crate::cell_nudge::reply_text`]) is not
     /// `expected` — a concurrent edit wins. Non-text parts stay in place: a single text part is
@@ -8756,7 +8756,7 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
 
     // endregion: --- Capture (68 §3)
 
-    /// 219: `replace_assistant_text` is a compare-and-swap on the row's text: a stale
+    /// 220: `replace_assistant_text` is a compare-and-swap on the row's text: a stale
     /// `expected`, a user row or an unknown seq write nothing; a match rewrites the text in
     /// place, keeps non-text parts and bumps the revision.
     #[tokio::test]

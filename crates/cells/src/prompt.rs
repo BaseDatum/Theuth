@@ -21,14 +21,14 @@ You never run a user cell, never run its command yourself, never type into its t
 /// The bundled skill, `<data_dir>/skills/cells.md`.
 pub const SKILL: &str = include_str!("../cells.md");
 
-/// A1's keys of the `cells:` section (flattened into [`crate::CellsConfig`]), and 219's cell
+/// A1's keys of the `cells:` section (flattened into [`crate::CellsConfig`]), and 220's cell
 /// nudge keys (read by the agent's `CellsKeys`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PromptConfig {
-    /// 219: after a finished turn, promote a plain run-me fence of the reply to a user cell.
+    /// 220: after a finished turn, promote a plain run-me fence of the reply to a user cell.
     pub nudge: bool,
-    /// 219: automatic promotions per session (in memory, per engine run).
+    /// 220: automatic promotions per session (in memory, per engine run).
     pub nudge_max: u8,
 }
 

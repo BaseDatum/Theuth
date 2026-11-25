@@ -1,4 +1,4 @@
-# 219 — Cell nudge: promote run-me fences to cells
+# 220 — Cell nudge: promote run-me fences to cells
 
 Status: contract (build in `feat/cell-nudge`, worktree `/Users/sky/Develop/skymoore/theuth-cell-nudge`)
 
@@ -26,7 +26,7 @@ every fence automatically is wrong (tutorial snippets, fragments, placeholders),
   closed fences only (same scanner both sides; the UI counts the same way over the stored text).
 
 ## Backend (owner: builder `nudge-backend`; paths: `crates/agent/**`, `crates/runtime/src/side_call.rs`,
-`crates/cells/src/prompt.rs`, `crates/cells/src/config.rs`, wire/bindings snapshots, `docs/design/219-*`)
+`crates/cells/src/prompt.rs`, `crates/cells/src/config.rs`, wire/bindings snapshots, `docs/design/220-*`)
 
 ### Detector — new module `crates/agent/src/cell_nudge.rs` (pure, unit-tested)
 

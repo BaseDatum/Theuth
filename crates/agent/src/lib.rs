@@ -451,7 +451,7 @@ pub struct TrimAssistant {
     pub keep: String,
 }
 
-/// `ask` → `Result<CellPromotion, String>` (design doc 219): rewrite plain fence `fence` of
+/// `ask` → `Result<CellPromotion, String>` (design doc 220): rewrite plain fence `fence` of
 /// the assistant row `seq` as a user cell via the cell-nudge side call, in place; the fence
 /// whose body equals `body` wins over the ordinal. `Err` only when the session has no native
 /// actor; every other refusal is an outcome.
@@ -3976,7 +3976,7 @@ pub enum AgentEvent {
         session: SessionId,
         /// Committed session revision (decimal string).
         revision: String,
-        /// `"context_edit"`, `"settled"`, `"rewind"`, `"trim"` or `"cell_nudge"` (219: a
+        /// `"context_edit"`, `"settled"`, `"rewind"`, `"trim"` or `"cell_nudge"` (220: a
         /// plain fence of a finished reply was rewritten as a user cell in place).
         reason: String,
     },

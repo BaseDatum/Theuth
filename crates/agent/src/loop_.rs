@@ -387,7 +387,7 @@ pub struct TrimTurn {
     pub keep: String,
 }
 
-/// 219 `ask`/`tell` → [`CellPromotion`]: rewrite plain fence `ordinal` of the assistant row
+/// 220 `ask`/`tell` → [`CellPromotion`]: rewrite plain fence `ordinal` of the assistant row
 /// `seq` as a user cell through the cell-nudge side call, in place. `seq: None` = the last
 /// final reply in the frame (stale while a turn runs). `body` (the RPC's drift guard): the
 /// fence whose body matches wins over the ordinal ([`cell_nudge::pick`]). The side call runs
@@ -742,7 +742,7 @@ pub struct SessionState {
     /// 136 §2.2: the `<budget>` note a refused call queued; appended once
     /// before the next turn's first model call.
     pub budget_note: Option<String>,
-    /// 219: the nudge hook B planned for the reply that just finished; the actor takes it
+    /// 220: the nudge hook B planned for the reply that just finished; the actor takes it
     /// with the state ([`TurnDone`]) and sends itself a [`PromoteFence`].
     pub nudge_plan: Option<NudgePlan>,
 }
@@ -913,7 +913,7 @@ struct Shared {
     title_pinned: Arc<std::sync::atomic::AtomicBool>,
     /// [`SetTalking`]: a live talk runs on this session; no suggestions.
     talking: Arc<std::sync::atomic::AtomicBool>,
-    /// 219: this session's automatic cell nudges; shared with the detached promote task,
+    /// 220: this session's automatic cell nudges; shared with the detached promote task,
     /// which gives a stale attempt back.
     nudges: Arc<parking_lot::Mutex<cell_nudge::NudgeBook>>,
     /// Turns this actor has entered, bumped as each one is driven: a detached
@@ -2706,7 +2706,7 @@ impl Message<crate::SideCall> for Session {
     }
 }
 
-/// 219: resolve the reply and the fence, run the repair side call detached, hand an accepted
+/// 220: resolve the reply and the fence, run the repair side call detached, hand an accepted
 /// cell to [`ApplyPromotion`]; every attempt is logged on `surface`. Refused `stale` at once
 /// while a turn runs — no side call is spent on a reply that may change under it.
 impl Message<PromoteFence> for Session {
@@ -3176,7 +3176,7 @@ impl Message<TurnDone> for Session {
         if std::mem::take(&mut state.status_titled) {
             self.titled = true;
         }
-        // 219 hook B: the planned nudge goes through the mailbox like an RPC's.
+        // 220 hook B: the planned nudge goes through the mailbox like an RPC's.
         if let Some(plan) = state.nudge_plan.take() {
             let me = ctx.actor_ref().downgrade();
             tokio::spawn(async move {
@@ -4064,14 +4064,14 @@ fn correction_message(
     })
 }
 
-/// The `cells:` keys the agent reads (design 171 §15.4, 219); the cells plugin owns the section.
+/// The `cells:` keys the agent reads (design 171 §15.4, 220); the cells plugin owns the section.
 #[derive(serde::Deserialize)]
 #[serde(default)]
 struct CellsKeys {
     correct_rounds: u8,
-    /// 219: the automatic cell nudge after a turn.
+    /// 220: the automatic cell nudge after a turn.
     nudge: bool,
-    /// 219: automatic nudges per session.
+    /// 220: automatic nudges per session.
     nudge_max: u8,
 }
 
@@ -7325,7 +7325,7 @@ impl Turn {
         }
     }
 
-    /// 219 hook B gate: the reply was taught cells (`cells_on`), the opener was typed (not a
+    /// 220 hook B gate: the reply was taught cells (`cells_on`), the opener was typed (not a
     /// spoken or voice-note input), `cells.nudge` is on and this session has nudges left
     /// (`cells.nudge_max`), and [`Turn::attended_chat`].
     async fn nudge_wanted(&self) -> bool {
@@ -7339,7 +7339,7 @@ impl Turn {
             && self.attended_chat().await
     }
 
-    /// 219 hook B: [`cell_nudge::detect`] on this turn's final reply; a fence it fires on,
+    /// 220 hook B: [`cell_nudge::detect`] on this turn's final reply; a fence it fires on,
     /// tried for the first time this session, is spent from [`Shared::nudges`] and planned
     /// for the actor ([`SessionState::nudge_plan`]), which runs the side call off the turn.
     fn plan_nudge(&mut self) {
@@ -11395,7 +11395,7 @@ mod tests {
         assert!(turn.check_cells(bad).await.is_none(), "the round is spent");
     }
 
-    /// 219 hook B gate: on for a typed, attended chat turn taught cells; off without the
+    /// 220 hook B gate: on for a typed, attended chat turn taught cells; off without the
     /// block, for a channel-opened turn, during a live talk, for a spoken opener and once
     /// `cells.nudge_max` nudges ran.
     #[tokio::test]
@@ -11423,7 +11423,7 @@ mod tests {
         assert!(!turn.nudge_wanted().await, "cap");
     }
 
-    /// 219 hook B: the alloy reply is planned once per fence digest.
+    /// 220 hook B: the alloy reply is planned once per fence digest.
     #[tokio::test]
     async fn cell_nudge_plans_a_fence_once() {
         use super::vision_fallback_tests::{Fake, Harness};
@@ -11440,7 +11440,7 @@ mod tests {
         assert!(turn.state.nudge_plan.is_none(), "same fence, not again");
     }
 
-    /// 219 review: a promote asked while a turn runs is refused `stale` at once — no side
+    /// 220 review: a promote asked while a turn runs is refused `stale` at once — no side
     /// call; an idle one whose body matches no fence is `not_found`.
     #[test]
     fn cell_nudge_promote_is_stale_at_once_while_a_turn_runs() {

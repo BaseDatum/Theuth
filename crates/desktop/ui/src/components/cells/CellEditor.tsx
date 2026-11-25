@@ -69,7 +69,7 @@ export function gutterMark(mark: LineMark | null, n: number, hovered: number | f
   return hovered === n ? (danger ? RUN_DANGER : RUN) : null
 }
 
-/** 219: lucide's `Copy` glyph at `size-3.5`, drawn by hand (a gutter marker is plain DOM). */
+/** 220: lucide's `Copy` glyph at `size-3.5`, drawn by hand (a gutter marker is plain DOM). */
 class CopyMarker extends GutterMarker {
   override eq(other: GutterMarker): boolean {
     return other === this
@@ -205,7 +205,7 @@ export function CellEditor({ lang, code, runnable, danger, disarmed, title, iden
           },
         },
       }),
-      // 219: the hovered line's copy (`copyLine`), on every cell, runnable or not. Mouse only: on touch and from the
+      // 220: the hovered line's copy (`copyLine`), on every cell, runnable or not. Mouse only: on touch and from the
       // keyboard the header's whole-cell Copy button (`Cell`'s `CopyCell`) is the fallback.
       gutter({
         class: 'cm-copy-gutter',

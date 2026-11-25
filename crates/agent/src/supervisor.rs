@@ -4160,7 +4160,7 @@ impl Message<EditTurn> for Agents {
     }
 }
 
-/// 219: off the mailbox — the session's side call takes up to its 20 s budget.
+/// 220: off the mailbox — the session's side call takes up to its 20 s budget.
 impl Message<CellPromote> for Agents {
     type Reply = kameo::reply::DelegatedReply<Result<crate::rpc_turns::CellPromotion, String>>;
 
@@ -4197,7 +4197,7 @@ impl Message<CellPromote> for Agents {
     }
 }
 
-/// `tell` (219): a session rewrote a reply's fence as a cell in place — the RPC's or the
+/// `tell` (220): a session rewrote a reply's fence as a cell in place — the RPC's or the
 /// automatic nudge. A context edit like [`TrimAssistant`]: cached searches and admitted
 /// candidates are stale.
 pub(crate) struct CellPromoted {

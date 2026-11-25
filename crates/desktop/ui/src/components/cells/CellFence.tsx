@@ -32,7 +32,7 @@ import { chatEditable, disarmedReason, labelOf, titleOf, viewOf } from './view'
 
 const NO_ENTRIES: Entry[] = []
 
-/** 171 §4.1: the fence languages `CellFence` registers for. 219: `shellscript` too, so every fence `plainFences` counts mounts here. */
+/** 171 §4.1: the fence languages `CellFence` registers for. 220: `shellscript` too, so every fence `plainFences` counts mounts here. */
 export const CELL_LANGUAGES = ['bash', 'shellscript', 'zsh', 'sh', 'pwsh', 'powershell', 'python', 'py']
 
 /**
@@ -42,8 +42,8 @@ export const CELL_LANGUAGES = ['bash', 'shellscript', 'zsh', 'sh', 'pwsh', 'powe
  * identical cells still get two ordinals; the claims reset with each value (one per message text). Only assistant
  * markdown provides it: without it a fence stays code (harness cards, tool results, peer text — §12.2).
  * `turnRunning` gates nothing for cells (cells-midturn D1: a closed, stored cell runs while its turn still runs); it
- * holds back Make runnable (219), which is refused while a turn runs.
- * 219: `plain` the reply's plain fences (`plainFences`); `claimPlain` hands a mounted plain fence its 0-based ordinal
+ * holds back Make runnable (220), which is refused while a turn runs.
+ * 220: `plain` the reply's plain fences (`plainFences`); `claimPlain` hands a mounted plain fence its 0-based ordinal
  * the same way, matched by its language (`info`, normalised) and body.
  */
 export type CellOrdinals = {
@@ -71,7 +71,7 @@ function claimer(list: readonly { ordinal: number; key: string }[]): (fence: str
   }
 }
 
-/** 219: a plain fence's claim key — its normalised language and body, so `bash`/`shellscript` and `sh` twins stay apart. */
+/** 220: a plain fence's claim key — its normalised language and body, so `bash`/`shellscript` and `sh` twins stay apart. */
 const plainKey = (lang: string, body: string) => `${lang}\n${body}`
 
 /** The `CellOrdinals` value for one message text. */
@@ -94,11 +94,11 @@ export function cellOrdinals(text: string, entry: string | null, turnRunning: bo
   }
 }
 
-/** 219: a snippet's lines as streamdown renders them — trailing newlines trimmed, one `pre code > span` per line. */
+/** 220: a snippet's lines as streamdown renders them — trailing newlines trimmed, one `pre code > span` per line. */
 export const snippetLines = (code: string) => code.replace(/\n+$/, '').split('\n')
 
 /**
- * 219: per-line copy over a streamdown code block. The line under the pointer (the last tapped one on touch) shows a
+ * 220: per-line copy over a streamdown code block. The line under the pointer (the last tapped one on touch) shows a
  * copy icon at its right end; it copies that line (`copyLine`). Keyboard: the button is in the tab order (revealed on
  * focus), starts on the first non-blank line, and ↑/↓ move it between non-blank lines.
  */
@@ -160,7 +160,7 @@ function LineCopy({ code, enabled, children }: { code: string; enabled: boolean;
   )
 }
 
-/** 219: Make runnable is offered on a plain fence of a stored, settled reply in a live, editable session whose engine has `cell_promote`. */
+/** 220: Make runnable is offered on a plain fence of a stored, settled reply in a live, editable session whose engine has `cell_promote`. */
 function usePromotable(plain: number | null): boolean {
   const fence = useContext(FenceContext)
   const ordinals = useContext(CellOrdinals)
@@ -169,7 +169,7 @@ function usePromotable(plain: number | null): boolean {
   return plain !== null && supported && !fence.readOnly && !!fence.session && !!ordinals?.entry && !ordinals.turnRunning && !running
 }
 
-/** 219: the quiet "Make runnable" control: the cell-nudge side call rewrites this fence (`body`, the code as given) as a cell, in place. */
+/** 220: the quiet "Make runnable" control: the cell-nudge side call rewrites this fence (`body`, the code as given) as a cell, in place. */
 function MakeRunnable({ ordinal, body }: { ordinal: number; body: string }) {
   const api = useApi()
   const { session } = useContext(FenceContext)
@@ -208,7 +208,7 @@ function MakeRunnable({ ordinal, body }: { ordinal: number; body: string }) {
 }
 
 /**
- * streamdown's own code block with the controls its default path mounts (download, copy), honouring `controls`. 219:
+ * streamdown's own code block with the controls its default path mounts (download, copy), honouring `controls`. 220:
  * the copy button copies `copyText` (no `#|` header, no `$ ` prompts), each line has its own copy (`LineCopy`), and a
  * plain fence of a reply (`plain`: its 0-based ordinal) offers Make runnable.
  */
@@ -479,7 +479,7 @@ export function CellFence(props: CustomRendererProps) {
   const header = cellOf(props.language, props.code) !== null
   const ordinal = header && ordinals ? ordinals.claim(id, bodyKey(props.code)) : null
   if (!ordinals || ordinal === null) {
-    // 219: a closed plain fence of the reply knows its ordinal among the reply's plain fences (Make runnable).
+    // 220: a closed plain fence of the reply knows its ordinal among the reply's plain fences (Make runnable).
     const plain = !header && ordinals && !props.isIncomplete ? ordinals.claimPlain(id, props.language, bodyKey(props.code)) : null
     return <Snippet {...props} plain={plain} />
   }

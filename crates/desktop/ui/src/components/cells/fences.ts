@@ -53,14 +53,14 @@ export function replyCells(md: string): ReplyCell[] {
   return out
 }
 
-/** 219: a plain fence — closed, a runnable language (a cell language but JS/TS), no `#|` header. `ordinal` is 0-based; `lang` normalised (`langOf`). */
+/** 220: a plain fence — closed, a runnable language (a cell language but JS/TS), no `#|` header. `ordinal` is 0-based; `lang` normalised (`langOf`). */
 export type PlainFence = { ordinal: number; lang: string; body: string }
 
 const STRICT_OPEN = /^( {0,3})(`{3,}|~{3,})(.*)$/
 const STRICT_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
 
 /**
- * 219 (Vocabulary): the plain fences of `md` in document order, numbered as `cell_promote` counts them. A strict
+ * 220 (Vocabulary): the plain fences of `md` in document order, numbered as `cell_promote` counts them. A strict
  * CommonMark scanner, the backend's: opener and closer indented ≤3 spaces (no tabs, no `>` quote prefix), the closer
  * the opener's character and at least as long, a backtick opener's info without backticks; an unclosed final fence
  * does not count. Up to the opener's indent in spaces is removed from each body line.

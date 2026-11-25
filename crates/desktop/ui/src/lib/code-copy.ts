@@ -1,4 +1,4 @@
-// 219 (Copy): what a code block's copy controls put on the clipboard — the text to paste into a terminal, not the fence.
+// 220 (Copy): what a code block's copy controls put on the clipboard — the text to paste into a terminal, not the fence.
 import { cellOf } from '@/components/cells/grammar'
 import { notify } from '@/lib/notify'
 
