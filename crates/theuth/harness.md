@@ -131,6 +131,43 @@ writes this same file; hand edits are picked up within a second. Per-session
 hiding (`/mcp` or `/tools` ⏎ → `s`; on desktop the chat's ⋯ › Tools…, "Off
 here" or a tool's switch) is in memory only and not something you can set.
 
+## Plugins
+
+External plugins (design 216) are folders the user (or you) puts under the
+data dir; each runs as a child process in any language and speaks JSON-RPC
+on stdin/stdout:
+
+```
+plugins/
+  grants.yaml        # theuth-owned, MAC'd: what the owner approved; never edit it
+  .trash/            # uninstalled folders
+  turns/             # one plugin = one folder; the folder name is the plugin name
+    plugin.yaml      # the manifest: run, env, subscribe, emits, placements, tools
+    main.py          # anything; run from this folder
+plugin-data/turns/   # the plugin's own writable state
+logs/plugins/turns.log.<date>   # its stderr and host lines, redacted
+```
+
+Tools: `plugin_list`, `plugin_status`, `plugin_logs` (read_only);
+`plugin_enable`, `plugin_disable`, `plugin_restart`, `plugin_new` (scaffold
+from the SDK: py, js, sh, go, rb or rs; `raw` for py/sh without an SDK),
+`plugin_install` (copy a local folder in) (mutating); `plugin_uninstall`
+(destructive: the folder goes to `plugins/.trash` and the approval is gone);
+`plugin_approve_request` (read_only: re-files the approval card in the
+owner's inbox).
+
+Nothing new or changed runs until it is approved, and approval is a human
+press: the app's Approve button or `t plugin approve <name>` on a terminal.
+You cannot approve; a widened manifest or changed code waits for the owner
+again. Say so and use `plugin_approve_request`.
+
+`plugins:` keys in config.yaml: `enabled` (true), `dir` (`plugins`), `watch`
+(true), `dev` (false: author mode, no code hash, restart on any change),
+`remote_sessions` (false), `restart_first_ms`, `restart_cap_ms`, `crash_loop`,
+`crash_window_s`, `shutdown_grace_ms`, `max_line_bytes`, `queue_frames`,
+`emit_per_s`, `ui_per_s`, `query_per_s`, `input_per_min`,
+`request_timeout_ms`, `string_cap`, `log_max_bytes`, `log_days`.
+
 ## Approvals
 
 Every tool call has a risk. `tools.policy` maps it to `allow` (runs), `ask`

@@ -62,3 +62,63 @@ impl HumanPress {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ext_with(peer: rpc_core::RpcPeer) -> jsonrpsee::Extensions {
+        let mut ext = jsonrpsee::Extensions::new();
+        ext.insert(peer);
+        ext
+    }
+
+    #[test]
+    fn internal_peer_refused() {
+        let e = HumanPress::from_rpc(&ext_with(rpc_core::RpcPeer::internal())).unwrap_err();
+        assert_eq!(e, PluginsError::NotAPress);
+    }
+
+    #[test]
+    fn guest_refused() {
+        let (peer, _guard) = rpc_core::RpcPeer::open_guest([1; 32], [2; 32]);
+        assert_eq!(HumanPress::from_rpc(&ext_with(peer)).unwrap_err(), PluginsError::NotAPress);
+    }
+
+    #[test]
+    fn forwarded_refused() {
+        // A local, non-internal peer would pass; the forward marker alone refuses it.
+        let (peer, _guard) = rpc_core::RpcPeer::open();
+        let mut ext = ext_with(peer);
+        let from = serde_json::from_value(serde_json::json!("other-engine")).unwrap();
+        ext.insert(agent::rpc_forward::Forwarded(from));
+        assert_eq!(HumanPress::from_rpc(&ext).unwrap_err(), PluginsError::NotAPress);
+    }
+
+    #[test]
+    fn local_peer_admitted() {
+        let (peer, _guard) = rpc_core::RpcPeer::open();
+        let id = peer.id();
+        let mut ext = ext_with(peer);
+        ext.insert(rpc_core::Client("ios"));
+        let press = HumanPress::from_rpc(&ext).unwrap();
+        assert_eq!((press.peer(), press.client(), press.remote()), (id, "ios", false));
+        // Without a client header the press reports `desktop`.
+        let (peer, _guard2) = rpc_core::RpcPeer::open_remote();
+        let press = HumanPress::from_rpc(&ext_with(peer)).unwrap();
+        assert_eq!((press.client(), press.remote()), ("desktop", true));
+    }
+
+    #[test]
+    fn closed_peer_refused() {
+        let (peer, guard) = rpc_core::RpcPeer::open();
+        drop(guard);
+        assert_eq!(HumanPress::from_rpc(&ext_with(peer)).unwrap_err(), PluginsError::NotAPress);
+    }
+
+    #[test]
+    fn no_peer_refused() {
+        let e = HumanPress::from_rpc(&jsonrpsee::Extensions::new()).unwrap_err();
+        assert_eq!(e, PluginsError::NotAPress);
+    }
+}
