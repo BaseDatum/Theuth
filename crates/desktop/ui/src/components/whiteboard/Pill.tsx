@@ -7,6 +7,8 @@ import { Check, Link2, Plus, Unlink } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useApi } from '@/lib/rpc'
+import { useDark } from '@/lib/theme'
+import { inkCss } from './ink/colour'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useSessions } from '@/store/sessions'
 import type { WhiteboardSession } from './wire'
@@ -29,6 +31,7 @@ export type SessionPick = {
 
 /** The chip and its picker: bound sessions, recent others, new, detach. */
 export function SessionChip({ p, onOpen }: { p: SessionPick; onOpen?(open: boolean): void }) {
+  const dark = useDark()
   const [open, setOpen] = useState(false)
   const api = useApi()
   const can = useQuerySupport(['list_sessions'])
@@ -58,7 +61,7 @@ export function SessionChip({ p, onOpen }: { p: SessionPick; onOpen?(open: boole
           aria-label={p.session ? `Session: ${p.title ?? 'untitled'}. Change session` : 'No session. Choose a session'}
           className="wb-chip flex h-8 max-w-[11rem] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-semibold"
         >
-          <span className="wb-dot" data-busy={p.busy} data-idle={p.session ? undefined : 'none'} aria-hidden />
+          <span className="wb-dot" data-busy={p.busy} style={p.session ? { background: inkCss('green', dark) } : undefined} aria-hidden />
           <span className="min-w-0 truncate">{p.session ? shortName(p.title) : 'no session'}</span>
           {p.session && <Link2 className="size-3.5 shrink-0 opacity-60" aria-hidden />}
         </button>
