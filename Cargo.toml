@@ -242,6 +242,21 @@ kameo_actors = "0.8"
 genai = { version = "0.7.6", features = ["bedrock-sigv4"] }
 aws-config = "1"
 aws-types = "1"
+aws-profiles = { path = "crates/aws-profiles" }  # 221 B1
+secrets-aws = { path = "crates/secrets-aws" }  # 221 B3
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }  # 221 D5
+aws-smithy-mocks = "0.2"  # 221 B3: secrets-aws tests
+# 221 B5: Bitwarden Password Manager, `bitwarden/sdk-internal` pinned to one commit (D3; GPL-3.0 option).
+# The light set (B0: no `bitwarden-pm`); `no-memory-hardening` is mandatory (theuth has its own allocator).
+secrets-bitwarden = { path = "crates/secrets-bitwarden" }  # 221 B5
+bitwarden-core = { git = "https://github.com/bitwarden/sdk-internal", rev = "2b06afa3b3579af116cd60f83d65b9e411fd2a56", features = ["internal", "no-memory-hardening"] }
+bitwarden-auth = { git = "https://github.com/bitwarden/sdk-internal", rev = "2b06afa3b3579af116cd60f83d65b9e411fd2a56" }
+bitwarden-vault = { git = "https://github.com/bitwarden/sdk-internal", rev = "2b06afa3b3579af116cd60f83d65b9e411fd2a56" }
+bitwarden-send = { git = "https://github.com/bitwarden/sdk-internal", rev = "2b06afa3b3579af116cd60f83d65b9e411fd2a56" }
+bitwarden-sync = { git = "https://github.com/bitwarden/sdk-internal", rev = "2b06afa3b3579af116cd60f83d65b9e411fd2a56" }
+bitwarden-collections = { git = "https://github.com/bitwarden/sdk-internal", rev = "2b06afa3b3579af116cd60f83d65b9e411fd2a56" }
+bitwarden-crypto = { git = "https://github.com/bitwarden/sdk-internal", rev = "2b06afa3b3579af116cd60f83d65b9e411fd2a56", features = ["no-memory-hardening"] }
+bitwarden-api-api = { git = "https://github.com/bitwarden/sdk-internal", rev = "2b06afa3b3579af116cd60f83d65b9e411fd2a56" }
 brush-core = "0.5"
 brush-builtins = "0.2"
 # Client features for crates/tools; `server` + `transport-streamable-http-server` for crates/mcp-server (158 §12.2)
