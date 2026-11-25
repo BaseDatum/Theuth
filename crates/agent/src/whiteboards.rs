@@ -898,8 +898,11 @@ pub fn turn_messages<S: AsRef<str>>(bound: &[Bound], history: &[S]) -> Vec<Strin
 // Runtime: send context cache, turn boundaries, the injection call and the RPC handlers.
 // ---------------------------------------------------------------------------------------------
 
-/// Pending send contexts: (root session or `None`, whiteboard) → (stored at, context).
-static CONTEXTS: LazyLock<Mutex<HashMap<(Option<SessionId>, String), (Instant, WbSendContext)>>> =
+/// Key of a pending send context: (root session or `None`, whiteboard).
+type ContextKey = (Option<SessionId>, String);
+
+/// Pending send contexts: key → (stored at, context).
+static CONTEXTS: LazyLock<Mutex<HashMap<ContextKey, (Instant, WbSendContext)>>> =
     LazyLock::new(Default::default);
 
 /// Whiteboards whose turn `WbTurn { Begin }` opened, per session, for the matching `End`.
