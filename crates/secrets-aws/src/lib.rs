@@ -583,6 +583,11 @@ impl ExternalBackend for AwsBackend {
                         ));
                     }
                 };
+                // Check-then-put, not compare-and-swap: `PutSecretValue` has no version
+                // precondition, so a writer landing between `check_expected` (or the `#key`
+                // read) and this put is overwritten — the window is one round trip. Its
+                // value stays reachable as `AWSPREVIOUS` (`:-1`) until the next write; the
+                // design doc's "As built" notes the gap.
                 self.client()
                     .await
                     .put_secret_value()
