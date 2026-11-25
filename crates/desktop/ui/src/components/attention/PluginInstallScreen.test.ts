@@ -58,7 +58,8 @@ vi.mock('@tanstack/react-router', async (original) => ({
     createElement('a', { href: `${to.replace('$tab', params?.tab ?? '')}?${new URLSearchParams(search ?? {}).toString()}` }, children),
   useNavigate: () => () => undefined,
 }))
-vi.mock('@/components/tasks/queries', () => ({
+vi.mock('@/components/tasks/queries', async (original) => ({
+  ...(await original<object>()),
   useMesh: () => ({ data: undefined }),
   useTask: () => ({ data: undefined }),
   useTasks: () => ({ data: undefined }),
