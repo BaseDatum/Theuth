@@ -131,7 +131,7 @@ export function Sheet(p: SheetProps) {
           type="button"
           onClick={p.onSend}
           disabled={!canSend}
-          className="flex h-9 items-center gap-1.5 rounded-full bg-accent px-4 text-[13px] font-semibold text-white disabled:opacity-45"
+          className="flex h-9 items-center gap-1.5 rounded-full bg-fg-accent px-4 text-[13px] font-semibold text-primary-foreground hover:bg-fg-accent-hover disabled:opacity-45"
         >
           {p.pick.session ? (p.pick.busy ? 'Steer' : 'Send') : 'Send to a new session'}
           <ArrowUp className="size-4" aria-hidden />

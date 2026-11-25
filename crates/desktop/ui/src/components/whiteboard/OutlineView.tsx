@@ -51,13 +51,13 @@ export type OutlineActions = {
   toolbar?: ReactNode
 }
 
-const btn = 'rounded-md px-2 py-1 text-xs text-fg-secondary hover:bg-layer-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent'
+const btn = 'rounded-md px-2 py-1 text-xs text-fg-secondary hover:bg-layer-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg-accent'
 
 function CardRow({ card, board, a }: { card: Card; board: Board; a: OutlineActions }) {
   const alias = board.aliases[card.id]
   return (
     <li className="flex items-center gap-1">
-      <button type="button" className="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-layer-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" data-card={card.id} onClick={() => a.onOpen(card.id)}>
+      <button type="button" className="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-layer-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg-accent" data-card={card.id} onClick={() => a.onOpen(card.id)}>
         {alias && <span className="mr-2 font-mono text-xs text-fg-tertiary">{alias}</span>}
         <span className={card.state === 'dimmed' ? 'text-fg-tertiary' : 'text-fg-primary'}>{card.title || 'Untitled'}</span>
         <span className="ml-2 text-xs text-fg-tertiary">

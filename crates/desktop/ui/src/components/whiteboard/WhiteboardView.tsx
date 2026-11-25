@@ -785,7 +785,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
 
 function ToolbarButton({ onClick, children }: { onClick(): void; children: React.ReactNode }) {
   return (
-    <button type="button" onClick={onClick} className="min-h-9 rounded-lg bg-layer-1 px-3 text-sm text-fg-primary hover:bg-layer-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+    <button type="button" onClick={onClick} className="min-h-9 rounded-lg bg-layer-1 px-3 text-sm text-fg-primary hover:bg-layer-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg-accent">
       {children}
     </button>
   )
@@ -823,7 +823,7 @@ function ChooserDialog({ c, onDone }: { c: Chooser; onDone(): void }) {
           >
             {/* biome-ignore lint/a11y/noAutofocus: the dialog exists to take this one value */}
             <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} placeholder={c.placeholder} className="wb-well min-w-0 flex-1 rounded-lg px-3 py-2 text-sm outline-none" />
-            <button type="submit" className="rounded-lg bg-accent px-3 text-sm font-semibold text-white">
+            <button type="submit" className="rounded-lg bg-fg-accent px-3 text-sm font-semibold text-primary-foreground hover:bg-fg-accent-hover">
               Add
             </button>
           </form>

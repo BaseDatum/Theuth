@@ -39,8 +39,9 @@
 }
 .wb-press[aria-pressed='true'],
 .wb-press[data-on='true'] {
-  background: color-mix(in oklab, var(--accent, #1f6feb) 16%, transparent);
-  color: var(--accent, #1f6feb);
+  /* `--fg-accent` (ochre), not `--accent`: in this app that is shadcn's muted layer colour, invisible as a state. */
+  background: color-mix(in oklab, var(--fg-accent) 16%, transparent);
+  color: var(--fg-accent);
 }
 
 /* The session dot; its colour is the ink `green` of the theme (`ink/colour.ts`, set inline), grey with no session. */

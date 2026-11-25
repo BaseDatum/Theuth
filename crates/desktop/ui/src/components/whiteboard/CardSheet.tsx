@@ -89,7 +89,7 @@ function Body({ card, source, blobUrl, onSession }: { card: Card; source: Source
       if (!url) return <p className="p-6 text-sm text-fg-secondary">This card's address is not a web page (only http and https are shown).</p>
       return (
         <div className="flex h-full flex-col">
-          <a href={url} target="_blank" rel="noreferrer noopener" className="flex items-center gap-1.5 px-4 py-2 text-sm text-accent">
+          <a href={url} target="_blank" rel="noreferrer noopener" className="flex items-center gap-1.5 px-4 py-2 text-sm text-fg-accent">
             <ExternalLink className="size-4" /> {url}
           </a>
           <iframe title={card.title} src={url} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" className="min-h-0 flex-1 border-0 bg-white" />

@@ -81,7 +81,7 @@ export function ClusterButton({ label, on, children, ...rest }: { label: string;
       title={label}
       aria-pressed={on === undefined ? undefined : on}
       {...rest}
-      className="wb-press grid size-11 place-items-center rounded-[14px] disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+      className="wb-press grid size-11 place-items-center rounded-[14px] disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg-accent"
     >
       {children}
     </button>
@@ -128,9 +128,9 @@ function InkTools({ store, onActivity }: { store: WbStore; onActivity(): void })
                 aria-checked={colour === c}
                 aria-label={c === 'ink' ? 'Ink (black or white with the theme)' : c}
                 onClick={() => pick({ colour: c })}
-                className="grid size-9 place-items-center rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                className="grid size-9 place-items-center rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg-accent"
               >
-                <span className="size-6 rounded-full" style={{ background: inkCss(c, dark), boxShadow: colour === c ? `0 0 0 2px var(--accent, #1f6feb)` : '0 0 0 1px color-mix(in oklab, currentColor 25%, transparent)' }} />
+                <span className="size-6 rounded-full" style={{ background: inkCss(c, dark), boxShadow: colour === c ? '0 0 0 2px var(--fg-accent)' : '0 0 0 1px color-mix(in oklab, currentColor 25%, transparent)' }} />
               </button>
             ))}
           </div>
