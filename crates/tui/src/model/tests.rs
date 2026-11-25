@@ -407,13 +407,13 @@
         })
     }
 
-    fn component_reply<M: Send + 'static>(model: &mut Model, id: &str, message: M) {
+    pub(crate) fn component_reply<M: Send + 'static>(model: &mut Model, id: &str, message: M) {
         model.apply(UiEvent::Component(crate::components::LocalReply {
             to: model.components.token(id), engine_epoch: 0, body: Box::new(message),
         }));
     }
 
-    fn component_menu_key(model: &mut Model, id: &str, code: KeyCode) {
+    pub(crate) fn component_menu_key(model: &mut Model, id: &str, code: KeyCode) {
         use crate::components::FocusClass;
         model.components.focus_fixture(id, FocusClass::Modal);
         model.component_key(FocusClass::Modal, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, code));
@@ -2920,7 +2920,7 @@
         component_reply(&mut m, "secrets", SecretMsg::Set(Ok(list.secrets[0].clone())));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "github: v1 set"));
         // Once listed, adding to a known name says which version it replaces.
-        component_reply(&mut m, "secrets", SecretMsg::Listed(Ok(list)));
+        component_reply(&mut m, "secrets", SecretMsg::Listed(Ok(list), Ok(vec![])));
         m.submit("/secrets add github", &tx);
         assert!(
             matches!(
@@ -3004,6 +3004,63 @@
         }
     }
 
+    /// 221 §13 B8: the master password typed on the unlock card reaches only `answer_unlock`.
+    #[test]
+    fn secrets_unlock_card_never_shows_the_master_password() {
+        use crate::components::secrets::{Secrets, Request as SecretRpc};
+        use crate::components::{FocusClass, Surface, View};
+        use iocraft::prelude::ElementExt as _;
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.components.register(Secrets::default()).unwrap();
+        m.mount_components(&tx);
+        let screen = |m: &Model| -> String {
+            [Surface::Prompt(FocusClass::Secret), Surface::Modal].into_iter()
+                .flat_map(|at| m.component_views(at, 80, 24))
+                .map(|v| match v {
+                    View::Text(t) => t,
+                    View::Element { mut element, .. } | View::IntrinsicElement { mut element, .. } => element.render(Some(80)).to_string(),
+                    View::Editor { .. } => String::new(),
+                })
+                .collect()
+        };
+        let card = |id| secrets::SecretsEvent::UnlockRequested {
+            id,
+            conn: "personal".into(),
+            backend: "bw".into(),
+            account: "me@example.org · vault.bitwarden.com".into(),
+            reason: "a tool call uses bw/personal/2f1c#password".into(),
+        };
+        let id: secrets::RequestId =
+            serde_json::from_str("\"7a1b2c3d-4e5f-4a60-8b9c-0d1e2f3a4b5c\"").unwrap();
+        m.apply(wire_event("secrets.events", card(id)));
+        assert!(m.input_focused() && m.components.editor().is_some_and(|(_, e)| e.masked));
+        assert!(screen(&m).contains("unlock bw/personal (me@example.org"));
+        let password = "correct-horse-battery-staple";
+        m.component_submit(password);
+        assert!(matches!(
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::AnswerUnlock { id: i, password: Some(p) }) if i == id && p == password
+        ));
+        assert!(m.components.get::<Secrets>().unwrap().unlocks.is_empty());
+        // A wrong password: the engine raises the card again; nothing typed before shows.
+        let again: secrets::RequestId =
+            serde_json::from_str("\"8a1b2c3d-4e5f-4a60-8b9c-0d1e2f3a4b5c\"").unwrap();
+        m.apply(wire_event("secrets.events", card(again)));
+        let shown = screen(&m);
+        assert!(shown.contains("unlock bw/personal") && !shown.contains(password), "{shown}");
+        // Esc declines with no password.
+        m.component_key(FocusClass::Secret, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Esc));
+        assert!(matches!(
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::AnswerUnlock { id: i, password: None }) if i == again
+        ));
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::UnlockResolved { id: again, unlocked: false }));
+        assert!(!leaked(&m, password), "the master password must not land in the transcript");
+        assert!(!screen(&m).contains(password));
+        assert!(!format!("{m:?}").contains(password));
+    }
+
     #[test]
     fn secrets_menu_history_restore_delete() {
         use crate::components::secrets::{Secrets, Prompt as SecretPrompt, Menu as SecretMenu, Request as SecretRpc, Msg as SecretMsg};
@@ -3013,7 +3070,7 @@
         m.mount_components(&tx);
         m.submit("/secrets", &tx);
         assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::ListSecrets)));
-        component_reply(&mut m, "secrets", SecretMsg::Listed(Ok(secrets_list())));
+        component_reply(&mut m, "secrets", SecretMsg::Listed(Ok(secrets_list()), Ok(vec![])));
         assert!(matches!(m.components.get::<Secrets>().unwrap().menu, Some(SecretMenu::Secrets { .. })) && !m.input_focused());
         assert!(m.components.get::<Secrets>().unwrap().secrets_title().starts_with("secrets · key: keychain"));
         assert!(

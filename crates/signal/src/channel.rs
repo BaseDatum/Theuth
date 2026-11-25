@@ -64,6 +64,23 @@ pub fn secret_notice(name: &str, note: &str) -> String {
     )
 }
 
+/// The 221 §9.4 line, plain text: a `secret_request` that stores into an external manager
+/// (`to` = `bw/personal`). Answerable only on the app's masked card.
+#[must_use]
+pub fn external_secret_notice(name: &str, note: &str, to: &str) -> String {
+    format!(
+        "theuth asks for secret {name} — {note}, to store in {to}. Answer it in the desktop app or the TUI (/secrets); it will not be read from this chat."
+    )
+}
+
+/// The 221 §9.4 line, plain text: an unlock card (`target` = `bw/personal`). Never answerable here.
+#[must_use]
+pub fn unlock_notice(target: &str, account: &str) -> String {
+    format!(
+        "theuth needs {target} ({account}) unlocked. Unlock it in the desktop app or the TUI; the master password will not be read from this chat."
+    )
+}
+
 /// Strips ` -.()` and prefixes `+` when what remains is all digits, so
 /// `"+1 (409) 519-3333"` and `"14095193333"` both match `"+14095193333"`.
 #[must_use]
@@ -1702,14 +1719,39 @@ impl Channel {
             }
             // 37 §7: the model asked the user for a secret; tell the owner where
             // to enter it (never here — the value would sit in Signal's history).
-            Event::Secret(secrets::SecretsEvent::Requested { name, note, .. }) => {
+            // 221 §9.4: likewise an external store's request and an unlock card.
+            Event::Secret(event) => {
+                let text = match event {
+                    secrets::SecretsEvent::Requested {
+                        name,
+                        note,
+                        destination: None,
+                        ..
+                    } => secret_notice(&name, &note),
+                    secrets::SecretsEvent::Requested {
+                        name,
+                        note,
+                        destination: Some(d),
+                        ..
+                    } => external_secret_notice(
+                        &name,
+                        &note,
+                        &format!("{}/{}", d.backend, d.destination.connection),
+                    ),
+                    secrets::SecretsEvent::UnlockRequested {
+                        conn,
+                        backend,
+                        account,
+                        ..
+                    } => unlock_notice(&format!("{backend}/{conn}"), &account),
+                    _ => return,
+                };
                 if self.owner.is_empty() {
                     return;
                 }
                 let to = self.lock().threads.recipient(&self.owner);
-                self.send_chunks(&to, &secret_notice(&name, &note)).await;
+                self.send_chunks(&to, &text).await;
             }
-            Event::Secret(_) => {}
             Event::Lease(lease) => {
                 let gained = self.lock().lease.observe(&lease);
                 if let Some(holding) = gained {

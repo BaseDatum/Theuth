@@ -1,9 +1,12 @@
-//! Vault metadata, masked administration wizard and intrinsic live-request overlay.
+//! Vault metadata, external connections (221 §9.3), masked administration wizard and the
+//! intrinsic live-request / unlock overlay.
 use super::*;
 use std::collections::{HashMap, VecDeque};
 use serde::Deserialize;
 use rpc_compose::api::clients::*;
 use iocraft::prelude::{element, View as BoxView, Text, BorderStyle, FlexDirection, Weight, TextWrap};
+use ::secrets::connections::{BwLogin, BwServer, ConnConfig, ConnInfo, DestinationView};
+use ::secrets::external::{ConnStatus, DeleteMode, ExtEntry, ListPage, ListQuery, LoginForm, LoginStep};
 use crate::model::{now_ms, when};
 use crate::ui::{FAIENCE, BONE_DIM};
 
@@ -11,11 +14,19 @@ use crate::ui::{FAIENCE, BONE_DIM};
 #[derive(Default)]
 pub struct Secrets {
     pub(crate) secrets: Option<::secrets::SecretsList>,
+    /// 221 §9.3: this engine's external connections, listed with the local vault.
+    pub(crate) connections: Vec<ConnInfo>,
+    /// Why the connections could not be listed (an engine without them).
+    conn_error: Option<String>,
     awaiting: bool,
     pub(crate) refresh: bool,
     pub(crate) menu: Option<Menu>,
     pub(crate) prompt: Option<Prompt>,
     pub(crate) requests: VecDeque<SecretRequest>,
+    /// 221 §9.4: unlock cards; engine-wide, shown before any request.
+    pub(crate) unlocks: VecDeque<UnlockCard>,
+    /// A password login in flight: the form is re-sent with the second factor.
+    login: Option<PendingLogin>,
 }
 // No Debug: `values` holds what the user typed until its one RPC submission.
 pub(crate) struct SecretRequest {
@@ -26,6 +37,8 @@ pub(crate) struct SecretRequest {
     pub(crate) fields: Vec<::secrets::SecretRequestField>,
     /// The agent's suggestion (`2h`, an RFC 3339 instant); the expiry step shows it.
     expires: Option<String>,
+    /// 221 §7.3: where the answer goes; the TUI shows it and cannot change it.
+    destination: Option<DestinationView>,
     /// Typed so far, one per field in order; the expiry step follows the last.
     values: Vec<String>,
 }
@@ -33,14 +46,65 @@ impl SecretRequest {
     /// The field being typed; `None` = the expiry step.
     fn field(&self) -> Option<&::secrets::SecretRequestField> { self.fields.get(self.values.len()) }
     fn names(&self) -> String { self.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ") }
+    /// 221 §9.2: expiry applies only to local copies.
+    fn expiry_step(&self) -> bool { self.destination.as_ref().is_none_or(|d| d.destination.keep_local) }
 }
-pub(crate) enum Menu { Secrets { cursor: usize, history: Option<usize> } }
+/// 221 §9.4: `ExternalUnlockRequested`, answered with `answer_unlock`.
+pub(crate) struct UnlockCard {
+    pub(crate) id: ::secrets::RequestId,
+    conn: String,
+    backend: String,
+    account: String,
+    reason: String,
+}
+impl UnlockCard {
+    fn target(&self) -> String { format!("{}/{}", self.backend, self.conn) }
+}
+// No Debug: the master password waits here for a second factor.
+struct PendingLogin {
+    email: String,
+    password: String,
+    two_factor: Option<(String, String)>,
+}
+impl PendingLogin {
+    fn form(&self, new_device_otp: Option<String>) -> LoginForm {
+        LoginForm::Password { email: self.email.clone(), password: self.password.clone(), two_factor: self.two_factor.clone(), new_device_otp }
+    }
+}
+pub(crate) enum Menu {
+    /// Connection rows first, then the local vault; `cursor` spans both.
+    Secrets { cursor: usize, history: Option<usize> },
+    /// One connection's entries (metadata only).
+    Browse { conn: String, back: usize, cursor: usize, entries: Vec<ExtEntry>, next: Option<String> },
+}
 // No Debug: the note step owns the value until its one RPC submission.
 pub(crate) enum Prompt {
     Name,
     Value { name: String, current: Option<u32> },
     Note { name: String, value: String },
     Delete { name: String },
+    /// `/secrets connect aws|bw`: the connection's name.
+    ConnName { backend: &'static str },
+    AwsProfile { conn: String, profiles: Vec<String> },
+    AwsRegion { conn: String, profile: Option<String> },
+    AwsKms { conn: String, profile: Option<String>, region: String },
+    AwsPrefix { conn: String, profile: Option<String>, region: String, kms_key_id: Option<String> },
+    /// `us` · `eu` · a self-hosted base URL.
+    BwServer { conn: String },
+    BwEmail { conn: String, server: BwServer, base_url: Option<String> },
+    BwMethod { conn: String, server: Option<(BwServer, Option<String>)>, email: String },
+    ClientId { conn: String },
+    ClientSecret { conn: String, client_id: String },
+    /// Password login: the master password.
+    MasterLogin { conn: String, email: String },
+    TwoFactorProvider { conn: String, providers: Vec<String> },
+    TwoFactorCode { conn: String, provider: String },
+    NewDeviceOtp { conn: String },
+    /// A locked connection's master password.
+    Unlock { conn: String, account: String },
+    /// The local name an external value is imported under.
+    Import { conn: String, r#ref: String },
+    ExtDelete { conn: String, r#ref: String, name: String, window: String },
 }
 impl Prompt {
     pub(crate) fn hint(&self) -> String {
@@ -50,14 +114,40 @@ impl Prompt {
             Self::Value { name, current: Some(v) } => format!("secrets add  {name}  value  (replaces v{v} → v{}; esc cancel)", v + 1),
             Self::Note { name, .. } => format!("secrets add  {name}  note  (⏎ none; esc cancel)"),
             Self::Delete { name } => format!("secrets  delete {name}?  type the name to confirm  (esc cancel)"),
+            Self::ConnName { backend } => format!("secrets connect {backend}  name  (esc cancel)"),
+            Self::AwsProfile { conn, profiles } => {
+                let some = profiles.iter().take(6).map(String::as_str).collect::<Vec<_>>().join(" · ");
+                let more = if profiles.len() > 6 { " · …" } else { "" };
+                format!("connect aws/{conn}  profile  ({some}{more}; ⏎ default chain; esc cancel)")
+            }
+            Self::AwsRegion { conn, .. } => format!("connect aws/{conn}  region  (eu-west-1 …; esc cancel)"),
+            Self::AwsKms { conn, .. } => format!("connect aws/{conn}  KMS key for new secrets  (⏎ aws/secretsmanager; esc cancel)"),
+            Self::AwsPrefix { conn, .. } => format!("connect aws/{conn}  name prefix to browse  (⏎ all; esc cancel)"),
+            Self::BwServer { conn } => format!("connect bw/{conn}  server  us · eu · https://vault.example.org  (esc cancel)"),
+            Self::BwEmail { conn, .. } => format!("connect bw/{conn}  account email  (esc cancel)"),
+            Self::BwMethod { conn, .. } => format!("login bw/{conn}  api_key (recommended) · password  (⏎ api_key; esc cancel)"),
+            Self::ClientId { conn } => format!("login bw/{conn}  client_id  (Account settings › Security › Keys; esc cancel)"),
+            Self::ClientSecret { conn, .. } => format!("login bw/{conn}  client_secret  (esc cancel)"),
+            Self::MasterLogin { conn, email } => format!("login bw/{conn} ({email})  master password  (esc cancel)"),
+            Self::TwoFactorProvider { conn, providers } => format!("login bw/{conn}  two-step login  {}  (esc cancel)", providers.join(" · ")),
+            Self::TwoFactorCode { conn, provider } => format!("login bw/{conn}  {provider} code  (esc cancel)"),
+            Self::NewDeviceOtp { conn } => format!("login bw/{conn}  new-device code from your email  (esc cancel)"),
+            Self::Unlock { conn, account } => format!("unlock bw/{conn} ({account})  master password  (⏎ unlock; esc cancel)"),
+            Self::Import { r#ref, .. } => format!("import {ref}  local name  (esc cancel)"),
+            Self::ExtDelete { name, window, .. } => format!("delete {name}? {window}  type the name to confirm  (esc cancel)"),
         }
     }
-    pub(crate) fn masked(&self) -> bool { matches!(self, Self::Value { .. }) }
+    pub(crate) fn masked(&self) -> bool {
+        matches!(self, Self::Value { .. } | Self::ClientSecret { .. } | Self::MasterLogin { .. } | Self::Unlock { .. })
+    }
+    fn submit_empty(&self) -> bool {
+        matches!(self, Self::Note { .. } | Self::AwsProfile { .. } | Self::AwsKms { .. } | Self::AwsPrefix { .. } | Self::BwMethod { .. })
+    }
 }
-/// RPC input; deliberately opaque to Debug because set/answer carry raw values.
+/// RPC input; deliberately opaque to Debug because set/answer/login/unlock carry raw values.
 #[derive(Clone)]
 pub enum Request {
-    /// Read metadata only.
+    /// Read metadata only (the vault, then the connections).
     ListSecrets,
     /// Store one submitted value.
     SetSecret {
@@ -86,27 +176,186 @@ pub enum Request {
         /// When every stored value expires (Unix ms); `None` = never.
         expires_ms: Option<u64>,
     },
+    /// Answer or decline one unlock card (221 §9.4).
+    AnswerUnlock {
+        /// Card identity.
+        id: ::secrets::RequestId,
+        /// The master password, or `None` to decline.
+        password: Option<String>,
+    },
+    /// The engine's AWS profiles for `/secrets connect aws`.
+    AwsProfiles {
+        /// The connection being added.
+        conn: String,
+    },
+    /// Probe, then add a connection; a Bitwarden one continues with its login.
+    AddConnection {
+        /// Connection name.
+        conn: String,
+        /// Its config.
+        cfg: ConnConfig,
+    },
+    /// One login step.
+    Login {
+        /// Connection name.
+        conn: String,
+        /// The masked card's values.
+        form: LoginForm,
+    },
+    /// Unlock with the master password.
+    Unlock {
+        /// Connection name.
+        conn: String,
+        /// Master password, never printed.
+        password: String,
+    },
+    /// Lock now.
+    Lock(String),
+    /// One page of a connection's entries.
+    Browse {
+        /// Connection name.
+        conn: String,
+        /// The previous page's `next`.
+        cursor: Option<String>,
+    },
+    /// Copy a `{{secret:…}}` reference (never a value).
+    CopyRef(String),
+    /// Copy an external value into the local vault under `name`.
+    Import {
+        /// Connection name.
+        conn: String,
+        /// The entry's reference.
+        r#ref: String,
+        /// Local vault name.
+        name: String,
+    },
+    /// Recoverable delete of an external entry.
+    DeleteExternal {
+        /// Connection name.
+        conn: String,
+        /// The entry's reference.
+        r#ref: String,
+        /// Its display name.
+        name: String,
+    },
 }
 /// Value-free owner replies and live bus events.
 pub enum Msg {
-    /// Metadata list.
-    Listed(Result<::secrets::SecretsList, String>),
+    /// Metadata list and the connections.
+    Listed(Result<::secrets::SecretsList, String>, Result<Vec<ConnInfo>, String>),
     /// Newly current metadata.
     Set(Result<::secrets::SecretInfo, String>),
     /// Delete/answer completion.
     Done(Result<Option<String>, String>),
     /// Live request/change/resolution.
     Event(::secrets::SecretsEvent),
+    /// AWS profile names for the add flow.
+    Profiles(String, Result<Vec<String>, String>),
+    /// A connection was added (or refused at the probe).
+    Added(Result<ConnInfo, String>),
+    /// A login step's answer, with the connections re-listed after `Done`.
+    LoggedIn {
+        /// Connection name.
+        conn: String,
+        /// What the server asks next.
+        step: Result<LoginStep, String>,
+        /// The connections after a finished login.
+        connections: Option<Vec<ConnInfo>>,
+    },
+    /// A connection after lock/unlock.
+    Conn(Result<ConnInfo, String>),
+    /// One page of entries.
+    Browsed(String, Option<String>, Result<ListPage, String>),
 }
+/// `prod · aws · ready` status words (221 §9.1).
+fn status_word(s: &ConnStatus) -> String {
+    match s {
+        ConnStatus::Ready => "ready".into(),
+        ConnStatus::Locked => "locked".into(),
+        ConnStatus::LoggedOut => "logged out".into(),
+        ConnStatus::Expired { hint } => format!("expired ({hint})"),
+        ConnStatus::Error(e) => format!("error: {e}"),
+        ConnStatus::Unsupported(e) => format!("unsupported: {e}"),
+    }
+}
+/// §9.3: `→ bw/personal › Personal/theuth · login "GitHub — CI"`.
+fn destination_line(v: &DestinationView) -> String {
+    let d = &v.destination;
+    let mut line = format!("→ {}/{}", v.backend, d.connection);
+    if v.backend == "bw" {
+        let place = match (&d.org, &d.collection) {
+            (Some(org), Some(c)) => format!("{org}/{c}"),
+            (Some(org), None) => org.clone(),
+            _ => format!("Personal/{}", d.folder.as_deref().unwrap_or("")).trim_end_matches('/').to_owned(),
+        };
+        let item = d.item.and_then(|k| serde_json::to_value(k).ok()).and_then(|k| k.as_str().map(str::to_owned)).unwrap_or_else(|| "login".into());
+        line.push_str(&format!(" › {place} · {item} \"{}\"", d.name));
+    } else {
+        let format = d.format.and_then(|f| serde_json::to_value(f).ok()).and_then(|f| f.as_str().map(str::to_owned)).unwrap_or_else(|| "string".into());
+        line.push_str(&format!(" › {} · {format}", d.name));
+        if let Some(kms) = &d.kms_key_id { line.push_str(&format!(" · KMS {kms}")); }
+    }
+    if d.replace.is_some() { line.push_str(" · replaces"); }
+    if d.keep_local { line.push_str(" · + local copy"); }
+    if v.status == ConnStatus::Locked { line.push_str(" · locked: unlock first"); }
+    line
+}
+/// The prompt's `us` · `eu` · base URL.
+fn parse_server(line: &str) -> Option<(BwServer, Option<String>)> {
+    match line.trim() {
+        "us" => Some((BwServer::Us, None)),
+        "eu" => Some((BwServer::Eu, None)),
+        url if url.starts_with("https://") || url.starts_with("http://") => Some((BwServer::SelfHosted, Some(url.trim_end_matches('/').to_owned()))),
+        _ => None,
+    }
+}
+fn opt(line: &str) -> Option<String> { let t = line.trim(); (!t.is_empty()).then(|| t.to_owned()) }
 impl Secrets {
     fn request(&self, request: Request, cx: &mut Cx<'_, '_, Msg>) {
         cx.spawn_request(Lane::Concurrent, request, |api, request| async move {
             match request {
-                Request::ListSecrets => Msg::Listed(api.list_secrets().await.map_err(crate::reason)),
+                Request::ListSecrets => {
+                    let list = api.list_secrets().await.map_err(crate::reason);
+                    Msg::Listed(list, api.list_secret_connections().await.map_err(crate::reason))
+                }
                 Request::SetSecret { name, value, note } => Msg::Set(api.set_secret(name, value, note).await.map_err(crate::reason)),
                 Request::RestoreSecret { name, back } => Msg::Set(api.restore_secret(name, back).await.map_err(crate::reason)),
                 Request::DeleteSecret(name) => Msg::Done(api.delete_secret(name.clone()).await.map(|_| Some(format!("{name}: deleted"))).map_err(crate::reason)),
                 Request::AnswerSecret { id, values, expires_ms } => Msg::Done(api.answer_secret(id, None, values, expires_ms, None).await.map(|_| None).map_err(crate::reason)),
+                Request::AnswerUnlock { id, password } => Msg::Done(api.answer_unlock(id, password).await.map(|_| None).map_err(crate::reason)),
+                Request::AwsProfiles { conn } => Msg::Profiles(conn, api.list_aws_profiles().await.map(|p| p.profiles).map_err(crate::reason)),
+                Request::AddConnection { conn, cfg } => Msg::Added(async {
+                    match api.probe_secret_connection(conn.clone(), cfg.clone()).await.map_err(crate::reason)? {
+                        ConnStatus::Error(e) | ConnStatus::Unsupported(e) => Err(format!("{}/{conn}: {e}; not added", cfg.backend())),
+                        _ => api.add_secret_connection(conn, cfg).await.map_err(crate::reason),
+                    }
+                }.await),
+                Request::Login { conn, form } => {
+                    let step = api.connection_login(conn.clone(), form).await.map_err(crate::reason);
+                    let connections = match step {
+                        Ok(LoginStep::Done) => api.list_secret_connections().await.ok(),
+                        _ => None,
+                    };
+                    Msg::LoggedIn { conn, step, connections }
+                }
+                Request::Unlock { conn, password } => Msg::Conn(api.connection_unlock(conn, password).await.map_err(crate::reason)),
+                Request::Lock(conn) => Msg::Conn(api.connection_lock(conn).await.map_err(crate::reason)),
+                Request::Browse { conn, cursor } => {
+                    let append = cursor.clone();
+                    let page = api.list_external_secrets(conn.clone(), ListQuery { cursor, ..ListQuery::default() }).await.map_err(crate::reason);
+                    Msg::Browsed(conn, append, page)
+                }
+                Request::CopyRef(reference) => Msg::Done(
+                    arboard::Clipboard::new().and_then(|mut clip| clip.set_text(reference.clone()))
+                        .map(|()| Some(format!("copied {reference}"))).map_err(|e| format!("could not copy the reference: {e}")),
+                ),
+                Request::Import { conn, r#ref, name } => Msg::Set(api.import_external_secret(conn, r#ref, name, None).await.map_err(crate::reason)),
+                Request::DeleteExternal { conn, r#ref, name } => Msg::Done(
+                    api.delete_external_secret(conn, r#ref, DeleteMode::Recoverable { days: None }).await.map(|o| Some(match o.recoverable_until {
+                        Some(until) => format!("{name}: deleted; recoverable until {}", when(&until)),
+                        None => format!("{name}: deleted"),
+                    })).map_err(crate::reason),
+                ),
             }
         });
     }
@@ -127,7 +376,9 @@ impl Secrets {
                     _ => { cx.core(CoreAction::Reject(format!("/secrets restore: n is 1..={}", ::secrets::KEEP - 1))); None }
                 }
             }
-            _ => { cx.core(CoreAction::Reject("usage: /secrets [add [name] | rm <name> | restore <name> [n]]".into())); None }
+            ("connect", "aws") => { self.prompt = Some(Prompt::ConnName { backend: "aws" }); None }
+            ("connect", "bw" | "bitwarden") => { self.prompt = Some(Prompt::ConnName { backend: "bw" }); None }
+            _ => { cx.core(CoreAction::Reject("usage: /secrets [add [name] | rm <name> | restore <name> [n] | connect aws|bw]".into())); None }
         };
         if let Some(request) = request { self.request(request, cx); }
         if self.prompt.is_some() { cx.focus(FocusClass::Modal); }
@@ -135,45 +386,82 @@ impl Secrets {
     fn secret_current(&self, name: &str) -> Option<u32> {
         self.secrets.as_ref()?.secrets.iter().find(|s| s.name == name).map(|s| s.current)
     }
+    fn local(&self) -> &[::secrets::SecretInfo] { self.secrets.as_ref().map(|l| l.secrets.as_slice()).unwrap_or_default() }
     /// Metadata-only menu title and keys.
     pub fn secrets_title(&self) -> String {
         let key = self.secrets.as_ref().map_or("?", |l| l.key_store.as_str());
+        let n = self.connections.len();
         match &self.menu {
             Some(Menu::Secrets { cursor, history: Some(_) }) => {
-                let name = self.secrets.as_ref().and_then(|l| l.secrets.get(*cursor)).map_or("", |s| s.name.as_str());
+                let name = cursor.checked_sub(n).and_then(|i| self.local().get(i)).map_or("", |s| s.name.as_str());
                 format!("secrets · {name} · history   ⏎ restore  h/esc back")
+            }
+            Some(Menu::Secrets { cursor, history: None }) if *cursor < n => {
+                let c = &self.connections[*cursor];
+                format!("secrets · {}/{} · {}   u unlock  l lock  ⏎ browse  a add  esc", c.backend, c.conn, status_word(&c.status))
+            }
+            Some(Menu::Browse { conn, .. }) => {
+                let backend = self.connections.iter().find(|c| &c.conn == conn).map_or("?", |c| c.backend.as_str());
+                format!("secrets · {backend}/{conn}   y copy reference  i import  d delete  esc back")
             }
             _ => format!("secrets · key: {key}   a add  r replace  h history  d delete  esc"),
         }
     }
     /// Metadata/history rows; values never enter presentation state.
     pub fn secrets_rows(&self) -> Vec<String> {
-        let list = self.secrets.as_ref().map(|l| l.secrets.as_slice()).unwrap_or_default();
-        if let Some(Menu::Secrets { cursor, history: Some(_) }) = &self.menu
-            && let Some(s) = list.get(*cursor)
-        {
-            return s.versions.iter().enumerate().map(|(i, v)| format!("v{} · {} · {}{}", v.v, when(&v.created), v.source, if i == 0 { " · current" } else { "" })).collect();
+        let n = self.connections.len();
+        let list = self.local();
+        match &self.menu {
+            Some(Menu::Secrets { cursor, history: Some(_) }) => if let Some(s) = cursor.checked_sub(n).and_then(|i| list.get(i)) {
+                return s.versions.iter().enumerate().map(|(i, v)| format!("v{} · {} · {}{}", v.v, when(&v.created), v.source, if i == 0 { " · current" } else { "" })).collect();
+            },
+            // §9.3: `ref · kind · place · rev`; no Reveal here (D25).
+            Some(Menu::Browse { entries, next, .. }) => {
+                let mut rows: Vec<String> = entries.iter().map(|e| {
+                    let rev = e.versions.first().map_or_else(String::new, |v| v.changed.as_deref().map_or_else(|| v.id.chars().take(8).collect(), when));
+                    format!("{} · {} · {} · {rev} · reveal in the desktop app", e.r#ref, e.kind, e.location)
+                }).collect();
+                if rows.is_empty() { rows.push("no entries".into()); }
+                if next.is_some() { rows.push("more · ⏎ loads the next page".into()); }
+                return rows;
+            }
+            _ => {}
         }
-        if list.is_empty() { return vec!["no secrets · a adds one".into()] }
+        let mut rows: Vec<String> = self.connections.iter().map(|c| format!("{} · {} · {} · {}", c.conn, c.backend, status_word(&c.status), c.summary)).collect();
+        if let Some(e) = &self.conn_error { rows.push(format!("connections unavailable: {e}")); }
+        if list.is_empty() { rows.push("no secrets · a adds one".into()); return rows; }
         let now = now_ms();
-        list.iter().map(|s| {
+        rows.extend(list.iter().map(|s| {
             let expires = s.expires.as_deref().and_then(::secrets::expiry::from_rfc3339).map_or_else(String::new, |t| format!(" · {}", ::secrets::expiry::describe(t, now)));
             format!("{:<20} · v{} ({} kept) · {} · {}{expires}", s.name.chars().take(20).collect::<String>(), s.current, s.versions.len(), s.note, when(&s.updated))
-        }).collect()
+        }));
+        rows
     }
     fn key(&mut self, code: KeyCode, cx: &mut Cx<'_, '_, Msg>) {
+        if !self.unlocks.is_empty() {
+            if code == KeyCode::Esc { self.decline_unlock(cx); cx.consume_key(); }
+            return;
+        }
         if !self.requests.is_empty() {
             if code == KeyCode::Esc { self.decline(cx); cx.consume_key(); }
             return;
         }
         if self.prompt.is_some() {
-            if code == KeyCode::Esc { self.prompt = None; cx.close(); cx.consume_key(); cx.core(CoreAction::Notice("secrets: cancelled".into())); }
+            if code == KeyCode::Esc { self.prompt = None; self.login = None; cx.close(); cx.consume_key(); cx.core(CoreAction::Notice("secrets: cancelled".into())); }
             return;
         }
+        match self.menu {
+            Some(Menu::Browse { .. }) => { cx.consume_key(); self.browse_key(code, cx); return }
+            Some(Menu::Secrets { cursor, history: None }) if cursor < self.connections.len() => { cx.consume_key(); self.conn_key(code, cursor, cx); return }
+            Some(Menu::Secrets { .. }) => {}
+            None => return,
+        }
+        let n = self.connections.len();
+        let total = n + self.local().len();
         let Some(Menu::Secrets { cursor, history }) = &mut self.menu else { return };
         cx.consume_key();
         let list = self.secrets.as_ref().map(|l| l.secrets.as_slice()).unwrap_or_default();
-        let info = list.get(*cursor);
+        let info = cursor.checked_sub(n).and_then(|i| list.get(i));
         let name = info.map(|s| s.name.clone());
         let current = info.map(|s| s.current);
         let versions = info.map_or(0, |s| s.versions.len());
@@ -185,7 +473,7 @@ impl Secrets {
                 if let (Some(name), Ok(back)) = (name, u8::try_from(h)) { self.request(Request::RestoreSecret { name, back }, cx); }
             }
             (KeyCode::Up, None) => *cursor = cursor.saturating_sub(1),
-            (KeyCode::Down, None) => *cursor = (*cursor + 1).min(list.len().saturating_sub(1)),
+            (KeyCode::Down, None) => *cursor = (*cursor + 1).min(total.saturating_sub(1)),
             (KeyCode::Esc, None) => { self.menu = None; cx.close(); }
             (KeyCode::Char('h'), None) if info.is_some() => *history = Some(0),
             (KeyCode::Char('a'), _) => { self.menu = None; self.prompt = Some(Prompt::Name); }
@@ -194,14 +482,69 @@ impl Secrets {
             _ => {}
         }
     }
+    /// §9.3 keys on a connection row.
+    fn conn_key(&mut self, code: KeyCode, cursor: usize, cx: &mut Cx<'_, '_, Msg>) {
+        let total = self.connections.len() + self.local().len();
+        let c = &self.connections[cursor];
+        let (conn, target) = (c.conn.clone(), format!("{}/{}", c.backend, c.conn));
+        match code {
+            KeyCode::Up => self.menu = Some(Menu::Secrets { cursor: cursor.saturating_sub(1), history: None }),
+            KeyCode::Down => self.menu = Some(Menu::Secrets { cursor: (cursor + 1).min(total.saturating_sub(1)), history: None }),
+            KeyCode::Esc => { self.menu = None; cx.close(); }
+            KeyCode::Char('a') => { self.menu = None; self.prompt = Some(Prompt::Name); }
+            KeyCode::Char('l') => self.request(Request::Lock(conn), cx),
+            KeyCode::Enter => match &c.status {
+                ConnStatus::Ready => self.request(Request::Browse { conn, cursor: None }, cx),
+                s => cx.core(CoreAction::Notice(format!("{target}: {}; u unlocks", status_word(s)))),
+            },
+            KeyCode::Char('u') => match (&c.status, c.backend.as_str()) {
+                (ConnStatus::Ready, _) => cx.core(CoreAction::Notice(format!("{target}: already unlocked"))),
+                (ConnStatus::Locked, _) => {
+                    let account = c.summary.split(" · ").next().unwrap_or_default().to_owned();
+                    self.menu = None; self.prompt = Some(Prompt::Unlock { conn, account });
+                }
+                (ConnStatus::LoggedOut, "bw") => {
+                    let email = c.summary.split(" · ").next().unwrap_or_default().to_owned();
+                    self.menu = None; self.prompt = Some(Prompt::BwMethod { conn, server: None, email });
+                }
+                (s, _) => cx.core(CoreAction::Notice(format!("{target}: {}", status_word(s)))),
+            },
+            _ => {}
+        }
+    }
+    fn browse_key(&mut self, code: KeyCode, cx: &mut Cx<'_, '_, Msg>) {
+        let Some(Menu::Browse { conn, back, cursor, entries, next }) = &mut self.menu else { return };
+        let rows = entries.len().max(1) + usize::from(next.is_some());
+        let entry = entries.get(*cursor).cloned();
+        let conn = conn.clone();
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(rows - 1),
+            KeyCode::Esc => { let back = *back; self.menu = Some(Menu::Secrets { cursor: back, history: None }); }
+            KeyCode::Enter if entry.is_none() && next.is_some() => { let cursor = next.clone(); self.request(Request::Browse { conn, cursor }, cx); }
+            KeyCode::Enter if entry.is_some() => cx.core(CoreAction::Notice("values: reveal in the desktop app".into())),
+            KeyCode::Char('y') => if let Some(e) = entry { self.request(Request::CopyRef(format!("{{{{secret:{}}}}}", e.r#ref)), cx); },
+            KeyCode::Char('i') => if let Some(e) = entry { self.menu = None; self.prompt = Some(Prompt::Import { conn, r#ref: e.r#ref }); },
+            KeyCode::Char('d') => if let Some(e) = entry {
+                let window = match self.connections.iter().find(|c| c.conn == conn) {
+                    Some(c) if c.backend == "aws" => format!("recoverable for {} days", c.settings.delete_recovery_days),
+                    _ => "it moves to the Bitwarden trash".to_owned(),
+                };
+                self.menu = None; self.prompt = Some(Prompt::ExtDelete { conn, r#ref: e.r#ref, name: e.name, window });
+            },
+            _ => {}
+        }
+    }
     fn submit(&mut self, line: &str, cx: &mut Cx<'_, '_, Msg>) {
+        if !self.unlocks.is_empty() { cx.consume_key(); self.unlock_submit(line, cx); return; }
         if !self.requests.is_empty() { cx.consume_key(); self.live_submit(line, cx); return; }
         let Some(prompt) = self.prompt.take() else { return };
         cx.consume_key();
+        let reject = |prompt: Prompt, why: String, me: &mut Self, cx: &mut Cx<'_, '_, Msg>| { me.prompt = Some(prompt); cx.core(CoreAction::Reject(why)); };
         let request = match prompt {
             Prompt::Name => {
                 if ::secrets::vault::valid_name(line) { self.prompt = Some(Prompt::Value { name: line.to_owned(), current: self.secret_current(line) }); }
-                else { self.prompt = Some(Prompt::Name); cx.core(CoreAction::Reject(bad_secret_name(line))); }
+                else { reject(Prompt::Name, bad_secret_name(line), self, cx); }
                 None
             }
             Prompt::Value { name, .. } => { self.prompt = Some(Prompt::Note { name, value: line.to_owned() }); None }
@@ -210,20 +553,90 @@ impl Secrets {
                 if line == name { Some(Request::DeleteSecret(name)) }
                 else { cx.core(CoreAction::Notice(format!("secrets: kept {name}"))); None }
             }
+            Prompt::ConnName { backend } => {
+                let conn = line.trim().to_owned();
+                if !::secrets::external::valid_conn(&conn) { reject(Prompt::ConnName { backend }, format!("secrets: {conn:?} is not a connection name"), self, cx); None }
+                else if self.connections.iter().any(|c| c.conn == conn) { reject(Prompt::ConnName { backend }, format!("secrets: {conn} exists"), self, cx); None }
+                else if backend == "aws" { Some(Request::AwsProfiles { conn }) }
+                else { self.prompt = Some(Prompt::BwServer { conn }); None }
+            }
+            Prompt::AwsProfile { conn, profiles } => match opt(line) {
+                None => { self.prompt = Some(Prompt::AwsRegion { conn, profile: None }); None }
+                Some(p) if profiles.contains(&p) => { self.prompt = Some(Prompt::AwsRegion { conn, profile: Some(p) }); None }
+                Some(p) => { reject(Prompt::AwsProfile { conn, profiles }, format!("secrets: no AWS profile {p:?}"), self, cx); None }
+            },
+            Prompt::AwsRegion { conn, profile } => match opt(line) {
+                Some(region) if region.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') => { self.prompt = Some(Prompt::AwsKms { conn, profile, region }); None }
+                _ => { reject(Prompt::AwsRegion { conn, profile }, "secrets: a region is like eu-west-1".into(), self, cx); None }
+            },
+            Prompt::AwsKms { conn, profile, region } => { self.prompt = Some(Prompt::AwsPrefix { conn, profile, region, kms_key_id: opt(line) }); None }
+            Prompt::AwsPrefix { conn, profile, region, kms_key_id } => Some(Request::AddConnection { conn, cfg: ConnConfig::Aws { profile, region, kms_key_id, prefix: opt(line) } }),
+            Prompt::BwServer { conn } => match parse_server(line) {
+                Some((server, base_url)) => { self.prompt = Some(Prompt::BwEmail { conn, server, base_url }); None }
+                None => { reject(Prompt::BwServer { conn }, "secrets: us, eu or the server's https:// URL".into(), self, cx); None }
+            },
+            Prompt::BwEmail { conn, server, base_url } => match opt(line) {
+                Some(email) if email.contains('@') => { self.prompt = Some(Prompt::BwMethod { conn, server: Some((server, base_url)), email }); None }
+                _ => { reject(Prompt::BwEmail { conn, server, base_url }, "secrets: an email address".into(), self, cx); None }
+            },
+            Prompt::BwMethod { conn, server, email } => {
+                let login = match line.trim() { "" | "api_key" | "api key" => Some(BwLogin::ApiKey), "password" => Some(BwLogin::Password), _ => None };
+                match (login, server) {
+                    (None, server) => { reject(Prompt::BwMethod { conn, server, email }, "secrets: api_key or password".into(), self, cx); None }
+                    // Adding: the connection exists before its login (the login RPC needs it).
+                    (Some(login), Some((server, base_url))) => {
+                        let request = Request::AddConnection { conn: conn.clone(), cfg: ConnConfig::Bw { server, base_url, api_url: None, identity_url: None, web_vault_url: None, email: email.clone(), login } };
+                        self.prompt = Some(match login { BwLogin::ApiKey => Prompt::ClientId { conn }, BwLogin::Password => Prompt::MasterLogin { conn, email } });
+                        Some(request)
+                    }
+                    (Some(BwLogin::ApiKey), None) => { self.prompt = Some(Prompt::ClientId { conn }); None }
+                    (Some(BwLogin::Password), None) => { self.prompt = Some(Prompt::MasterLogin { conn, email }); None }
+                }
+            }
+            Prompt::ClientId { conn } => match opt(line) {
+                Some(client_id) => { self.prompt = Some(Prompt::ClientSecret { conn, client_id }); None }
+                None => { reject(Prompt::ClientId { conn }, "secrets: the client_id".into(), self, cx); None }
+            },
+            Prompt::ClientSecret { conn, client_id } => Some(Request::Login { conn, form: LoginForm::ApiKey { client_id, client_secret: line.to_owned() } }),
+            Prompt::MasterLogin { conn, email } => {
+                let login = PendingLogin { email, password: line.to_owned(), two_factor: None };
+                let form = login.form(None);
+                self.login = Some(login);
+                Some(Request::Login { conn, form })
+            }
+            Prompt::TwoFactorProvider { conn, providers } => match providers.iter().find(|p| p.as_str() == line.trim()) {
+                Some(provider) => { self.prompt = Some(Prompt::TwoFactorCode { conn, provider: provider.clone() }); None }
+                None => { let why = format!("secrets: one of {}", providers.join(", ")); reject(Prompt::TwoFactorProvider { conn, providers }, why, self, cx); None }
+            },
+            Prompt::TwoFactorCode { conn, provider } => match self.login.as_mut() {
+                Some(login) => { login.two_factor = Some((provider, line.trim().to_owned())); Some(Request::Login { conn, form: login.form(None) }) }
+                None => None,
+            },
+            Prompt::NewDeviceOtp { conn } => self.login.as_ref().map(|login| Request::Login { conn, form: login.form(Some(line.trim().to_owned())) }),
+            Prompt::Unlock { conn, .. } => Some(Request::Unlock { conn, password: line.to_owned() }),
+            Prompt::Import { conn, r#ref } => {
+                if ::secrets::vault::valid_name(line) { Some(Request::Import { conn, r#ref, name: line.to_owned() }) }
+                else { reject(Prompt::Import { conn, r#ref }, bad_secret_name(line), self, cx); None }
+            }
+            Prompt::ExtDelete { conn, r#ref, name, .. } => {
+                if line == name { Some(Request::DeleteExternal { conn, r#ref, name }) }
+                else { cx.core(CoreAction::Notice(format!("secrets: kept {name}"))); None }
+            }
         };
         if self.prompt.is_none() { cx.close(); }
         if let Some(request) = request { self.request(request, cx); }
     }
     /// One step of the front request: the next field's value, then the expiry
     /// (`30m` / `2h` / `3d` / `YYYY-MM-DD HH:MM` local; empty = never), which sends the answer.
+    /// A request stored only in an external manager has no expiry step (221 §9.2).
     fn live_submit(&mut self, line: &str, cx: &mut Cx<'_, '_, Msg>) {
         let Some(r) = self.requests.front_mut() else { return };
         if r.field().is_some() {
             r.values.push(line.to_owned());
-            return;
+            if r.field().is_some() || r.expiry_step() { return; }
         }
         let now = now_ms();
-        let expires_ms = if line.trim().is_empty() {
+        let expires_ms = if line.trim().is_empty() || !r.expiry_step() {
             None
         } else {
             match ::secrets::expiry::parse(line, now) {
@@ -233,7 +646,8 @@ impl Secrets {
         };
         let r = self.requests.pop_front().expect("front");
         let when = expires_ms.map_or_else(String::new, |t| format!("; expires {}", ::secrets::expiry::local_time(t)));
-        cx.core(CoreAction::Notice(format!("{}: stored{when}", r.names())));
+        let to = r.destination.as_ref().map_or_else(String::new, |d| format!(" → {}/{}", d.backend, d.destination.connection));
+        cx.core(CoreAction::Notice(format!("{}: stored{to}{when}", r.names())));
         let values = r.fields.iter().map(|f| f.name.clone()).zip(r.values).collect();
         self.request(Request::AnswerSecret { id: r.id, values: Some(values), expires_ms }, cx);
     }
@@ -242,27 +656,56 @@ impl Secrets {
         cx.core(CoreAction::Notice(format!("{}: declined", r.names())));
         self.request(Request::AnswerSecret { id: r.id, values: None, expires_ms: None }, cx);
     }
+    fn unlock_submit(&mut self, line: &str, cx: &mut Cx<'_, '_, Msg>) {
+        let Some(u) = self.unlocks.pop_front() else { return };
+        cx.core(CoreAction::Notice(format!("{}: unlocking", u.target())));
+        self.request(Request::AnswerUnlock { id: u.id, password: Some(line.to_owned()) }, cx);
+    }
+    fn decline_unlock(&mut self, cx: &mut Cx<'_, '_, Msg>) {
+        let Some(u) = self.unlocks.pop_front() else { return };
+        cx.core(CoreAction::Notice(format!("{}: unlock declined", u.target())));
+        self.request(Request::AnswerUnlock { id: u.id, password: None }, cx);
+    }
     fn event(&mut self, event: ::secrets::SecretsEvent, cx: &mut Cx<'_, '_, Msg>) {
         use ::secrets::SecretsEvent::*;
         if cx.core.reasoning { cx.plain(Plain::Text("\x1b[0m\n".into())); }
         match event {
             Changed => self.refresh = self.secrets.is_some(),
-            Requested { id, session, name, note, current, fields, expires, .. } => {
+            Requested { id, session, name, note, current, fields, expires, destination, .. } => {
                 cx.plain(Plain::Line(format!("secret requested: {name} — {note} (needs a TTY or another client)")));
                 if !self.requests.iter().any(|r| r.id == id) && cx.core.owns_session(session) {
                     // A pre-79 engine sends the one field as `name` / `note` / `current` only.
                     let fields = if fields.is_empty() {
                         vec![::secrets::SecretRequestField { name, label: note.clone(), masked: true, current, note: None }]
                     } else { fields };
-                    self.requests.push_back(SecretRequest { id, note, fields, expires, values: Vec::new() });
+                    self.requests.push_back(SecretRequest { id, note, fields, expires, destination, values: Vec::new() });
                 }
             }
             Resolved { id, timed_out, .. } => if let Some(i) = self.requests.iter().position(|r| r.id == id) {
                 let r = self.requests.remove(i).expect("position");
                 if timed_out { cx.core(CoreAction::Notice(format!("{}: request timed out", r.names()))); }
             },
-            // 221 §9.3: the unlock modal is B8's; until then the card is answered elsewhere.
-            Rotation(_) | UnlockRequested { .. } | UnlockResolved { .. } => {}
+            // Engine-wide (not a session's): whoever is at a TTY may answer it.
+            UnlockRequested { id, conn, backend, account, reason } => {
+                cx.plain(Plain::Line(format!("unlock requested: {backend}/{conn} — {reason}")));
+                if !self.unlocks.iter().any(|u| u.id == id) {
+                    self.unlocks.push_back(UnlockCard { id, conn, backend, account, reason });
+                }
+            }
+            UnlockResolved { id, unlocked } => {
+                if let Some(i) = self.unlocks.iter().position(|u| u.id == id) {
+                    let u = self.unlocks.remove(i).expect("position");
+                    cx.core(CoreAction::Notice(format!("{}: {}", u.target(), if unlocked { "unlocked" } else { "unlock card closed" })));
+                }
+                self.refresh = self.secrets.is_some();
+            }
+            Rotation(_) => {}
+        }
+    }
+    fn update_conn(&mut self, info: ConnInfo) {
+        match self.connections.iter_mut().find(|c| c.conn == info.conn) {
+            Some(c) => *c = info,
+            None => self.connections.push(info),
         }
     }
 }
@@ -270,7 +713,7 @@ impl Component for Secrets {
     type Msg = Msg;
     fn declaration(&self) -> Declaration {
         Declaration { id: "secrets", interests: &[Interest { topic: "secrets.events", version: 1, variants: &[] }],
-            slash: &[("/secrets", "[add [name]|rm <name>|restore <name> [n]]", "encrypted secrets the agent uses by name")], bindings: &[] }
+            slash: &[("/secrets", "[add [name]|rm <name>|restore <name> [n]|connect aws|bw]", "encrypted secrets the agent uses by name, and AWS/Bitwarden connections")], bindings: &[] }
     }
     fn decode(&self, event: &TopicEvent, _: &CoreView<'_>) -> Option<Msg> {
         if event.topic().is_some() && (event.topic() != Some("secrets.events") || event.version() != Some(1)) { return None }
@@ -281,20 +724,29 @@ impl Component for Secrets {
             Input::Slash { args, .. } => self.slash(args, cx),
             Input::Key(key) => self.key(key.code, cx),
             Input::Submit(line) => self.submit(line, cx),
-            Input::Message(Msg::Listed(result)) => match result {
-                Err(error) => cx.error(error),
-                Ok(list) => {
-                    if cx.core.reasoning { cx.plain(Plain::Text("\x1b[0m\n".into())); }
-                    cx.plain(Plain::Line(format!("key: {}", list.key_store)));
-                    let now = now_ms();
-                    for s in &list.secrets {
-                        let expires = s.expires.as_deref().and_then(::secrets::expiry::from_rfc3339).map_or_else(String::new, |t| format!(" · {}", ::secrets::expiry::describe(t, now)));
-                        cx.plain(Plain::Line(format!("{} · v{} ({} kept) · {} · {}{expires}", s.name, s.current, s.versions.len(), s.note, s.updated)));
-                    }
-                    if self.awaiting && self.menu.is_none() { self.menu = Some(Menu::Secrets { cursor: 0, history: None }); cx.focus(FocusClass::Modal); }
-                    self.awaiting = false; self.secrets = Some(list);
+            Input::Message(Msg::Listed(result, connections)) => {
+                match connections {
+                    Ok(c) => { self.connections = c; self.conn_error = None; }
+                    Err(e) => { self.connections.clear(); self.conn_error = Some(e); }
                 }
-            },
+                match result {
+                    Err(error) => cx.error(error),
+                    Ok(list) => {
+                        if cx.core.reasoning { cx.plain(Plain::Text("\x1b[0m\n".into())); }
+                        cx.plain(Plain::Line(format!("key: {}", list.key_store)));
+                        for c in &self.connections {
+                            cx.plain(Plain::Line(format!("{} · {} · {} · {}", c.conn, c.backend, status_word(&c.status), c.summary)));
+                        }
+                        let now = now_ms();
+                        for s in &list.secrets {
+                            let expires = s.expires.as_deref().and_then(::secrets::expiry::from_rfc3339).map_or_else(String::new, |t| format!(" · {}", ::secrets::expiry::describe(t, now)));
+                            cx.plain(Plain::Line(format!("{} · v{} ({} kept) · {} · {}{expires}", s.name, s.current, s.versions.len(), s.note, s.updated)));
+                        }
+                        if self.awaiting && self.menu.is_none() { self.menu = Some(Menu::Secrets { cursor: 0, history: None }); cx.focus(FocusClass::Modal); }
+                        self.awaiting = false; self.secrets = Some(list);
+                    }
+                }
+            }
             Input::Message(Msg::Set(result)) => match result {
                 Err(error) => cx.error(error),
                 Ok(info) => {
@@ -312,23 +764,87 @@ impl Component for Secrets {
                 Ok(None) => {}
             },
             Input::Message(Msg::Event(event)) => self.event(event, cx),
+            Input::Message(Msg::Profiles(conn, result)) => match result {
+                Err(error) => cx.error(error),
+                Ok(profiles) => { self.prompt = Some(Prompt::AwsProfile { conn, profiles }); cx.focus(FocusClass::Modal); }
+            },
+            Input::Message(Msg::Added(result)) => match result {
+                Err(error) => {
+                    // A Bitwarden add waits at its login step; nothing to log into now.
+                    if matches!(self.prompt, Some(Prompt::ClientId { .. } | Prompt::MasterLogin { .. })) { self.prompt = None; cx.close(); }
+                    cx.error(error);
+                }
+                Ok(info) => {
+                    cx.core(CoreAction::Notice(format!("{}/{}: added · {}", info.backend, info.conn, status_word(&info.status))));
+                    self.update_conn(info);
+                }
+            },
+            Input::Message(Msg::LoggedIn { conn, step, connections }) => match step {
+                Err(error) => { self.login = None; cx.error(error); }
+                Ok(LoginStep::Done) => {
+                    self.login = None;
+                    if let Some(c) = connections { self.connections = c; }
+                    let info = self.connections.iter().find(|c| c.conn == conn);
+                    match info.map(|c| (&c.status, c.summary.split(" · ").next().unwrap_or_default().to_owned())) {
+                        Some((ConnStatus::Locked, account)) => {
+                            cx.core(CoreAction::Notice(format!("bw/{conn}: logged in; unlock it")));
+                            self.prompt = Some(Prompt::Unlock { conn, account }); cx.focus(FocusClass::Modal);
+                        }
+                        Some((s, _)) => cx.core(CoreAction::Notice(format!("bw/{conn}: logged in · {}", status_word(s)))),
+                        None => cx.core(CoreAction::Notice(format!("bw/{conn}: logged in"))),
+                    }
+                }
+                Ok(LoginStep::NeedTwoFactor { providers }) if self.login.is_some() => {
+                    self.prompt = Some(match providers.as_slice() {
+                        [one] => Prompt::TwoFactorCode { conn, provider: one.clone() },
+                        _ => Prompt::TwoFactorProvider { conn, providers },
+                    });
+                    cx.focus(FocusClass::Modal);
+                }
+                Ok(LoginStep::NeedNewDeviceOtp) if self.login.is_some() => { self.prompt = Some(Prompt::NewDeviceOtp { conn }); cx.focus(FocusClass::Modal); }
+                Ok(_) => cx.error(format!("bw/{conn}: the server asked for another step; log in again")),
+            },
+            Input::Message(Msg::Conn(result)) => match result {
+                Err(error) => cx.error(error),
+                Ok(info) => {
+                    cx.core(CoreAction::Notice(format!("{}/{}: {}", info.backend, info.conn, status_word(&info.status))));
+                    self.update_conn(info);
+                }
+            },
+            Input::Message(Msg::Browsed(conn, after, result)) => match result {
+                Err(error) => cx.error(error),
+                Ok(page) => match &mut self.menu {
+                    Some(Menu::Browse { conn: open, entries, next, .. }) if after.is_some() && *open == conn => {
+                        entries.extend(page.entries); *next = page.next;
+                    }
+                    _ => {
+                        let back = self.connections.iter().position(|c| c.conn == conn).unwrap_or(0);
+                        self.menu = Some(Menu::Browse { conn, back, cursor: 0, entries: page.entries, next: page.next });
+                        cx.focus(FocusClass::Modal);
+                    }
+                },
+            },
             Input::Tick { .. } => if std::mem::take(&mut self.refresh) && cx.core.interactive { self.request(Request::ListSecrets, cx); },
             Input::Lifecycle(Lifecycle::Prompts(value)) => if let Some(rows) = value["secrets"].as_array() {
                 self.requests.clear();
                 for row in rows { if let Ok(event) = ::secrets::SecretsEvent::deserialize(row) { self.event(event, cx); } }
             },
             Input::Lifecycle(Lifecycle::CommandFailed(_)) => self.awaiting = false,
-            Input::Lifecycle(Lifecycle::FocusLost) => { self.awaiting = false; self.menu = None; self.prompt = None; }
-            Input::Lifecycle(Lifecycle::SessionReset) => { self.awaiting = false; self.menu = None; self.prompt = None; self.requests.clear(); }
+            Input::Lifecycle(Lifecycle::FocusLost) => { self.awaiting = false; self.menu = None; self.prompt = None; self.login = None; }
+            Input::Lifecycle(Lifecycle::SessionReset) => { self.awaiting = false; self.menu = None; self.prompt = None; self.login = None; self.requests.clear(); }
             Input::Lifecycle(Lifecycle::EngineChanged | Lifecycle::Resync) => {
                 self.awaiting = false; self.refresh = self.secrets.is_some();
+                if matches!(input, Input::Lifecycle(Lifecycle::EngineChanged)) { self.unlocks.clear(); self.login = None; }
                 if self.menu.is_some() || self.prompt.is_some() { cx.focus(FocusClass::Modal); }
             }
             _ => {}
         }
     }
-    fn captures(&self, class: FocusClass) -> bool { class == FocusClass::Secret && !self.requests.is_empty() }
+    fn captures(&self, class: FocusClass) -> bool { class == FocusClass::Secret && !(self.requests.is_empty() && self.unlocks.is_empty()) }
     fn editor(&self) -> Option<Editor> {
+        if let Some(u) = self.unlocks.front() {
+            return Some(Editor { hint: format!("unlock {} ({})  master password  (esc cancels)", u.target(), u.account), masked: true, submit_empty: false });
+        }
         if let Some(r) = self.requests.front() {
             return Some(match r.field() {
                 Some(f) => Editor { hint: format!("{}  {}  ({}/{}; esc declines)", f.label, f.name, r.values.len() + 1, r.fields.len()), masked: f.masked, submit_empty: false },
@@ -336,14 +852,29 @@ impl Component for Secrets {
             });
         }
         let prompt = self.prompt.as_ref()?;
-        Some(Editor { hint: prompt.hint(), masked: prompt.masked(), submit_empty: matches!(prompt, Prompt::Note { .. }) })
+        Some(Editor { hint: prompt.hint(), masked: prompt.masked(), submit_empty: prompt.submit_empty() })
     }
     fn view(&self, at: Surface<'_>, vc: &ViewCx<'_>) -> Option<View> {
         match at {
+            // §9.3: the unlock modal reuses the request modal's frame.
+            Surface::Prompt(FocusClass::Secret) if !self.unlocks.is_empty() => {
+                let u = self.unlocks.front()?;
+                let head = format!("unlock {} ({})", u.target(), u.account);
+                let reason = u.reason.clone();
+                Some(View::IntrinsicElement { element: element! {
+                    BoxView(border_style: BorderStyle::Double, border_color: FAIENCE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+                        Text(content: head, weight: Weight::Bold)
+                        Text(content: reason, color: BONE_DIM, wrap: TextWrap::Wrap)
+                        Text(content: "master password · ••••• below · [⏎] unlock  [esc] cancel", color: FAIENCE)
+                    }
+                }.into_any(), rows: 0, replace: false })
+            }
             Surface::Prompt(FocusClass::Secret) => {
                 let r = self.requests.front()?;
                 let head = r.note.clone();
+                let to = r.destination.as_ref().map(destination_line).unwrap_or_default();
                 let step = match r.field() {
+                    Some(f) if r.destination.as_ref().is_some_and(|d| !d.destination.keep_local) => format!("{} ({})", f.label, f.name),
                     Some(f) => {
                         let version = f.current.map_or_else(|| "new secret".to_owned(), |v| format!("adds v{}; v{v} stays as {{{{secret:{}:-1}}}}", v + 1, f.name));
                         format!("{} ({}) · {version}", f.label, f.name)
@@ -362,19 +893,28 @@ impl Component for Secrets {
                         None => "expiry · ⏎ keeps it until you delete it".to_owned(),
                     },
                 };
-                let keys = if r.field().is_some() { "type it below · [⏎] next  [esc] decline" } else { "30m · 2h · 3d · YYYY-MM-DD HH:MM · [⏎] store  [esc] decline" };
+                let keys = match (r.field().is_some(), r.expiry_step() || r.values.len() + 1 < r.fields.len()) {
+                    (true, true) => "type it below · [⏎] next  [esc] decline",
+                    (true, false) => "type it below · [⏎] store  [esc] decline",
+                    (false, _) => "30m · 2h · 3d · YYYY-MM-DD HH:MM · [⏎] store  [esc] decline",
+                };
                 Some(View::IntrinsicElement { element: element! {
                     BoxView(border_style: BorderStyle::Double, border_color: FAIENCE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                         Text(content: "secret requested", weight: Weight::Bold)
                         Text(content: head, color: FAIENCE, wrap: TextWrap::Wrap)
+                        #((!to.is_empty()).then(|| element!(Text(content: to.clone(), color: FAIENCE, wrap: TextWrap::Wrap))))
                         Text(content: step, color: BONE_DIM, wrap: TextWrap::Wrap)
                         Text(content: keys, color: FAIENCE)
                     }
                 }.into_any(), rows: 0, replace: false })
             }
             Surface::Modal => {
-                let Some(Menu::Secrets { cursor, history }) = self.menu else { return None };
-                Some(View::IntrinsicElement { element: crate::ui::menu_view(self.secrets_title(), self.secrets_rows(), history.unwrap_or(cursor), vc.width as u16, vc.height as u16, false), rows: 0, replace: false })
+                let highlighted = match &self.menu {
+                    Some(Menu::Secrets { cursor, history }) => history.unwrap_or(*cursor),
+                    Some(Menu::Browse { cursor, .. }) => *cursor,
+                    None => return None,
+                };
+                Some(View::IntrinsicElement { element: crate::ui::menu_view(self.secrets_title(), self.secrets_rows(), highlighted, vc.width as u16, vc.height as u16, false), rows: 0, replace: false })
             }
             _ => None,
         }
@@ -457,5 +997,98 @@ mod tests {
         assert_eq!(values.get("gh.pass").map(String::as_str), Some("hunter22-password"));
         assert_eq!(*at, ::secrets::expiry::parse("2030-01-01 00:00", before).unwrap().at(before));
         assert!(model.components.get::<Secrets>().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn a_request_into_bitwarden_shows_its_destination_and_skips_the_expiry() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionId::new();
+        let mut model = Model::new("model".into(), true);
+        model.components = crate::components::Registry::empty();
+        model.components.register(Secrets::default()).unwrap();
+        model.session = Some(session);
+        model.mount_components(&tx);
+        let secret = json!({"type":"SecretRequested","id":uuid::Uuid::now_v7(),"session":session,"name":"gh.token","note":"GitHub","current":null,
+            "destination":{"connection":"personal","name":"GitHub — CI","folder":"theuth","item":"login",
+                "backend":"bw","summary":"me@example.org · vault.bitwarden.com","status":{"state":"ready"}}});
+        model.apply(UiEvent::Wire(crate::components::tests::topic("secrets.events", 1, secret)));
+        let s = model.components.get::<Secrets>().unwrap();
+        let line = destination_line(s.requests.front().unwrap().destination.as_ref().unwrap());
+        assert_eq!(line, "→ bw/personal › Personal/theuth · login \"GitHub — CI\"");
+        model.component_submit("ghp_into_bitwarden");
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("answered without an expiry step") };
+        assert!(matches!(effect.request::<Request>(), Some(Request::AnswerSecret { expires_ms: None, values: Some(_), .. })));
+    }
+
+    fn conn(name: &str, backend: &str, status: ConnStatus) -> ConnInfo {
+        ConnInfo { conn: name.into(), backend: backend.into(), status, summary: "me@example.org · vault.bitwarden.com".into(),
+            ask: Default::default(), settings: Default::default() }
+    }
+
+    #[test]
+    fn connection_rows_lock_browse_and_copy_a_reference() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut model = Model::new("model".into(), true);
+        model.components = crate::components::Registry::empty();
+        model.components.register(Secrets::default()).unwrap();
+        model.mount_components(&tx);
+        let s = model.components.get_mut::<Secrets>().unwrap();
+        s.connections = vec![conn("prod", "aws", ConnStatus::Ready), conn("personal", "bw", ConnStatus::Locked)];
+        s.menu = Some(Menu::Secrets { cursor: 0, history: None });
+        let rows = s.secrets_rows();
+        assert!(rows[0].starts_with("prod · aws · ready") && rows[1].starts_with("personal · bw · locked"), "{rows:?}");
+        let key = |m: &mut Model, k| crate::model::tests::component_menu_key(m, "secrets", k);
+        key(&mut model, KeyCode::Char('l'));
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!() };
+        assert!(matches!(effect.request::<Request>(), Some(Request::Lock(c)) if c == "prod"));
+        key(&mut model, KeyCode::Enter);
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!() };
+        assert!(matches!(effect.request::<Request>(), Some(Request::Browse { conn, cursor: None }) if conn == "prod"));
+        let entry = ExtEntry { r#ref: "aws/prod/app/token".into(), name: "app/token".into(), kind: "string".into(), keys: vec![],
+            location: "eu-west-1".into(), versions: vec![], recoverable_until: None };
+        model.components.get_mut::<Secrets>().unwrap().menu = Some(Menu::Browse { conn: "prod".into(), back: 0, cursor: 0, entries: vec![entry], next: None });
+        assert!(model.components.get::<Secrets>().unwrap().secrets_rows()[0].ends_with("reveal in the desktop app"));
+        key(&mut model, KeyCode::Char('y'));
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!() };
+        assert!(matches!(effect.request::<Request>(), Some(Request::CopyRef(r)) if r == "{{secret:aws/prod/app/token}}"));
+        key(&mut model, KeyCode::Char('i'));
+        model.component_submit("app_token");
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!() };
+        assert!(matches!(effect.request::<Request>(), Some(Request::Import { conn, r#ref, name }) if conn == "prod" && r#ref == "aws/prod/app/token" && name == "app_token"));
+        // `u` on the locked Bitwarden row: a masked prompt, then `connection_unlock`.
+        model.components.get_mut::<Secrets>().unwrap().menu = Some(Menu::Secrets { cursor: 1, history: None });
+        key(&mut model, KeyCode::Char('u'));
+        assert!(model.components.get::<Secrets>().unwrap().editor().unwrap().masked);
+        model.component_submit("correct horse");
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!() };
+        assert!(matches!(effect.request::<Request>(), Some(Request::Unlock { conn, password }) if conn == "personal" && password == "correct horse"));
+    }
+
+    #[test]
+    fn bitwarden_connect_walks_password_login_with_a_second_factor() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut model = Model::new("model".into(), true);
+        model.components = crate::components::Registry::empty();
+        model.components.register(Secrets::default()).unwrap();
+        model.mount_components(&tx);
+        let mut sent = || { let Command::Component(effect) = rx.try_recv().unwrap() else { panic!() }; effect };
+        model.submit("/secrets connect bw", &tx);
+        for line in ["personal", "eu", "me@example.org", "password"] { model.component_submit(line); }
+        let effect = sent();
+        assert!(matches!(effect.request::<Request>(), Some(Request::AddConnection { conn, cfg: ConnConfig::Bw { server: BwServer::Eu, login: BwLogin::Password, .. } }) if conn == "personal"));
+        assert!(model.components.get::<Secrets>().unwrap().editor().unwrap().masked, "the master password is masked");
+        model.component_submit("master-pw");
+        let effect = sent();
+        assert!(matches!(effect.request::<Request>(), Some(Request::Login { form: LoginForm::Password { two_factor: None, .. }, .. })));
+        crate::model::tests::component_reply(&mut model, "secrets", Msg::LoggedIn { conn: "personal".into(), step: Ok(LoginStep::NeedTwoFactor { providers: vec!["authenticator".into(), "email".into()] }), connections: None });
+        model.component_submit("email");
+        model.component_submit("123456");
+        let effect = sent();
+        assert!(matches!(effect.request::<Request>(), Some(Request::Login { form: LoginForm::Password { password, two_factor: Some((p, c)), .. }, .. })
+            if password == "master-pw" && p == "email" && c == "123456"));
+        crate::model::tests::component_reply(&mut model, "secrets", Msg::LoggedIn { conn: "personal".into(), step: Ok(LoginStep::Done),
+            connections: Some(vec![conn("personal", "bw", ConnStatus::Locked)]) });
+        let s = model.components.get::<Secrets>().unwrap();
+        assert!(s.login.is_none() && matches!(s.prompt, Some(Prompt::Unlock { .. })));
     }
 }

@@ -20,7 +20,7 @@ use agent::{
 };
 use artifact::{Artifact, ArtifactShown};
 use async_trait::async_trait;
-use chat_common::{agents, secret_notice};
+use chat_common::{agents, external_secret_notice, secret_notice, unlock_notice};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -1918,14 +1918,23 @@ impl Channel {
             }
             // 37 §7: the model asked the user for a secret; say where to enter it
             // (never here). The session's thread, else the nearest bound
-            // ancestor's, else the owner DM (Ask's routing).
+            // ancestor's, else the owner DM (Ask's routing). 221 §9.4: one that
+            // stores into an external manager is answered in the app only.
             Event::Secret(secrets::SecretsEvent::Requested {
                 session,
                 name,
                 note,
+                destination,
                 ..
             }) => {
-                let md = secret_notice(&name, &note);
+                let md = match &destination {
+                    Some(d) => external_secret_notice(
+                        &name,
+                        &note,
+                        &format!("{}/{}", d.backend, d.destination.connection),
+                    ),
+                    None => secret_notice(&name, &note),
+                };
                 let target = self.bound(session).or_else(|| {
                     self.ancestors(session)
                         .into_iter()
@@ -1948,6 +1957,24 @@ impl Channel {
                             tracing::debug!(error = %e, "secret notice to the owner DM failed");
                         }
                     }
+                }
+            }
+            // 221 §9.4: an unlock card belongs to no session; the owner DM only.
+            Event::Secret(secrets::SecretsEvent::UnlockRequested {
+                conn,
+                backend,
+                account,
+                ..
+            }) => {
+                if self.approvals != ApprovalsScope::All {
+                    return;
+                }
+                let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.as_deref()) else {
+                    return;
+                };
+                let md = unlock_notice(&format!("{backend}/{conn}"), &account);
+                if let Err(e) = self.api.post_markdown(dm, None, &md).await {
+                    tracing::debug!(error = %e, "unlock notice to the owner DM failed");
                 }
             }
             Event::Secret(_) => {}
