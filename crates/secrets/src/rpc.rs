@@ -114,18 +114,21 @@ pub trait CredentialsApi {
     /// Set one harness-wide D20 key; loosening asks like `set_connection_setting`.
     #[method(name = "set_external_setting", with_extensions)]
     async fn set_external_setting(&self, key: String, value: serde_json::Value) -> RpcResult<()>;
-    /// The Secrets page's Delete (the user is the actor: no card). `id` is the entry's ref
-    /// (`aws/prod/app/x`) or its id inside the connection. `Permanent` needs
-    /// `allow_permanent_delete`.
-    #[method(name = "delete_external_secret")]
+    /// The Secrets page's Delete. `id` is the entry's ref (`aws/prod/app/x`) or its id inside the
+    /// connection. `Permanent` needs `allow_permanent_delete`. The owner's press is the consent;
+    /// any other caller with the connection's `…:delete` always ask in force gets the human-only
+    /// card `secrets.external.delete`.
+    #[method(name = "delete_external_secret", with_extensions)]
     async fn delete_external_secret(
         &self,
         conn: String,
         id: String,
         mode: DeleteMode,
     ) -> RpcResult<DeleteOutcome>;
-    /// The Secrets page's Restore of a recoverable delete.
-    #[method(name = "restore_external_secret")]
+    /// The Secrets page's Restore of a recoverable delete. A non-press caller with the
+    /// connection's `…:write` always ask in force gets the human-only card
+    /// `secrets.external.restore`.
+    #[method(name = "restore_external_secret", with_extensions)]
     async fn restore_external_secret(&self, conn: String, id: String) -> RpcResult<ExtVersion>;
     /// D25: the value at `ref` for the owner's eyes. The owner's own press only (never the
     /// internal connection, where the agent's halves live); refused with `allow_reveal` off.
@@ -149,8 +152,10 @@ pub trait CredentialsApi {
     #[method(name = "secrets_power_event")]
     async fn secrets_power_event(&self, kind: String) -> RpcResult<()>;
     /// §12.5: create a Bitwarden Send from the owner's dialog (`args` = `SendCreateArgs` without
-    /// `connection`). The user is the actor: no card.
-    #[method(name = "create_send")]
+    /// `connection`). The owner's press is the consent. Any other caller is refused while the
+    /// connection's `send_owner_only` is on, and otherwise gets the human-only card
+    /// `secrets.send.create` while the `…:send` always ask is in force.
+    #[method(name = "create_send", with_extensions)]
     async fn create_send(
         &self,
         conn: String,
@@ -159,10 +164,14 @@ pub trait CredentialsApi {
     /// §12.4: the Sends of a connection (never the link).
     #[method(name = "list_sends")]
     async fn list_sends(&self, conn: String) -> RpcResult<Vec<secrets::tools_send::SendRecord>>;
-    /// §12.4: revoke a Send.
-    #[method(name = "revoke_send")]
+    /// §12.4: revoke a Send. A non-press caller with the Send's connection `…:send` always ask
+    /// in force (or a Send this engine has no row for) gets the human-only card
+    /// `secrets.send.revoke`.
+    #[method(name = "revoke_send", with_extensions)]
     async fn revoke_send(&self, id: String) -> RpcResult<()>;
-    /// §12.5: a Send's link for the clipboard (`copy_link_needs_press`).
+    /// §12.5: a Send's link for the clipboard. Never to the internal peer (where the agent's
+    /// halves live) or a share guest; a press runs directly; any other caller gets a human-only
+    /// card while `copy_link_needs_press` is on.
     #[method(name = "copy_send_link", with_extensions)]
     async fn copy_send_link(&self, id: String) -> RpcResult<String>;
 }
@@ -214,6 +223,20 @@ fn approval_actor() -> Option<ActorRef<::tools::approval::Approval>> {
     ActorRef::<::tools::approval::Approval>::lookup(::tools::APPROVAL_ACTOR)
         .ok()
         .flatten()
+}
+
+/// Whether the always ask `secret:<backend>/<conn>:<dir>` is in force. Fail-closed: no tool
+/// registry, or a registry error, counts as asking.
+async fn always_asks(backend: &str, conn: &str, dir: ::tools::secrets::Direction) -> bool {
+    let key = ::tools::secrets::always_ask_key(backend, conn, dir);
+    match ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR) {
+        Ok(Some(reg)) => reg
+            .ask(::tools::GetAlwaysAsk { session: None })
+            .await
+            .map(|s| s.global.contains(&key))
+            .unwrap_or(true),
+        _ => true,
+    }
 }
 
 /// The registered backend of `conn`.
@@ -428,12 +451,25 @@ impl CredentialsApiServer for Server {
 
     async fn delete_external_secret(
         &self,
+        ext: &Extensions,
         conn: String,
         id: String,
         mode: DeleteMode,
     ) -> RpcResult<DeleteOutcome> {
         let b = backend(&conn).await?;
         let r = ext_ref(b.as_ref(), &id);
+        let press = human_press(ext);
+        let asks =
+            !press && always_asks(b.backend(), &conn, ::tools::secrets::Direction::Delete).await;
+        confirm_loosening(
+            approval_actor().as_ref(),
+            press,
+            asks,
+            "secrets.external.delete",
+            serde_json::json!({ "connection": conn, "id": r.id, "mode": mode }),
+        )
+        .await
+        .map_err(failed)?;
         let out = bounded(b.delete(&r, mode, None)).await?;
         let _ = secrets()?
             .tell(Audit(format!(
@@ -445,9 +481,26 @@ impl CredentialsApiServer for Server {
         Ok(out)
     }
 
-    async fn restore_external_secret(&self, conn: String, id: String) -> RpcResult<ExtVersion> {
+    async fn restore_external_secret(
+        &self,
+        ext: &Extensions,
+        conn: String,
+        id: String,
+    ) -> RpcResult<ExtVersion> {
         let b = backend(&conn).await?;
         let r = ext_ref(b.as_ref(), &id);
+        let press = human_press(ext);
+        let asks =
+            !press && always_asks(b.backend(), &conn, ::tools::secrets::Direction::Write).await;
+        confirm_loosening(
+            approval_actor().as_ref(),
+            press,
+            asks,
+            "secrets.external.restore",
+            serde_json::json!({ "connection": conn, "id": r.id }),
+        )
+        .await
+        .map_err(failed)?;
         bounded(b.restore(&r)).await
     }
 
@@ -476,19 +529,11 @@ impl CredentialsApiServer for Server {
         if r.conn != conn {
             return Err(failed(format!("{ref} is not on connection {conn}")));
         }
-        let key =
-            ::tools::secrets::always_ask_key(backend, &conn, ::tools::secrets::Direction::Read);
-        let asks = match ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR) {
-            Ok(Some(reg)) => reg
-                .ask(::tools::GetAlwaysAsk { session: None })
-                .await
-                .map(|s| s.global.contains(&key))
-                .unwrap_or(true),
-            _ => false,
-        };
+        let press = human_press(ext);
+        let asks = !press && always_asks(backend, &conn, ::tools::secrets::Direction::Read).await;
         confirm_loosening(
             approval_actor().as_ref(),
-            human_press(ext),
+            press,
             asks,
             "secrets.import",
             serde_json::json!({ "ref": r#ref, "name": name }),
@@ -531,9 +576,32 @@ impl CredentialsApiServer for Server {
 
     async fn create_send(
         &self,
+        ext: &Extensions,
         conn: String,
         args: serde_json::Value,
     ) -> RpcResult<secrets::tools_send::SendRecord> {
+        let press = human_press(ext);
+        if !press {
+            let owner_only = send(&secrets()?, ConnSettingsOf(conn.clone()))
+                .await?
+                .send_owner_only;
+            if owner_only {
+                return Err(failed(format!(
+                    "send_owner_only is on for {conn}: only the owner's own press creates a Send \
+                     (Settings › Secrets › {conn})"
+                )));
+            }
+            let asks = always_asks("bw", &conn, ::tools::secrets::Direction::Send).await;
+            confirm_loosening(
+                approval_actor().as_ref(),
+                press,
+                asks,
+                "secrets.send.create",
+                serde_json::json!({ "connection": conn, "args": args }),
+            )
+            .await
+            .map_err(failed)?;
+        }
         let cx = send_cx().await?;
         let mut args = args;
         if let Some(o) = args.as_object_mut() {
@@ -560,8 +628,30 @@ impl CredentialsApiServer for Server {
             .map_err(failed)
     }
 
-    async fn revoke_send(&self, id: String) -> RpcResult<()> {
+    async fn revoke_send(&self, ext: &Extensions, id: String) -> RpcResult<()> {
         let cx = send_cx().await?;
+        let press = human_press(ext);
+        if !press {
+            let conn = secrets::tools_send::list_records(&cx, None)
+                .await
+                .map_err(failed)?
+                .into_iter()
+                .find(|r| r.id == id || r.link_secret.as_deref() == Some(id.as_str()))
+                .map(|r| r.conn);
+            let asks = match &conn {
+                Some(c) => always_asks("bw", c, ::tools::secrets::Direction::Send).await,
+                None => true,
+            };
+            confirm_loosening(
+                approval_actor().as_ref(),
+                press,
+                asks,
+                "secrets.send.revoke",
+                serde_json::json!({ "send": id, "connection": conn }),
+            )
+            .await
+            .map_err(failed)?;
+        }
         secrets::tools_send::revoke(&cx, &id, None)
             .await
             .map(|_| ())
@@ -569,6 +659,16 @@ impl CredentialsApiServer for Server {
     }
 
     async fn copy_send_link(&self, ext: &Extensions, id: String) -> RpcResult<String> {
+        // R3: the link is a value outbound; never to the agent's halves or a share guest,
+        // whatever `copy_link_needs_press` says.
+        if ext
+            .get::<rpc_core::RpcPeer>()
+            .is_none_or(|p| p.is_internal() || p.guest().is_some())
+        {
+            return Err(failed(
+                "copy_send_link: only the owner's own app copies a Send link",
+            ));
+        }
         let a = secrets()?;
         let needs = send(&a, GetExternalSettings).await?.copy_link_needs_press;
         confirm_loosening(
