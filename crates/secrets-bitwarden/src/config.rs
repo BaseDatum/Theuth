@@ -70,6 +70,11 @@ pub struct BwConfig {
     pub write_scope: WriteScope,
     /// Every network operation's deadline (`secrets.external.timeout_secs`).
     pub timeout_secs: u64,
+    /// A Send's card is answerable only by the owner in person (D17).
+    pub send_owner_only: bool,
+    /// Seal the user key in the credential store so a restart unlocks without the master
+    /// password (D12).
+    pub remember_unlock: bool,
 }
 
 impl Default for BwConfig {
@@ -89,6 +94,8 @@ impl Default for BwConfig {
             expose_totp_seed: false,
             write_scope: WriteScope::Personal,
             timeout_secs: 20,
+            send_owner_only: true,
+            remember_unlock: false,
         }
     }
 }

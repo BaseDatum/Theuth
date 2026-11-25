@@ -70,6 +70,19 @@ fn api_refusal(e: &ApiError, file: bool) -> ExtError {
     }
 }
 
+/// A failed file upload, without the upload URL (an Azure SAS token rides in it): a server
+/// refusal keeps the server's words; transport failures are named by kind only, in the log too.
+fn upload_error(e: &UploadSendFileError) -> ExtError {
+    let kind = match e {
+        UploadSendFileError::Api(e @ ApiError::Response(_)) => return api_refusal(e, true),
+        UploadSendFileError::Api(_) => "network",
+        UploadSendFileError::Reqwest(_) => "multipart form",
+        UploadSendFileError::RenewFileUploadUrl(_) => "upload URL renewal",
+    };
+    tracing::warn!(kind, "bitwarden: Send upload failed");
+    ExtError::Network(format!("upload to Bitwarden failed ({kind})"))
+}
+
 fn rfc3339(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -168,15 +181,7 @@ impl BwBackend {
                     .await;
                 let failed = match upload {
                     Ok(Ok(())) => None,
-                    Ok(Err(e)) => Some(match e {
-                        UploadSendFileError::Api(e) => api_refusal(&e, true),
-                        e => {
-                            tracing::warn!(error = %e, "bitwarden: Send upload failed");
-                            ExtError::Network(
-                                "upload to Bitwarden failed after one URL renewal".into(),
-                            )
-                        }
-                    }),
+                    Ok(Err(e)) => Some(upload_error(&e)),
                     Err(e) => Some(e),
                 };
                 if let Some(e) = failed {
@@ -184,16 +189,20 @@ impl BwBackend {
                         .timed(sends.delete(send_id))
                         .await
                         .is_ok_and(|r| r.is_ok());
+                    // No sweeper retries a Send theuth holds no row for: name it so the user can.
                     let tail = if gone {
-                        "; the Send was deleted"
+                        "; the Send was deleted".to_owned()
                     } else {
-                        "; deleting the Send failed, it is queued for deletion"
+                        format!(
+                            "; deleting the Send failed: Send {send_id} has no file and still \
+                             exists, delete it in Bitwarden (Send tab)"
+                        )
                     };
                     return Err(match e {
                         ExtError::Network(m) => ExtError::Network(format!("{m}{tail}")),
                         ExtError::Denied(m) => ExtError::Denied(format!("{m}{tail}")),
                         ExtError::Sdk(m) => ExtError::Sdk(format!("{m}{tail}")),
-                        e => e,
+                        e => ExtError::Sdk(format!("{e}{tail}")),
                     });
                 }
                 created.send
@@ -299,10 +308,11 @@ impl BwBackend {
             .await?
             .map_err(sdk)?;
         let api = s.client.internal.get_api_configurations();
+        // The download URL is signed: no error text that could carry it.
         let resp = self
             .timed(api.identity_config.client.get(url).send())
             .await?
-            .map_err(|e| ExtError::Network(e.to_string()))?;
+            .map_err(|_| ExtError::Network("attachment download failed".into()))?;
         if !resp.status().is_success() {
             return Err(ExtError::Network(format!(
                 "attachment download answered {}",
@@ -312,7 +322,7 @@ impl BwBackend {
         let enc = self
             .timed(resp.bytes())
             .await?
-            .map_err(|e| ExtError::Network(e.to_string()))?;
+            .map_err(|_| ExtError::Network("attachment download broke off".into()))?;
         if enc.len() as u64 > max_bytes.saturating_add(1024) {
             return Err(ExtError::Denied(format!(
                 "the attachment exceeds {max_bytes} bytes"
@@ -385,6 +395,13 @@ impl SendBackend for BwBackend {
         max_bytes: u64,
     ) -> Result<(String, Zeroizing<Vec<u8>>), ExtError> {
         BwBackend::attachment_bytes(self, r, which, max_bytes).await
+    }
+
+    fn send_owner_only(&self) -> bool {
+        self.cfg
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .send_owner_only
     }
 }
 

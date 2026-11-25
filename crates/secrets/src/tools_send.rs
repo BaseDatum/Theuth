@@ -11,9 +11,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use kameo::actor::ActorRef;
@@ -132,6 +131,9 @@ pub trait SendBackend: Send + Sync {
         which: &str,
         max_bytes: u64,
     ) -> Result<(String, Zeroizing<Vec<u8>>), ExtError>;
+    /// D17 `send_owner_only` of this connection, as the gate reads it per call: only the owner,
+    /// in person, may answer a Send's card.
+    fn send_owner_only(&self) -> bool;
 }
 
 /// Everything the Send tools need.
@@ -139,20 +141,21 @@ pub trait SendBackend: Send + Sync {
 pub struct SendCx {
     /// Connections, vault, settings.
     pub ext: ExtCx,
-    /// `send_owner_only` (D17) as the gate reads it: on when any Bitwarden connection has it on.
-    /// The registrar keeps it current ([`SendCx::set_owner_only`]).
-    pub owner_only: Arc<AtomicBool>,
     /// `secret_send_create` acts on what its card showed (210 §7.3): the preview's plan per
-    /// `(session, call_id)`.
-    plans: Arc<Mutex<HashMap<(SessionId, String), Plan>>>,
+    /// `(session, call_id)`, with when it was made ([`PLAN_TTL`]).
+    plans: Arc<Mutex<HashMap<(SessionId, String), (Instant, Plan)>>>,
     /// `secrets.request_timeout_secs`, for the password card.
     pub request_timeout: Duration,
     /// `artifact:<id>` lookups; `None` = artifact sources are refused.
     pub artifacts: Option<Arc<dyn ArtifactSource>>,
 }
 
+/// How long a previewed plan waits for its call: a denied, timed out or withdrawn card never
+/// calls, so older plans are dropped at the next preview.
+const PLAN_TTL: Duration = Duration::from_secs(3600);
+
 impl SendCx {
-    /// A context; `owner_only` starts on (the default).
+    /// A context.
     pub fn new(
         ext: ExtCx,
         request_timeout: Duration,
@@ -160,16 +163,10 @@ impl SendCx {
     ) -> Self {
         Self {
             ext,
-            owner_only: Arc::new(AtomicBool::new(true)),
             plans: Arc::default(),
             request_timeout,
             artifacts,
         }
-    }
-
-    /// Update `send_owner_only` (any Bitwarden connection with it on → on).
-    pub fn set_owner_only(&self, on: bool) {
-        self.owner_only.store(on, Ordering::Relaxed);
     }
 
     fn pool(&self) -> &sqlx::SqlitePool {
@@ -293,11 +290,12 @@ enum Source {
     Local { name: String, version: u32 },
     /// An external reference (`bw/…`, `aws/…`), its version at preview time.
     External { text: String, version: String },
-    /// An absolute path, its size and mtime.
+    /// An absolute path, canonical (symlinks resolved), its size, mtime and file identity.
     Path {
         path: String,
         bytes: u64,
         mtime_ms: u64,
+        file_id: (u64, u64),
     },
     /// An artifact.
     Artifact {
@@ -371,6 +369,39 @@ struct Plan {
     link_name: String,
     link_to_agent: bool,
     max_bytes: u64,
+}
+
+/// Modification time in Unix ms (0 when unknown).
+fn mtime_ms(m: &std::fs::Metadata) -> u64 {
+    m.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// `(device, inode)`: the call reads the very file the card showed. `(0, 0)` off Unix.
+fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        (m.dev(), m.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        (0, 0)
+    }
+}
+
+/// At most `expected + 1` bytes of `f` (so a file that grew is seen without reading it whole),
+/// in one buffer that does not reallocate (the slack covers `read_to_end`'s EOF probe).
+async fn read_bounded(f: tokio::fs::File, expected: u64) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    use tokio::io::AsyncReadExt as _;
+    let cap = expected.saturating_add(1);
+    let room = usize::try_from(cap.saturating_add(64)).unwrap_or(usize::MAX);
+    let mut buf = Zeroizing::new(Vec::with_capacity(room));
+    f.take(cap).read_to_end(&mut buf).await?;
+    Ok(buf)
 }
 
 fn size(b: u64) -> String {
@@ -465,10 +496,14 @@ impl SendCx {
                 ));
             }
         }
-        if let Some(SendPassword::From { from }) = &a.password
-            && self.ext.vault.get(from, 0).is_none()
-        {
-            return Err(format!("password source {from} does not exist"));
+        if let Some(SendPassword::From { from }) = &a.password {
+            self.ext
+                .vault
+                .copy_source_allowed(from)
+                .map_err(|e| format!("password source: {e}"))?;
+            if self.ext.vault.get(from, 0).is_none() {
+                return Err(format!("password source {from} does not exist"));
+            }
         }
         if let Some(SendPassword::Ask { ask: false }) = &a.password {
             return Err("password: {\"ask\": true} or {\"from\": NAME}".into());
@@ -481,6 +516,15 @@ impl SendCx {
             return Err(format!(
                 "link_name {link_name:?} is taken or not a valid vault name"
             ));
+        }
+        if let Some(SendPassword::Ask { .. }) = &a.password {
+            let pw = format!("{link_name}-password");
+            if !crate::vault::valid_name(&pw) || self.ext.vault.get(&pw, 0).is_some() {
+                return Err(format!(
+                    "the password would be stored as {pw:?}, which is taken or not a valid vault \
+                     name; choose another link_name"
+                ));
+            }
         }
         Ok(Plan {
             conn: a.connection.clone(),
@@ -518,6 +562,10 @@ impl SendCx {
                 version,
             });
         }
+        self.ext
+            .vault
+            .copy_source_allowed(s)
+            .map_err(|e| format!("source: {e}"))?;
         let info = self
             .ext
             .vault
@@ -597,7 +645,11 @@ impl SendCx {
                 "{f}: an absolute path, artifact:<id> or bw/…#attachment:<name>"
             ));
         }
-        let meta = tokio::fs::metadata(p)
+        // The card shows (and the call reads) the real file, not a symlink's name for it.
+        let real = tokio::fs::canonicalize(p)
+            .await
+            .map_err(|e| format!("{f}: {e}"))?;
+        let meta = tokio::fs::metadata(&real)
             .await
             .map_err(|e| format!("{f}: {e}"))?;
         if !meta.is_file() {
@@ -610,16 +662,12 @@ impl SendCx {
         if meta.len() > max_bytes {
             return Err(too_big(&name, meta.len()));
         }
-        let mtime_ms = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_millis() as u64);
         Ok((
             Source::Path {
-                path: f.to_owned(),
+                path: real.to_string_lossy().into_owned(),
                 bytes: meta.len(),
-                mtime_ms,
+                mtime_ms: mtime_ms(&meta),
+                file_id: file_id(&meta),
             },
             name,
         ))
@@ -668,32 +716,36 @@ impl SendCx {
             Source::Path {
                 path,
                 bytes,
-                mtime_ms,
+                mtime_ms: m,
+                file_id: id,
             } => {
-                let meta = tokio::fs::metadata(path)
+                // Checked on the open handle, so a swap after the check cannot slip in.
+                let f = tokio::fs::File::open(path)
                     .await
                     .map_err(|e| format!("{path}: {e}"))?;
-                let m = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_millis() as u64);
-                if meta.len() != *bytes || m != *mtime_ms {
+                let meta = f.metadata().await.map_err(|e| format!("{path}: {e}"))?;
+                if meta.len() != *bytes || mtime_ms(&meta) != *m || file_id(&meta) != *id {
                     return Err(changed());
                 }
-                let b = tokio::fs::read(path)
+                let b = read_bounded(f, *bytes)
                     .await
                     .map_err(|e| format!("{path}: {e}"))?;
-                Ok(file(Zeroizing::new(b)))
+                if b.len() as u64 != *bytes {
+                    return Err(changed());
+                }
+                Ok(file(b))
             }
             Source::Artifact { path, bytes, .. } => {
-                let b = tokio::fs::read(path)
+                let f = tokio::fs::File::open(path)
+                    .await
+                    .map_err(|e| format!("artifact: {e}"))?;
+                let b = read_bounded(f, *bytes)
                     .await
                     .map_err(|e| format!("artifact: {e}"))?;
                 if b.len() as u64 != *bytes {
                     return Err(changed());
                 }
-                Ok(file(Zeroizing::new(b)))
+                Ok(file(b))
             }
             Source::Attachment { text: t, which, .. } => {
                 let (b, r) = self.ext.open(t, "read a Send's attachment").await?;
@@ -716,6 +768,10 @@ impl SendCx {
         match &plan.password {
             None => Ok(None),
             Some(SendPassword::From { from }) => {
+                self.ext
+                    .vault
+                    .copy_source_allowed(from)
+                    .map_err(|e| format!("password source: {e}"))?;
                 let v = self
                     .ext
                     .vault
@@ -808,6 +864,7 @@ pub struct SendCreateTool(pub SendCx);
 impl Tool for SendCreateTool {
     const NAME: &'static str = "secret_send_create";
     const RISK: Risk = Risk::Destructive;
+    const HUMAN_ONLY_PER_CALL: bool = true;
     const CONSUMES_SECRETS: bool = false;
     const APPROVAL_PREVIEW: bool = true;
     type Args = SendCreateArgs;
@@ -822,8 +879,20 @@ impl Tool for SendCreateTool {
             .into()
     }
 
+    /// Without arguments (tool inspection): the safe default.
     fn human_only(&self) -> bool {
-        self.0.owner_only.load(Ordering::Relaxed)
+        true
+    }
+
+    /// D17 per connection: the named connection's `send_owner_only`; an unknown or non-Send
+    /// connection keeps the safe default.
+    fn human_only_for(&self, a: &SendCreateArgs) -> bool {
+        self.0
+            .ext
+            .externals
+            .by_conn(&a.connection)
+            .and_then(|b| b.sender())
+            .is_none_or(|s| s.send_owner_only())
     }
 
     async fn approval_preview(
@@ -870,11 +939,10 @@ impl Tool for SendCreateTool {
                 format!("stored as {}", plan.link_name)
             },
         );
-        self.0
-            .plans
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert((cx.session, cx.call_id), plan);
+        let mut plans = self.0.plans.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        plans.retain(|_, (at, _)| now.duration_since(*at) < PLAN_TTL);
+        plans.insert((cx.session, cx.call_id), (now, plan));
         Ok(Some(m))
     }
 
@@ -886,7 +954,7 @@ impl Tool for SendCreateTool {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&(cx.session, cx.call_id.clone()));
         let plan = match cached {
-            Some(p) => p,
+            Some((_, p)) => p,
             None => match CURRENT_SESSION.scope(cx.session, self.0.plan(&a)).await {
                 Ok(p) => p,
                 Err(e) => return Ok(ToolOutput::err(e)),
@@ -908,8 +976,12 @@ impl SendCx {
     ) -> Result<(SendRecord, String), String> {
         let cx_ = self;
         let content = cx_.content(plan).await?;
+        // A text sent as a file reports no size: its length is the secret's.
         let (file_bytes, kind) = match &content {
-            SendContent::File { bytes, .. } => (Some(bytes.len() as u64), "file"),
+            SendContent::File { bytes, .. } if plan.source.is_file() => {
+                (Some(bytes.len() as u64), "file")
+            }
+            SendContent::File { .. } => (None, "file"),
             SendContent::Text(_) => (None, "text"),
         };
         let password = cx_.password(plan, session).await?;
@@ -999,10 +1071,11 @@ impl SendCx {
             "send.create conn=bw/{} kind={kind}{} source={} expires={} deleted={} max={} \
              password={} session={} call={}",
             plan.conn,
-            plan.file_name
-                .as_ref()
-                .map(|n| format!(" file={n} bytes={}", file_bytes.unwrap_or_default()))
-                .unwrap_or_default(),
+            match (&plan.file_name, file_bytes) {
+                (Some(n), Some(b)) => format!(" file={n} bytes={b}"),
+                (Some(n), None) => format!(" file={n}"),
+                (None, _) => String::new(),
+            },
             plan.source_text,
             created.expiration_date.as_deref().unwrap_or("-"),
             created.deletion_date,
@@ -1012,14 +1085,18 @@ impl SendCx {
             call_id,
         ))
         .await;
-        let what = match &plan.file_name {
-            Some(n) => format!(
+        let what = match (&plan.file_name, file_bytes) {
+            (Some(n), Some(b)) => format!(
                 "file Send on bw/{}: {n} ({}, from {})",
                 plan.conn,
-                size(file_bytes.unwrap_or_default()),
+                size(b),
                 plan.source_text
             ),
-            None => format!("text Send on bw/{}", plan.conn),
+            (Some(n), None) => format!(
+                "file Send on bw/{}: {n} (from {})",
+                plan.conn, plan.source_text
+            ),
+            (None, _) => format!("text Send on bw/{}", plan.conn),
         };
         let password_line = match &plan.password {
             None => String::new(),
@@ -1319,9 +1396,9 @@ impl Tool for SendListTool {
                 r.link_secret.clone().unwrap_or_else(|| r.id.clone()),
                 r.conn,
                 r.name,
-                match &r.file_name {
-                    Some(f) if r.kind == "file" =>
-                        format!("file {f} · {}", size(r.file_bytes.unwrap_or_default() as u64)),
+                match (&r.file_name, r.file_bytes) {
+                    (Some(f), Some(b)) if r.kind == "file" => format!("file {f} · {}", size(b as u64)),
+                    (Some(f), None) if r.kind == "file" => format!("file {f}"),
                     _ => r.kind.clone(),
                 },
                 r.source_ref,
@@ -1372,19 +1449,27 @@ impl Tool for SendRevokeTool {
     }
 }
 
-/// Revoke `send` (link name or Send id): delete it on Bitwarden, drop its secrets, stamp the row.
-/// Also what the owner RPC and connection removal call. A Send theuth did not make is revoked
-/// only with `manage_all_sends`.
-pub async fn revoke(cx: &SendCx, send: &str, call: Option<&ToolCx>) -> Result<String, String> {
-    let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {ROW_COLS} FROM external_sends WHERE link_secret = ? OR send_id = ? \
-         ORDER BY created_ms DESC LIMIT 1"
+/// The newest `external_sends` row named by `send`: its row id (what the Secrets page passes), its
+/// link name or its Send id; with `live`, not revoked.
+async fn find_row(pool: &sqlx::SqlitePool, send: &str, live: bool) -> Result<Option<Row>, String> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {ROW_COLS} FROM external_sends WHERE (id = ? OR link_secret = ? OR send_id = ?){} \
+         ORDER BY created_ms DESC LIMIT 1",
+        if live { " AND revoked_ms IS NULL" } else { "" }
     )))
     .bind(send)
     .bind(send)
-    .fetch_optional(cx.pool())
+    .bind(send)
+    .fetch_optional(pool)
     .await
-    .map_err(|e| format!("external_sends: {e}"))?;
+    .map_err(|e| format!("external_sends: {e}"))
+}
+
+/// Revoke `send` (row id, link name or Send id): delete it on Bitwarden, drop its secrets, stamp
+/// the row. Also what the owner RPC and connection removal call. A Send theuth did not make is
+/// revoked only with `manage_all_sends`.
+pub async fn revoke(cx: &SendCx, send: &str, call: Option<&ToolCx>) -> Result<String, String> {
+    let row = find_row(cx.pool(), send, false).await?;
     let Some(row) = row else {
         return revoke_foreign(cx, send).await;
     };
@@ -1495,15 +1580,7 @@ pub async fn revoke_all(cx: &SendCx, conn: &str) -> Vec<String> {
 /// The link of a Send theuth made, for the owner's Copy link (`copy_send_link`): only rows of
 /// `external_sends`. `None` when unknown, revoked or gone.
 pub async fn send_link(cx: &SendCx, send: &str) -> Result<Option<Zeroizing<String>>, String> {
-    let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {ROW_COLS} FROM external_sends WHERE (link_secret = ? OR send_id = ?) \
-         AND revoked_ms IS NULL ORDER BY created_ms DESC LIMIT 1"
-    )))
-    .bind(send)
-    .bind(send)
-    .fetch_optional(cx.pool())
-    .await
-    .map_err(|e| format!("external_sends: {e}"))?;
+    let row = find_row(cx.pool(), send, true).await?;
     let Some(row) = row else { return Ok(None) };
     if let Some(name) = &row.link_secret {
         return Ok(cx.ext.vault.get(name, 0));
@@ -1611,5 +1688,58 @@ mod tests {
         assert_eq!(size(512), "512 B");
         assert_eq!(size(3277), "3.2 KB");
         assert_eq!(size(3 << 20), "3.0 MB");
+    }
+
+    #[tokio::test]
+    async fn a_row_is_found_by_row_id_link_name_or_send_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = crate::Vault::open(dir.path(), crate::KeyStore::File)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO external_sends (id, conn, send_id, access_id, kind, name, source_ref, \
+             link_secret, created_ms, deletion_ms, session, call_id) \
+             VALUES ('row-1', 'p', 'send-uuid', 'acc', 'text', 'n', 'X', 'send-p-0011aabb', 1, 2, 's', 'c')",
+        )
+        .execute(vault.pool())
+        .await
+        .unwrap();
+        for key in ["row-1", "send-p-0011aabb", "send-uuid"] {
+            let r = find_row(vault.pool(), key, true).await.unwrap();
+            assert_eq!(r.map(|r| r.id).as_deref(), Some("row-1"), "{key}");
+        }
+        assert!(
+            find_row(vault.pool(), "other", false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        sqlx::query("UPDATE external_sends SET revoked_ms = 3")
+            .execute(vault.pool())
+            .await
+            .unwrap();
+        assert!(
+            find_row(vault.pool(), "row-1", true)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            find_row(vault.pool(), "row-1", false)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bounded_read_stops_one_past_the_expected_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f");
+        std::fs::write(&p, vec![7u8; 4096]).unwrap();
+        let f = tokio::fs::File::open(&p).await.unwrap();
+        assert_eq!(read_bounded(f, 100).await.unwrap().len(), 101);
+        let f = tokio::fs::File::open(&p).await.unwrap();
+        assert_eq!(read_bounded(f, 4096).await.unwrap().len(), 4096);
     }
 }
