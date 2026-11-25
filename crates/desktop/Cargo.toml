@@ -57,13 +57,14 @@ percent-encoding = "2"
 tokio = { workspace = true, features = ["net"] }
 
 # Mobile only: QR scanning for `/link` and the universal-link handoff (31 §8.2); haptics for the
-# voice-note gesture (89 VOICE-HOLD).
+# voice-note gesture (89 VOICE-HOLD); the whiteboard's native Pencil layer (218 §6, iPadOS; in-tree).
 # Direct versions: these have no other consumer, so they are not in the
 # workspace dependency table.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-barcode-scanner = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-haptics = "2"
+tauri-plugin-ink = { workspace = true }
 
 # macOS only: the meetings island (53 decision 8, 03 §1) — `NSPanel` swizzle, notch geometry,
 # screen-change notification. `objc2`/`block2` are the same line the iOS table pins.
@@ -107,7 +108,7 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSURLResponse", "NSUUID", "NSDictionary", "NSKeyValueObserving", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSError", "NSProcessInfo", "NSSet"] }
 objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "UIView", "UIScrollView", "UIWindow", "UIViewController", "UIAlertController", "UIControl", "UITextField", "UIImage", "objc2-core-foundation", "objc2-core-graphics", "block2"] }
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebsiteDataRecord", "WKNavigationDelegate", "WKNavigationAction", "WKNavigationResponse", "WKFrameInfo", "WKUIDelegate", "WKPreferences", "WKHTTPCookieStore", "WKContentWorld"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebsiteDataRecord", "WKNavigationDelegate", "WKNavigationAction", "WKNavigationResponse", "WKFrameInfo", "WKUIDelegate", "WKPreferences", "WKHTTPCookieStore", "WKContentWorld", "WKSnapshotConfiguration"] }
 # 209 §4.7 (`apple_tile.rs`): `web_view_call`'s snapshot, as on macOS; `UIImage` for its `CGImage`.
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace"] }
 png = { workspace = true }

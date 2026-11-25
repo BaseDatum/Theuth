@@ -38,7 +38,7 @@ export function describe(name: string, args: unknown): string[] {
       .split('\n')
       .map((l, i) => (i === 0 ? '$ ' : '  ') + l)
   }
-  return Object.entries(obj).map(([k, v]) => {
+  const line = (k: string, v: unknown): string => {
     if (typeof v === 'string') {
       return !v.includes('\n') && v.length <= MAX
         ? `${k}: ${v}`
@@ -46,7 +46,17 @@ export function describe(name: string, args: unknown): string[] {
     }
     const s = JSON.stringify(v)
     return s.length > MAX ? `${k}: ${s.slice(0, MAX)}…` : `${k}: ${s}`
-  })
+  }
+  // 218: a whiteboard write's `source` is an object (`{ t: "sticky", text }`): its kind on the key's line, each field
+  // indented under it, instead of one line of JSON.
+  if (name.startsWith('wb_')) {
+    return Object.entries(obj).flatMap(([k, v]) => {
+      if (typeof v !== 'object' || v === null || Array.isArray(v)) return [line(k, v)]
+      const { t, ...rest } = v as Record<string, unknown>
+      return [`${k}: ${typeof t === 'string' ? t : ''}`.trimEnd(), ...Object.entries(rest).map(([sk, sv]) => `  ${line(sk, sv)}`)]
+    })
+  }
+  return Object.entries(obj).map(([k, v]) => line(k, v))
 }
 
 /** First output line plus a `(+n lines)` tail for the rest (mirrors `tui::model::result_line`). */

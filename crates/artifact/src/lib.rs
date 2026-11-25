@@ -66,6 +66,7 @@ pub use codeview::{
 };
 pub use tileview::{
     NoteViewOpened, PtyViewOpened, ShowNoteArgs, ShowNoteTool, ShowPtyArgs, ShowPtyTool,
+    ShowWhiteboardArgs, ShowWhiteboardTool, WhiteboardViewOpened,
 };
 pub use webview::{
     ShowWebArgs, ShowWebTool, WebViewCallAnswer, WebViewCallId, WebViewCallRequested,
@@ -795,6 +796,7 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<WebViewOpened>().await?;
     rt.register_wire_event::<PtyViewOpened>().await?;
     rt.register_wire_event::<NoteViewOpened>().await?;
+    rt.register_wire_event::<WhiteboardViewOpened>().await?;
     rt.register_wire_event::<FileViewOpened>().await?;
     rt.register_wire_event::<DiffViewOpened>().await?;
     rt.register_wire_event::<preview::PagePreviewRequested>().await?;
@@ -901,6 +903,11 @@ impl runtime::Plugin for ArtifactPlugin {
                     .await;
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(tileview::ShowNoteTool {
+                        rt: rt.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(tileview::ShowWhiteboardTool {
                         rt: rt.clone(),
                     })))
                     .await;

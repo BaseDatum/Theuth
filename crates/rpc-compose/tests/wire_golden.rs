@@ -127,6 +127,8 @@ async fn legacy_event_families() {
     family::<artifact::WebViewOpened>(&rt, &mut stream, "artifact.web-view-opened").await;
     family::<artifact::PtyViewOpened>(&rt, &mut stream, "artifact.pty-view-opened").await;
     family::<artifact::NoteViewOpened>(&rt, &mut stream, "artifact.note-view-opened").await;
+    family::<artifact::WhiteboardViewOpened>(&rt, &mut stream, "artifact.whiteboard-view-opened")
+        .await;
     family::<artifact::FileViewOpened>(&rt, &mut stream, "artifact.file-view-opened").await;
     family::<artifact::DiffViewOpened>(&rt, &mut stream, "artifact.diff-view-opened").await;
     family::<artifact::preview::PagePreviewRequested>(

@@ -9,6 +9,8 @@ export const HOST_CONTEXT = 'ui/notifications/host-context-changed'
 export const SIZE_CHANGED = 'ui/notifications/size-changed'
 export const OPEN_LINK = 'ui/open-link'
 export const CONSOLE = 'theuth/notifications/console'
+/** 218 §8.7: host → page request `{ x, y }` (frame CSS px) → `{ selector, role, label, rect }` of what is there. */
+export const DESCRIBE_POINT = 'theuth/describe-point'
 
 export const CONSOLE_MAX = 20
 export const CONSOLE_CHARS = 500
@@ -98,10 +100,79 @@ if (hash && hash.indexOf('#theuth-theme=') === 0) {
   try { window.history.replaceState(null, '', window.location.pathname + window.location.search); } catch (e) {}
 }
 
+// 218 §8.7: what sits at a point — the nearest meaningful element's role, label (with an ordinal among same-role
+// siblings of a tab bar, list, menu or nav), a short CSS path and its rect. The host sanitises every field again.
+var IMPLICIT = { A: 'link', BUTTON: 'button', SELECT: 'combobox', TEXTAREA: 'textbox', IMG: 'img', SVG: 'img', CANVAS: 'img',
+  NAV: 'navigation', UL: 'list', OL: 'list', MENU: 'list', LI: 'listitem', TABLE: 'table', TR: 'row', TD: 'cell', TH: 'columnheader',
+  HEADER: 'banner', FOOTER: 'contentinfo', MAIN: 'main', FORM: 'form', SECTION: 'region', ASIDE: 'complementary', DIALOG: 'dialog',
+  SUMMARY: 'button', OPTION: 'option', LABEL: 'label', P: 'paragraph', FIGURE: 'figure', VIDEO: 'video', AUDIO: 'audio' };
+var INPUTS = { checkbox: 'checkbox', radio: 'radio', button: 'button', submit: 'button', reset: 'button', image: 'button', range: 'slider' };
+var GROUPS = { tablist: 'tab bar', list: 'list', navigation: 'navigation', menu: 'menu', menubar: 'menu bar', listbox: 'list', tree: 'tree', toolbar: 'toolbar', radiogroup: 'options' };
+var attr = function (el, n) { return el && el.getAttribute ? el.getAttribute(n) || '' : ''; };
+var tagOf = function (el) { return String(el && el.tagName || '').toUpperCase(); };
+var roleOf = function (el) {
+  var r = attr(el, 'role').split(' ')[0], t = tagOf(el);
+  if (r) return r;
+  if (t === 'INPUT') return INPUTS[(attr(el, 'type') || 'text').toLowerCase()] || 'textbox';
+  if (/^H[1-6]$/.test(t)) return 'heading';
+  return IMPLICIT[t] || 'generic';
+};
+var squash = function (s) { return String(s || '').replace(/\\s+/g, ' ').trim().slice(0, 200); };
+var ownLabel = function (el) { return squash(attr(el, 'aria-label') || attr(el, 'alt') || attr(el, 'title')); };
+var kids = function (el) { var out = [], c = el && el.children, i; if (c) for (i = 0; i < c.length; i++) out.push(c[i]); return out; };
+var ordinal = function (el) {
+  var item = el, depth, parent, group, same, i;
+  for (depth = 0; item && depth < 4; depth++, item = item.parentElement) {
+    parent = item.parentElement;
+    group = parent && GROUPS[roleOf(parent)];
+    if (!group) continue;
+    same = kids(parent).filter(function (k) { return roleOf(k) === roleOf(item); });
+    if (same.length < 2) return '';
+    for (i = 0; i < same.length; i++) if (same[i] === item) return (ownLabel(parent) || group) + ', item ' + (i + 1);
+    return '';
+  }
+  return '';
+};
+var selectorOf = function (el) {
+  var parts = [], part, cls, same, i;
+  for (i = 0; el && el.tagName && i < 4 && tagOf(el) !== 'HTML'; i++, el = el.parentElement) {
+    if (/^[A-Za-z][\\w-]*$/.test(el.id || '')) { parts.unshift('#' + el.id); break; }
+    part = String(el.tagName).toLowerCase();
+    cls = String(attr(el, 'class')).split(/\\s+/)[0];
+    if (/^[A-Za-z_][\\w-]*$/.test(cls)) part += '.' + cls;
+    same = el.parentElement ? kids(el.parentElement).filter(function (k) { return k.tagName === el.tagName; }) : [];
+    if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(el) + 1) + ')';
+    parts.unshift(part);
+  }
+  return parts.join(' '); // descendant combinators: the host strips '>' with the other markup characters
+};
+var describe = function (x, y) {
+  if (typeof document.elementFromPoint !== 'function' || !isFinite(x) || !isFinite(y)) return null;
+  var hit = document.elementFromPoint(x, y), el = hit, depth;
+  if (!hit) return null;
+  for (depth = 0; el && depth < 6 && tagOf(el) !== 'BODY'; depth++, el = el.parentElement)
+    if (roleOf(el) !== 'generic' || ownLabel(el)) break;
+  if (!el || tagOf(el) === 'BODY' || depth >= 6) el = hit;
+  var n = ordinal(el);
+  var label = ownLabel(el) || squash(el.innerText || el.textContent || attr(el, 'placeholder') || attr(el, 'value'));
+  var b = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: x, top: y, width: 0, height: 0 };
+  return {
+    selector: selectorOf(el),
+    role: roleOf(el),
+    label: n ? (label ? label + ' (' + n + ')' : n) : label,
+    rect: [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]
+  };
+};
+
 window.addEventListener('message', function (ev) {
   var d = ev.data;
   if (!d || d.jsonrpc !== '2.0') return;
   if (d.method === ${JSON.stringify(HOST_CONTEXT)}) apply(d.params);
+  else if (d.method === ${JSON.stringify(DESCRIBE_POINT)} && (typeof d.id === 'string' || typeof d.id === 'number')) {
+    var p = d.params || {}, out = null;
+    try { out = describe(Number(p.x), Number(p.y)); } catch (e) {}
+    post({ jsonrpc: '2.0', id: d.id, result: out });
+  }
 });
 
 var last = 0;
@@ -246,4 +317,58 @@ export function readConsole(data: unknown): ConsoleLine | null {
   const p = d?.params as { level?: unknown; text?: unknown } | undefined
   if (!p || typeof p.text !== 'string' || !LEVELS.includes(p.level as ConsoleLevel)) return null
   return { level: p.level as ConsoleLevel, text: p.text.slice(0, CONSOLE_CHARS) }
+}
+
+export type PointDescription = { selector: string; role: string; label: string; rect: [number, number, number, number] }
+
+/** Untrusted page text (design §6.5) → one line: newlines and `[ ] < >` gone, whitespace collapsed, cut to `max`. */
+const clean = (v: unknown, max: number): string =>
+  typeof v === 'string' ? v.replace(/[[\]<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, max).trim() : ''
+
+/** A `describe-point` result as the host keeps it: label/selector ≤ 120, role ≤ 24; `null` unless the rect is 4 finite numbers. */
+export function sanitizeDescription(raw: unknown): PointDescription | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as { selector?: unknown; role?: unknown; label?: unknown; rect?: unknown }
+  if (!Array.isArray(r.rect) || r.rect.length !== 4 || !r.rect.every((n) => typeof n === 'number' && Number.isFinite(n))) return null
+  const [x = 0, y = 0, w = 0, h = 0] = r.rect as number[]
+  return { selector: clean(r.selector, 120), role: clean(r.role, 24), label: clean(r.label, 120), rect: [x, y, w, h] }
+}
+
+let describeSeq = 0
+
+/**
+ * 218 §8.7: ask `frame`'s page what sits at `(x, y)` (frame CSS px). The reply is matched by id and by source (the
+ * frame is an opaque origin, so `'*'` both ways); `null` on timeout, refusal or no `contentWindow`. Never throws.
+ */
+export function describePoint(frame: HTMLIFrameElement, x: number, y: number, timeoutMs = 300): Promise<PointDescription | null> {
+  const { promise, resolve } = Promise.withResolvers<PointDescription | null>()
+  let target: Window | null = null
+  try {
+    target = frame.contentWindow
+  } catch {
+    target = null
+  }
+  if (!target || typeof window === 'undefined' || !Number.isFinite(x) || !Number.isFinite(y)) {
+    resolve(null)
+    return promise
+  }
+  const id = `theuth-describe-${++describeSeq}`
+  const done = (v: PointDescription | null) => {
+    window.removeEventListener('message', onMessage)
+    clearTimeout(timer)
+    resolve(v)
+  }
+  const onMessage = (ev: MessageEvent) => {
+    const d = ev.data as { jsonrpc?: unknown; id?: unknown; result?: unknown } | null
+    if (ev.source !== target || !d || typeof d !== 'object' || d.jsonrpc !== '2.0' || d.id !== id) return
+    done(sanitizeDescription(d.result))
+  }
+  window.addEventListener('message', onMessage)
+  const timer = setTimeout(() => done(null), timeoutMs)
+  try {
+    target.postMessage({ jsonrpc: '2.0', id, method: DESCRIBE_POINT, params: { x, y } }, '*')
+  } catch {
+    done(null)
+  }
+  return promise
 }

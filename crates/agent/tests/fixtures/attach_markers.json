@@ -234,6 +234,12 @@
       "body": "summarise section 4"
     },
     {
+      "name": "whiteboard",
+      "input": "[attached whiteboard 01a2f3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b \"Attention inbox\" · 5 cards]\nwhich mock should we keep?",
+      "refs": [{"kind": "whiteboard", "id": "01a2f3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b", "title": "Attention inbox", "meta": "5 cards"}],
+      "body": "which mock should we keep?"
+    },
+    {
       "name": "empty text",
       "input": "",
       "refs": [],

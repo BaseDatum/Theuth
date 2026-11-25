@@ -51,6 +51,8 @@ test('sectionOf lights the right sidebar row', () => {
   expect(sectionOf('/skills/pdf')).toBe('library')
   expect(sectionOf('/tools')).toBeNull()
   expect(sectionOf('/secrets')).toBe('library')
+  expect(sectionOf('/whiteboards')).toBe('whiteboards')
+  expect(sectionOf('/whiteboards/abc')).toBe('whiteboards')
   expect(sectionOf('/meetings/new')).toBe('meeting')
   expect(sectionOf('/c/abc')).toBeNull()
   expect(sectionOf('/settings')).toBe('settings')

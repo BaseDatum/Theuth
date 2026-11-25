@@ -41,6 +41,16 @@ test('null is empty, a non-object is its json', () => {
   expect(describe('t', [1, 2])).toEqual(['[1,2]'])
 })
 
+test('a whiteboard source is its kind and indented fields, not json', () => {
+  expect(describe('wb_place', { kind: 'sticky', title: 'From the agent', source: { t: 'sticky', text: 'Placed by the agent\nline 2' } })).toEqual([
+    'kind: sticky',
+    'title: From the agent',
+    'source: sticky',
+    '  text: (2 lines, 26 bytes)',
+  ])
+  expect(describe('wb_update', { card: 'c3', source: { t: 'excerpt', path: 'a.ts', start: 1, end: 4 } })).toEqual(['card: c3', 'source: excerpt', '  path: a.ts', '  start: 1', '  end: 4'])
+})
+
 test('resultLine', () => {
   expect(resultLine('ok')).toBe('ok')
   expect(resultLine('a\nb\nc\n')).toBe('a  (+2 lines)')

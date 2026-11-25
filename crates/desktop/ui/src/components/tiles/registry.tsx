@@ -12,6 +12,7 @@ import {
   MousePointer2,
   Network,
   NotebookText,
+  Presentation,
   ScrollText,
   Sparkles,
   SquareTerminal,
@@ -38,6 +39,7 @@ import { skillTile } from './kinds/skill'
 import { tasksGraphTile } from './kinds/tasksGraph'
 import { jobTerminalTile, terminalsTile } from './kinds/terminals'
 import { vmTile } from './kinds/vm'
+import { whiteboardTile } from './kinds/whiteboard'
 
 /** Every generic tile kind, by the `kind` its opener passes to `openTile`. */
 export const TILE_KINDS: Record<string, TileKind> = {
@@ -58,6 +60,7 @@ export const TILE_KINDS: Record<string, TileKind> = {
   'tasks-graph': tasksGraphTile,
   terminals: terminalsTile,
   vm: vmTile,
+  whiteboard: whiteboardTile,
 }
 
 /** Each kind's Trellis tab icon (the tab bar shows while views share a panel, e.g. tiles of one kind). */
@@ -79,6 +82,7 @@ export const TILE_ICONS: Record<string, LucideIcon> = {
   'tasks-graph': Network,
   terminals: SquareTerminal,
   vm: Monitor,
+  whiteboard: Presentation,
 }
 
 /** The `tile:<id>` leaf's body: its kind draws it; a tile whose payload is gone (or whose kind this build lacks) says so

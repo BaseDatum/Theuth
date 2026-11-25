@@ -55,6 +55,8 @@ import { useConnection } from "@/store/connection";
 import { type Entry, type SessionsApi, useSessions } from "@/store/sessions";
 import { partialShow } from "@/store/reduce";
 import { ChatPicker } from "@/components/notes/ChatPicker";
+import { AddToWhiteboard } from "@/components/whiteboard/AddToWhiteboard";
+import { cardFromArtifact } from "@/components/whiteboard/place-elsewhere";
 import { attachTo, toRef } from "@/lib/attach";
 import { Img } from "./Attachments";
 import { RemoveButton } from "./MessageAssistant";
@@ -203,9 +205,20 @@ export function ArtifactMenu({
   const local = isLocal(active);
   // 66 §7.8: the card's artifact as a reference, into this session's composer or a picked chat.
   const [attaching, setAttaching] = useState(false);
+  // 218: the artifact as a card on a picked whiteboard (pages, images, text as an excerpt, mermaid as a diagram).
+  const [boarding, setBoarding] = useState(false);
+  const boardable = a.kind === "html" || a.kind === "image" || a.kind === "svg" || a.kind === "markdown" || a.kind === "text" || a.kind === "csv" || a.kind === "mermaid";
   return (
     <>
     {attaching && <ChatPicker open onOpenChange={setAttaching} item={toRef({ kind: "artifact", artifact: a })} />}
+    {boarding && (
+      <AddToWhiteboard
+        open
+        onOpenChange={setBoarding}
+        name={a.title || a.name}
+        card={() => cardFromArtifact(a, () => readText(api, a.path, privateOwner(a.session)))}
+      />
+    )}
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
@@ -255,6 +268,7 @@ export function ArtifactMenu({
           Attach to this chat
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => setAttaching(true)}>Attach to chat…</DropdownMenuItem>
+        {boardable && <DropdownMenuItem onSelect={() => setBoarding(true)}>Add to whiteboard…</DropdownMenuItem>}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={() => void navigator.clipboard.writeText(a.path)}

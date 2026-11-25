@@ -29,12 +29,13 @@ use chunk::Block;
 use db::{BlockRow, Index, Lexical, State, VecRow};
 
 /// Kinds the index walks (§7.1).
-pub const INDEXABLE: [DocKind; 5] = [
+pub const INDEXABLE: [DocKind; 6] = [
     DocKind::Note,
     DocKind::Board,
     DocKind::MeetingNote,
     DocKind::Source,
     DocKind::Notebook,
+    DocKind::Whiteboard,
 ];
 
 /// `nb_vec` dims when no model is installed (gte-modernbert-base's).
@@ -371,8 +372,20 @@ impl Indexer {
     }
 
     /// The top-level blocks of `doc` in order: ids and heading levels from the outline, full
-    /// text from the annotated markdown.
-    async fn blocks(&self, doc: &DocId) -> anyhow::Result<Vec<Block>> {
+    /// text from the annotated markdown. A whiteboard (218 §3.3) has no blocks: its outline's item
+    /// lines are the blocks, keyed by alias, never through the helper.
+    async fn blocks(&self, doc: &DocId, kind: DocKind) -> anyhow::Result<Vec<Block>> {
+        if kind == DocKind::Whiteboard {
+            let o = self
+                .actor
+                .ask(crate::wb::WbOutline {
+                    doc: doc.clone(),
+                    frame: None,
+                })
+                .await
+                .map_err(anyhow::Error::msg)?;
+            return Ok(whiteboard_blocks(&o.text));
+        }
         let outline = self
             .actor
             .ask(Outline {
@@ -408,7 +421,7 @@ impl Indexer {
             model.as_ref().map_or(DEFAULT_DIMS, |m| m.dims),
         )
         .await?;
-        let blocks = self.blocks(doc).await?;
+        let blocks = self.blocks(doc, meta.kind).await?;
         let texts: Vec<String> = blocks.iter().map(|b| b.text.clone()).collect();
         let shas: Vec<String> = texts.iter().map(|t| sha256(t.as_bytes())).collect();
         let content_sha = sha256(format!("{}\n{}", meta.title, shas.join("\n")).as_bytes());
@@ -805,6 +818,26 @@ fn strip_marks(s: &str) -> (String, Vec<MatchRange>) {
         }
     }
     (out, ranges)
+}
+
+/// A whiteboard outline's item lines as blocks (218 §3.3): frames, cards, links and marks, keyed
+/// by alias; row lines, `loose` and the wrapper are layout, not text.
+fn whiteboard_blocks(outline: &str) -> Vec<Block> {
+    outline
+        .lines()
+        .filter(|l| !l.starts_with('<') && !l.starts_with(' ') && !l.starts_with('…') && *l != "loose")
+        .filter_map(|l| {
+            let id = match l.strip_prefix("frame ") {
+                Some(rest) => rest.split(' ').next()?,
+                None => l.split(' ').next()?,
+            };
+            Some(Block {
+                id: id.to_owned(),
+                heading: l.starts_with("frame ").then_some(2),
+                text: l.to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// Join the outline's top-level blocks with the annotated markdown (`<!-- id -->` or

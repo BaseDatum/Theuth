@@ -13,9 +13,9 @@ import type { SearchHit } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 
-export type Kind = 'note' | 'knowledge' | 'artifact' | 'session' | 'meeting' | 'notebook' | 'source'
+export type Kind = 'note' | 'knowledge' | 'artifact' | 'session' | 'meeting' | 'notebook' | 'source' | 'whiteboard'
 
-export const KINDS: readonly Kind[] = ['note', 'knowledge', 'artifact', 'session', 'meeting', 'notebook', 'source']
+export const KINDS: readonly Kind[] = ['note', 'knowledge', 'artifact', 'session', 'meeting', 'notebook', 'source', 'whiteboard']
 
 export type AttachRef = {
   kind: Kind
@@ -36,6 +36,7 @@ export const KIND_LABEL: Record<Kind, string> = {
   meeting: 'Meeting',
   notebook: 'Notebook',
   source: 'Source',
+  whiteboard: 'Whiteboard',
 }
 
 /** Identity for dedupe: the same thing attached twice is one chip. */
@@ -52,7 +53,7 @@ export function marker(ref: AttachRef): string {
   return `[attached ${ref.kind} ${ref.id} "${title}"${ref.meta ? ` · ${ref.meta}` : ''}]`
 }
 
-const ATTACHED = /^\[attached (note|knowledge|artifact|session|meeting|notebook|source) (\S+) "((?:[^"\\]|\\.)*)"(?: · ([^\]]*))?\]$/
+const ATTACHED = /^\[attached (note|knowledge|artifact|session|meeting|notebook|source|whiteboard) (\S+) "((?:[^"\\]|\\.)*)"(?: · ([^\]]*))?\]$/
 /** 59 §5.4's spelling: `[doc <DocId> "<title>"]` is a note, `[doc knowledge:<id> "<title>"]` a knowledge concept. */
 const LEGACY = /^\[doc (\S+) "((?:[^"\\]|\\.)*)"\]$/
 
@@ -90,6 +91,14 @@ export function compose(refs: readonly AttachRef[], body: string): string {
   return refs.length > 0 ? `${refs.map(marker).join('\n')}\n${body}` : body
 }
 
+/** 218 §1: a whiteboard's marker meta is its card count — `1 card`, `5 cards`. */
+export const cardsLabel = (cards: number): string => `${cards} ${cards === 1 ? 'card' : 'cards'}`
+
+/** `[attached whiteboard <DocId> "<title>" · N cards]` as a reference. */
+export function whiteboardRef(doc: string, title: string, cards: number): AttachRef {
+  return { kind: 'whiteboard', id: doc, title: title || 'Untitled whiteboard', meta: cardsLabel(cards) }
+}
+
 // ---- §8 naming --------------------------------------------------------------------------------------------------
 
 /** An artifact row from either shape the UI sees: `list_artifacts` (numbers) or a search hit (the ts-rs binding, bigints). */
@@ -106,6 +115,8 @@ export type Source =
   | { kind: 'meeting'; meeting: MeetingSummary }
   | { kind: 'notebook'; hit: BlockHit }
   | { kind: 'source'; hit: BlockHit }
+  /** `cards` when the caller knows the count (the marker's meta), else the row reads `whiteboard · updated …`. */
+  | { kind: 'whiteboard'; doc: DocSummary; cards?: number }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
@@ -163,6 +174,8 @@ export function title(src: Source, now: Date = new Date()): string {
     case 'notebook':
     case 'source':
       return src.hit.title || `Untitled ${src.kind}`
+    case 'whiteboard':
+      return src.doc.title || 'Untitled whiteboard'
   }
 }
 
@@ -198,6 +211,10 @@ export function subtitle(src: Source, now: Date = new Date()): string {
     case 'notebook':
     case 'source':
       return [src.kind, src.hit.heading, src.hit.block ? `#${src.hit.block}` : ''].filter(Boolean).join(' · ')
+    case 'whiteboard':
+      return src.cards !== undefined
+        ? cardsLabel(src.cards)
+        : `whiteboard · updated ${date(Number(src.doc.updated_ms), now)}`
   }
 }
 
@@ -217,6 +234,8 @@ export function idOf(src: Source): string {
     case 'notebook':
     case 'source':
       return src.hit.doc
+    case 'whiteboard':
+      return src.doc.id
   }
 }
 

@@ -85,6 +85,8 @@ pub fn install_insight_hooks(rt: &Runtime) {
         }),
         skill: Arc::new(move |name| agent::notebook_context::insight_skill(&dir, name)),
     });
+    // 218 §5 (c): `wb_*` writes, `wb_create` and `show_whiteboard` bind their session.
+    agent::whiteboards::install_hooks();
 }
 
 /// A `ContextLevel` as its wire word (`off | mention | summary | full`) — what the agent's store keeps.

@@ -24,6 +24,7 @@ import { Route as NotesRouteImport } from './routes/notes'
 import { Route as OverlayRouteImport } from './routes/overlay'
 import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as ToolsRouteImport } from './routes/tools'
+import { Route as WhiteboardsRouteImport } from './routes/whiteboards'
 import { Route as AgentsIndexRouteImport } from './routes/agents.index'
 import { Route as AgentsNewRouteImport } from './routes/agents.new'
 import { Route as ArtifactsCallIdRouteImport } from './routes/artifacts.$callId'
@@ -55,6 +56,7 @@ import { Route as TasksIdRouteImport } from './routes/tasks.$id'
 import { Route as TasksGraphRouteImport } from './routes/tasks.graph'
 import { Route as VmNameRouteImport } from './routes/vm.$name'
 import { Route as WebIdRouteImport } from './routes/web.$id'
+import { Route as WhiteboardsIdRouteImport } from './routes/whiteboards_.$id'
 import { Route as AgentsNameIndexRouteImport } from './routes/agents.$name.index'
 import { Route as AgentsNameTabRouteImport } from './routes/agents.$name.$tab'
 import { Route as CodemapSessionRootRouteImport } from './routes/codemap.$session.$root'
@@ -137,6 +139,11 @@ const SecretsRoute = SecretsRouteImport.update({
 const ToolsRoute = ToolsRouteImport.update({
   id: '/tools',
   path: '/tools',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WhiteboardsRoute = WhiteboardsRouteImport.update({
+  id: '/whiteboards',
+  path: '/whiteboards',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AgentsIndexRoute = AgentsIndexRouteImport.update({
@@ -294,6 +301,11 @@ const WebIdRoute = WebIdRouteImport.update({
   path: '/web/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WhiteboardsIdRoute = WhiteboardsIdRouteImport.update({
+  id: '/whiteboards_/$id',
+  path: '/whiteboards/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AgentsNameIndexRoute = AgentsNameIndexRouteImport.update({
   id: '/agents/$name/',
   path: '/agents/$name/',
@@ -351,6 +363,7 @@ export interface FileRoutesByFullPath {
   '/overlay': typeof OverlayRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
+  '/whiteboards': typeof WhiteboardsRoute
   '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/ask/$session': typeof AskSessionRoute
@@ -375,6 +388,7 @@ export interface FileRoutesByFullPath {
   '/tasks/graph': typeof TasksGraphRoute
   '/vm/$name': typeof VmNameRoute
   '/web/$id': typeof WebIdRoute
+  '/whiteboards/$id': typeof WhiteboardsIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
@@ -406,6 +420,7 @@ export interface FileRoutesByTo {
   '/overlay': typeof OverlayRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
+  '/whiteboards': typeof WhiteboardsRoute
   '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/ask/$session': typeof AskSessionRoute
@@ -430,6 +445,7 @@ export interface FileRoutesByTo {
   '/tasks/graph': typeof TasksGraphRoute
   '/vm/$name': typeof VmNameRoute
   '/web/$id': typeof WebIdRoute
+  '/whiteboards/$id': typeof WhiteboardsIdRoute
   '/agents': typeof AgentsIndexRoute
   '/attention': typeof AttentionIndexRoute
   '/meetings': typeof MeetingsIndexRoute
@@ -463,6 +479,7 @@ export interface FileRoutesById {
   '/overlay': typeof OverlayRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
+  '/whiteboards': typeof WhiteboardsRoute
   '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/ask_/$session': typeof AskSessionRoute
@@ -487,6 +504,7 @@ export interface FileRoutesById {
   '/tasks/graph': typeof TasksGraphRoute
   '/vm/$name': typeof VmNameRoute
   '/web/$id': typeof WebIdRoute
+  '/whiteboards_/$id': typeof WhiteboardsIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
@@ -521,6 +539,7 @@ export interface FileRouteTypes {
     | '/overlay'
     | '/secrets'
     | '/tools'
+    | '/whiteboards'
     | '/agents/new'
     | '/artifacts/$callId'
     | '/ask/$session'
@@ -545,6 +564,7 @@ export interface FileRouteTypes {
     | '/tasks/graph'
     | '/vm/$name'
     | '/web/$id'
+    | '/whiteboards/$id'
     | '/agents/'
     | '/attention/'
     | '/meetings/'
@@ -576,6 +596,7 @@ export interface FileRouteTypes {
     | '/overlay'
     | '/secrets'
     | '/tools'
+    | '/whiteboards'
     | '/agents/new'
     | '/artifacts/$callId'
     | '/ask/$session'
@@ -600,6 +621,7 @@ export interface FileRouteTypes {
     | '/tasks/graph'
     | '/vm/$name'
     | '/web/$id'
+    | '/whiteboards/$id'
     | '/agents'
     | '/attention'
     | '/meetings'
@@ -632,6 +654,7 @@ export interface FileRouteTypes {
     | '/overlay'
     | '/secrets'
     | '/tools'
+    | '/whiteboards'
     | '/agents/new'
     | '/artifacts/$callId'
     | '/ask_/$session'
@@ -656,6 +679,7 @@ export interface FileRouteTypes {
     | '/tasks/graph'
     | '/vm/$name'
     | '/web/$id'
+    | '/whiteboards_/$id'
     | '/agents/'
     | '/attention/'
     | '/meetings/'
@@ -689,6 +713,7 @@ export interface RootRouteChildren {
   OverlayRoute: typeof OverlayRoute
   SecretsRoute: typeof SecretsRoute
   ToolsRoute: typeof ToolsRoute
+  WhiteboardsRoute: typeof WhiteboardsRoute
   AgentsNewRoute: typeof AgentsNewRoute
   AskSessionRoute: typeof AskSessionRoute
   CSessionRoute: typeof CSessionRoute
@@ -708,6 +733,7 @@ export interface RootRouteChildren {
   TasksGraphRoute: typeof TasksGraphRoute
   VmNameRoute: typeof VmNameRoute
   WebIdRoute: typeof WebIdRoute
+  WhiteboardsIdRoute: typeof WhiteboardsIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
   RoutinesIndexRoute: typeof RoutinesIndexRoute
@@ -829,6 +855,13 @@ declare module '@tanstack/react-router' {
       path: '/tools'
       fullPath: '/tools'
       preLoaderRoute: typeof ToolsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/whiteboards': {
+      id: '/whiteboards'
+      path: '/whiteboards'
+      fullPath: '/whiteboards'
+      preLoaderRoute: typeof WhiteboardsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/agents/': {
@@ -1048,6 +1081,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WebIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/whiteboards_/$id': {
+      id: '/whiteboards_/$id'
+      path: '/whiteboards/$id'
+      fullPath: '/whiteboards/$id'
+      preLoaderRoute: typeof WhiteboardsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/agents/$name/': {
       id: '/agents/$name/'
       path: '/agents/$name'
@@ -1175,6 +1215,7 @@ const rootRouteChildren: RootRouteChildren = {
   OverlayRoute: OverlayRoute,
   SecretsRoute: SecretsRoute,
   ToolsRoute: ToolsRoute,
+  WhiteboardsRoute: WhiteboardsRoute,
   AgentsNewRoute: AgentsNewRoute,
   AskSessionRoute: AskSessionRoute,
   CSessionRoute: CSessionRoute,
@@ -1194,6 +1235,7 @@ const rootRouteChildren: RootRouteChildren = {
   TasksGraphRoute: TasksGraphRoute,
   VmNameRoute: VmNameRoute,
   WebIdRoute: WebIdRoute,
+  WhiteboardsIdRoute: WhiteboardsIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,
   RoutinesIndexRoute: RoutinesIndexRoute,

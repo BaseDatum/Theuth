@@ -60,6 +60,7 @@
     "opus-decoder": "^0.7.12",
     "papaparse": "^5.7.0",
     "pdfjs-dist": "^6.3.289",
+    "perfect-freehand": "1.2.3",
     "prosemirror-model": "1.25.12",
     "prosemirror-state": "1.4.4",
     "prosemirror-view": "1.42.5",

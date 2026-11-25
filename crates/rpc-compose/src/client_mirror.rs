@@ -134,6 +134,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         artifact::WebViewOpened,
         artifact::PtyViewOpened,
         artifact::NoteViewOpened,
+        artifact::WhiteboardViewOpened,
         artifact::FileViewOpened,
         artifact::DiffViewOpened,
         artifact::WebViewCallRequested,

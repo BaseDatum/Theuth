@@ -84,6 +84,7 @@ vi.mock('@/components/chat/TerminalViewer', () => ({
   usePoppedElsewhere: () => false,
   useTerminals: () => [{ session: 's1', id: 'j1' }],
 }))
+vi.mock('@/components/whiteboard/WhiteboardView', () => ({ WhiteboardView: Stub }))
 
 const { TILE_KINDS, PoppedTile } = await import('./registry')
 const { popoutTarget, popoutUrl, stashTileProps } = await import('@/lib/popout')
@@ -107,6 +108,7 @@ const SAMPLES: Record<string, unknown> = {
   'tasks-graph': { project: 'theuth' },
   terminals: {},
   vm: { name: 'box' },
+  whiteboard: { doc: 'w1', title: 'Sketch' },
 }
 /** The window each kind opens: a dedicated route where one exists, else the generic tile window. */
 const WINDOW: Record<string, string> = {

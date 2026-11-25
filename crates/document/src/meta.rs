@@ -110,6 +110,10 @@ pub enum DocKind {
     /// text, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so
     /// the same thing is one document everywhere. Written by `Principal::Helper`/`File` only.
     Source,
+    /// A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven
+    /// top-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);
+    /// its derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.
+    Whiteboard,
 }
 
 impl DocKind {
@@ -124,20 +128,21 @@ impl DocKind {
             Self::Board => "board",
             Self::Notebook => "notebook",
             Self::Source => "source",
+            Self::Whiteboard => "whiteboard",
         }
     }
 
     /// A note or a board: owned by nobody else, so it is renamed and deleted directly, keeps the title it was
     /// created with, and lists among the notes.
     pub fn free_standing(self) -> bool {
-        matches!(self, Self::Note | Self::Board)
+        matches!(self, Self::Note | Self::Board | Self::Whiteboard)
     }
 
     /// 184 §4.1: the kinds that get `DocMeta.home` at create (the rest stay unhomed, hub-served).
     pub fn homed(self) -> bool {
         matches!(
             self,
-            Self::Note | Self::Board | Self::MeetingNote | Self::TaskThread
+            Self::Note | Self::Board | Self::MeetingNote | Self::TaskThread | Self::Whiteboard
         )
     }
 
@@ -180,6 +185,8 @@ pub enum Binding {
     /// A source by its origin key (144 §4.1): `url:<canonical>`, `file:<sha256>`, `meeting:<id>`,
     /// `session:<id>`, `mcp:<server>/<tool>/<sha256(args)>`, `youtube:<video id>`, `text:<sha256>`.
     Source(String),
+    /// A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.
+    Whiteboard,
 }
 
 impl Binding {
@@ -191,7 +198,7 @@ impl Binding {
     /// No natural key: several live documents share this binding (notes, notebooks), so `Lookup`
     /// and the id convergence of 69 §5 never apply to it.
     pub fn keyless(&self) -> bool {
-        matches!(self, Self::Note | Self::Notebook)
+        matches!(self, Self::Note | Self::Notebook | Self::Whiteboard)
     }
 
     /// The kind a new document of this binding gets.
@@ -205,6 +212,7 @@ impl Binding {
             Self::TaskThread(_) => DocKind::TaskThread,
             Self::Notebook => DocKind::Notebook,
             Self::Source(_) => DocKind::Source,
+            Self::Whiteboard => DocKind::Whiteboard,
         }
     }
 
@@ -222,6 +230,7 @@ impl Binding {
             Self::TaskThread(_) => format!("documents/{id}/thread.md"),
             Self::Notebook => format!("documents/{id}/notebook.md"),
             Self::Source(_) => format!("documents/{id}/source.md"),
+            Self::Whiteboard => format!("documents/{id}/whiteboard.md"),
         }
     }
 }
