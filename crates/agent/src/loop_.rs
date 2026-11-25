@@ -7003,6 +7003,8 @@ impl Turn {
             }
             crash_point(crash::TURN_AFTER_FINISHED);
         }
+        // 218 §5 step 4: close the whiteboard turns this turn's injection began (detached).
+        crate::whiteboards::end_turn(self.shared.id);
         // 125 §4.12: the terminal hook, with the optional catch-up wait,
         // before `TurnFinished` so a late blocker opens a turn instead of
         // racing the event.
@@ -7560,6 +7562,41 @@ impl Turn {
             .await;
             if let Some(text) = message {
                 tracing::debug!(session = %self.shared.id, notebook = %nb, epoch, capacity, fixed, frame, limit, kind = text.split([' ', '>']).next().unwrap_or_default(), "notebook message");
+                self.persist(ChatMessage::user(text)).await;
+            }
+        }
+        // 218 §5: every bound whiteboard's `<whiteboard>` block once per context, then a
+        // `<whiteboard_changes>` note when it moved since or the send carried context; after the
+        // notebook block, before the knowledge hints. A retried round 0 already has them.
+        if chat
+            && round == 0
+            && !self
+                .state
+                .history
+                .last()
+                .is_some_and(|(_, m)| text_of(&m.content).starts_with("<whiteboard"))
+            && crate::whiteboards::bound(&self.shared.store, self.shared.id, &self.input_text).await
+        {
+            // Under endless memory the store's rows are the record (as for the notebook above).
+            let rows = if endless {
+                self.shared
+                    .store
+                    .frame(self.shared.id)
+                    .await
+                    .ok()
+                    .map(|(_, _, rows)| rows)
+            } else {
+                None
+            };
+            let history: Vec<String> = rows
+                .as_deref()
+                .unwrap_or(&self.state.history)
+                .iter()
+                .map(|(_, m)| text_of(&m.content))
+                .collect();
+            let messages =
+                crate::whiteboards::inject(&self.shared.store, self.shared.id, &history).await;
+            for text in messages {
                 self.persist(ChatMessage::user(text)).await;
             }
         }

@@ -64,6 +64,8 @@ pub mod rpc_suffixes;
 pub mod rpc_turns;
 /// 208: Attention graph RPC server and client methods.
 pub mod rpc_graph;
+/// 218: Whiteboard bindings and send context RPC methods.
+pub mod rpc_whiteboards;
 
 /// Assemble agent-owned RPC domains.
 pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
@@ -80,6 +82,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
         rpc_jobs::rpc_module(server.clone()),
         rpc_skills::rpc_module(server.clone()),
         rpc_suffixes::rpc_module(server.clone()),
+        rpc_whiteboards::rpc_module(server.clone()),
         rpc_graph::rpc_module(server.clone()),
         rpc_turns::rpc_module(server),
     ]).expect("agent RPC composition")
@@ -131,6 +134,7 @@ pub mod title;
 pub mod todo;
 pub mod tokens;
 pub mod user;
+pub mod whiteboards;
 pub mod vision;
 
 /// Tests that start the process-global `tools` registry actor hold this for

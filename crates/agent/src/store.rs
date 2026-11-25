@@ -71,6 +71,7 @@ mod moved;
 pub mod suffixes;
 pub mod title_guard;
 pub mod turn_usage;
+pub mod whiteboards;
 pub use capture::ATTACHED;
 pub use durability::Scope;
 

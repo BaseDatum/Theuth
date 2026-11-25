@@ -427,6 +427,36 @@ impl wire::WireEvent for NoteViewOpened {
     const TOPIC: &'static str = "artifact.note-view-opened";
 }
 
+/// Arguments of `show_whiteboard` (218 §3.4).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ShowWhiteboardArgs {
+    /// The whiteboard's document id (the `id` of its `<whiteboard>` block, or what `wb_create` returned).
+    pub whiteboard: String,
+    /// Tile title. Default: the whiteboard's title.
+    pub title: Option<String>,
+}
+
+/// Event: a `show_whiteboard` call opened a whiteboard (218 §4.3).
+/// Wire shape `{ "type": "WhiteboardViewOpened", "session", "call_id", "doc", "title" }`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
+#[serde(tag = "type")]
+pub struct WhiteboardViewOpened {
+    /// Calling session.
+    pub session: SessionId,
+    /// The tool call (joins the card).
+    pub call_id: String,
+    /// The whiteboard's document id.
+    pub doc: String,
+    /// Tile title.
+    pub title: String,
+}
+
+impl wire::WireEvent for WhiteboardViewOpened {
+    const TOPIC: &'static str = "artifact.whiteboard-view-opened";
+}
+
 /// `show_note`: resolve the document as the `doc_*` tools do, check the agent may read it and that
 /// it opens as a note, publish [`NoteViewOpened`], return the receipt (211 §1).
 pub struct ShowNoteTool {
@@ -521,6 +551,114 @@ impl Tool for ShowNoteTool {
     }
 }
 
+/// `show_whiteboard`: resolve the document, check the agent may read it and that it is a
+/// whiteboard, bind the calling session to it, publish [`WhiteboardViewOpened`], return the
+/// receipt (218 §3.4).
+pub struct ShowWhiteboardTool {
+    /// For publishing the event; `data_dir` locates knowledge files for on-demand documents.
+    pub rt: Runtime,
+}
+
+#[async_trait::async_trait]
+impl Tool for ShowWhiteboardTool {
+    const NAME: &'static str = "show_whiteboard";
+    const RISK: Risk = Risk::ReadOnly;
+    const RETURNS: &'static str = "dict";
+    const DIRECT: bool = true;
+    type Args = ShowWhiteboardArgs;
+
+    fn description(&self) -> String {
+        "Open a whiteboard for the user: a tile beside the chat on desktop, the full-window \
+         whiteboard on iPad. `whiteboard` is its document id (the `id` of its <whiteboard> block, \
+         or what wb_create returned); `title` names the tile (default the whiteboard's title). \
+         Opening it binds this chat to the whiteboard, so its outline and changes reach you. \
+         Notes and boards open with `show_note`."
+            .into()
+    }
+
+    async fn call(&self, args: ShowWhiteboardArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let Some(handle) = document::Handle::lookup() else {
+            return Ok(ToolOutput::err(
+                "show_whiteboard: documents are disabled on this engine",
+            ));
+        };
+        let docs = document::tools::Docs::new(handle.actor().clone(), self.rt.data_dir.clone());
+        let id = match docs.resolve(args.whiteboard.trim()).await {
+            Ok(id) => id,
+            Err(e) => return Ok(ToolOutput::err(format!("show_whiteboard: {e}"))),
+        };
+        let meta = match handle
+            .actor()
+            .ask(document::MetaOf {
+                doc: id.clone(),
+                by: Principal::Agent {
+                    session: cx.session.0,
+                },
+            })
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => return Ok(ToolOutput::err(format!("show_whiteboard: {e}"))),
+        };
+        if let Some(msg) = not_a_whiteboard(&id.to_string(), meta.kind) {
+            return Ok(ToolOutput::err(format!("show_whiteboard: {msg}")));
+        }
+        let title = args
+            .title
+            .map(|t| clean_title(&t))
+            .filter(|t| !t.is_empty())
+            .or_else(|| Some(clean_title(&meta.title)).filter(|t| !t.is_empty()))
+            .unwrap_or_else(|| "Whiteboard".to_owned());
+        document::wb::hooks::bind(cx.session.0, &id);
+        let doc = id.to_string();
+        self.rt
+            .publish(WhiteboardViewOpened {
+                session: cx.session,
+                call_id: cx.call_id.clone(),
+                doc: doc.clone(),
+                title: title.clone(),
+            })
+            .await;
+        let content = whiteboard_receipt(&title, &doc, crate::preview::feed_live());
+        Ok(ToolOutput {
+            structured: Some(serde_json::json!({
+                "session": cx.session,
+                "doc": doc,
+                "title": title,
+                "href": format!("theuth://whiteboards/{doc}"),
+            })),
+            ..ToolOutput::ok(content)
+        })
+    }
+}
+
+/// `None` for a whiteboard; else the refusal, pointing note-tile kinds at `show_note`.
+fn not_a_whiteboard(id: &str, kind: DocKind) -> Option<String> {
+    if kind == DocKind::Whiteboard {
+        return None;
+    }
+    let name = serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    Some(match note_kind(kind) {
+        Ok(_) => format!("{id} is a {name}; use show_note"),
+        Err(_) => format!("{id} is a {name}, not a whiteboard"),
+    })
+}
+
+/// The text the model reads; the first line is fixed (218 §3.4).
+fn whiteboard_receipt(title: &str, doc: &str, live: bool) -> String {
+    let mut s = format!(
+        "opened whiteboard {}\ntheuth://whiteboards/{doc}",
+        serde_json::to_string(title).unwrap_or_default()
+    );
+    if !live {
+        let _ = write!(s, "\n{NO_APP}");
+    }
+    s
+}
+
 /// A block id: one token of id characters (no spaces, `#`, `/` or controls), ≤ [`MAX_BLOCK`].
 fn valid_block(b: &str) -> bool {
     !b.is_empty()
@@ -546,6 +684,7 @@ fn note_kind(kind: DocKind) -> Result<String, String> {
         DocKind::Artifact => "hand the file over with `show` instead",
         DocKind::AgentCharter => "a charter opens in the Agents view",
         DocKind::TaskThread => "a task thread opens with its task",
+        DocKind::Whiteboard => return Err("this is a whiteboard; use show_whiteboard".to_owned()),
     };
     Err(format!(
         "{name} documents do not open in a note tile; {hint}"
@@ -834,5 +973,68 @@ mod tests {
         for bad in ["", "a b", "a#b", "../x", &"a".repeat(MAX_BLOCK + 1)] {
             assert!(!valid_block(bad), "{bad}");
         }
+    }
+
+    /// 218 §3.4: the event goes out under its declared topic with the §4.3 shape, and the receipt's
+    /// first line is fixed.
+    #[tokio::test]
+    async fn show_whiteboard_publishes_the_event() {
+        use wire::RuntimeWire as _;
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        crate::declare_wire(&rt).await.unwrap();
+        let mut rx = rt.wire_events();
+        let doc = "01a2f3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b";
+        rt.publish(WhiteboardViewOpened {
+            session: session(),
+            call_id: "toolu_1".into(),
+            doc: doc.into(),
+            title: "Attention inbox".into(),
+        })
+        .await;
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            frame.event,
+            serde_json::json!({
+                "type": "WhiteboardViewOpened",
+                "session": "00000000-0000-0000-0000-000000000001",
+                "call_id": "toolu_1",
+                "doc": doc,
+                "title": "Attention inbox",
+            })
+        );
+        assert_eq!(
+            frame.descriptor.as_ref().unwrap().topic,
+            "artifact.whiteboard-view-opened"
+        );
+        assert_eq!(
+            whiteboard_receipt("Attention \"inbox\"", doc, true),
+            format!("opened whiteboard \"Attention \\\"inbox\\\"\"\ntheuth://whiteboards/{doc}")
+        );
+        assert!(whiteboard_receipt("A", doc, false).ends_with(NO_APP));
+    }
+
+    #[test]
+    fn show_note_refuses_a_whiteboard() {
+        assert_eq!(
+            note_kind(DocKind::Whiteboard).unwrap_err(),
+            "this is a whiteboard; use show_whiteboard"
+        );
+    }
+
+    #[test]
+    fn show_whiteboard_refuses_a_note() {
+        assert_eq!(not_a_whiteboard("d1", DocKind::Whiteboard), None);
+        assert_eq!(
+            not_a_whiteboard("d1", DocKind::Note).as_deref(),
+            Some("d1 is a note; use show_note")
+        );
+        assert_eq!(
+            not_a_whiteboard("d1", DocKind::Notebook).as_deref(),
+            Some("d1 is a notebook, not a whiteboard")
+        );
     }
 }
