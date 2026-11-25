@@ -137,7 +137,8 @@ test('the row: both numbers always shown, right-aligned 16 px, the % banded ambe
   act(() => root!.render(h(ComposerMeta, { session: 's1', meta: META })))
   const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
   expect(row.className).toContain('h-4')
-  expect(row.querySelector('[data-meta-numbers]')!.className).toContain('ml-auto')
+  expect(row.className).toContain('justify-end')
+  expect(row.querySelector('[data-meta-numbers]')!.className).not.toContain('ml-auto')
   expect(row.className).not.toContain('invisible')
   const pct = row.querySelector<HTMLElement>('[data-meta="context"]')!
   expect(pct.textContent).toBe('78%')
@@ -238,7 +239,10 @@ test('the bar holds only + · MCP · shield … spacer … talk · mic · send',
 
 const pick = () => h('button', { type: 'button', 'data-tour': 'chat-model' }, 'Claude Opus 5.5 · medium')
 
-test('the row: the picker left, truncating first, the numbers right after it', () => {
+test('the row: right-aligned, the picker then the numbers directly after it; the picker truncates first', () => {
+  const box = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  // The picker's 32 px hover target hangs 8 px above the 16 px row: the box's top padding (8 px) keeps it inside the border.
+  expect(box).toContain("topRow ? 'pt-2' : 'pt-2.5'")
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)

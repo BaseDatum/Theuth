@@ -1416,7 +1416,7 @@ export function Composer({
         ref={box}
         data-composer=""
         data-tour="chat-composer"
-        className={cn('relative rounded-2xl border border-border-subtle bg-elevated px-3 pb-2 shadow-sm', topRow ? 'pt-1' : 'pt-2.5')}
+        className={cn('relative rounded-2xl border border-border-subtle bg-elevated px-3 pb-2 shadow-sm', topRow ? 'pt-2' : 'pt-2.5')}
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
       >
