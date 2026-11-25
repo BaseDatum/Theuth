@@ -74,3 +74,21 @@ export const dismissLabel = (item: Pick<AttentionItem, 'kind'>, leaves: boolean)
 
 /** What a dismissal does, for tooltips and the bulk bar. */
 export const DISMISS_HINT = 'Dismissed requests are left to their agents to decide: nothing is refused and no session is woken.'
+
+/** 216 §10.2: dismissing an install card leaves nothing to an agent; the plugin waits, unapproved, for its next change. */
+export const PLUGIN_DISMISS_HINT = 'Dismiss: the plugin stays unapproved until it changes'
+
+/** The Dismiss button's tooltip: a plugin card's own, else `DISMISS_HINT` where dismissing leaves requests, else plain hiding. */
+export const dismissHint = (item: Pick<AttentionItem, 'kind' | 'id'>, leaves: boolean): string =>
+  pluginRef(item)?.notify === false ? PLUGIN_DISMISS_HINT : leaves ? DISMISS_HINT : 'Hide this item'
+
+/**
+ * 216 contract §10.1: a `plugin` item's plugin — `plugin:<name>:<m8>:<c8>:<seq>` is an install / widen / code-changed card,
+ * `plugin-notify:<name>:<n>` a notice the plugin raised (no Approve). `null` for any other item.
+ */
+export function pluginRef(item: Pick<AttentionItem, 'kind' | 'id'>): { name: string; notify: boolean } | null {
+  if (item.kind !== 'plugin') return null
+  const [head, name] = item.id.split(':')
+  if (!name || (head !== 'plugin' && head !== 'plugin-notify')) return null
+  return { name, notify: head === 'plugin-notify' }
+}

@@ -12,6 +12,7 @@ import { BlockedScreen, BudgetScreen, ContactFirstScreen, DoubleScreen, Finished
 import { ReviewScreen } from './ReviewScreen'
 import { ShowScreen } from './ShowScreen'
 import { ItemError } from './ItemError'
+import { PluginInstallScreen } from './PluginInstallScreen'
 import { Why } from './Why'
 import { WebViewScreen } from './WebViewScreen'
 
@@ -36,7 +37,7 @@ const SCREEN: Record<AttentionItem['kind'], ComponentType<{ item: AttentionItem 
   finished: FinishedScreen,
   contact_first: ContactFirstScreen,
   web_view: WebViewScreen,
-  plugin: HomeScreen, // 216 B0 placeholder; B3 adds PluginInstallScreen
+  plugin: PluginInstallScreen,
 }
 
 /** The selected item's screen (101 D7, 104 A6): every kind has one, under 207's "Why here". Under `md` a 52 px header with the back chevron. */

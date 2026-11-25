@@ -1,11 +1,13 @@
 // The per-kind buttons of an Attention item — the card's inline block and the plain screen's action bar (101 D7) share
 // them. Moved out of `hud/Hud.tsx` (207); Snooze became a menu, Dismiss goes through the bulk call with one id.
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, Clock, EyeOff, Forward } from 'lucide-react'
 import { useState } from 'react'
 import { DoubleUndo } from '@/components/chat/DoubleChip'
 import { snoozeUntil } from '@/components/hud/model'
-import { useSecretRequestRows } from '@/components/hud/queries'
+import { ATTENTION_KEY, useSecretRequestRows } from '@/components/hud/queries'
+import { errorText } from '@/components/settings/shared'
 import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { useMesh } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
@@ -13,10 +15,12 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@/components/ui/input'
 import { FIRST_ANSWERS, contactFirstOf, useFirstWaiting } from '@/lib/contacts'
 import { canPopout, openPopout } from '@/lib/popout'
+import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useQuerySupport } from '@/rpc/capabilities'
+import type { InstallCard } from '@/rpc/bindings/method.plugins.output'
 import type { AttentionItem, AttentionOutcome } from '@/rpc/bindings/method.roster.output'
-import { DISMISS_HINT, dismissLabel, doubleIds } from './labels'
+import { dismissHint, dismissLabel, doubleIds, pluginRef } from './labels'
 import { setItemError, useAttentionBulk, useBulkPending, useInboxActions } from './queries'
 
 export type Size = 'xs' | 'sm' | 'default'
@@ -78,7 +82,7 @@ export function SnoozeDismiss({ item, ids = [item.id], size, onResolved }: { ite
   return (
     <span className={cn('flex items-center gap-1.5', pane && 'ml-auto')}>
       <SnoozeMenu size={size} disabled={bulk.pending} onPick={(until) => done(bulk.snooze(ids, until))} />
-      <Button size={size} variant={pane ? 'outline' : 'ghost'} className={pane ? 'border-danger-border bg-danger-bg text-danger hover:bg-danger-bg/80 hover:text-danger' : 'text-fg-secondary hover:text-foreground'} disabled={bulk.pending} title={leaves ? DISMISS_HINT : 'Hide this item'} onClick={() => done(bulk.dismiss(ids))}>
+      <Button size={size} variant={pane ? 'outline' : 'ghost'} className={pane ? 'border-danger-border bg-danger-bg text-danger hover:bg-danger-bg/80 hover:text-danger' : 'text-fg-secondary hover:text-foreground'} disabled={bulk.pending} title={dismissHint(item, leaves)} onClick={() => done(bulk.dismiss(ids))}>
         {label === 'Dismiss' ? <EyeOff /> : <Forward />}
         {label}
       </Button>
@@ -121,6 +125,46 @@ export function AllowOnce({ first, size, disabled, onClick }: { first: { contact
     <Button size={size} className={paneTone(size, 'success')} disabled={disabled} onClick={onClick}>
       Allow once
     </Button>
+  )
+}
+
+/**
+ * 216 §10.2: a plugin's install / widen / code-changed card — Approve with exactly the hashes of the card `plugin_get`
+ * holds (a human press; the host refuses anything else), and Review in Settings › Plugins. Approve waits until that
+ * card is the one this item names. A plugin's notice (`plugin-notify:`) has no Approve, only the way to the plugin.
+ */
+export function PluginActions({ item, size, then }: { item: AttentionItem; size: Size; then(p: Promise<unknown>): void }) {
+  const ref = pluginRef(item)
+  const api = useApi()
+  const qc = useQueryClient()
+  const name = ref?.name ?? ''
+  const detail = useQuery({ enabled: ref?.notify === false, queryKey: queryKeys.plugin(name), queryFn: () => api.plugin_get(name) })
+  const approve = useMutation({
+    mutationFn: (card: InstallCard) => api.plugin_approve(card.plugin, card.manifest_sha256, card.code_sha256),
+    onSuccess: () => {
+      setItemError([item.id], null)
+      void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins })
+    },
+    onError: (e) => setItemError([item.id], errorText(e)),
+  })
+  if (!ref) return null
+  const card = detail.data?.card?.id === item.id ? detail.data.card : undefined
+  const review = (
+    <Button asChild size={size} variant="outline" className={paneClass(size, TONE_NEUTRAL)}>
+      <Link to="/settings/$tab" params={{ tab: 'plugins' }} search={{ focus: ref.name }}>
+        {ref.notify ? 'Open plugin' : 'Review'}
+      </Link>
+    </Button>
+  )
+  if (ref.notify) return review
+  return (
+    <>
+      <Button size={size} className={paneTone(size, 'success')} disabled={!card || approve.isPending} onClick={() => card && then(approve.mutateAsync(card))}>
+        Approve
+      </Button>
+      {review}
+    </>
   )
 }
 
@@ -243,6 +287,7 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
           </Button>
         </>
       )}
+      {item.kind === 'plugin' && <PluginActions item={item} size={size} then={then} />}
       {(item.kind !== 'home' || item.id.startsWith('misplaced:')) && <SnoozeDismiss item={item} size={size} onResolved={onResolved} />}
       {item.kind === 'contact_first' && size !== 'xs' && <span className="basis-full text-xs text-fg-tertiary">{FIRST_ANSWERS}</span>}
     </div>

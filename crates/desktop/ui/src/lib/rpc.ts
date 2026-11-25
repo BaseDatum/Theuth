@@ -202,6 +202,11 @@ export const queryKeys = {
   sessionMemory: (id: string) => ['session-memory', id] as const,
   /** 137 §11.1 `endless_settings_get()`: Settings → Memory and the New chat ∞ switch's initial state. */
   endlessSettings: ['endless-settings'] as const,
+  // 216 §12.2: Settings › Plugins — `plugin_list()` under `plugins`, `plugin_get(name)` and `plugin_logs(name)` under it,
+  // so a `PluginState` / `PluginsChanged` refetches every plugin query at once.
+  plugins: ['plugins'] as const,
+  plugin: (name: string) => ['plugins', name] as const,
+  pluginLogs: (name: string) => ['plugins', 'logs', name] as const,
 }
 
 /** One `list_sessions` row with `SessionOwnerChanged` applied; the list is returned as is when the session is not in it. */
@@ -406,6 +411,9 @@ export function useInvalidateOn(): void {
         if (e.data.state === 'paired') void qc.invalidateQueries({ queryKey: queryKeys.contacts })
       }),
       on("agent.endless-progress@1", 'EndlessProgress', (e) => applyEndlessProgress(qc, e)),
+      // 216 §12.2: a lifecycle change or a changed set (placements, order, hidden flags, cards) re-reads Settings › Plugins.
+      on("plugins.ui@1", 'PluginState', () => void qc.invalidateQueries({ queryKey: queryKeys.plugins })),
+      on("plugins.ui@1", 'PluginsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.plugins })),
     ]
     return () => {
       clearTimeout(timer)

@@ -23,8 +23,8 @@ test('tab ids are unique across categories, and TAB_IDS lists them in column ord
   expect(ids).toEqual([...TAB_IDS])
 })
 
-test('188: twelve categories in column order (#3 Prompt suffixes after Agent, 210 Sharing after Network), each with 1 to 6 tabs', () => {
-  expect(CATEGORIES.map((category) => category.id)).toEqual(['general', 'models', 'agent', 'suffixes', 'learning', 'voice', 'meetings', 'calendar', 'network', 'sharing', 'channels', 'tools'])
+test('188: thirteen categories in column order (#3 Prompt suffixes after Agent, 210 Sharing after Network, 216 Plugins last), each with 1 to 6 tabs', () => {
+  expect(CATEGORIES.map((category) => category.id)).toEqual(['general', 'models', 'agent', 'suffixes', 'learning', 'voice', 'meetings', 'calendar', 'network', 'sharing', 'channels', 'tools', 'plugins'])
   for (const category of CATEGORIES) {
     expect(category.tabs.length).toBeGreaterThanOrEqual(1)
     expect(category.tabs.length).toBeLessThanOrEqual(6)
@@ -48,6 +48,13 @@ test('Sky 2026-11-11: Tools opens on MCP (the servers theuth uses, at `tools`), 
     ['computer', 'Computer use'],
     ['browser', 'Browser'],
   ])
+})
+
+test('216: Plugins is one tab, at `plugins`, needing the plugins methods and the `plugins.ui` topic', () => {
+  const plugins = CATEGORIES.find((category) => category.id === 'plugins')!
+  expect(plugins.tabs.map((tab) => [tab.id, tab.label])).toEqual([['plugins', 'Plugins']])
+  expect(plugins.tabs[0].required?.methods).toContain('plugin_approve')
+  expect(plugins.tabs[0].required?.topics).toEqual(['plugins.ui@1'])
 })
 
 test('S4: with every tab shown, every category is listed and every tab lands on itself', () => {

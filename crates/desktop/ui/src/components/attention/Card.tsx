@@ -30,9 +30,9 @@ export function PriorityChip({ priority }: { priority: AttentionItem['priority']
 /** A stopped session whose turn failed or timed out reads as a problem; a clean finish or a cancel does not. */
 const troubled = (item: AttentionItem) => item.stop?.outcome === 'failed' || item.stop?.outcome === 'timed_out'
 
-/** Kinds whose answer needs the pane (a packet, an artifact, several questions): the card links there. */
+/** Kinds whose answer needs the pane (a packet, an artifact, several questions, 216 a plugin's card with its lines): the card links there. */
 function needsPane(item: AttentionItem): boolean {
-  if (item.kind === 'decision' || item.kind === 'review' || item.kind === 'show' || item.kind === 'web_view') return true
+  if (item.kind === 'decision' || item.kind === 'review' || item.kind === 'show' || item.kind === 'web_view' || item.kind === 'plugin') return true
   if (item.kind !== 'ask') return false
   const qs = item.ask?.questions ?? []
   return qs.length !== 1 || (qs[0]?.options.length ?? 0) === 0
