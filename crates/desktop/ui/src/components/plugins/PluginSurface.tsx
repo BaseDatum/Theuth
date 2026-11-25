@@ -7,7 +7,7 @@ import { AppRenderer, type AppRendererProps } from '@theuth/apps/renderer'
 import { useNavigate } from '@tanstack/react-router'
 import { LoaderCircle, X } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef } from 'react'
-import { Streamdown } from 'streamdown'
+import { Streamdown, defaultRehypePlugins } from 'streamdown'
 import { copyToClipboard } from '@/components/apps/openui-actions'
 import { OpenUITheme } from '@/components/apps/openui-theme'
 import { useDark } from '@/components/apps/theme'
@@ -105,12 +105,16 @@ function Body({ plugin, placement, session, content }: Omit<PluginSurfaceProps, 
       return <JsonRenderFence code={source} language="json-render" isIncomplete={false} />
     case 'markdown':
       return (
-        <Streamdown mode="static" skipHtml rehypePlugins={rehypePlugins} components={markdownComponents} className="[&_a]:underline [&_a]:underline-offset-2 [&_p]:my-1">
+        <Streamdown mode="static" skipHtml rehypePlugins={MARKDOWN_REHYPE} components={markdownComponents} className="[&_a]:underline [&_a]:underline-offset-2 [&_p]:my-1">
           {source}
         </Streamdown>
       )
   }
 }
+
+/** The chat's sanitize/harden steps without `raw`: HTML in a plugin's markdown stays unparsed, and `skipHtml` drops it
+ * (216 §9.4: no plugin-drawn inputs). */
+const MARKDOWN_REHYPE = rehypePlugins.filter((p) => p !== defaultRehypePlugins.raw)
 
 const Fallback = ({ text }: { text: string | null }) => <p className="py-2 whitespace-pre-wrap text-fg-secondary">{text ?? 'Nothing to show.'}</p>
 

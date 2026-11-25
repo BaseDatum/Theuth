@@ -1,5 +1,6 @@
 import '../settings/test-dom'
 import { act, createElement as h } from 'react'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { EMPTY_PLUGINS, pluginStore, seed } from '@/lib/plugins'
@@ -19,7 +20,7 @@ afterEach(() => {
 async function mount(variant: 'rail' | 'row') {
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
-  await act(async () => root.render(h(SidebarSlot, { variant })))
+  await act(async () => root.render(h(TooltipProvider, null, h(SidebarSlot, { variant }))))
   return { host, unmount: () => act(async () => root.unmount()) }
 }
 

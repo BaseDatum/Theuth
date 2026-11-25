@@ -38,7 +38,7 @@ test('the attribution strip reads "plugin · turns" and sits outside the content
   expect(strip.textContent).toBe('plugin · turns')
   expect(body().contains(strip)).toBe(false)
   expect(body().textContent).toContain('Turns today: 3')
-  expect(body().querySelector('strong')?.textContent).toBe('3')
+  expect(body().querySelector('strong, [data-streamdown="strong"]')?.textContent).toBe('3')
   await unmount()
 })
 
