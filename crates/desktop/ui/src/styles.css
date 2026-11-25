@@ -1378,13 +1378,6 @@ html .tg-canvas .tg-edge {
   .horizon-out {
     animation: bg-horizon-down 320ms cubic-bezier(0.55, 0.05, 0.85, 0.3) forwards;
   }
-  .horizon-in > * {
-    animation: bg-layer-rise 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  }
-  .horizon-in > *:nth-last-child(1) { animation-delay: 0ms; }
-  .horizon-in > *:nth-last-child(2) { animation-delay: 45ms; }
-  .horizon-in > *:nth-last-child(3) { animation-delay: 90ms; }
-  .horizon-in > *:nth-last-child(n+4) { animation-delay: 135ms; }
   .tray-pill-launch {
     animation: bg-pill-launch 280ms cubic-bezier(0.22, 1, 0.36, 1);
   }

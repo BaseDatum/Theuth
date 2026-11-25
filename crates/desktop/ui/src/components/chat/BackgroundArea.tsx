@@ -100,7 +100,8 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
           aria-hidden={exiting || undefined}
           className={cn(
             'mx-auto w-full max-w-[768px] shrink-0 px-4',
-            phase === 'open' ? 'max-h-[calc(var(--visible-band,100dvh)/2)] overflow-y-auto' : 'overflow-hidden',
+            // While gliding, the stage sits on the shell's floor: the growing height reveals it from the grabber up, in one motion.
+            phase === 'open' ? 'max-h-[calc(var(--visible-band,100dvh)/2)] overflow-y-auto' : 'flex flex-col justify-end overflow-hidden',
             exiting && 'pointer-events-none',
           )}
         >

@@ -166,19 +166,19 @@ function WhiteboardsButton({ tray, className, children }: { tray: Tray; classNam
   )
 }
 
-/** A tile: ≥ 44 px to tap, its dash, name, one line of detail and the count top-right. */
+/** A tile: one full-width row like a card header — its dash, name, one line of detail and the count at the end. */
 const TILE =
-  'relative flex min-h-11 w-full min-w-0 flex-col items-start gap-0.5 rounded-xl border bg-background px-2.5 py-2 text-left outline-none hover:bg-layer-2 focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-expanded:bg-layer-2'
+  'flex min-h-9 w-full min-w-0 shrink-0 items-center gap-2 rounded-xl border bg-background px-3 py-1.5 text-left outline-none hover:bg-layer-2 focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-expanded:bg-layer-2'
 
 function TileBody({ color, width, name, detail, count }: { color: string; width?: string; name: string; detail: string; count: number }) {
   return (
     <>
-      <span className="flex h-2 items-center" aria-hidden>
+      <span className="flex h-2 shrink-0 items-center" aria-hidden>
         <ActivityDash color={color} width={width} />
       </span>
-      <span className="font-medium text-foreground">{name}</span>
-      <span className="w-full truncate pr-4 text-fg-tertiary">{detail}</span>
-      <span className="absolute top-2 right-2.5 text-fg-tertiary tabular-nums">{count}</span>
+      <span className="shrink-0 font-medium text-foreground">{name}</span>
+      <span className="min-w-0 flex-1 truncate text-fg-tertiary">{detail}</span>
+      <span className="shrink-0 text-fg-tertiary tabular-nums">{count}</span>
     </>
   )
 }
@@ -282,5 +282,5 @@ export function TrayTiles({ tray }: { tray: Tray }) {
     )
   }
   if (!tiles.length) return null
-  return <div data-tray-tiles="" className="grid shrink-0 grid-cols-2 gap-1.5 text-xs">{tiles}</div>
+  return <div data-tray-tiles="" className="flex shrink-0 flex-col gap-1.5 text-xs">{tiles}</div>
 }
