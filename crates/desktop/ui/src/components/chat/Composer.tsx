@@ -1434,7 +1434,9 @@ export function Composer({
                       onClick={dictate}
                     >
                       <VoiceWave state="listening" source={dictSource} label="Dictation level" className="h-full flex-1" />
-                      <Square className="size-3.5 shrink-0 fill-current" />
+                      <span className="flex size-9 shrink-0 items-center justify-center rounded-full hover:bg-surface-hover">
+                        <Square className="size-4 fill-current" />
+                      </span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
