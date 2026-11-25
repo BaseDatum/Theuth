@@ -292,6 +292,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const wet = useRef<Wet | null>(null)
   const palmUntil = useRef(0)
   const lastKind = useRef<PointerKind>('mouse')
+  const suppressClick = useRef(false)
   const taps = useRef(new MultiTap()).current
   const rubberRef = useRef<Rubber | null>(null)
   const propsRef = useRef({ onPenActivity, onCanvasTap, readOnly })
@@ -374,6 +375,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     const down = (e: PointerEvent) => {
       const kind = pointerKind(e.pointerType)
       lastKind.current = kind
+      suppressClick.current = false
       if (kind === 'touch') taps.down(e.pointerId, e.clientX, e.clientY, e.timeStamp)
       if (isControl(e.target) && kind !== 'touch') return
       const route = routePointer(kind, stateNow())
@@ -455,6 +457,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       const rb = rubberRef.current
       if (rb && rb.id === e.pointerId) {
         e.stopPropagation()
+        suppressClick.current = true
         rubberRef.current = null
         setRubber(null)
         const x = Math.min(rb.x0, rb.x1)
@@ -473,6 +476,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       if (!wt || wt.id !== e.pointerId) return
       e.stopPropagation()
       wet.current = null
+      suppressClick.current = true // the click that follows a stroke is not a tap on the canvas
       if (wt.kind === 'pen') penUp()
       if (wt.erase) {
         undo.stopCapturing()
@@ -498,9 +502,11 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     const touch = (e: TouchEvent) => {
       const stylus = Array.from(e.changedTouches).some((t) => (t as Touch & { touchType?: string }).touchType === 'stylus')
       const s = stateNow()
+      // In link mode the Pencil is a pointer: its touches reach React Flow (node taps, handle drags).
+      const pencilInk = stylus && s.mode !== 'link'
       const palm = !stylus && (s.penDown || s.now < s.palmUntil)
       const fingerInking = wet.current !== null && wet.current.kind === 'touch'
-      if (stylus || palm || fingerInking || rubberRef.current) {
+      if (pencilInk || palm || fingerInking || rubberRef.current) {
         e.stopPropagation()
         if (e.cancelable && !isControl(e.target)) e.preventDefault()
       }
@@ -701,7 +707,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   }), [boxOf, captions, commit, dark, doc, focus, freeSpot, host, rf, store, undo, windowRect, worldView])
 
   // ---- React Flow callbacks ----
-  const onMove = useCallback((_: unknown, v: Viewport) => {
+  const onMove = useCallback((ev: unknown, v: Viewport) => {
+    if (ev) fitted.current = true // the owner moved: no late fit
     viewRef.current = { x: v.x, y: v.y, zoom: v.zoom }
     onViewChange?.(viewRef.current, 'move')
   }, [onViewChange])
@@ -717,6 +724,15 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     onViewChange?.(viewRef.current, 'end')
     recomputeLod()
   }, [onViewChange, recomputeLod, rf])
+  // The document often arrives after mount (engine sync): fit once when the first cards show up, unless the owner moved.
+  const fitted = useRef(Object.keys(board.cards).length > 0)
+  const hasCards = Object.keys(board.cards).length > 0
+  useEffect(() => {
+    if (fitted.current || !hasCards) return
+    fitted.current = true
+    const t = setTimeout(() => void rf.fitView({ padding: 0.1, maxZoom: 1 }), 50)
+    return () => clearTimeout(t)
+  }, [hasCards, rf])
 
   const onConnect: OnConnect = useCallback((c) => {
     if (!c.source || !c.target || c.source === c.target) return
@@ -746,7 +762,10 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   }, [doc, readOnly, store, undo])
   const onPaneClick = useCallback(() => {
     const kind = lastKind.current
-    if (kind === 'pen') return
+    if (kind === 'pen' || suppressClick.current) {
+      suppressClick.current = false
+      return
+    }
     const s = store.getState()
     setMenu(null)
     linkFrom.current = null

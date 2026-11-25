@@ -46,7 +46,7 @@ export function FreeInk() {
   const strokes = strokesOf(board, null)
   if (strokes.length === 0) return null
   return (
-    <svg className="wb-ink" width={1} height={1} style={{ zIndex: 5 }} aria-hidden>
+    <svg className="wb-ink" width={1} height={1} style={{ zIndex: 1_000_000 }} aria-hidden>
       <Paths strokes={strokes} board={board} />
     </svg>
   )
