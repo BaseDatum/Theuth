@@ -23,7 +23,7 @@ fn resolve<'a>(document: &'a Value, schema: &'a Value) -> &'a Value {
 
 #[test]
 fn event_catalog_uses_consumer_dialect_directions_and_local_collision_safe_refs() {
-    let event = |topic| EventDescriptor { topic, version: 1, schema: schema_for::<Event> };
+    let event = |topic| EventDescriptor::public(topic, 1, schema_for::<Event>);
     let discovery = Discovery {
         events: vec![event("z.events"), event("a.events")],
         plugins: vec!["z".into(), "a".into(), "a".into()],
@@ -57,7 +57,7 @@ fn event_catalog_uses_consumer_dialect_directions_and_local_collision_safe_refs(
 #[test]
 fn malformed_nonlocal_and_unresolved_refs_fail_closed_but_example_data_is_inert() {
     let document_with = |schema| Discovery {
-        events: vec![EventDescriptor { topic:"test", version:1, schema }],
+        events: vec![EventDescriptor::public("test", 1, schema)],
         ..Default::default()
     }.document();
     for schema in [
@@ -71,6 +71,6 @@ fn malformed_nonlocal_and_unresolved_refs_fail_closed_but_example_data_is_inert(
     }
     let document = document_with(|_| schemars::json_schema!({"type":"object","default":{"$ref":"literal user data"}})).unwrap();
     assert_eq!(document["x-theuth"]["events"][0]["schema"]["default"]["$ref"], "literal user data");
-    let duplicate = EventDescriptor { topic:"duplicate", version:1, schema:schema_for::<Event> };
+    let duplicate = EventDescriptor::public("duplicate", 1, schema_for::<Event>);
     assert!(Discovery { events:vec![duplicate.clone(), duplicate], ..Default::default() }.document().unwrap_err().to_string().contains("duplicate event descriptor"));
 }

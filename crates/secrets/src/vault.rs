@@ -260,18 +260,33 @@ pub const SANDBOX_PREFIX: &str = "sandbox/";
 /// [`Vault::set_if_version`], never listed, never expandable, every segment a `valid_name`.
 pub const SHARE_PREFIX: &str = "share/";
 
+/// Prefix of external plugins' rows (216): `plugins/<name>/<key>`. `share/`'s rules: written
+/// only through [`Vault::set_if_version`], never listed, never expandable, every segment a
+/// `valid_name`.
+pub const PLUGINS_PREFIX: &str = "plugins/";
+
+/// 216 D9: the name of the key that MACs `plugins/grants.yaml` ([`Vault::plugins_grants_key`]).
+/// It is kept in this engine's local-only `meta` table, not in a `vault` row, because vault
+/// rows replicate across the mesh and an approval must verify only on the engine that made it.
+pub const PLUGINS_GRANTS_KEY: &str = "plugins/grants-key";
+
+/// Associated data sealing [`PLUGINS_GRANTS_KEY`] under this engine's key.
+const PLUGINS_GRANTS_AAD: &[u8] = b"theuth-plugins-grants-key-1";
+
 /// `valid_name`, or one of the `/` families a local caller may write
 /// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`, `sandbox/<vm>/<key>`,
-/// `share/<domain>/<name>/<key>`.
+/// `share/<domain>/<name>/<key>`, `plugins/<name>/<key>`.
 fn writable_name(name: &str) -> bool {
     valid_name(name)
         || [OAUTH_PREFIX, MESH_PREFIX]
             .iter()
             .any(|p| name.strip_prefix(p).is_some_and(valid_name))
-        || [SANDBOX_PREFIX, SHARE_PREFIX].iter().any(|p| {
-            name.strip_prefix(p)
-                .is_some_and(|rest| rest.split('/').all(valid_name))
-        })
+        || [SANDBOX_PREFIX, SHARE_PREFIX, PLUGINS_PREFIX]
+            .iter()
+            .any(|p| {
+                name.strip_prefix(p)
+                    .is_some_and(|rest| rest.split('/').all(valid_name))
+            })
 }
 
 /// A 32-byte key row's value (base64url, no padding); `name` labels the errors.
@@ -547,6 +562,25 @@ impl Vault {
             }
             Err(e) => Err(anyhow::anyhow!("mesh/device_key: {e}")),
         }
+    }
+
+    /// 216 D9: the 32-byte key that MACs `plugins/grants.yaml`, created on first use. Kept in the
+    /// local-only `meta` table under [`PLUGINS_GRANTS_KEY`], sealed with this engine's key: it
+    /// never replicates, so an approval made here verifies on no other engine of the mesh.
+    pub async fn plugins_grants_key(&self) -> anyhow::Result<Zeroizing<[u8; 32]>> {
+        let _creating = self.keylock.lock().await;
+        if let Some(sealed) = store::meta_get(&self.pool, PLUGINS_GRANTS_KEY).await? {
+            return open_bytes(&self.key, PLUGINS_GRANTS_AAD, &sealed)
+                .and_then(|k| <[u8; 32]>::try_from(k.as_slice()).ok())
+                .map(Zeroizing::new)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("{PLUGINS_GRANTS_KEY}: does not open with this engine's key")
+                });
+        }
+        let fresh = Zeroizing::new(rand::random::<[u8; 32]>());
+        let sealed = seal(&self.key, PLUGINS_GRANTS_AAD, &*fresh);
+        store::meta_put(&self.pool, PLUGINS_GRANTS_KEY, &sealed).await?;
+        Ok(fresh)
     }
 
     /// `nonce ‖ XChaCha20-Poly1305(mesh key, aad)` — for callers that keep a
@@ -1822,6 +1856,62 @@ mod tests {
         assert_eq!(args["a"], "{{secret:share/tun.zip/sky/tls}}");
         let (names, _) = v.names_written_by(None);
         assert_eq!(names, ["tok"], "not in the unpair preview");
+    }
+
+    /// 216: `plugins/` rows follow `share/`'s rules; the grants key is stable across reopen,
+    /// distinct per engine, and never a (replicated) `vault` row.
+    #[tokio::test]
+    async fn plugins_rows_are_versioned_hidden_and_unexpandable() {
+        assert!(writable_name("plugins/turns/token"));
+        assert!(!writable_name("plugins/"));
+        assert!(!writable_name("plugins/turns//token"));
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("tok", "user-token-value", None, "user")
+            .await
+            .unwrap();
+        let row = "plugins/turns/token";
+        assert!(
+            v.set(row, "x", None, "u").await.is_err(),
+            "`/` names only via set_if_version"
+        );
+        let first = v
+            .set_if_version(row, "a", "plugins", None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.current, 1);
+        let second = v
+            .set_if_version(row, "b", "plugins", Some(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.current, 2);
+        assert_eq!(
+            v.list().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["tok"]
+        );
+        let placeholder = ["{{", "secret:", row, "}}"].concat();
+        let mut args = serde_json::json!({ "a": placeholder });
+        assert_eq!(v.expand(&mut args).unwrap(), 0, "never expanded");
+        assert_eq!(args["a"], placeholder);
+
+        let key = v.plugins_grants_key().await.unwrap();
+        assert_eq!(*key, *v.plugins_grants_key().await.unwrap());
+        assert!(
+            v.get(PLUGINS_GRANTS_KEY, 0).is_none(),
+            "not a vault row: it would replicate"
+        );
+        let (rows, _) = store::rows(&v.pool).await.unwrap();
+        assert!(rows.iter().all(|r| r.name != PLUGINS_GRANTS_KEY));
+        drop(v);
+        let reopened = open(dir.path()).await;
+        assert_eq!(*key, *reopened.plugins_grants_key().await.unwrap());
+        let other = tempfile::tempdir().unwrap();
+        assert_ne!(
+            *key,
+            *open(other.path()).await.plugins_grants_key().await.unwrap()
+        );
     }
 
     /// 210 §5.7: only the lease holder mints `mesh/share_key`; anyone reads the row once it

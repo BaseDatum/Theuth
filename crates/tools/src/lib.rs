@@ -115,8 +115,8 @@ pub use registry::{
 };
 pub use registry::{
     BuiltinsSwitchError, CloseTreeAll, ExpectParticipants, HarnessInvoke, HiddenEpoch,
-    ListBuiltins, MCP_SERVER_HIDE_PREFIX, OpenTree, ParticipantsReady, RegisterLifecycle,
-    SetBuiltinsDisabled, mcp_server_key,
+    InvokeHumanOnly, ListBuiltins, MCP_SERVER_HIDE_PREFIX, OpenTree, ParticipantsReady,
+    RegisterLifecycle, SetBuiltinsDisabled, mcp_server_key,
 };
 pub use reminder::{
     CancelReminder, CancelReminders, RearmReminder, ReminderEvent, ReminderView, SetReminder,

@@ -164,6 +164,8 @@ pub struct Lagged {
 
 impl wire::WireEvent for StreamControl {
     const TOPIC: &'static str = "rpc.stream";
+    /// 216 §7.3: connection controls, not events of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// 188: the flags Settings had no write path for: four `<section>.enabled` and

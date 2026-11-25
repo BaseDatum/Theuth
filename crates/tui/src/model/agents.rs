@@ -161,6 +161,7 @@ impl Model {
                 session,
                 from,
                 text,
+                ..
             } => {
                 if self.session == Some(*session) {
                     match self.components.wrapper(crate::components::Wrapper {

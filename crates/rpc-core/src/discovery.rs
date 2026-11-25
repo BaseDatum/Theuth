@@ -220,6 +220,7 @@ impl Discovery {
             ensure!(identities.insert((event.topic, event.version)), "duplicate event descriptor: {} v{}", event.topic, event.version);
             let scope = format!("event.{}", component_name(event.topic));
             events.push(json!({"topic":event.topic,"version":event.version,
+                "exposure":event.exposure.as_str(),
                 "schema":schemas.schema(&scope, "output", event.schema)?,
                 "receiverSchema":schemas.schema(&scope, "receiver", event.schema)?,
             }));

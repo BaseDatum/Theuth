@@ -3799,6 +3799,10 @@ pub enum AgentEvent {
         from: String,
         /// Delivered text without its wrapper.
         text: String,
+        /// 216 §7.3: the sender is a contact (186, `PeerOrigin.contact_mode` set); external
+        /// plugins then see no `text`. `false` for children, parent, jobs and the owner.
+        #[serde(default)]
+        contact: bool,
     },
     /// The session's model was switched (takes effect on its next model call).
     ModelChanged {
@@ -4160,6 +4164,28 @@ pub enum AgentEvent {
 
 impl wire::WireEvent for AgentEvent {
     const TOPIC: &'static str = "agent.events";
+    /// 216 §7.3 (b): a contact's file name and where it was saved; size, type, state stay.
+    const STRIP: &'static [&'static str] =
+        &["ContactFileChanged.file.name", "ContactFileChanged.file.path"];
+    const CONDITIONAL: &'static [&'static str] = &[
+        "MessageDelivered.text removed when contact is true (b: a contact's message, 186)",
+        "router: in a meeting session, for its whole life, TurnStarted.text, InputQueued.text, \
+         TextDelta.text, ReasoningDelta.text, ToolCallStarted.args, ToolCallProgress.args, \
+         ToolCallFinished.output, MessageDelivered.text, Error.message, Suggestions.items, \
+         TodoChanged.snapshot and AdvisoryAdded.advisory are removed (b: meeting transcripts)",
+    ];
+
+    /// 216 §7.3: a contact's message body never reaches an external plugin.
+    fn plugin_view(json: &serde_json::Value) -> Option<serde_json::Value> {
+        let mut json = json.clone();
+        if json["type"] == "MessageDelivered"
+            && json["contact"] == true
+            && let Some(map) = json.as_object_mut()
+        {
+            map.remove("text");
+        }
+        Some(json)
+    }
 
     fn policy(json: &serde_json::Value) -> wire::EventPolicy {
         let mut policy = wire::EventPolicy::legacy_fields(json);

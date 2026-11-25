@@ -451,6 +451,8 @@ pub struct WebViewCallRequested {
 
 impl wire::WireEvent for WebViewCallRequested {
     const TOPIC: &'static str = "artifact.web-view-call-requested";
+    /// 216 §7.3: an engine-to-shell request, not an event of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// Event: the call was answered, failed, timed out or nobody claimed it; the tile's "agent is
@@ -466,6 +468,8 @@ pub struct WebViewCallResolved {
 
 impl wire::WireEvent for WebViewCallResolved {
     const TOPIC: &'static str = "artifact.web-view-call-resolved";
+    /// 216 §7.3: an engine-to-shell request's answer, not an event of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// A client's answer to a [`WebViewCallRequested`] (209 §4.4).

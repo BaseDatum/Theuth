@@ -1277,6 +1277,7 @@ mod tests {
             session: r.session(),
             from: "grep-logs".into(),
             text: "found it".into(),
+            contact: false,
         })
         .await;
         assert_eq!(
@@ -1690,6 +1691,7 @@ mod tests {
             session: r.session(),
             from: "grep-logs".into(),
             text: format!("found it\n\n```json-render\n{GRAPH}\n```"),
+            contact: false,
         })
         .await;
         let calls = r.api.calls();

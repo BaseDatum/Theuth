@@ -192,6 +192,9 @@ async fn legacy_event_families() {
     family::<share::ShareTraffic>(&rt, &mut stream, "share.traffic").await;
     family::<agent::EndlessProgress>(&rt, &mut stream, "agent.endless-progress").await;
     family::<agent::CostCubeChanged>(&rt, &mut stream, "agent.cost-cube").await;
+    // 216: external plugins' events and their placement/lifecycle frames.
+    family::<plugins::PluginEvent>(&rt, &mut stream, "plugins.events").await;
+    family::<plugins::PluginUi>(&rt, &mut stream, "plugins.ui").await;
     relay(&rt, &mut stream).await;
     drop(stream);
     lagged_then_pending_snapshot(&methods, &events).await;

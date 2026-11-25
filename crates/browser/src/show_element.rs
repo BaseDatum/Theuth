@@ -98,6 +98,8 @@ pub struct ElementFormRequested {
 
 impl wire::WireEvent for ElementFormRequested {
     const TOPIC: &'static str = "browser.element-form-requested";
+    /// 216 §7.3: an engine-to-shell request, not an event of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// How a card ended (209 §4.4).
@@ -129,6 +131,8 @@ pub struct ElementFormResolved {
 
 impl wire::WireEvent for ElementFormResolved {
     const TOPIC: &'static str = "browser.element-form-resolved";
+    /// 216 §7.3: an engine-to-shell request's answer, not an event of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// The card's answer (209 §4.4): `{ "submit": { "values": { "<index>": "…" } } }` or

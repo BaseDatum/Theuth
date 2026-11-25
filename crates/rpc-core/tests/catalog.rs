@@ -13,7 +13,7 @@ fn discovery() -> Discovery {
             method("owner_secret", Audience::Owner, schema_for::<Vec<u64>>),
             method("peer_deliver", Audience::Mesh, schema_for::<bool>),
         ], ..Default::default() },
-        events: vec![wire::EventDescriptor { topic: "global.events", version: 1, schema: schema_for::<Vec<String>> }],
+        events: vec![wire::EventDescriptor::public("global.events", 1, schema_for::<Vec<String>>)],
         plugins: vec!["document".into(), "hidden-owner".into()],
     }
 }

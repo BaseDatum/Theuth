@@ -871,6 +871,7 @@ impl AcpChild {
             session,
             from,
             text,
+            contact: false,
         })
         .await;
     }

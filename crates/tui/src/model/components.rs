@@ -627,7 +627,7 @@ fn wrapper_projection_is_tag_owned_and_shared_by_history_and_live_rows() {
     model.session = Some(session);
     model.streaming = true;
     model.apply(UiEvent::Agent(AgentEvent::TextDelta { session, turn: runtime::TurnId::new(), text: "streaming".into() }));
-    model.apply(UiEvent::Agent(AgentEvent::MessageDelivered { session, from: "live".into(), text: "live body".into() }));
+    model.apply(UiEvent::Agent(AgentEvent::MessageDelivered { session, from: "live".into(), text: "live body".into(), contact: false }));
     assert!(matches!(&model.entries[0], Entry::Card { title, text, .. } if title == "owner:live" && text.raw() == "live body"));
     assert!(matches!(&model.entries[1], Entry::Assistant(text) if text.raw() == "streaming" && !text.is_done()));
     model.components.unmount(token);

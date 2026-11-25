@@ -1871,10 +1871,7 @@
             source: ::knowledge::Source::User, commit: None,
         };
         m.apply(UiEvent::Wire(TopicEvent::Local(Arc::new(wire::WireFrame {
-            descriptor: Some(Arc::new(wire::EventDescriptor {
-                topic: "knowledge.changed", version: 1,
-                schema: |generator| generator.subschema_for::<::knowledge::KnowledgeChanged>(),
-            })),
+            descriptor: Some(Arc::new(wire::EventDescriptor::of::<::knowledge::KnowledgeChanged>())),
             event: serde_json::to_value(&changed).unwrap(), policy: Default::default(),
         }))));
         let due = m.components.wake().expect("local change schedules an open query refresh");
@@ -4099,6 +4096,7 @@
             session: s,
             from: "job j1".into(),
             text: "done".into(),
+            contact: false,
         });
         assert!(matches!(
             m.entries.last(),
@@ -4507,6 +4505,7 @@
             session: s,
             from: "pinger".into(),
             text: "PONG".into(),
+            contact: false,
         });
         m.apply_agent(AgentEvent::TextDelta {
             session: s,

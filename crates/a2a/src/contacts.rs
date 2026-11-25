@@ -333,6 +333,8 @@ pub enum ContactEvent {
 impl wire::WireEvent for ContactEvent {
     const TOPIC: &'static str = "a2a.contacts";
     const VERSION: u32 = 1;
+    /// 216 §7.3 (a): the contact pairing ceremony with its verification code.
+    const DROP: &'static [&'static str] = &["contact_pair"];
 }
 
 // ---------------------------------------------------------------------------

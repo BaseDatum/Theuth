@@ -1883,6 +1883,7 @@ impl Agents {
                             session: to,
                             from: from.to_string(),
                             text,
+                            contact: false,
                         })
                         .await;
                     return;
@@ -1914,6 +1915,7 @@ impl Agents {
                 session: to,
                 from: from.to_string(),
                 text,
+                contact: false,
             })
             .await;
     }
@@ -8083,6 +8085,7 @@ impl Message<AnswerPeerRequest> for Agents {
                     session: m.session,
                     from: "you".into(),
                     text,
+                    contact: false,
                 })
                 .await;
             self.settle_wait(&original);
@@ -8148,6 +8151,7 @@ impl Message<AnswerPeerRequest> for Agents {
                 session: m.session,
                 from: "you".into(),
                 text: text.clone(),
+                contact: false,
             })
             .await;
         if self.settle_wait(&original) {
@@ -18377,6 +18381,7 @@ pub(crate) mod tests {
                     session,
                     from,
                     text,
+                    ..
                 } if *session == p => Some((from.clone(), text.clone())),
                 _ => None,
             })

@@ -519,6 +519,18 @@ pub enum MeetingEvent {
 
 impl wire::WireEvent for MeetingEvent {
     const TOPIC: &'static str = "meeting.events";
+    /// 216 §7.3 (b): live transcript of other people's speech.
+    const DROP: &'static [&'static str] = &["Utterance"];
+    /// 216 §7.3 (b, a): an invite's agenda (others' words) and its join link (often with a
+    /// passcode), wherever an `EventRef` appears; title, times, host and attendees stay.
+    const STRIP: &'static [&'static str] = &[
+        "Upcoming.event.description",
+        "Upcoming.event.join_url",
+        "Detected.event.event.description",
+        "Detected.event.event.join_url",
+        "Detected.event.alternatives.description",
+        "Detected.event.alternatives.join_url",
+    ];
 }
 
 /// Why a topic button disappeared (phase 2).

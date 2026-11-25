@@ -1,0 +1,178 @@
+[
+  {
+    "input": {
+      "type": "PluginStatus",
+      "plugin": "turns",
+      "placement": "turns",
+      "dot": "ok",
+      "badge": 3,
+      "label": null,
+      "tooltip": "3 turns today"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginStatus",
+          "plugin": "turns",
+          "placement": "turns",
+          "dot": "ok",
+          "badge": 3,
+          "label": null,
+          "tooltip": "3 turns today"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PluginStatus",
+      "plugin": "ping",
+      "placement": "ping",
+      "dot": "warn",
+      "badge": "slow",
+      "label": "ping 412 ms",
+      "tooltip": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginStatus",
+          "plugin": "ping",
+          "placement": "ping",
+          "dot": "warn",
+          "badge": "slow",
+          "label": "ping 412 ms",
+          "tooltip": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PluginSurface",
+      "plugin": "turns",
+      "placement": "turns",
+      "format": "openui",
+      "revision": 7
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginSurface",
+          "plugin": "turns",
+          "placement": "turns",
+          "format": "openui",
+          "revision": 7
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PluginSurface",
+      "plugin": "notes",
+      "placement": "panel",
+      "format": "json-render",
+      "revision": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginSurface",
+          "plugin": "notes",
+          "placement": "panel",
+          "format": "json-render",
+          "revision": 1
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PluginInvalidate",
+      "plugin": "turns",
+      "placement": "turns"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginInvalidate",
+          "plugin": "turns",
+          "placement": "turns"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PluginState",
+      "plugin": "turns",
+      "state": "awaiting_approval",
+      "error": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginState",
+          "plugin": "turns",
+          "state": "awaiting_approval",
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PluginState",
+      "plugin": "ping",
+      "state": "backoff",
+      "error": "exited with status 1"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginState",
+          "plugin": "ping",
+          "state": "backoff",
+          "error": "exited with status 1"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PluginsChanged"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginsChanged"
+        }
+      }
+    }
+  }
+]

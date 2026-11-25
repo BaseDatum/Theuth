@@ -113,6 +113,10 @@ pub enum SignalEvent {
 
 impl wire::WireEvent for SignalEvent {
     const TOPIC: &'static str = "signal.events";
+    /// 216 §7.3 (a): the device-link URL links the account.
+    const DROP: &'static [&'static str] = &["LinkUrl"];
+    /// 216 §7.3 (d): the owner's phone number; `Linked` itself stays public.
+    const STRIP: &'static [&'static str] = &["Linked.number"];
 }
 
 /// Declare wire contracts before starting producers, even when disabled.

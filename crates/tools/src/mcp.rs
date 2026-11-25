@@ -416,6 +416,22 @@ impl Gates {
     }
 }
 
+/// 216 §8: the server-key prefix reserved for external plugins' tools in `config.yaml`
+/// (`plugin.turns: {risk: off}`) and in session hides. No MCP server may be named with it.
+pub const PLUGIN_SERVER_PREFIX: &str = "plugin.";
+
+/// 216 §8: the reserved server key of plugin `name`'s tools (`plugin.<name>`).
+pub fn plugin_server_key(name: &str) -> String {
+    format!("{PLUGIN_SERVER_PREFIX}{name}")
+}
+
+/// 216 §8: the gate line of `<mcp_dir>/config.yaml` for `tool` of `server` (tool line, else
+/// server line), `None` when neither names one: the caller falls back to annotations, the same
+/// order as an MCP tool's risk. A plugin's server is [`plugin_server_key`].
+pub fn gate_for(mcp_dir: &Path, server: &str, tool: &str) -> Option<Gate> {
+    load_gates(&mcp_dir.join("config.yaml")).for_tool(server, tool)
+}
+
 /// Missing file = annotations; unreadable/unparsable = warn + annotations.
 fn load_gates(path: &Path) -> Gates {
     let text = match std::fs::read_to_string(path) {
@@ -643,16 +659,23 @@ fn backoff(failures: u32) -> Duration {
         .min(RETRY_CAP)
 }
 
-/// Risk from the remote tool's annotations: `read_only_hint` → read-only,
-/// `destructive_hint` → destructive, else mutating. rmcp's
-/// `is_destructive()` reads an *unset* hint as destructive; we do not (12 §5):
-/// most servers set nothing, and `tools.policy.mutating = ask` already
-/// prompts. A server that means destructive says so.
+/// Risk from the remote tool's annotations ([`risk_from_hints`]).
 fn annotated(t: &rmcp::model::Tool) -> Risk {
     let a = t.annotations.as_ref();
-    if a.and_then(|a| a.read_only_hint) == Some(true) {
+    risk_from_hints(
+        a.and_then(|a| a.read_only_hint),
+        a.and_then(|a| a.destructive_hint),
+    )
+}
+
+/// Risk from MCP tool annotations (216 §8 uses it for manifest tools): `readOnlyHint` →
+/// read-only, `destructiveHint` → destructive, else mutating. rmcp's `is_destructive()` reads an
+/// *unset* hint as destructive; we do not (12 §5): most servers set nothing, and
+/// `tools.policy.mutating = ask` already prompts. A server that means destructive says so.
+pub fn risk_from_hints(read_only: Option<bool>, destructive: Option<bool>) -> Risk {
+    if read_only == Some(true) {
         Risk::ReadOnly
-    } else if a.and_then(|a| a.destructive_hint) == Some(true) {
+    } else if destructive == Some(true) {
         Risk::Destructive
     } else {
         Risk::Mutating
@@ -2133,7 +2156,7 @@ impl Message<Progress> for Mcp {
 /// literal dollar, and the shell's own parser handles nesting. A `$`-free
 /// string is returned as is; a failed substitution is a warning and empty
 /// (POSIX), the server's own auth error names the consequence.
-async fn expand(raw: &str) -> anyhow::Result<String> {
+pub async fn expand(raw: &str) -> anyhow::Result<String> {
     let mut s = raw.to_owned();
     if s.contains("{{secret:") {
         let mut v = serde_json::Value::String(s);
@@ -2165,7 +2188,8 @@ async fn expand(raw: &str) -> anyhow::Result<String> {
     Ok(text)
 }
 
-async fn expand_map(m: &BTreeMap<String, String>) -> anyhow::Result<BTreeMap<String, String>> {
+/// [`expand`] over every value of an env or header map; keys are kept as written.
+pub async fn expand_map(m: &BTreeMap<String, String>) -> anyhow::Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for (k, v) in m {
         out.insert(k.clone(), expand(v).await?);
@@ -2319,6 +2343,13 @@ fn wanted(dir: &Path) -> BTreeMap<String, (String, ServerSpec)> {
             .unwrap_or_default()
             .to_owned();
         for (name, spec) in parse_file(stem(&path), &json, dir) {
+            if name.starts_with(PLUGIN_SERVER_PREFIX) {
+                tracing::warn!(
+                    server = %name, file = %path.display(),
+                    "mcp server names starting with `plugin.` are reserved for external plugins (216); entry skipped"
+                );
+                continue;
+            }
             if let Some(first) = owner.get(&name) {
                 tracing::warn!(
                     server = %name, kept = %first.display(), ignored = %path.display(),
@@ -3111,6 +3142,37 @@ mod tests {
             Risk::Mutating,
             "off falls back to annotations for display"
         );
+    }
+
+    /// 216 §8: manifest tools map hints exactly as MCP annotations do.
+    #[test]
+    fn risk_from_hints_matches_annotations() {
+        assert_eq!(risk_from_hints(None, None), Risk::Mutating);
+        assert_eq!(risk_from_hints(Some(true), Some(true)), Risk::ReadOnly);
+        assert_eq!(risk_from_hints(Some(false), Some(true)), Risk::Destructive);
+        assert_eq!(risk_from_hints(None, Some(false)), Risk::Mutating);
+    }
+
+    /// 216 §8: `plugin.*` is reserved: such an MCP server is skipped; a plugin's gate lines are
+    /// read under `plugin.<name>`, tool line first.
+    #[test]
+    fn plugin_named_servers_refused_and_plugin_gates_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("servers.json"),
+            r#"{"mcpServers": {"plugin.turns": {"command": "x"}, "ok": {"command": "y"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(wanted(dir.path()).into_keys().collect::<Vec<_>>(), ["ok"]);
+        std::fs::write(
+            dir.path().join("config.yaml"),
+            "servers:\n  plugin.turns:\n    risk: read_only\n    tools:\n      reset: off\n",
+        )
+        .unwrap();
+        let key = plugin_server_key("turns");
+        assert_eq!(gate_for(dir.path(), &key, "reset"), Some(Gate::Off));
+        assert_eq!(gate_for(dir.path(), &key, "count"), Some(Gate::ReadOnly));
+        assert_eq!(gate_for(dir.path(), "plugin.other", "count"), None);
     }
 
     #[test]

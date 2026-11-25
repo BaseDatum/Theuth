@@ -32,6 +32,7 @@
 
 use std::{
     any::{Any, TypeId},
+    borrow::Cow,
     collections::HashMap,
     future::Future,
     pin::Pin,
@@ -64,6 +65,31 @@ pub fn serde_type_tag<T: JsonSchema>(schema: &mut Schema) {
         .push(Value::String("type".into()));
 }
 
+/// 216 §7.3: who outside the binary may see a topic. Exposure governs external plugins only;
+/// owner clients and native plugins see every frame (00 §7).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Exposure {
+    /// Every external plugin may subscribe (after the user approves the subscription).
+    #[default]
+    Public,
+    /// Never delivered to external plugins, never in their catalog. Owner-only consumers
+    /// (native plugins, RPC clients holding the owner token) are unaffected.
+    Private,
+    /// Transport/control frames that are not events of the world (no catalog entry).
+    Internal,
+}
+
+impl Exposure {
+    /// The serialized name (`public`, `private`, `internal`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Private => "private",
+            Self::Internal => "internal",
+        }
+    }
+}
 
 /// An owner-declared event family; Rust type names never identify wire topics.
 pub trait WireEvent: Clone + Send + Serialize + JsonSchema + 'static {
@@ -71,6 +97,18 @@ pub trait WireEvent: Clone + Send + Serialize + JsonSchema + 'static {
     const TOPIC: &'static str;
     /// Inner JSON contract version, independent of the engine version.
     const VERSION: u32 = 1;
+    /// 216: who outside the binary may see this topic. New topics are public.
+    const EXPOSURE: Exposure = Exposure::Public;
+    /// 216: `type` tags of variants never shown to external plugins.
+    const DROP: &'static [&'static str] = &[];
+    /// 216: `"<type>.<field>"` paths always removed before delivery (`"Linked.number"`). A path
+    /// segment that meets an array applies to each element.
+    const STRIP: &'static [&'static str] = &[];
+    /// 216: fields whose names look sensitive but were reviewed as public (`"LinkPaired.device.key"`).
+    const REVIEWED_PUBLIC: &'static [&'static str] = &[];
+    /// 216: one line per data-dependent rule `plugin_view` applies, for the snapshot. Empty means
+    /// `plugin_view` is never called.
+    const CONDITIONAL: &'static [&'static str] = &[];
 
     /// Serialize once per accepted event, not once per receiver.
     fn to_json(&self) -> serde_json::Result<Value> {
@@ -80,6 +118,12 @@ pub trait WireEvent: Clone + Send + Serialize + JsonSchema + 'static {
     /// Extract scope and owner-defined semantics from the projected inner JSON.
     fn policy(json: &Value) -> EventPolicy {
         EventPolicy::legacy_fields(json)
+    }
+
+    /// 216: data-dependent projection after DROP/STRIP (`None` drops the frame). Default:
+    /// unchanged. An owner that overrides it lists what it does in `CONDITIONAL`.
+    fn plugin_view(json: &Value) -> Option<Value> {
+        Some(json.clone())
     }
 }
 
@@ -139,6 +183,149 @@ pub struct EventDescriptor {
     pub version: u32,
     /// Generate lazily with the consumer's dialect, contract and definitions.
     pub schema: fn(&mut schemars::SchemaGenerator) -> Schema,
+    /// 216: [`WireEvent::EXPOSURE`].
+    pub exposure: Exposure,
+    /// 216: [`WireEvent::DROP`].
+    pub drop: &'static [&'static str],
+    /// 216: [`WireEvent::STRIP`].
+    pub strip: &'static [&'static str],
+    /// 216: [`WireEvent::REVIEWED_PUBLIC`].
+    pub reviewed_public: &'static [&'static str],
+    /// 216: [`WireEvent::CONDITIONAL`].
+    pub conditional: &'static [&'static str],
+    /// 216: [`WireEvent::plugin_view`].
+    pub plugin_view: fn(&Value) -> Option<Value>,
+}
+
+impl EventDescriptor {
+    /// The descriptor of `E`, as registration installs it.
+    pub fn of<E: WireEvent>() -> Self {
+        Self {
+            topic: E::TOPIC,
+            version: E::VERSION,
+            schema: |generator| generator.subschema_for::<E>(),
+            exposure: E::EXPOSURE,
+            drop: E::DROP,
+            strip: E::STRIP,
+            reviewed_public: E::REVIEWED_PUBLIC,
+            conditional: E::CONDITIONAL,
+            plugin_view: E::plugin_view,
+        }
+    }
+
+    /// A hand-built public descriptor with no exposure rules (tests, synthetic catalogs).
+    pub fn public(
+        topic: &'static str,
+        version: u32,
+        schema: fn(&mut schemars::SchemaGenerator) -> Schema,
+    ) -> Self {
+        Self {
+            topic,
+            version,
+            schema,
+            exposure: Exposure::Public,
+            drop: &[],
+            strip: &[],
+            reviewed_public: &[],
+            conditional: &[],
+            plugin_view: |json| Some(json.clone()),
+        }
+    }
+
+    /// 216 §7.3: `event` as an external plugin may see it, or `None` for a Private/Internal
+    /// topic, a DROP variant or a `plugin_view` drop. Borrows when nothing is removed.
+    pub fn external_view<'a>(&self, event: &'a Value) -> Option<Cow<'a, Value>> {
+        if self.exposure != Exposure::Public {
+            return None;
+        }
+        let tag = event.get("type").and_then(Value::as_str);
+        if tag.is_some_and(|tag| self.drop.contains(&tag)) {
+            return None;
+        }
+        let mut view = Cow::Borrowed(event);
+        if let Some(tag) = tag {
+            for path in self.strip {
+                let mut segments = path.split('.');
+                if segments.next() == Some(tag) {
+                    let rest: Vec<&str> = segments.collect();
+                    if has_path(view.as_ref(), &rest) {
+                        strip_path(view.to_mut(), &rest);
+                    }
+                }
+            }
+        }
+        if self.conditional.is_empty() {
+            return Some(view);
+        }
+        (self.plugin_view)(view.as_ref()).map(Cow::Owned)
+    }
+
+    /// The fields of a topic that two impls of one `TOPIC` must agree on (216 §7.3, F4).
+    fn exposure_key(&self) -> ExposureKey {
+        (self.exposure, self.drop, self.strip, self.reviewed_public, self.conditional)
+    }
+}
+
+type ExposureKey = (
+    Exposure,
+    &'static [&'static str],
+    &'static [&'static str],
+    &'static [&'static str],
+    &'static [&'static str],
+);
+
+/// Whether `path` reaches at least one value under `value` (arrays fan out).
+fn has_path(value: &Value, path: &[&str]) -> bool {
+    let Some((first, rest)) = path.split_first() else {
+        return false;
+    };
+    match value {
+        Value::Array(items) => items.iter().any(|item| has_path(item, path)),
+        Value::Object(map) => match map.get(*first) {
+            Some(_) if rest.is_empty() => true,
+            Some(inner) => has_path(inner, rest),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+/// Remove every value `path` reaches under `value` (arrays fan out).
+fn strip_path(value: &mut Value, path: &[&str]) {
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
+    match value {
+        Value::Array(items) => items.iter_mut().for_each(|item| strip_path(item, path)),
+        Value::Object(map) if rest.is_empty() => {
+            map.remove(*first);
+        }
+        Value::Object(map) => {
+            if let Some(inner) = map.get_mut(*first) {
+                strip_path(inner, rest);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Process-wide record of every declared topic's exposure, across runtimes, so two impls of one
+/// `TOPIC` (the relay's test twins) cannot disagree on it.
+fn agree(descriptor: &EventDescriptor) -> Result<()> {
+    static SEEN: std::sync::LazyLock<parking_lot::Mutex<HashMap<&'static str, ExposureKey>>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut seen = SEEN.lock();
+    let key = descriptor.exposure_key();
+    match seen.get(descriptor.topic) {
+        Some(old) if *old != key => {
+            bail!("wire topic {} declared with disagreeing exposure consts", descriptor.topic)
+        }
+        Some(_) => Ok(()),
+        None => {
+            seen.insert(descriptor.topic, key);
+            Ok(())
+        }
+    }
 }
 
 /// Shared feed item. A missing descriptor means legacy-only opaque JSON.
@@ -150,6 +337,15 @@ pub struct WireFrame {
     pub event: Value,
     /// Metadata derived from the projected inner event.
     pub policy: EventPolicy,
+}
+
+impl WireFrame {
+    /// 216 (D4): the frame as an external plugin may see it — `None` without a descriptor, for a
+    /// Private or Internal topic, a DROP variant or a `plugin_view` drop. Computed on each call
+    /// (borrowed when nothing is removed); the caller caches per frame.
+    pub fn external_view(&self) -> Option<Cow<'_, Value>> {
+        self.descriptor.as_ref()?.external_view(&self.event)
+    }
 }
 
 /// A transport adapter's output, never republished onto the typed bus.
@@ -312,12 +508,10 @@ impl RuntimeWire for Runtime {
         E: WireEvent,
         F: for<'a> FnMut(EventInput<'a, E>) -> serde_json::Result<Option<Value>> + Send + 'static,
     {
+        let descriptor = EventDescriptor::of::<E>();
+        agree(&descriptor)?;
         let entry = Entry::Event(EventEntry {
-            descriptor: Arc::new(EventDescriptor {
-                topic: E::TOPIC,
-                version: E::VERSION,
-                schema: |generator| generator.subschema_for::<E>(),
-            }),
+            descriptor: Arc::new(descriptor),
             project: Box::new(move |input| {
                 project(match input {
                     ErasedInput::Typed(event) => {

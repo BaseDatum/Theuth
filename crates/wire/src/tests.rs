@@ -406,3 +406,89 @@ async fn late_declarations_are_rejected_after_freeze_without_resetting_existing_
     rt.register_wire_event::<Local<0>>().await.unwrap();
     assert_eq!(rt.wire_schema().iter().map(|d| d.topic).collect::<Vec<_>>(), ["test.a"]);
 }
+
+/// A tagged enum with the 216 exposure consts, for `external_view`.
+#[allow(dead_code)]
+#[derive(Clone, Serialize, JsonSchema)]
+#[serde(tag = "type")]
+enum Exposed {
+    Kept { owner: String },
+    Secret { key: String },
+    Linked { number: String, device: String, alternatives: Vec<Value> },
+}
+
+impl WireEvent for Exposed {
+    const TOPIC: &'static str = "test.exposed";
+    const DROP: &'static [&'static str] = &["Secret"];
+    const STRIP: &'static [&'static str] = &["Linked.number", "Linked.alternatives.url"];
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Serialize, JsonSchema)]
+struct Hidden;
+
+impl WireEvent for Hidden {
+    const TOPIC: &'static str = "test.hidden";
+    const EXPOSURE: Exposure = Exposure::Private;
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Serialize, JsonSchema)]
+struct Twin;
+
+impl WireEvent for Twin {
+    const TOPIC: &'static str = "test.hidden";
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Serialize, JsonSchema)]
+struct Viewed;
+
+impl WireEvent for Viewed {
+    const TOPIC: &'static str = "test.viewed";
+    const CONDITIONAL: &'static [&'static str] = &["drops frames whose `drop` is true"];
+    fn plugin_view(json: &Value) -> Option<Value> {
+        (json["drop"] != true).then(|| json.clone())
+    }
+}
+
+fn frame(descriptor: Option<EventDescriptor>, event: Value) -> WireFrame {
+    WireFrame { descriptor: descriptor.map(Arc::new), policy: EventPolicy::legacy_fields(&event), event }
+}
+
+#[test]
+fn external_view_none_without_descriptor() {
+    let legacy = frame(None, json!({"type": "Kept", "owner": "sky"}));
+    assert!(legacy.external_view().is_none());
+    let private = frame(Some(EventDescriptor::of::<Hidden>()), json!({"type": "Hidden"}));
+    assert!(private.external_view().is_none());
+}
+
+#[test]
+fn drop_and_strip_apply() {
+    let descriptor = || Some(EventDescriptor::of::<Exposed>());
+    let kept = frame(descriptor(), json!({"type": "Kept", "owner": "sky"}));
+    assert!(matches!(kept.external_view(), Some(Cow::Borrowed(v)) if *v == kept.event));
+    assert!(frame(descriptor(), json!({"type": "Secret", "key": "k"})).external_view().is_none());
+    let linked = frame(
+        descriptor(),
+        json!({"type": "Linked", "number": "+4100", "device": "d",
+               "alternatives": [{"url": "u", "title": "t"}, {"title": "x"}]}),
+    );
+    assert_eq!(
+        linked.external_view().unwrap().into_owned(),
+        json!({"type": "Linked", "device": "d", "alternatives": [{"title": "t"}, {"title": "x"}]})
+    );
+    // The frame itself is untouched: owner clients still see everything.
+    assert_eq!(linked.event["number"], "+4100");
+    let viewed = || Some(EventDescriptor::of::<Viewed>());
+    assert!(frame(viewed(), json!({"drop": true})).external_view().is_none());
+    assert_eq!(frame(viewed(), json!({"drop": false})).external_view().unwrap().into_owned(), json!({"drop": false}));
+}
+
+#[tokio::test]
+async fn same_topic_with_disagreeing_exposure_fails_declaration() {
+    runtime().register_wire_event::<Hidden>().await.unwrap();
+    let err = runtime().register_wire_event::<Twin>().await.unwrap_err();
+    assert!(err.to_string().contains("disagreeing exposure"), "{err}");
+}

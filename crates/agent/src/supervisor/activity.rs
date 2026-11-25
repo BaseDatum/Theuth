@@ -678,6 +678,7 @@ mod tests {
                     session,
                     from,
                     text,
+                    ..
                 } = e
                     && session == self.parent
                 {

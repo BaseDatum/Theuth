@@ -174,6 +174,8 @@ pub enum SandboxEvent {
 
 impl wire::WireEvent for SandboxEvent {
     const TOPIC: &'static str = "sandbox.events";
+    /// 216 §7.3 (a): `ws_url` is an unauthenticated live link to the VM's desktop.
+    const DROP: &'static [&'static str] = &["OpenDesktop"];
 }
 
 /// `sandbox:` config section (79 §4.7). An absent section is the defaults.

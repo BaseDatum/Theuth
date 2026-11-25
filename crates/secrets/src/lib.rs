@@ -45,8 +45,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 pub use vault::{
-    KEEP, KeyInfo, KeyStore, MESH_PREFIX, OAUTH_PREFIX, RetireHold, RotationPeer, RotationPhase,
-    RotationState, SHARE_PREFIX, SecretInfo, SecretsList, Vault, VersionInfo, WireKey,
+    KEEP, KeyInfo, KeyStore, MESH_PREFIX, OAUTH_PREFIX, PLUGINS_GRANTS_KEY, PLUGINS_PREFIX,
+    RetireHold, RotationPeer, RotationPhase, RotationState, SHARE_PREFIX, SecretInfo, SecretsList,
+    Vault, VersionInfo, WireKey,
 };
 
 /// How often the plugin looks for rows written by others (a peer's batch
@@ -314,6 +315,8 @@ pub enum SecretsEvent {
 
 impl wire::WireEvent for SecretsEvent {
     const TOPIC: &'static str = "secrets.events";
+    /// 216 §7.3 (a): the live masked-entry moment and wording a plugin could imitate.
+    const DROP: &'static [&'static str] = &["SecretRequested"];
 }
 
 /// Internal `tell`: the waiter finished (answered, timed out) — drop its pending entry.

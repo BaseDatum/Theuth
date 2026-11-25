@@ -1,0 +1,58 @@
+[
+  {
+    "input": {
+      "type": "PluginEvent",
+      "plugin": "turns",
+      "event": "limit_reached",
+      "version": 1,
+      "session": null,
+      "data": {
+        "day": "2026-11-25",
+        "turns": 40
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginEvent",
+          "plugin": "turns",
+          "event": "limit_reached",
+          "version": 1,
+          "session": null,
+          "data": {
+            "day": "2026-11-25",
+            "turns": 40
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "PluginEvent",
+      "plugin": "turns",
+      "event": "counted",
+      "version": 2,
+      "session": "00000000-0000-0000-0000-000000000001",
+      "data": {}
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PluginEvent",
+          "plugin": "turns",
+          "event": "counted",
+          "version": 2,
+          "session": "00000000-0000-0000-0000-000000000001",
+          "data": {}
+        }
+      }
+    }
+  }
+]

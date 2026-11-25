@@ -881,6 +881,21 @@ pub struct PeerDelivered {
 
 impl wire::WireEvent for PeerDelivered {
     const TOPIC: &'static str = "agent.peer-delivered";
+    const CONDITIONAL: &'static [&'static str] =
+        &["text and files removed when origin.contact_mode is set (b: a contact's message, 186)"];
+
+    /// 216 §7.3: a contact's message body and files never reach an external plugin; the
+    /// owner's own mesh peers stay public.
+    fn plugin_view(json: &serde_json::Value) -> Option<serde_json::Value> {
+        let mut json = json.clone();
+        if !json["origin"]["contact_mode"].is_null()
+            && let Some(map) = json.as_object_mut()
+        {
+            map.remove("text");
+            map.remove("files");
+        }
+        Some(json)
+    }
 }
 
 /// Bus message: a session opened by a remote parent (67 §8) sent
@@ -2097,5 +2112,56 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(ev.revision, 3);
+    }
+
+    /// 216 §7.3: `MessageDelivered.text` reaches external plugins unless a contact sent it;
+    /// an older frame without `contact` reads as `false`.
+    #[test]
+    fn contact_message_text_hidden_from_plugins() {
+        let view = |contact: bool| {
+            let event = crate::AgentEvent::MessageDelivered {
+                session: SessionId::new(),
+                from: "ada".into(),
+                text: "hello".into(),
+                contact,
+            };
+            let json = serde_json::to_value(&event).unwrap();
+            wire::EventDescriptor::of::<crate::AgentEvent>()
+                .external_view(&json)
+                .unwrap()
+                .into_owned()
+        };
+        assert_eq!(view(false)["text"], "hello");
+        assert!(view(true).get("text").is_none());
+        assert_eq!(view(true)["from"], "ada");
+        let legacy: crate::AgentEvent = serde_json::from_value(serde_json::json!({
+            "type": "MessageDelivered", "session": SessionId::new(), "from": "job j3", "text": "x"
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            crate::AgentEvent::MessageDelivered { contact: false, .. }
+        ));
+    }
+
+    /// 216 §7.3: a contact's `PeerDelivered` loses `text` and `files`; a mesh peer's keeps them.
+    #[test]
+    fn contact_peer_delivered_body_hidden() {
+        let view = |mode: Option<ShareMode>| {
+            let json = serde_json::json!({
+                "type": "PeerDelivered", "session": SessionId::new(),
+                "origin": {"id": Uuid::nil(), "from": "peer:x", "reply_to": null, "scope": null,
+                           "contact_mode": mode},
+                "text": "hi", "seq": 1, "turn": Uuid::nil(), "files": [],
+            });
+            wire::EventDescriptor::of::<PeerDelivered>()
+                .external_view(&json)
+                .unwrap()
+                .into_owned()
+        };
+        assert_eq!(view(None)["text"], "hi");
+        let contact = view(Some(ShareMode::Cautious));
+        assert!(contact.get("text").is_none() && contact.get("files").is_none());
+        assert_eq!(contact["seq"], 1);
     }
 }

@@ -110,6 +110,8 @@ pub struct PagePreviewRequested {
 
 impl wire::WireEvent for PagePreviewRequested {
     const TOPIC: &'static str = "artifact.page-preview-requested";
+    /// 216 §7.3: an engine-to-shell request, not an event of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// Event: the request was answered or timed out. Clients still rendering
@@ -125,6 +127,8 @@ pub struct PagePreviewResolved {
 
 impl wire::WireEvent for PagePreviewResolved {
     const TOPIC: &'static str = "artifact.page-preview-resolved";
+    /// 216 §7.3: an engine-to-shell request's answer, not an event of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// A client's answer to a [`PagePreviewRequested`].

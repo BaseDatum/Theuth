@@ -969,6 +969,7 @@ mod tests {
                         session,
                         from,
                         text,
+                        ..
                     } = *ev
                     {
                         delivered.push((session, from, text));

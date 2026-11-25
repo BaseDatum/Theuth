@@ -2188,7 +2188,8 @@
           "type": "MessageDelivered",
           "session": "00000000-0000-0000-0000-000000000001",
           "from": "sample",
-          "text": "sample"
+          "text": "sample",
+          "contact": false
         }
       }
     }

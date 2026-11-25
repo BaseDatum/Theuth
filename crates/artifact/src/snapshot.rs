@@ -98,6 +98,8 @@ pub struct FenceSnapshotRequested {
 
 impl wire::WireEvent for FenceSnapshotRequested {
     const TOPIC: &'static str = "artifact.fence-snapshot-requested";
+    /// 216 §7.3: an engine-to-shell request, not an event of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// Event: the request was answered or timed out; clients drop late renders.
@@ -112,6 +114,8 @@ pub struct FenceSnapshotResolved {
 
 impl wire::WireEvent for FenceSnapshotResolved {
     const TOPIC: &'static str = "artifact.fence-snapshot-resolved";
+    /// 216 §7.3: an engine-to-shell request's answer, not an event of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// A client's answer (`crate::preview::Client`).

@@ -4805,6 +4805,7 @@ pub(crate) mod tests {
                     session: f.stub.session,
                     from: from.into(),
                     text: "<job_result>done</job_result>".into(),
+                    contact: false,
                 }))
                 .await;
         }

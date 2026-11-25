@@ -299,6 +299,8 @@ pub enum MeshEvent {
 impl wire::WireEvent for MeshEvent {
     const TOPIC: &'static str = "mesh.events";
     const VERSION: u32 = 1;
+    /// 216 §7.3 (a): the pairing ceremony with its verification code (a plugin could phish it).
+    const DROP: &'static [&'static str] = &["pair"];
 }
 
 /// Frames and bytes one stream ALPN has moved since start (69 audit: the

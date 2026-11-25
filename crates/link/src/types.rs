@@ -188,6 +188,8 @@ pub enum LinkEvent {
 impl wire::WireEvent for LinkEvent {
     const TOPIC: &'static str = "link.events";
     const VERSION: u32 = 1;
+    /// 216 §7.3 (a): `LinkPairing.key` pairs a device to this engine.
+    const DROP: &'static [&'static str] = &["LinkPairing"];
 }
 
 /// `ask` → [`LinkStatus`].

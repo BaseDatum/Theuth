@@ -113,6 +113,8 @@ pub struct FollowState {
 impl wire::WireEvent for FollowState {
     const TOPIC: &'static str = "sessionsync.follow-state";
     const VERSION: u32 = 1;
+    /// 216 §7.3: relay transport, not an event of the world.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
 }
 
 /// 209 §4.4: wire events of a session that the owner relays from its own wire feed by topic,
@@ -1399,6 +1401,8 @@ mod tests {
 
     impl wire::WireEvent for FormRequested {
         const TOPIC: &'static str = "browser.element-form-requested";
+        /// The production impl's 216 exposure (`wire` refuses twins that disagree).
+        const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
     }
 
     /// Its resolution, which names no session.
@@ -1411,6 +1415,8 @@ mod tests {
 
     impl wire::WireEvent for FormResolved {
         const TOPIC: &'static str = "browser.element-form-resolved";
+        /// The production impl's 216 exposure (`wire` refuses twins that disagree).
+        const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
     }
 
     /// 209 §4.4 (P5): a card raised on the owner reaches the viewer's bus, and its resolution
@@ -1472,6 +1478,8 @@ mod tests {
 
     impl wire::WireEvent for CallRequested {
         const TOPIC: &'static str = "artifact.web-view-call-requested";
+        /// The production impl's 216 exposure (`wire` refuses twins that disagree).
+        const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
     }
 
     /// Its resolution, which names no session.
@@ -1483,6 +1491,8 @@ mod tests {
 
     impl wire::WireEvent for CallResolved {
         const TOPIC: &'static str = "artifact.web-view-call-resolved";
+        /// The production impl's 216 exposure (`wire` refuses twins that disagree).
+        const EXPOSURE: wire::Exposure = wire::Exposure::Internal;
     }
 
     async fn relayed(rx: &mut mpsc::UnboundedReceiver<Relayed>) -> Relayed {

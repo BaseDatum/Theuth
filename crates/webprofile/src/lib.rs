@@ -448,6 +448,8 @@ pub struct WebProfileChanged {
 
 impl wire::WireEvent for WebProfileChanged {
     const TOPIC: &'static str = "browser.web-profile-changed";
+    /// 216 §7.3 (d): `sites` is the inventory of sites the owner is signed in to.
+    const EXPOSURE: wire::Exposure = wire::Exposure::Private;
 }
 
 /// Why a profile operation failed.

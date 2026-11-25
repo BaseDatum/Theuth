@@ -204,6 +204,8 @@ pub enum TelegramEvent {
 
 impl wire::WireEvent for TelegramEvent {
     const TOPIC: &'static str = "telegram.events";
+    /// 216 §7.3 (a): the bot pairing link makes its holder the owner.
+    const DROP: &'static [&'static str] = &["PairingLink"];
 }
 
 /// Declare wire contracts before starting producers, even when disabled.

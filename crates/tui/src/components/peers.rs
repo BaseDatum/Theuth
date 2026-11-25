@@ -321,7 +321,7 @@ impl Peers {
             }
             Msg::Agent => {
                 self.legacy_echo = false;
-                if let Some(AgentEvent::MessageDelivered { session, from, text }) = cx.core.agent
+                if let Some(AgentEvent::MessageDelivered { session, from, text, .. }) = cx.core.agent
                     && cx.core.session == Some(*session) && !from.starts_with("job ")
                     && let Some(at) = self.peer_shown.iter().position(|shown| shown == text) {
                     self.peer_shown.remove(at); self.legacy_echo = true;
@@ -778,7 +778,7 @@ fn typed_peer_delivery_and_legacy_echo_share_one_card_above_streaming_assistant(
         session, origin: agent::PeerOrigin { id: Uuid::nil(), from: "session:source".into(), reply_to: None, scope: None, contact_mode: None },
         text: "PONG".into(), seq: 1, turn, files: Vec::new(),
     }).unwrap())));
-    model.apply(event(AgentEvent::MessageDelivered { session, from: "session:source".into(), text: "PONG".into() }));
+    model.apply(event(AgentEvent::MessageDelivered { session, from: "session:source".into(), text: "PONG".into(), contact: false }));
     model.apply(event(AgentEvent::TextDelta { session, turn, text: " after".into() }));
     assert!(matches!(model.entries.as_slice(),
         [Entry::Card { title, text, .. }, Entry::Assistant(tail)]

@@ -271,6 +271,19 @@ pub struct HarnessInvoke(pub ToolCall);
 #[derive(Debug)]
 pub struct Invoke(pub ToolCall);
 
+/// `ask` → [`ToolOutput`] (216 §10.3): [`Invoke`] for a call an external plugin brokers
+/// (`call`), never the model's. Visibility, policy and the tool's own risk apply as for
+/// [`Invoke`]; when the policy asks, the card is a [`RequestHumanOnly`] (the double and channel
+/// users cannot answer it) whose args gain `requested_by: "<requester> wants to run <tool>"`.
+/// Timeout is the ordinary one and denies. Never fails.
+#[derive(Debug)]
+pub struct InvokeHumanOnly {
+    /// The call, in the plugin's headless session.
+    pub call: ToolCall,
+    /// Who asks, as the card names it (`plugin turns`).
+    pub requester: String,
+}
+
 /// `ask` → [`AppInvoked`]. The app bridge's entry (46 §6): the same tool
 /// map, visibility, policy, activity admission, secret expansion and body as
 /// [`Invoke`], plus what only a published app has: a bound identity to hold
@@ -1151,7 +1164,11 @@ impl ToolRegistry {
                         self.tools.get(name).and_then(|t| match t.source() {
                             ToolSource::Mcp { server, .. } => Some(mcp_server_key(&server)),
                             ToolSource::Native { .. } => None,
-                            ToolSource::Plugin { .. } => None,
+                            // 216 §8: a plugin's tools sit under the reserved server key
+                            // `plugin.<name>` (the MCP loader refuses servers named `plugin.*`).
+                            ToolSource::Plugin { name, .. } => {
+                                Some(mcp_server_key(&crate::mcp::plugin_server_key(&name)))
+                            }
                         })
                     });
                     if key.as_ref().is_some_and(|k| h.contains(k)) {
@@ -2249,7 +2266,7 @@ impl Message<Invoke> for ToolRegistry {
         Invoke(call): Invoke,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.invoke(call, false, ctx)
+        self.invoke(call, false, None, ctx)
     }
 }
 
@@ -2261,16 +2278,30 @@ impl Message<HarnessInvoke> for ToolRegistry {
         HarnessInvoke(call): HarnessInvoke,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.invoke(call, true, ctx)
+        self.invoke(call, true, None, ctx)
+    }
+}
+
+impl Message<InvokeHumanOnly> for ToolRegistry {
+    type Reply = DelegatedReply<ToolOutput>;
+
+    async fn handle(
+        &mut self,
+        InvokeHumanOnly { call, requester }: InvokeHumanOnly,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.invoke(call, false, Some(requester), ctx)
     }
 }
 
 impl ToolRegistry {
-    /// [`Invoke`] and, with `harness`, [`HarnessInvoke`] (206: the builtin switch skipped).
+    /// [`Invoke`] and, with `harness`, [`HarnessInvoke`] (206: the builtin switch skipped);
+    /// with `requester`, [`InvokeHumanOnly`] (the policy is the tool's, its card human-only).
     fn invoke(
         &mut self,
         mut call: ToolCall,
         harness: bool,
+        requester: Option<String>,
         ctx: &mut Context<Self, DelegatedReply<ToolOutput>>,
     ) -> DelegatedReply<ToolOutput> {
         let (reply, tx) = ctx.reply_sender();
@@ -2312,6 +2343,10 @@ impl ToolRegistry {
                 return reply;
             }
         };
+        let tool: DynTool = match requester {
+            Some(requester) => Arc::new(Brokered { inner: tool, requester }),
+            None => tool,
+        };
         let promote_after = self.promote_after.get(&call.session).copied();
         self.dispatch(
             tool,
@@ -2323,6 +2358,61 @@ impl ToolRegistry {
             move |out| tx.send(out),
         );
         reply
+    }
+}
+
+/// [`InvokeHumanOnly`]'s view of a tool, applied after the gate: the same tool, but its approval
+/// card is human-only and names the requester.
+struct Brokered {
+    inner: DynTool,
+    requester: String,
+}
+
+impl crate::ErasedTool for Brokered {
+    fn spec(&self) -> ToolSpec {
+        self.inner.spec()
+    }
+    fn source(&self) -> ToolSource {
+        self.inner.source()
+    }
+    fn origin(&self) -> String {
+        self.inner.origin()
+    }
+    fn consumes_secrets(&self) -> bool {
+        self.inner.consumes_secrets()
+    }
+    fn promotable(&self) -> bool {
+        self.inner.promotable()
+    }
+    fn credentialed(&self, session: SessionId, args: &serde_json::Value) -> bool {
+        self.inner.credentialed(session, args)
+    }
+    fn approved_by_card(&self) -> bool {
+        self.inner.approved_by_card()
+    }
+    fn human_only(&self) -> bool {
+        true
+    }
+    fn approval_preview(
+        &self,
+        args: &serde_json::Value,
+        cx: PreviewCx,
+    ) -> futures::future::BoxFuture<'_, anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>>>
+    {
+        let inner = self.inner.approval_preview(args, cx);
+        let line = format!("{} wants to run {}", self.requester, self.inner.spec().name);
+        Box::pin(async move {
+            let mut extra = inner.await?.unwrap_or_default();
+            extra.insert("requested_by".into(), line.into());
+            Ok(Some(extra))
+        })
+    }
+    fn call(
+        &self,
+        args: serde_json::Value,
+        cx: ToolCx,
+    ) -> futures::future::BoxFuture<'_, anyhow::Result<ToolOutput>> {
+        self.inner.call(args, cx)
     }
 }
 
@@ -5583,6 +5673,43 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(i.action, PolicyAction::Ask);
+    }
+
+    /// 216 §10.3: a brokered call follows the tool's own policy — `allow` runs without a card —
+    /// and an `ask` raises a human-only card the double cannot answer.
+    #[tokio::test]
+    async fn invoke_human_only_follows_policy_and_asks_human_only() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(5)));
+        let policy = |read_only| Policy {
+            read_only,
+            mutating: PolicyAction::Ask,
+            destructive: PolicyAction::Ask,
+        };
+        let seen: Seen = Arc::default();
+        let owner = Owner::spawn(Owner(approval.clone(), seen.clone()));
+        rt.subscribe::<Owner, crate::approval::ApprovalRequested>(&owner)
+            .await;
+        let brokered = |name: &str| InvokeHumanOnly {
+            call: call(name, SessionId::new()),
+            requester: "plugin turns".into(),
+        };
+        let allow = ToolRegistry::spawn(ToolRegistry {
+            policy: policy(PolicyAction::Allow),
+            approval: Some(approval.clone()),
+            ..build(vec![Arc::new(Echo)], None)
+        });
+        assert_eq!(allow.ask(brokered("echo")).await.unwrap().content, "hi");
+        assert!(lock(&seen).is_empty(), "allowed by policy, yet asked");
+
+        let ask = ToolRegistry::spawn(ToolRegistry {
+            policy: policy(PolicyAction::Ask),
+            approvals: true,
+            approval: Some(approval.clone()),
+            ..build(vec![Arc::new(Echo)], None)
+        });
+        assert_eq!(ask.ask(brokered("echo")).await.unwrap().content, "hi");
+        assert_eq!(*lock(&seen), [(true, false)], "human-only card, double refused");
     }
 
     /// A human-only tool with a card preview: it keeps what it showed under the call's key and

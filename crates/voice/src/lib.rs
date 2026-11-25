@@ -637,6 +637,9 @@ pub enum VoiceEvent {
 
 impl wire::WireEvent for VoiceEvent {
     const TOPIC: &'static str = "voice.events";
+    /// 216 §7.3: dictation types into any app, password fields included (c); the suggestion
+    /// keeps audio (c); opus chunks are transport.
+    const DROP: &'static [&'static str] = &["DictationText", "DictionarySuggestion", "SpeechAudio"];
 }
 
 /// Declare wire contracts before starting producers, even when disabled.
