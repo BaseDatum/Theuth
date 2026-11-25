@@ -122,14 +122,14 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
           stack above in the same order; nothing overflows the pane sideways. Their -m-3 lets the dashes reach into the
           button's padding so they sit a dash-gap from the bar's ends. */}
       <div data-dash-row="" className="mx-auto grid min-h-6 w-full max-w-[768px] shrink-0 select-none grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end px-4 text-xs text-fg-tertiary">
-        <div className="pointer-events-none relative z-10 -mr-3 flex min-w-0 items-end justify-end py-0.5 [&>*]:pointer-events-auto">
+        <div className="pointer-events-none relative z-10 -mr-3 flex min-w-0 items-end justify-end py-1 [&>*]:pointer-events-auto">
           <SubagentDashes session={session} />
         </div>
         <button type="button" aria-expanded={shown} aria-controls={blockId} aria-label={label} title={label} onClick={() => store.getState().setTodosShown(session, !shown)} className="group flex h-6 w-20 shrink-0 cursor-pointer touch-manipulation select-none items-center justify-center rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
           <span className="h-[5px] w-12 rounded-full bg-fg-tertiary/40 transition-colors group-hover:bg-fg-secondary group-active:bg-fg-secondary" />
         </button>
         <div className="pointer-events-none relative z-10 -ml-3 flex min-w-0 items-end gap-3 [&>*]:pointer-events-auto">
-          <div className="flex min-w-0 flex-wrap-reverse items-end justify-start gap-x-[7px] py-0.5">
+          <div className="flex min-w-0 flex-wrap-reverse items-end justify-start gap-x-[7px] py-1">
             <BackgroundDashes session={session} tray={tray} />
           </div>
           {trailing && <div className="flex shrink-0 items-center">{trailing}</div>}
