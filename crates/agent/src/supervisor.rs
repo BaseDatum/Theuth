@@ -1091,11 +1091,11 @@ impl Agents {
                         None,
                     )
                     .await?;
+                // `tool_registry`: under `cfg(test)` only this test's live registry, never a
+                // dead one another test's runtime left registered (that failed every new root).
                 if parent.is_none()
                     && desk.is_none()
-                    && let Some(reg) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
-                        .ok()
-                        .flatten()
+                    && let Some(reg) = crate::communication::network::tool_registry().ok().flatten()
                 {
                     let defaults = reg.ask(DefaultHiddenCategories).await?;
                     if !defaults.is_empty() {
@@ -21066,6 +21066,30 @@ pub(crate) mod tests {
     async fn rooted(mut a: Agents) -> (ActorRef<Agents>, SessionId) {
         let (p, _) = a.session(None, None, None, (None, None)).await.unwrap();
         (Agents::spawn(a), p)
+    }
+
+    /// A registry another test's runtime dropped stays registered under the process-wide name,
+    /// dead: a new root of a later test must not ask it for the default hidden categories (that
+    /// failed `session` with "actor not running" for every test after it).
+    #[test]
+    fn a_dead_registry_left_by_another_test_does_not_fail_a_new_root() {
+        crate::with_test_registry(async {
+            let scratch = crate::test_dir("dead-registry");
+            tools::registry::start(&Runtime::new(
+                figment::Figment::new(),
+                scratch.path().to_path_buf(),
+            ))
+            .await
+            .unwrap();
+        });
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (_scratch, mut a) = agents_with(false).await;
+                a.session(None, None, None, (None, None)).await.unwrap();
+            });
     }
 
     /// Native permits free in `root`'s tree, and whether `child` is queued.
