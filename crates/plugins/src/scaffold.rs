@@ -71,6 +71,48 @@ fn rename(text: &str, name: &str) -> String {
         .replace(PLACEHOLDER, name)
 }
 
+/// Whether `rel` is source code whose bare words are identifiers (a hyphen would not parse).
+/// Shell, YAML, JSON, TOML and `go.mod` take the name as a plain word or string.
+fn is_code(rel: &str) -> bool {
+    [".py", ".rb", ".go", ".rs", ".mjs", ".js", ".ts"].iter().any(|ext| rel.ends_with(ext))
+}
+
+/// [`rename`] for source code: inside a string literal (`"…"`, `'…'`, `` `…` ``) the plugin
+/// name stays as is (tool names, placement ids, which plugin.yaml spells the same); outside
+/// one it becomes an identifier (`-` → `_`).
+fn rename_code(text: &str, name: &str) -> String {
+    let snake = name.replace('-', "_");
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        let mut rest = line;
+        while let Some(c) = rest.chars().next() {
+            if quote.is_none() || !escaped {
+                if let Some(tail) = rest.strip_prefix(PLACEHOLDER) {
+                    let ident_tail = tail.starts_with('_');
+                    out.push_str(if quote.is_some() && !ident_tail { name } else { &snake });
+                    rest = tail;
+                    escaped = false;
+                    continue;
+                }
+            }
+            match (quote, c) {
+                (Some(_), '\\') if !escaped => escaped = true,
+                (Some(q), c) if c == q && !escaped => quote = None,
+                (None, '"' | '\'' | '`') => quote = Some(c),
+                _ => escaped = false,
+            }
+            if c != '\\' {
+                escaped = false;
+            }
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out
+}
+
 /// Scripts the template runs directly are marked executable.
 fn executable(rel: &str) -> bool {
     let file = rel.rsplit('/').next().unwrap_or(rel);
@@ -147,6 +189,7 @@ fn plan(name: &str, lang: Lang, raw: bool) -> Result<Planned, PluginsError> {
         let Some(rel) = path.strip_prefix(&prefix) else { continue };
         let rel = rename(rel, name);
         let bytes = match std::str::from_utf8(bytes) {
+            Ok(text) if is_code(&rel) => rename_code(text, name).into_bytes(),
             Ok(text) => rename(text, name).into_bytes(),
             Err(_) => bytes.to_vec(),
         };
@@ -267,6 +310,11 @@ mod tests {
     fn placeholder_renamed() {
         assert_eq!(rename("presses_count = presses", "my-tool"), "my_tool_count = my-tool");
         assert_eq!(rename("presses/presses_x", "a"), "a/a_x");
+        assert_eq!(
+            rename_code("@plugin.tool(\"presses\")\ndef presses(_): return 'presses_x \\'presses'\n", "my-tool"),
+            "@plugin.tool(\"my-tool\")\ndef my_tool(_): return 'my_tool_x \\'my-tool'\n"
+        );
+        assert!(is_code("main.py") && is_code("src/main.rs") && !is_code("run.sh") && !is_code("plugin.yaml"));
         if sdk_files().is_empty() {
             return;
         }
