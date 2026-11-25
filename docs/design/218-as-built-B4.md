@@ -53,6 +53,6 @@ Builder B4, night of 2026-11-25. `UI` = `crates/desktop/ui/src`. Two sub-builder
 
 ## For the orchestrator and other builders
 
-- Every new RPC goes through `wbRpc(client)` in `wire.ts`; casts are marked `// 218-TEMP(wire)` (`requirements.ts`, `useWhiteboards.ts`, `App.tsx`, `tasks/*`, `AttachChip`?). `grep -rn "218-TEMP" crates/desktop/ui/src` lists them.
+- Every new RPC goes through `wbRpc(client)` in `wire.ts`; casts are marked `// 218-TEMP(wire)` in `wire.ts`, `requirements.ts`, `useWhiteboards.ts`, `App.tsx`, `tasks/NewTaskSheet.tsx`, `tasks/TaskDetail.tsx` (`grep -rn "218-TEMP" crates/desktop/ui/src`).
 - B3: the shell relies on `handle.freeSpot`, `planSend`, `composeImage`, `commitSend`, `commitCaptured` (must resolve after paint, and **reject** when it cannot commit so nothing is acked), `frameRect`, `focus`, `fit`, `undo/redo/canUndo/canRedo`, and `onViewChange(…,'end')` once after mount (the native viewport). `canUndo()` is read at render time; the cluster re-renders on board changes.
 - B5: JS calls `plugin:ink|attach|set_enabled|set_viewport|set_tool|set_picker_visible|ack|recognize_text|detach` with exactly the §6 argument names; `set_viewport` gets web-view coordinates (`view + frameRect.left/top`).
