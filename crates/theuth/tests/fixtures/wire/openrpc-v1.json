@@ -49836,6 +49836,67 @@
         ],
         "type": "object"
       },
+      "method.agent.output.ToolCategoryInfo": {
+        "description": "One tool category as an app shows it.",
+        "properties": {
+          "builtin_count": {
+            "description": "Number of registered native tools in [`Self::builtin_tools`].",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "builtin_tools": {
+            "description": "Registered native tool names in this category, sorted by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "custom": {
+            "description": "Whether this is a user-created rather than default category.",
+            "type": "boolean"
+          },
+          "default_enabled": {
+            "description": "Whether the category is enabled in brand-new root interactive sessions.",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "One-line summary of the category.",
+            "type": "string"
+          },
+          "hidden": {
+            "description": "Whether the requested session or an ancestor hides this category.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Stable id; its session hide key is `tcat:<id>`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "mcp_servers": {
+            "description": "MCP server names assigned to this category, sorted by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "description",
+          "custom",
+          "default_enabled",
+          "hidden",
+          "builtin_count",
+          "builtin_tools",
+          "mcp_servers"
+        ],
+        "type": "object"
+      },
       "method.agent.output.ToolOutput": {
         "description": "Result returned to the model. Errors are content, not `Err`: the model\nmust see them.",
         "properties": {
@@ -60416,6 +60477,67 @@
           "cache_read",
           "cache_write",
           "unknown_calls"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.ToolCategoryInfo": {
+        "description": "One tool category as an app shows it.",
+        "properties": {
+          "builtin_count": {
+            "description": "Number of registered native tools in [`Self::builtin_tools`].",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "builtin_tools": {
+            "description": "Registered native tool names in this category, sorted by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "custom": {
+            "description": "Whether this is a user-created rather than default category.",
+            "type": "boolean"
+          },
+          "default_enabled": {
+            "description": "Whether the category is enabled in brand-new root interactive sessions.",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "One-line summary of the category.",
+            "type": "string"
+          },
+          "hidden": {
+            "description": "Whether the requested session or an ancestor hides this category.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Stable id; its session hide key is `tcat:<id>`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "mcp_servers": {
+            "description": "MCP server names assigned to this category, sorted by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "description",
+          "custom",
+          "default_enabled",
+          "hidden",
+          "builtin_count",
+          "builtin_tools",
+          "mcp_servers"
         ],
         "type": "object"
       },
@@ -135391,6 +135513,32 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "delete_tool_category",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "desk_open",
       "paramStructure": "by-position",
       "params": [
@@ -140576,6 +140724,45 @@
         "x-theuth-receiverSchema": {
           "items": {
             "$ref": "#/components/schemas/method.agent.receiver.TerminalSummary"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "list_tool_categories",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.ToolCategoryInfo"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.ToolCategoryInfo"
           },
           "type": "array"
         }
@@ -146839,6 +147026,35 @@
       "x-theuth-owner": "dreaming"
     },
     {
+      "name": "set_default_tool_categories",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "disabled",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "set_effort",
       "paramStructure": "by-position",
       "params": [
@@ -147244,6 +147460,43 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_mcp_category",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "server",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "category",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "x-theuth-aliases": []
         }
@@ -148626,6 +148879,43 @@
               "type": "null"
             }
           ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_tool_category",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "tool",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "category",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
         }
       },
       "x-theuth-audience": "owner",
@@ -151227,6 +151517,54 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "update"
+    },
+    {
+      "name": "upsert_tool_category",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "label",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "description",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.ToolCategoryInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.ToolCategoryInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
     },
     {
       "name": "usage_limits",
