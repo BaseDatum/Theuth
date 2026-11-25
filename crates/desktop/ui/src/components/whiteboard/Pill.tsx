@@ -59,7 +59,7 @@ export function SessionChip({ p, onOpen }: { p: SessionPick; onOpen?(open: boole
         <button
           type="button"
           aria-label={p.session ? `Session: ${p.title ?? 'untitled'}. Change session` : 'No session. Choose a session'}
-          className="wb-chip flex h-8 max-w-[11rem] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-semibold"
+          className="wb-well flex h-8 max-w-[11rem] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-semibold"
         >
           <span className="wb-dot" data-busy={p.busy} style={p.session ? { background: inkCss('green', dark) } : undefined} aria-hidden />
           <span className="min-w-0 truncate">{p.session ? shortName(p.title) : 'no session'}</span>

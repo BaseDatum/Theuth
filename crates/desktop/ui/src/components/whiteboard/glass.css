@@ -27,10 +27,11 @@
 }
 
 /* A chip or button surface inside the glass. */
-.wb-chip {
+/* `wb-well`, not `wb-chip`: that name is the card-body chip of `canvas/canvas.css` (absolute, inset 0). */
+.wb-well {
   background: color-mix(in oklab, white 62%, transparent);
 }
-.dark .wb-chip {
+.dark .wb-well {
   background: color-mix(in oklab, white 10%, transparent);
 }
 .wb-press:hover {

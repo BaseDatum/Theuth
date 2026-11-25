@@ -39,14 +39,14 @@ export function Bubble(p: BubbleProps) {
       {!collapsed && (
         <div className="mt-2 flex flex-wrap gap-2">
           {p.canUndo && (
-            <button type="button" disabled={p.undoing} onClick={p.onUndo} className="wb-chip rounded-[10px] px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50">
+            <button type="button" disabled={p.undoing} onClick={p.onUndo} className="wb-well rounded-[10px] px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50">
               {p.undoing ? 'Undoing…' : 'Undo this turn'}
             </button>
           )}
-          <button type="button" onClick={p.onOpenSession} className="wb-chip rounded-[10px] px-2.5 py-1.5 text-[11px] font-semibold">
+          <button type="button" onClick={p.onOpenSession} className="wb-well rounded-[10px] px-2.5 py-1.5 text-[11px] font-semibold">
             Open session
           </button>
-          <button type="button" onClick={p.onDismiss} className="wb-chip rounded-[10px] px-2.5 py-1.5 text-[11px] font-semibold">
+          <button type="button" onClick={p.onDismiss} className="wb-well rounded-[10px] px-2.5 py-1.5 text-[11px] font-semibold">
             Dismiss
           </button>
         </div>

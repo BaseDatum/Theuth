@@ -789,7 +789,7 @@ function ChooserDialog({ c, onDone }: { c: Chooser; onDone(): void }) {
             }}
           >
             {/* biome-ignore lint/a11y/noAutofocus: the dialog exists to take this one value */}
-            <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} placeholder={c.placeholder} className="wb-chip min-w-0 flex-1 rounded-lg px-3 py-2 text-sm outline-none" />
+            <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} placeholder={c.placeholder} className="wb-well min-w-0 flex-1 rounded-lg px-3 py-2 text-sm outline-none" />
             <button type="submit" className="rounded-lg bg-accent px-3 text-sm font-semibold text-white">
               Add
             </button>
@@ -835,7 +835,7 @@ function MoreMenu(p: {
         <label className="wb-muted text-[11px] font-semibold uppercase tracking-wide" htmlFor="wb-title">
           Title
         </label>
-        <input id="wb-title" value={name} onChange={(e) => setName(e.target.value)} onBlur={() => name.trim() && p.onRename(name.trim())} className="wb-chip mt-1 w-full rounded-lg px-2 py-1.5 text-sm outline-none" />
+        <input id="wb-title" value={name} onChange={(e) => setName(e.target.value)} onBlur={() => name.trim() && p.onRename(name.trim())} className="wb-well mt-1 w-full rounded-lg px-2 py-1.5 text-sm outline-none" />
       </form>
       <div className="px-2">
         <div className="wb-muted pt-1 text-[11px] font-semibold uppercase tracking-wide">Background</div>
