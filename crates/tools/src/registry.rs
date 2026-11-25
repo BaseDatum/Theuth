@@ -4999,7 +4999,7 @@ pub(crate) mod tests {
         let session = SessionId::new();
         reg.ask(SetHidden {
             session,
-            tools: vec![categories::tool_category_key("design")],
+            tools: vec![categories::tool_category_key("interface")],
             hidden: true,
         })
         .await
@@ -5013,14 +5013,14 @@ pub(crate) mod tests {
             &reg,
             SetMcpCategory {
                 server: "files".into(),
-                category: Some("design".into()),
+                category: Some("interface".into()),
             }
         )
         .unwrap();
         assert_eq!(reg.ask(HiddenEpoch).await.unwrap(), before + 1);
         assert!(tool_names(reg.ask(ListTools(Some(session))).await.unwrap()).is_empty());
         assert_eq!(
-            tool_category(&reg.ask(ListToolCategories(None)).await.unwrap(), "design").mcp_servers,
+            tool_category(&reg.ask(ListToolCategories(None)).await.unwrap(), "interface").mcp_servers,
             ["files"]
         );
 
@@ -5058,12 +5058,12 @@ pub(crate) mod tests {
             &reg,
             SetToolCategory {
                 tool: "doc_read".into(),
-                category: Some("design".into()),
+                category: Some("interface".into()),
             }
         )
         .unwrap();
         let infos = reg.ask(ListToolCategories(None)).await.unwrap();
-        assert_eq!(tool_category(&infos, "design").builtin_tools, ["doc_read"]);
+        assert_eq!(tool_category(&infos, "interface").builtin_tools, ["doc_read"]);
         assert!(
             tool_category(&infos, "documentation")
                 .builtin_tools
@@ -5073,7 +5073,7 @@ pub(crate) mod tests {
         let session = SessionId::new();
         reg.ask(SetHidden {
             session,
-            tools: vec![categories::tool_category_key("design")],
+            tools: vec![categories::tool_category_key("interface")],
             hidden: true,
         })
         .await
@@ -5131,21 +5131,21 @@ pub(crate) mod tests {
         category_command!(
             &reg,
             SetDefaultToolCategories {
-                disabled: vec!["web".into(), "design".into(), "web".into()],
+                disabled: vec!["web".into(), "interface".into(), "web".into()],
             }
         )
         .unwrap();
         assert_eq!(
             reg.ask(DefaultHiddenCategories).await.unwrap(),
-            ["tcat:design", "tcat:web"]
+            ["tcat:interface", "tcat:web"]
         );
         let infos = reg.ask(ListToolCategories(None)).await.unwrap();
-        assert!(!tool_category(&infos, "design").default_enabled);
+        assert!(!tool_category(&infos, "interface").default_enabled);
         assert!(!tool_category(&infos, "web").default_enabled);
         assert!(tool_category(&infos, "engineering").default_enabled);
         assert!(infos.iter().all(|c| !c.hidden));
         let cfg = saved_categories(&dir);
-        assert_eq!(cfg.default_disabled, ["design", "web"]);
+        assert_eq!(cfg.default_disabled, ["interface", "web"]);
 
         assert!(
             category_command!(
@@ -5158,7 +5158,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             reg.ask(DefaultHiddenCategories).await.unwrap(),
-            ["tcat:design", "tcat:web"]
+            ["tcat:interface", "tcat:web"]
         );
         category_command!(
             &reg,

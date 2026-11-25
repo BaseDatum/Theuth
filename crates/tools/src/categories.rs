@@ -45,9 +45,9 @@ pub const DEFAULT_CATEGORIES: &[DefaultCategoryDef] = &[
         description: "Control the desktop, its apps and system automation",
     },
     DefaultCategoryDef {
-        id: "design",
-        label: "Design & Output",
-        description: "Interactive apps, previews, tiles and visual output",
+        id: "interface",
+        label: "Interface",
+        description: "Interactive apps, previews, tiles, visual output and user prompts",
     },
     DefaultCategoryDef {
         id: "documentation",
@@ -92,7 +92,7 @@ pub fn default_category_for_builtin(tool_name: &str) -> &'static str {
         "files" | "shell" | "code" | "sandbox" | "autoresearch" => "engineering",
         "web" | "browser" => "web",
         "computer" => "computer",
-        "output" => "design",
+        "output" => "interface",
         "documents" => "documentation",
         "knowledge" => "knowledge",
         "channels" => "comms",
@@ -233,7 +233,7 @@ mod tests {
                 "engineering",
                 "web",
                 "computer",
-                "design",
+                "interface",
                 "documentation",
                 "knowledge",
                 "comms",
@@ -245,7 +245,7 @@ mod tests {
         );
         assert_eq!(DEFAULT_CATEGORIES[1].label, "Web");
         assert_eq!(DEFAULT_CATEGORIES[2].label, "Computer");
-        assert_eq!(DEFAULT_CATEGORIES[3].label, "Design & Output");
+        assert_eq!(DEFAULT_CATEGORIES[3].label, "Interface");
         assert_eq!(DEFAULT_CATEGORIES[5].label, "Knowledge");
         assert_eq!(DEFAULT_CATEGORIES[6].label, "Comms");
         assert_eq!(DEFAULT_CATEGORIES[7].label, "Agents");
@@ -268,7 +268,7 @@ mod tests {
             ("sandbox", "sandbox_create", "engineering"),
             ("knowledge", "knowledge_search", "knowledge"),
             ("documents", "doc_read", "documentation"),
-            ("output", "show", "design"),
+            ("output", "show", "interface"),
             ("agents", "spawn_subagent", "agents"),
             ("tasks", "task_create", "agents"),
             ("schedules", "schedule", "harness"),
@@ -341,13 +341,13 @@ mod tests {
     #[test]
     fn config_deserializes_assignments_and_custom_categories() {
         let cfg: ToolCategoriesConfig = serde_yaml::from_str(
-            "custom:\n  - id: research\n    label: Research\nmcp_assignments:\n  files: research\ntool_assignments:\n  read_file: web\ndefault_disabled: [design, research]\n",
+            "custom:\n  - id: research\n    label: Research\nmcp_assignments:\n  files: research\ntool_assignments:\n  read_file: web\ndefault_disabled: [interface, research]\n",
         )
         .unwrap();
         assert_eq!(cfg.custom[0].id, "research");
         assert_eq!(cfg.custom[0].description, "");
         assert_eq!(cfg.mcp_assignments["files"], "research");
         assert_eq!(cfg.tool_assignments["read_file"], "web");
-        assert_eq!(cfg.default_disabled, ["design", "research"]);
+        assert_eq!(cfg.default_disabled, ["interface", "research"]);
     }
 }
