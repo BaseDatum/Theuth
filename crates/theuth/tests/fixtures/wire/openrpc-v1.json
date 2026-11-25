@@ -127722,6 +127722,43 @@
           }
         ]
       },
+      "method.secrets.output.UnlockRequestView": {
+        "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
+        "properties": {
+          "account": {
+            "description": "What the card names: `me@… · vault.bitwarden.eu`.",
+            "type": "string"
+          },
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "conn": {
+            "description": "The connection.",
+            "type": "string"
+          },
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.RequestId"
+              }
+            ],
+            "description": "Answer with this id."
+          },
+          "reason": {
+            "description": "Why: `a tool call uses bw/personal/2f1c…#password`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conn",
+          "backend",
+          "account",
+          "reason"
+        ],
+        "type": "object"
+      },
       "method.secrets.output.VersionInfo": {
         "description": "One kept version. Wire-visible: never a value, never a length.",
         "properties": {
@@ -128727,6 +128764,43 @@
             "type": "string"
           }
         ]
+      },
+      "method.secrets.receiver.UnlockRequestView": {
+        "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
+        "properties": {
+          "account": {
+            "description": "What the card names: `me@… · vault.bitwarden.eu`.",
+            "type": "string"
+          },
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "conn": {
+            "description": "The connection.",
+            "type": "string"
+          },
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.RequestId"
+              }
+            ],
+            "description": "Answer with this id."
+          },
+          "reason": {
+            "description": "Why: `a tool call uses bw/personal/2f1c…#password`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conn",
+          "backend",
+          "account",
+          "reason"
+        ],
+        "type": "object"
       },
       "method.secrets.receiver.VersionInfo": {
         "description": "One kept version. Wire-visible: never a value, never a length.",
@@ -149200,6 +149274,29 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "tools"
+    },
+    {
+      "name": "list_unlock_requests",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.output.UnlockRequestView"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.receiver.UnlockRequestView"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
     },
     {
       "name": "load_session",
