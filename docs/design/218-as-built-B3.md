@@ -15,6 +15,8 @@ Builder B3, 2026-11-25 night build. Owned paths only: `crates/desktop/ui/src/com
 | `43da2728e` | fixes found in the browser (listed under "Checks run") |
 | `151c329c8` | placeholder cards are opaque enough to read over what lies under them |
 | `7bfb036da` | the diff card uses the generated `DiffSpec` type, so it needs no temp cast |
+| `17238ca2c` | session cards show the last turns; image cards load artifact, path and blob images; light green and amber ≥ 3 : 1 |
+| `caaaf242e` | the Pencil over an entered live page inks, through a pen relay in page cards; fingers and mouse still reach the page |
 
 ## What is built (files)
 
@@ -60,7 +62,9 @@ Builder B3, 2026-11-25 night build. Owned paths only: `crates/desktop/ui/src/com
   - `Overlays.tsx`: lasso path, lassoed-ink halo, multi-selection bar, off-screen placeholder chevrons.
   - `context.ts` and `canvas.css` (all colours are theme tokens or light/dark pairs).
 - `cards/PageCard.tsx`: the 120 sandboxed frame at the device viewport, CSS-scaled, themed, and registered for describe-point.
-- `cards/bodies.tsx`: renderers for the other kinds, plus `Chip`, `Snapshot` and `CardBoundary`.
+- `cards/bodies.tsx`: renderers for the other kinds (including session turns and artifact/path/blob images), plus `Chip`, `Snapshot` and `CardBoundary`.
+- `turns.ts`: the session card's rows.
+- `penRelay.ts`: the pen relay for entered pages (deviation 8).
 - `fixtures/`:
   - `example.ts` builds the §2.10 doc. `example-v1.update.b64` is written and compared by `model.test.ts` with clientID 1, so the bytes are stable.
   - `generate.ts` generates 100 cards and 2 000 strokes (seeded).
@@ -80,11 +84,23 @@ Builder B3, 2026-11-25 night build. Owned paths only: `crates/desktop/ui/src/com
 1. **Cheap kinds go live from 60 px, not 240 px.** This covers `sticky`, `excerpt`, `diagram` and `image` (`lod.ts` `CHEAP`). Under the 240 px rule, a 220 px sticky at zoom 1 rendered as a chip. Seen in the browser; it was clearly wrong. Pages, terminals, notes, diffs and sessions keep 240 px and the budget.
 2. **A terminal card never shows a live xterm on the canvas.** It is an info card (title, job, "open to watch it live"). `Terminal` resizes the agent's PTY to fit its container (`pty_resize`, then SIGWINCH), so a scaled card would reshape the job. The live view belongs in B4's sheet.
 3. **Excerpt cards use a small renderer of their own:** monospace, numbered rows of a fixed 18 px (`send.ts` `EXCERPT_ROW`). The chat `Excerpt`'s row geometry is private and capped at 18 rows, and the `lines A–B` caption needs exact rows. The full `Excerpt` belongs in the sheet.
-4. **Session cards show the title and "open to read its turns".** There is no inline transcript. **Image cards** show `blob` images. Artifact and path images show a label, because the canvas has no URL for engine files.
+4. **Session cards show the session's last turns,** read-only: up to 6 user/assistant messages, each cut to 280 characters.
+   - The source is the live session store when that session is loaded, else one `load_session(id, null, 40)` page.
+   - **Image cards** load `blob` keys through `host.blobUrl`, `path`s through the chat's file cache (`useFileUrl`: `asset://` locally, RPC bytes otherwise, private owners respected), and `{session, call_id}` artifacts through the artifact list, then their path.
 5. **Snapshots capture the card body only,** the area below the 30 px title bar. `wb_crop` of a card therefore returns body pixels.
-6. **Two named light colours stay below 3 : 1 on bone `#e8dcc8`:** green `#2f9e44` (2.54) and amber `#b7791f` (2.69). They are the contract's values, kept as-is; every dark value and every free `#rrggbb` meets ≥ 3 : 1. `colour.test.ts` pins this. The orchestrator or owner may want darker light-theme twins.
+6. **The light green and amber ink colours differ from the contract.** The contract's `#2f9e44` (2.54 : 1) and `#b7791f` (2.69 : 1) sat below 3 : 1 on bone `#e8dcc8`, which design A1 forbids.
+   - They are now `#2a8e3d` (3.08 : 1) and `#aa701d` (3.07 : 1): the same hue, with lightness moved just far enough. `readable()` of the contract values gives exactly these.
+   - Frame colours and the pinned label use the same light/dark pairs (`--wb-*` in `canvas.css`).
+   - Frame borders are now drawn at full strength so they keep ≥ 3 : 1; before, they were mixed at 55 %.
+   - Every named colour is now ≥ 3 : 1 on its canvas in both themes (`colour.test.ts`).
 7. **The Pencil does not ink on controls.** On buttons, inputs, toolbars and the scrubber (`CONTROL` in `Canvas.tsx`) it taps them. On an iPad the Pencil is the main pointer, so toolbars must work with it.
-8. **On an entered live page with pointer ink, the Pencil reaches the page, not the ink layer.** A cross-origin iframe swallows its events before any parent filter runs. Native ink (P3) draws above the web view, so it is unaffected.
+8. **The Pencil over an entered live page now inks (pointer path), through a relay inside the page** (`canvas/penRelay.ts`).
+   - The frame is sandboxed with an opaque origin, so the host cannot filter its events. Instead, whiteboard page cards (not chat pages) carry a small script, added by `withPenRelay` after `injectBootstrap`.
+   - While the canvas switches capture on — card entered, pen route `ink`/`erase`, native ink not drawing — the script takes `pointerType === 'pen'` events only: `preventDefault`, then post the points to the host. It also suppresses pen clicks and stylus touch scrolling.
+   - Fingers and mouse still scroll and tap the page. In link mode, or with capture off, the Pencil taps the page again.
+   - The host accepts messages only from that frame's window, refuses points outside the viewport (+64 px) or more than 256 points per message, then maps frame px → card → world and commits through the normal stroke path (anchoring, captions, undo).
+   - Trust cost: a hostile page can post fake pen points, but only while its card is entered and the pen tool is active, and only inside its own card.
+   - Native ink (P3) draws above the web view and never needed this.
 9. **Frames are grabbed by their title.** The interior passes through to the canvas, so pan, lasso, ink and frame drawing all work inside frames. Otherwise a big frame made lassoing or drawing inside it drag the frame.
 10. **Keyboard shortcuts are split between the shell and the canvas.**
     - B4's `WhiteboardView` already owns V P E L F N O, ⌘0 and ⌘↵, and Esc for an entered card, the composer and the cluster.
@@ -107,7 +123,7 @@ Builder B3, 2026-11-25 night build. Owned paths only: `crates/desktop/ui/src/com
 
 - `bun install` exited 0. `perfect-freehand@1.2.3` was added with `bun add --exact`.
 - `bun run check` exited 0. Zero `error TS` lines in the whole project at the last run; earlier runs showed only B4's files.
-- `bun x vitest run src/components/whiteboard/canvas src/components/whiteboard/ink` exited 0: **13 files, 76 tests, all pass.**
+- `bun x vitest run src/components/whiteboard/canvas src/components/whiteboard/ink` exited 0: **15 files, 82 tests, all pass.**
 
 | File | Tests | What they cover |
 |---|---|---|
@@ -124,6 +140,13 @@ Builder B3, 2026-11-25 night build. Owned paths only: `crates/desktop/ui/src/com
 | `canvas/input.test.ts` | 9 | — |
 | `canvas/send.test.ts` | 6 | — |
 | `canvas/lasso.test.ts` | 2 | extra |
+| `canvas/turns.test.ts` | 2 | extra (session card rows) |
+| `canvas/penRelay.test.ts` | 3 | extra: validation against a hostile page, and the relay script parses |
+
+**Follow-up round: pen relay checked in headless Chrome.** The relay script ran in a sandboxed `srcdoc` iframe, with Pencil events sent through CDP `pointerType: 'pen'`.
+- With capture off, a pen tap clicked the page's button.
+- With capture on, a pen stroke arrived at the host as `down`, 5 × `move`, `up`, with pressure 0.6. The pen's click was suppressed.
+- A mouse click still reached the page.
 
 **Visual check in headless Chrome.** I used a throwaway harness, since deleted. It ran Vite with no engine and loaded the fixture whiteboard, in light and dark.
 
@@ -151,11 +174,11 @@ Bugs this found and fixed:
 
 - **Not verified:**
   - Anything that needs an iPad: real touch, the Pencil, the palm rule, stylus `touchType` filtering, multi-finger taps.
-  - Native capture snapshots (`host.capture`), describe-point captions against real pages, page cards (they need an engine), `composeImage` output, Follow/spotlight, and pointer ink on WebKit.
+  - Native capture snapshots (`host.capture`), describe-point captions against real pages, `composeImage` output, Follow/spotlight, and pointer ink on WebKit.
+  - Page, session and artifact-image cards: they need an engine connection and were not loaded in the browser.
+  - The pen relay inside a real page card: Tauri `theuth-page://` and WebKit/iPadOS. Its page-side script was checked in Chrome on its own (follow-up section).
 - **Not built:**
-  - an inline session transcript
   - live terminals on the canvas (deviation 2)
-  - artifact and path images on the canvas
   - "Ask about selection" (it belongs to the shell; the selection is in the store)
 
 ## For the other builders and the orchestrator
@@ -168,4 +191,7 @@ Bugs this found and fixed:
 - **B4 — things the shell must know:**
   - `host.capture` returning `null` once latches "no capture" for that mount.
   - `freeSpot` avoids cards (16 px padding) and ink.
+- **B4 — palette copies:** `native-ink.ts` (lines 16–17) still has the contract's light green `#2f9e44` and amber `#b7791f`, and `glass.css:50` uses `#2f9e44`.
+  - Import `INK_COLOURS` / `inkCss` from `ink/colour.ts` so the native picker gets the ≥ 3 : 1 values.
+  - `nearestInk` still maps the old hexes to `green` / `amber` (RGB distance under 40).
 - **Orchestrator:** B3's tree has no `218-TEMP(wire)` cast and does not import `wire.ts`.
