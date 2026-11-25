@@ -49,6 +49,7 @@ Builder B4, night of 2026-11-25. `UI` = `crates/desktop/ui/src`. Two sub-builder
 ## Not built / unverified
 
 - Not built: *Add to whiteboard…* from a chat message or a fence (only the artifact card's menu has it); PDF export; a file picker for the excerpt (a typed path).
+- Unverified (no runtime tonight): nothing was rendered in a browser or simulator — layout of pill/cluster/sheet/bubble in light and dark, the keyboard-riding sheet on iPad, native ink end to end (needs B5's plugin and a Pencil), `wb_capture` sizing (the `width` argument is computed as points so the PNG's long side ≈ `maxSide` px).
 
 ## Follow-up round (02:18 request)
 
@@ -68,7 +69,6 @@ Builder B4, night of 2026-11-25. `UI` = `crates/desktop/ui/src`. Two sub-builder
 5. **Export:** ⋯ → *Export as a note* (`export.ts` `briefMarkdown`, tested: title, frames in reading order, loose cards, links, pinned marks; every card a `theuth://whiteboards/<id>#<card>` link; created with `doc_create`, notice with *Open*) and *Copy view as a picture* (hides the cluster, waits two frames, `wb_capture` of the canvas rect → a promised `ClipboardItem` so WKWebView keeps the gesture). In a plain browser it says it needs the app.
 
 Checks after the round: `bun run check` exit 0 (whole UI); `bunx vitest run` over the whiteboard, attach, page-bootstrap, tile-arrival, injected-wrappers and Composer tests: 16 files, 140 tests, all pass. Unverified: the voice note and the PNG copy on a device; chevron placement and Follow against live agent turns.
-- Unverified (no runtime tonight): nothing was rendered in a browser or simulator — layout of pill/cluster/sheet/bubble in light and dark, the keyboard-riding sheet on iPad, native ink end to end (needs B5's plugin and a Pencil), `wb_capture` sizing (the `width` argument is computed as points so the PNG's long side ≈ `maxSide` px).
 
 ## For the orchestrator and other builders
 
