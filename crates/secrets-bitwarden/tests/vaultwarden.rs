@@ -189,7 +189,7 @@ async fn api_key_unlock_crud_conflict_trash_lock() {
     let page = b
         .list(ListQuery {
             query: Some("b5 LOGIN".into()),
-            cursor: None,
+            ..Default::default()
         })
         .await
         .unwrap();

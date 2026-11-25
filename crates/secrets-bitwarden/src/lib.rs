@@ -558,7 +558,7 @@ impl ExternalBackend for BwBackend {
         let mut entries: Vec<ExtEntry> = list
             .successes
             .into_iter()
-            .filter(|c| c.deleted_date.is_none())
+            .filter(|c| c.deleted_date.is_some() == q.deleted)
             .filter_map(|c| {
                 let id = c.id?;
                 let location = Self::location(
@@ -582,6 +582,7 @@ impl ExternalBackend for BwBackend {
                     keys: Vec::new(),
                     location,
                     versions: vec![version(c.revision_date)],
+                    recoverable_until: c.deleted_date.map(trash_until),
                 })
             })
             .collect();
@@ -616,6 +617,7 @@ impl ExternalBackend for BwBackend {
                 v.folder_id,
             ),
             versions: vec![version(v.revision_date)],
+            recoverable_until: None,
             name: v.name,
         })
     }
@@ -794,11 +796,8 @@ impl ExternalBackend for BwBackend {
                     return Err(ExtError::NotFound);
                 }
                 self.timed(ciphers.soft_delete(id)).await?.map_err(map)?;
-                let until = Utc::now() + chrono::Duration::days(TRASH_DAYS);
                 Ok(DeleteOutcome {
-                    recoverable_until: Some(
-                        until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                    ),
+                    recoverable_until: Some(trash_until(Utc::now())),
                 })
             }
         }
@@ -823,6 +822,12 @@ impl ExternalBackend for BwBackend {
     async fn lock(&self) {
         self.lock_now().await;
     }
+}
+
+/// Until when a trashed item can be restored (cloud: 30 days; self-hosted: the server's setting).
+fn trash_until(deleted: chrono::DateTime<Utc>) -> String {
+    (deleted + chrono::Duration::days(TRASH_DAYS))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn kind_of_list(t: &bitwarden_vault::CipherListViewType) -> &'static str {
