@@ -14,8 +14,8 @@ export const bodyKey = (body: string) => body.replaceAll('\r\n', '\n').replace(/
 
 const OPEN = /^([ \t]*(?:>[ \t]?)*[ \t]*)(`{3,}|~{3,})[ \t]*([^`\n]*)$/
 
-/** One fenced code block: its info string, body, closing line index (the last line when unclosed) and whether it closed. */
-type Fence = { info: string; body: string; end: number; closed: boolean }
+/** One fenced code block: its info string, body, and closing line index (the last line when unclosed). */
+type Fence = { info: string; body: string; end: number }
 
 /**
  * Fenced code blocks of `md` (CommonMark's rule: a closer of the same character, at least as long, nothing after it;
@@ -37,7 +37,7 @@ function fencesOf(md: string): Fence[] {
       if (close?.[1] && close[1][0] === fence[0] && close[1].length >= fence.length) break
       body.push(line)
     }
-    out.push({ info, body: body.join('\n'), end: Math.min(j, lines.length - 1), closed: j < lines.length })
+    out.push({ info, body: body.join('\n'), end: Math.min(j, lines.length - 1) })
     i = j
   }
   return out
@@ -53,16 +53,43 @@ export function replyCells(md: string): ReplyCell[] {
   return out
 }
 
-/** 219: a plain fence — closed, a runnable language (a cell language but JS/TS), no `#|` header. `ordinal` is 0-based. */
-export type PlainFence = { ordinal: number; body: string }
+/** 219: a plain fence — closed, a runnable language (a cell language but JS/TS), no `#|` header. `ordinal` is 0-based; `lang` normalised (`langOf`). */
+export type PlainFence = { ordinal: number; lang: string; body: string }
 
-/** 219 (Vocabulary): the plain fences of `md` in document order, numbered as `cell_promote` counts them. */
+const STRICT_OPEN = /^( {0,3})(`{3,}|~{3,})(.*)$/
+const STRICT_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
+
+/**
+ * 219 (Vocabulary): the plain fences of `md` in document order, numbered as `cell_promote` counts them. A strict
+ * CommonMark scanner, the backend's: opener and closer indented ≤3 spaces (no tabs, no `>` quote prefix), the closer
+ * the opener's character and at least as long, a backtick opener's info without backticks; an unclosed final fence
+ * does not count. Up to the opener's indent in spaces is removed from each body line.
+ */
 export function plainFences(md: string): PlainFence[] {
+  const lines = md.replaceAll('\r\n', '\n').split('\n')
   const out: PlainFence[] = []
-  for (const f of fencesOf(md)) {
-    const lang = langOf(f.info)
-    if (!f.closed || lang === null || lang === 'javascript' || lang === 'typescript' || cellOf(f.info, f.body) !== null) continue
-    out.push({ ordinal: out.length, body: bodyKey(f.body) })
+  for (let i = 0; i < lines.length; i++) {
+    const m = STRICT_OPEN.exec(lines[i] as string)
+    if (!m) continue
+    const [, indent = '', fence = '', info = ''] = m
+    if (fence[0] === '`' && info.includes('`')) continue
+    const body: string[] = []
+    let j = i + 1
+    let closed = false
+    for (; j < lines.length; j++) {
+      const line = lines[j] as string
+      const close = STRICT_CLOSE.exec(line)
+      if (close?.[1] && close[1][0] === fence[0] && close[1].length >= fence.length) {
+        closed = true
+        break
+      }
+      body.push(line.replace(new RegExp(`^ {0,${indent.length}}`), ''))
+    }
+    i = j
+    const lang = langOf(info)
+    const text = body.join('\n')
+    if (!closed || lang === null || lang === 'javascript' || lang === 'typescript' || cellOf(info, text) !== null) continue
+    out.push({ ordinal: out.length, lang, body: bodyKey(text) })
   }
   return out
 }

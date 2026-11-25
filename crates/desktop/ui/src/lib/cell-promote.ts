@@ -27,12 +27,13 @@ export function promoteNotice(outcome: PromoteOutcome): { kind: 'info' | 'warnin
 
 /**
  * Rewrite plain fence `ordinal` (0-based among the reply's plain runnable fences) of the stored reply `entry` (its
- * message seq) as a cell, in place, and say how it went. `undefined` when the call was parked behind the owner-offline
- * card or failed (the failure is noticed here).
+ * message seq) as a cell, in place, and say how it went. `body` is the fence's code: the engine picks the plain fence
+ * with that body (the ordinal only breaks ties between identical bodies), so a scanner difference cannot rewrite the
+ * wrong fence. `undefined` when the call was parked behind the owner-offline card or failed (the failure is noticed here).
  */
-export async function promoteFence(api: Api, session: string, entry: string, ordinal: number): Promise<PromoteOutcome | undefined> {
+export async function promoteFence(api: Api, session: string, entry: string, ordinal: number, body: string): Promise<PromoteOutcome | undefined> {
   try {
-    const r = await routed(session, () => api.cell_promote(session, Number(entry), ordinal))
+    const r = await routed(session, () => api.cell_promote(session, Number(entry), ordinal, body))
     if (!r) return undefined
     const n = promoteNotice(r.outcome)
     if (n) (n.kind === 'warning' ? notify.warning : notify.info)(n.text, r.detail ? { description: r.detail } : undefined)

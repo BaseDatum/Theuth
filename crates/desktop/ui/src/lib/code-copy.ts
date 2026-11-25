@@ -19,7 +19,7 @@ export function copyText(lang: string, code: string): string {
   let lines = code.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')
   const spec = cellOf(lang, code)
   if (spec) lines = [...lines.slice(0, spec.header_lines).filter((l) => l.startsWith('#!')), ...lines.slice(spec.header_lines)]
-  if (lines.length > 1 && lines.at(-1) === '') lines.pop()
+  while (lines.length > 1 && lines.at(-1)?.trim() === '') lines.pop()
   return (prompted(lines) ? lines.map((l) => (l.startsWith(PROMPT) ? l.slice(PROMPT.length) : l)) : lines).join('\n')
 }
 

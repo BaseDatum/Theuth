@@ -23,7 +23,7 @@ import { Cell, CellExtras, cellDomId } from './Cell'
 import { CellEditor } from './CellEditor'
 import { setEdit, useEdit } from './edits'
 import { bodyKey, cellAt, firstOfName, type PlainFence, plainFences, type ReplyCell, replyCells, restated } from './fences'
-import { cellOf, digest } from './grammar'
+import { cellOf, digest, langOf } from './grammar'
 import { openAsNote } from './open-as-note'
 import { cellIdentity } from './line-run'
 import { followSuperseded, newestOf, replacementOf, RunbookBar, runAllPairs } from './RunbookBar'
@@ -32,8 +32,8 @@ import { chatEditable, disarmedReason, labelOf, titleOf, viewOf } from './view'
 
 const NO_ENTRIES: Entry[] = []
 
-/** 171 §4.1: the fence languages `CellFence` registers for. */
-export const CELL_LANGUAGES = ['bash', 'zsh', 'sh', 'pwsh', 'powershell', 'python', 'py']
+/** 171 §4.1: the fence languages `CellFence` registers for. 219: `shellscript` too, so every fence `plainFences` counts mounts here. */
+export const CELL_LANGUAGES = ['bash', 'shellscript', 'zsh', 'sh', 'pwsh', 'powershell', 'python', 'py']
 
 /**
  * 171 §3.4, §4.1: what `MessageAssistant` knows about its reply's cells. `text` is the reply's markdown; `entry` the
@@ -44,7 +44,7 @@ export const CELL_LANGUAGES = ['bash', 'zsh', 'sh', 'pwsh', 'powershell', 'pytho
  * `turnRunning` gates nothing for cells (cells-midturn D1: a closed, stored cell runs while its turn still runs); it
  * holds back Make runnable (219), which is refused while a turn runs.
  * 219: `plain` the reply's plain fences (`plainFences`); `claimPlain` hands a mounted plain fence its 0-based ordinal
- * the same way.
+ * the same way, matched by its language (`info`, normalised) and body.
  */
 export type CellOrdinals = {
   text: string
@@ -53,100 +53,146 @@ export type CellOrdinals = {
   cells: ReplyCell[]
   plain: PlainFence[]
   claim(fence: string, body: string): number | null
-  claimPlain(fence: string, body: string): number | null
+  claimPlain(fence: string, info: string, body: string): number | null
 }
 export const CellOrdinals = createContext<CellOrdinals | null>(null)
 
-/** A claim over `list`: a fence keeps its first answer; otherwise the first unclaimed item with the same body. */
-function claimer(list: readonly { ordinal: number; body: string }[]): (fence: string, body: string) => number | null {
+/** A claim over `list`: a fence keeps its first answer; otherwise the first unclaimed item with the same key. */
+function claimer(list: readonly { ordinal: number; key: string }[]): (fence: string, key: string) => number | null {
   const claims = new Map<string, number>()
-  return (fence, body) => {
+  return (fence, key) => {
     const known = claims.get(fence)
     if (known !== undefined) return known
     const taken = new Set(claims.values())
-    const hit = list.find((c) => c.body === body && !taken.has(c.ordinal))
+    const hit = list.find((c) => c.key === key && !taken.has(c.ordinal))
     if (!hit) return null
     claims.set(fence, hit.ordinal)
     return hit.ordinal
   }
 }
 
+/** 219: a plain fence's claim key — its normalised language and body, so `bash`/`shellscript` and `sh` twins stay apart. */
+const plainKey = (lang: string, body: string) => `${lang}\n${body}`
+
 /** The `CellOrdinals` value for one message text. */
 export function cellOrdinals(text: string, entry: string | null, turnRunning: boolean): CellOrdinals {
   const cells = replyCells(text)
   const plain = plainFences(text)
-  return { text, entry, turnRunning, cells, plain, claim: claimer(cells), claimPlain: claimer(plain) }
+  const claimCell = claimer(cells.map((c) => ({ ordinal: c.ordinal, key: c.body })))
+  const claimPlain = claimer(plain.map((p) => ({ ordinal: p.ordinal, key: plainKey(p.lang, p.body) })))
+  return {
+    text,
+    entry,
+    turnRunning,
+    cells,
+    plain,
+    claim: claimCell,
+    claimPlain: (fence, info, body) => {
+      const lang = langOf(info)
+      return lang === null ? null : claimPlain(fence, plainKey(lang, body))
+    },
+  }
 }
+
+/** 219: a snippet's lines as streamdown renders them — trailing newlines trimmed, one `pre code > span` per line. */
+export const snippetLines = (code: string) => code.replace(/\n+$/, '').split('\n')
 
 /**
  * 219: per-line copy over a streamdown code block. The line under the pointer (the last tapped one on touch) shows a
- * copy icon at its right end; it copies that line (`copyLine`). The lines are streamdown's: the code with its trailing
- * newlines trimmed, one `code > span` each.
+ * copy icon at its right end; it copies that line (`copyLine`). Keyboard: the button is in the tab order (revealed on
+ * focus), starts on the first non-blank line, and ↑/↓ move it between non-blank lines.
  */
-function LineCopy({ code, children }: { code: string; children: ReactNode }) {
+function LineCopy({ code, enabled, children }: { code: string; enabled: boolean; children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null)
   const [at, setAt] = useState<{ line: number; top: number; height: number } | null>(null)
-  const lines = useMemo(() => code.replace(/\n+$/, '').split('\n'), [code])
-  const track = (target: EventTarget) => {
-    const el = target instanceof Element ? target.closest('pre code > span') : null
-    if (!el?.parentElement || !box.current?.contains(el)) return
-    const line = Array.prototype.indexOf.call(el.parentElement.children, el)
+  const lines = useMemo(() => snippetLines(code), [code])
+  const first = lines.findIndex((l) => l.trim() !== '')
+  const place = (line: number, el: Element | null | undefined) => {
+    if (!el || !box.current) return setAt({ line, top: 0, height: 0 })
     const r = el.getBoundingClientRect()
     const top = r.top - box.current.getBoundingClientRect().top
     setAt((p) => (p?.line === line && p.top === top && p.height === r.height ? p : { line, top, height: r.height }))
   }
-  const text = at ? lines[at.line] : undefined
+  const track = (target: EventTarget) => {
+    const el = target instanceof Element ? target.closest('pre code > span') : null
+    if (!el?.parentElement || !box.current?.contains(el)) return
+    place(Array.prototype.indexOf.call(el.parentElement.children, el), el)
+  }
+  const step = (from: number, by: 1 | -1) => {
+    for (let i = from + by; i >= 0 && i < lines.length; i += by) if ((lines[i] as string).trim() !== '') return i
+    return from
+  }
+  const go = (line: number) => place(line, box.current?.querySelector('pre code')?.children[line])
+  const line = at?.line ?? first
+  const text = lines[line]
+  if (!enabled || first < 0) return <div className="relative">{children}</div>
   return (
     <div
       ref={box}
       className="group/snippet relative"
       onPointerMove={(e) => track(e.target)}
       onPointerDown={(e) => track(e.target)}
-      onPointerLeave={(e) => e.pointerType === 'mouse' && setAt(null)}
+      onPointerLeave={(e) => e.pointerType === 'mouse' && !box.current?.contains(document.activeElement) && setAt(null)}
     >
       {children}
-      {at && text !== undefined && text.trim() !== '' && (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={`Copy line ${at.line + 1}`}
-          title="Copy this line"
-          className="absolute right-3 z-10 -translate-y-1/2 bg-layer-2 text-fg-tertiary pointer-coarse:min-h-12"
-          style={{ top: at.top + at.height / 2 }}
-          onClick={() => void copyToClipboard(copyLine(text))}
-        >
-          <Copy className="size-3.5" aria-hidden />
-        </Button>
-      )}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label={`Copy line ${line + 1}`}
+        aria-keyshortcuts="ArrowUp ArrowDown"
+        title="Copy this line (↑/↓ picks the line)"
+        className={cn(
+          'absolute right-3 z-10 -translate-y-1/2 bg-layer-2 text-fg-tertiary opacity-0 group-focus-within/snippet:opacity-100 focus-visible:opacity-100 pointer-coarse:min-h-12 pointer-coarse:min-w-12',
+          at && text?.trim() && 'opacity-100',
+        )}
+        style={{ top: at && at.height ? at.top + at.height / 2 : undefined }}
+        onFocus={() => at === null && go(first)}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+          e.preventDefault()
+          go(step(line, e.key === 'ArrowDown' ? 1 : -1))
+        }}
+        onClick={() => text?.trim() && void copyToClipboard(copyLine(text))}
+      >
+        <Copy className="size-3.5" aria-hidden />
+      </Button>
     </div>
   )
 }
 
-/** 219: Make runnable is offered on a plain fence of a stored, settled reply in a live (not read-only) session whose engine has `cell_promote`. */
+/** 219: Make runnable is offered on a plain fence of a stored, settled reply in a live, editable session whose engine has `cell_promote`. */
 function usePromotable(plain: number | null): boolean {
   const fence = useContext(FenceContext)
   const ordinals = useContext(CellOrdinals)
   const running = useSessionField(fence.session ?? '', 'running') ?? false
   const supported = useQuerySupport([PROMOTE_METHOD])
-  return plain !== null && supported && !!fence.session && !!ordinals?.entry && !ordinals.turnRunning && !running
+  return plain !== null && supported && !fence.readOnly && !!fence.session && !!ordinals?.entry && !ordinals.turnRunning && !running
 }
 
-/** 219: the quiet "Make runnable" control: the cell-nudge side call rewrites this fence as a cell, in place. */
-function MakeRunnable({ ordinal }: { ordinal: number }) {
+/** 219: the quiet "Make runnable" control: the cell-nudge side call rewrites this fence (`body`, the code as given) as a cell, in place. */
+function MakeRunnable({ ordinal, body }: { ordinal: number; body: string }) {
   const api = useApi()
   const { session } = useContext(FenceContext)
   const entry = useContext(CellOrdinals)?.entry
   const [busy, setBusy] = useState(false)
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
   const go = () => {
     if (busy || !session || !entry) return
     setBusy(true)
-    void promoteFence(api, session, entry, ordinal).finally(() => setBusy(false))
+    void promoteFence(api, session, entry, ordinal, body).finally(() => alive.current && setBusy(false))
   }
   return (
     <Button
       variant="ghost"
       size="sm"
       data-make-runnable={ordinal}
+      disabled={busy}
       aria-busy={busy || undefined}
       title="Rewrite this snippet as a runnable cell"
       className={cn(
@@ -174,7 +220,7 @@ function Snippet({ code, language, isIncomplete, meta, plain = null }: CustomRen
   const clean = useMemo(() => copyText(language, code), [language, code])
   const promotable = usePromotable(plain)
   return (
-    <LineCopy code={code}>
+    <LineCopy code={code} enabled={c !== false && on('copy')}>
       <CodeBlock
         code={code}
         className={`language-${language}`}
@@ -185,7 +231,7 @@ function Snippet({ code, language, isIncomplete, meta, plain = null }: CustomRen
       >
         {c !== false || promotable ? (
           <>
-            {promotable && plain !== null ? <MakeRunnable ordinal={plain} /> : null}
+            {promotable && plain !== null ? <MakeRunnable ordinal={plain} body={code} /> : null}
             {c !== false && on('download') ? <CodeBlockDownloadButton code={code} language={language} /> : null}
             {c !== false && on('copy') ? (
               <CodeBlockCopyButton code={clean} onCopy={() => notify.message('Copied')} onError={() => notify.error('Copy failed')} />
@@ -434,7 +480,7 @@ export function CellFence(props: CustomRendererProps) {
   const ordinal = header && ordinals ? ordinals.claim(id, bodyKey(props.code)) : null
   if (!ordinals || ordinal === null) {
     // 219: a closed plain fence of the reply knows its ordinal among the reply's plain fences (Make runnable).
-    const plain = !header && ordinals && !props.isIncomplete ? ordinals.claimPlain(id, bodyKey(props.code)) : null
+    const plain = !header && ordinals && !props.isIncomplete ? ordinals.claimPlain(id, props.language, bodyKey(props.code)) : null
     return <Snippet {...props} plain={plain} />
   }
   return <ChatCell {...props} ordinals={ordinals} ordinal={ordinal} />

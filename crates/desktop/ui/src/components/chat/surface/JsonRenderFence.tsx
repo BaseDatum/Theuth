@@ -13,10 +13,10 @@ import { registry } from './registry'
  * that wrote this message still runs (fence-skel D2: that turn, never a later one), whether a later assistant reply
  * follows this message before the next human one, the session an `Open as app` may publish into (`undefined` outside a
  * live transcript: artifact viewer, tool cards), and the assistant message id (135 §2: the first half of a surface's
- * remembered-height key).
+ * remembered-height key). `readOnly`: an inspection page — no actions that change the transcript (219 Make runnable).
  * The default is the static, settled case.
  */
-export type FenceContext = { running: boolean; hasLaterAssistant: boolean; session?: string; entry?: string }
+export type FenceContext = { running: boolean; hasLaterAssistant: boolean; session?: string; entry?: string; readOnly?: boolean }
 export const FenceContext = createContext<FenceContext>({ running: false, hasLaterAssistant: false })
 
 /**
