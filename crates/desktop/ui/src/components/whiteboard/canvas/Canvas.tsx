@@ -63,8 +63,8 @@ const portOf = (h: string | null | undefined): Port | undefined => {
 type Wet = { id: number; kind: PointerKind; erase: boolean; pts: Pt[]; t0: number; hasPressure: boolean }
 type Rubber = { id: number; x0: number; y0: number; x1: number; y1: number }
 
-/** B4's anchored nodes (the reply bubble): at a card's right-top in screen space, flipped left when clipped. */
-/** `reserve`: px kept free at the right edge (the bubble, plus the control cluster while it is up). */
+/** B4's anchored nodes (the reply bubble): at a card's right-top in screen space, flipped left when `reserve` px (the
+ *  bubble, plus the control cluster while it is up) do not fit at the right edge. */
 function Anchored({ items, board, width, reserve }: { items: NonNullable<WhiteboardCanvasProps['anchored']>; board: Board; width: number; reserve: number }) {
   const { x, y, zoom } = useViewport()
   return (

@@ -81,7 +81,8 @@
   flex: none;
   padding: 0 10px;
   border-bottom: 1px solid var(--wb-card-border);
-  font: 600 11.5px/1 var(--font-sans, system-ui);
+  /* Not /1: the title clips (overflow: hidden) and line-height 1 cut the descenders (y, g, p). */
+  font: 600 11.5px/16px var(--font-sans, system-ui);
   white-space: nowrap;
 }
 .wb-card.sticky .wb-head { border-bottom-color: var(--wb-sticky-border); }
