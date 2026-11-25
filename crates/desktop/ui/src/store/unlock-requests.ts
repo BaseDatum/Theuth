@@ -5,10 +5,7 @@
 // whenever the event stream (re)starts; `UNLOCK_TTL_MS` drops a card whose `Resolved` was missed in between.
 
 import { create } from 'zustand'
-import type { SecretsEvent } from '@/rpc/bindings/event.rpc_2estream.output'
-
-/** One waiting unlock: the `ExternalUnlockRequested` fields, and a `list_unlock_requests` row. */
-export type UnlockRequestView = Omit<Extract<SecretsEvent, { type: 'ExternalUnlockRequested' }>, 'type'>
+import type { UnlockRequestView } from '@/rpc/bindings/method.secrets.output'
 
 /** The engine's default human wait (`secrets.request_timeout_secs`, 1800 s) and a minute of slack. */
 export const UNLOCK_TTL_MS = 31 * 60_000

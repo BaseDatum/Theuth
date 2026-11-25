@@ -6,8 +6,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { notify } from '@/lib/notify'
 import { useApi } from '@/lib/rpc'
 import type { LoginForm } from '@/rpc/bindings/method.secrets.input'
-import type { LoginStep } from '@/rpc/bindings/method.secrets.output'
-import type { UnlockRequestView } from '@/store/unlock-requests'
+import type { LoginStep, UnlockRequestView } from '@/rpc/bindings/method.secrets.output'
 
 const CARD = 'flex flex-col gap-2 rounded-xl border border-info-border bg-info-bg px-4 py-3 text-sm'
 
