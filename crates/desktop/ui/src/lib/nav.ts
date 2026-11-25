@@ -51,7 +51,7 @@ export const tabOf = (group: Group, pathname: string): string | null =>
 export const groupOf = (pathname: string): Group | null =>
   tabOf('agents', pathname) ? 'agents' : tabOf('library', pathname) ? 'library' : null
 
-export type Section = 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | 'costs' | 'settings' | null
+export type Section = 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | 'whiteboards' | 'costs' | 'settings' | null
 
 /** Which sidebar row `pathname` lights up; null for chats and the rest. */
 export const sectionOf = (pathname: string): Section => {
@@ -60,6 +60,8 @@ export const sectionOf = (pathname: string): Section => {
   if (pathname === '/attention' || pathname.startsWith('/attention/')) return 'attention'
   // The start form is the Meeting button's page, not a Library tab.
   if (pathname === '/meetings/new') return 'meeting'
+  // 218: the Whiteboards row lights itself (`sidebar/Whiteboards.tsx`); Library stays dark under it.
+  if (pathname === '/whiteboards' || pathname.startsWith('/whiteboards/')) return 'whiteboards'
   if (tabOf('library', pathname)) return 'library'
   if (pathname === '/costs' || pathname.startsWith('/costs/')) return 'costs'
   // 188: Settings is a page now, its footer button lit like any row.
