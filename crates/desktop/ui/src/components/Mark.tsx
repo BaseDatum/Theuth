@@ -39,17 +39,29 @@ export function EclipseMark({ className, duration = 8 }: { className?: string; d
 /**
  * The send button's glyph: the mark at rest; each new `pulse` (> 0) plays the eclipse once (1.4 s, `.theta-eclipse-once`
  * in styles.css): the shadow slides off to the full moon, comes back round and settles on the crescent. The pen never moves.
+ * `arrive` draws it in once as Stop gives way to Send (`.send-arrive-*`, styles.css): a stroke mask reveals the crescent
+ * round the circle, then the pen slides in from the left; both end on the mark at rest, so dropping `arrive` is seamless.
  */
-export function SendMark({ pulse, className }: { pulse: number; className?: string }) {
-  const mask = `theta-send-${useId().replace(/:/g, '')}`
+export function SendMark({ pulse, arrive = false, className }: { pulse: number; arrive?: boolean; className?: string }) {
+  const id = useId().replace(/:/g, '')
+  const mask = `theta-send-${id}`
+  const reveal = `theta-send-reveal-${id}`
   return (
     <svg viewBox="14 14 92 92" className={cn('shrink-0', className)} aria-hidden="true">
       <mask id={mask} maskUnits="userSpaceOnUse" x="0" y="0" width="120" height="120">
         <rect width="120" height="120" fill="#fff" />
         <circle key={pulse} className={pulse > 0 ? 'theta-eclipse-once' : 'theta-eclipse-rest'} cx="60" cy="60" r="37" fill="#000" />
       </mask>
-      <path fill="currentColor" d={DISC} mask={`url(#${mask})`} />
-      <path fill={PEN} d={BAR} />
+      {arrive && (
+        // A 12-wide stroke over radii 31.5–43.5 covers the whole crescent (outer r 42; the shadow's edge sits 33–41 out).
+        <mask id={reveal} maskUnits="userSpaceOnUse" x="0" y="0" width="120" height="120">
+          <circle className="send-arrive-ring" cx="60" cy="60" r="37.5" fill="none" stroke="#fff" strokeWidth="12" pathLength={100} strokeDasharray="100 101" />
+        </mask>
+      )}
+      <g mask={arrive ? `url(#${reveal})` : undefined}>
+        <path fill="currentColor" d={DISC} mask={`url(#${mask})`} />
+      </g>
+      <path className={arrive ? 'send-arrive-bar' : undefined} fill={PEN} d={BAR} />
     </svg>
   )
 }

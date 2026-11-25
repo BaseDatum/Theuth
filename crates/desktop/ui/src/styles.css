@@ -1533,3 +1533,43 @@ html .tg-canvas .tg-edge {
 :root[data-animations="off"] :is(.tray-dash-side, [data-dash-row] .tray-grabber-pill) {
   transition: none;
 }
+/* SendButton (chat/Composer.tsx) `arrive`, Stop → Send after a running turn (~750 ms): the outgoing Stop's cut-out
+   square (lucide Square at size-4: 13.33 px, 2 px corners) grows and rounds over the red disc until the button is the
+   page; then SendMark's crescent draws round the circle (a stroke mask) and the pen slides in from the left. Every
+   default below is the resting state, so with reduced motion the overlay is hidden and Send is simply there. */
+.send-arrive-fill {
+  display: none;
+}
+.send-arrive-square {
+  position: absolute;
+  inset: -1px; /* a hair past the disc: no red fringe from anti-aliasing */
+  border-radius: 50%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .send-arrive-fill {
+    display: block;
+  }
+  .send-arrive-square {
+    animation: send-arrive-square 260ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+  .send-arrive-ring {
+    animation: send-arrive-ring 280ms 240ms ease-out both;
+  }
+  .send-arrive-bar {
+    animation: send-arrive-bar 260ms 480ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  }
+}
+@keyframes send-arrive-square {
+  from { inset: calc(50% - 6.667px); border-radius: 2px; }
+  to { inset: -1px; border-radius: 50%; }
+}
+@keyframes send-arrive-ring {
+  from { stroke-dashoffset: 100; }
+  to { stroke-dashoffset: 0; }
+}
+/* SendMark's viewBox is 92 wide: -92 user units (the mock's -22 on the 24 grid, plus the pen's tip) starts the pen
+   wholly off the left edge. */
+@keyframes send-arrive-bar {
+  from { transform: translateX(-92px); }
+  to { transform: none; }
+}

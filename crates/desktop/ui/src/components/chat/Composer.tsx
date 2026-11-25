@@ -80,7 +80,7 @@ import { ContextPicker } from './ContextPicker'
 import { MicButton } from './MicButton'
 import { useNoteRecorder } from './use-note-recorder'
 import { StopButton } from './StopButton'
-import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
+import { CancelHint, DeleteNote, RecordingMeta, reduced, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
 import { type Uploaded, uploadWait, useUploads } from './uploads'
 import { McpMenu } from './McpMenu'
@@ -1156,6 +1156,16 @@ export function Composer({
   )
   const filled = Boolean(text.trim() || skills.length || held || dictatedFilled || carries)
   const at = phase(Boolean(session && running), queued?.length ?? 0)
+  const stopping = at !== 'idle' && !!session && !playing
+  // The Stop→Send hand-off (`SendButton`'s `arrive`), decided in render so Send's first frame is already Stop's red
+  // disc: nothing paints between the two. It ends on the draw-in's last animation, or the next change of button.
+  const tail: Tail = { session: session ?? null, button: stage !== 'idle' ? null : stopping ? 'stop' : 'send' }
+  const [lastTail, setLastTail] = useState(tail)
+  const [arrive, setArrive] = useState(false)
+  if (lastTail.session !== tail.session || lastTail.button !== tail.button) {
+    setLastTail(tail)
+    setArrive(handsOff(lastTail, tail, reduced()))
+  }
   const gesture = (g: 'press' | 'interrupt') => {
     if (dictating) {
       if (!filled) return
@@ -1681,7 +1691,7 @@ export function Composer({
           )}
           {/* 89 VOICE-HOLD: while a note is held or locked the row is the recording's; these come back on reset. */}
           {stage === 'idle' &&
-            (at !== 'idle' && session && !playing ? (
+            (stopping ? (
               <>
                 {/* Item 7: a finger's steer. Tap queues the box into the running turn; hold interrupts (with the box,
                     or the queued steers when it is empty). Not `disabled`: an empty box still takes the hold. */}
@@ -1708,7 +1718,7 @@ export function Composer({
                 <StopButton count={descendants} ring={ring} onStop={stop} />
               </>
             ) : (
-              <SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading} onSend={() => gesture('press')} sent={sent} playing={playing} />
+              <SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading} onSend={() => gesture('press')} sent={sent} playing={playing} arrive={arrive} onArrived={() => setArrive(false)} />
             ))}
         </div>
       </div>
@@ -1757,9 +1767,23 @@ function DictatedText({
   )
 }
 
+/** The round button that ends the bar: Stop while a turn runs, Send otherwise, none while a voice note holds the row. */
+export type Tail = { session: string | null; button: 'stop' | 'send' | null }
+
+/**
+ * Whether Send arrives drawn in (`SendButton`'s `arrive`): only when this session's Stop just gave way to Send, i.e. a
+ * running turn ended, stopped or on its own (one code path, so both animate), and motion is allowed. Never on mount, a
+ * session switch, a voice note handing the row back, or Send merely turning enabled or disabled.
+ */
+export const handsOff = (prev: Tail, next: Tail, reduce: boolean): boolean =>
+  !reduce && prev.session === next.session && prev.button === 'stop' && next.button === 'send'
+
 /**
  * The idle Send. `waiting` (an attachment still uploading, `uploadWait`) disables it and says why in a tooltip: a
- * disabled button gets no pointer events, so the tooltip hangs on a focusable wrapper.
+ * disabled button gets no pointer events, so the tooltip hangs on a focusable wrapper. `arrive` plays the Stop→Send
+ * draw-in once (`.send-arrive-*`, styles.css): Stop's red disc and cut-out sit under the button (outside it, so a
+ * disabled Send's half opacity never pales the red), the cut-out fills it, then the mark draws in; `onArrived` at the
+ * end. The button stays live throughout: the overlay takes no pointer events.
  */
 export function SendButton({
   disabled,
@@ -1767,16 +1791,28 @@ export function SendButton({
   onSend,
   sent = 0,
   playing = false,
-}: { disabled: boolean; waiting: string | null; onSend(): void; sent?: number; playing?: boolean }) {
+  arrive = false,
+  onArrived,
+}: { disabled: boolean; waiting: string | null; onSend(): void; sent?: number; playing?: boolean; arrive?: boolean; onArrived?(): void }) {
   const button = (
-    <Button
-      className={cn('size-9 shrink-0 rounded-full bg-transparent p-0 text-fg-primary hover:bg-transparent hover:opacity-80', playing && 'disabled:opacity-100')}
-      aria-label="Send"
-      disabled={disabled || waiting !== null}
-      onClick={onSend}
+    <span
+      className="relative inline-flex shrink-0 rounded-full"
+      onAnimationEnd={arrive ? (e) => e.animationName === 'send-arrive-bar' && onArrived?.() : undefined}
     >
-      <SendMark pulse={sent} className="size-8" />
-    </Button>
+      {arrive && (
+        <span aria-hidden className="send-arrive-fill pointer-events-none absolute inset-0 rounded-full bg-danger">
+          <span className="send-arrive-square bg-background" />
+        </span>
+      )}
+      <Button
+        className={cn('relative size-9 shrink-0 rounded-full bg-transparent p-0 text-fg-primary hover:bg-transparent hover:opacity-80', playing && 'disabled:opacity-100')}
+        aria-label="Send"
+        disabled={disabled || waiting !== null}
+        onClick={onSend}
+      >
+        <SendMark pulse={sent} arrive={arrive} className="size-8" />
+      </Button>
+    </span>
   )
   if (waiting === null) return button
   return (

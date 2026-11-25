@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import { type Active, finish } from '@/lib/dictation'
-import { dictationCommands, placeholderFor, spokenSend } from './Composer'
+import { dictationCommands, handsOff, placeholderFor, SendButton, spokenSend, type Tail } from './Composer'
 import { COMMANDS } from './slash'
 
 const active = (utts: Active['utts']): Active => ({ id: 'd1', before: '', after: '', utts, levels: [], startedAt: 0, device: null })
@@ -73,4 +75,36 @@ test('215 C2: inside the data-composer box the text comes first, then the toolba
   for (const s of order) expect(at(s), s).toBeGreaterThan(0)
   for (let i = 1; i < order.length; i++) expect(at(order[i - 1]!), `${order[i - 1]} before ${order[i]}`).toBeLessThan(at(order[i]!))
   expect(src).not.toMatch(/rounded-\[28px\]/)
+})
+
+test('Stop→Send draws in only when this session\'s running turn ends, never on mount, a switch, or reduced motion', () => {
+  // The Composer's render loop: each change of tail asks `handsOff`; the first tail is the mount and asks nothing.
+  const run = (tails: Tail[], reduce = false) => tails.slice(1).map((t, i) => handsOff(tails[i]!, t, reduce))
+  const stop = (session: string | null = 'a'): Tail => ({ session, button: 'stop' })
+  const send = (session: string | null = 'a'): Tail => ({ session, button: 'send' })
+  expect(run([send(), stop(), send()])).toEqual([false, true])
+  expect(run([stop(), send()], true)).toEqual([false])
+  expect(run([stop('a'), send('b')])).toEqual([false])
+  // A voice note holding the row hands it back as Send: not a turn ending.
+  expect(run([stop(), { session: 'a', button: null }, send()])).toEqual([false, false])
+  expect(run([send(), send()])).toEqual([false])
+})
+
+test('SendButton carries the draw-in classes only while `arrive`, at rest otherwise', () => {
+  const paint = (arrive?: boolean) =>
+    renderToStaticMarkup(createElement(SendButton, { disabled: true, waiting: null, onSend: () => {}, arrive }))
+  const drawn = paint(true)
+  for (const c of ['send-arrive-fill', 'send-arrive-square', 'send-arrive-ring', 'send-arrive-bar']) expect(drawn).toContain(c)
+  expect(drawn).toContain('bg-danger')
+  expect(paint()).not.toContain('send-arrive')
+  expect(paint(false)).not.toContain('send-arrive')
+})
+
+test('the draw-in is CSS-gated: with reduced motion the overlay is hidden and every arrive default is the resting mark', () => {
+  const css = readFileSync(new URL('../../styles.css', import.meta.url), 'utf8')
+  const gated = css.slice(css.indexOf('.send-arrive-fill {'), css.indexOf('@keyframes send-arrive-square'))
+  const [rest, motion] = gated.split('@media (prefers-reduced-motion: no-preference)')
+  expect(rest).toMatch(/\.send-arrive-fill \{\s+display: none;/)
+  expect(rest).not.toContain('animation')
+  for (const c of ['send-arrive-square', 'send-arrive-ring', 'send-arrive-bar']) expect(motion).toMatch(new RegExp(`\\.${c} \\{\\s+animation: ${c} `))
 })
