@@ -26284,6 +26284,36 @@
         ],
         "type": "object"
       },
+      "event.rpc_2estream.output.AwsFormat": {
+        "description": "AWS value shape for a `secret_request` destination.",
+        "oneOf": [
+          {
+            "const": "string",
+            "description": "One field → `SecretString`.",
+            "type": "string"
+          },
+          {
+            "const": "json",
+            "description": "Every field → `{\"<field.name>\": value}`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.rpc_2estream.output.BwKind": {
+        "description": "The Bitwarden item types theuth creates.",
+        "oneOf": [
+          {
+            "const": "login",
+            "description": "A login item.",
+            "type": "string"
+          },
+          {
+            "const": "secure_note",
+            "description": "A secure note.",
+            "type": "string"
+          }
+        ]
+      },
       "event.rpc_2estream.output.Choice": {
         "description": "One selectable answer.",
         "properties": {
@@ -26301,6 +26331,254 @@
         },
         "required": [
           "label"
+        ],
+        "type": "object"
+      },
+      "event.rpc_2estream.output.ConnStatus": {
+        "description": "A connection's state, as the UIs show it.",
+        "oneOf": [
+          {
+            "description": "Usable now.",
+            "properties": {
+              "state": {
+                "const": "ready",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Logged in, keys dropped: the unlock card brings it back.",
+            "properties": {
+              "state": {
+                "const": "locked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "No credentials on this engine.",
+            "properties": {
+              "state": {
+                "const": "logged_out",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Credentials expired; `hint` says what the user runs (`aws sso login --profile …`).",
+            "properties": {
+              "detail": {
+                "properties": {
+                  "hint": {
+                    "description": "What to do.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hint"
+                ],
+                "type": "object"
+              },
+              "state": {
+                "const": "expired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last probe failed.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server or build cannot serve this connection.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "unsupported",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.rpc_2estream.output.DestinationView": {
+        "description": "§7.3: a [`Destination`] as the request card shows it, resolved on the asking engine.",
+        "properties": {
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "collection": {
+            "default": null,
+            "description": "Bitwarden: collection name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection": {
+            "description": "The connection (`prod`, `personal`).",
+            "type": "string"
+          },
+          "current_rev": {
+            "default": null,
+            "description": "The entry's current revision when `replace` is set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Bitwarden: per form field, the Bitwarden field it fills (`password` | `username` | `totp`\n| `notes` | `field:<name>`).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "folder": {
+            "default": null,
+            "description": "Bitwarden: folder name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.rpc_2estream.output.AwsFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "AWS: `string` (one field) | `json` (every field)."
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.rpc_2estream.output.BwKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Bitwarden: `login` | `secure_note`."
+          },
+          "keep_local": {
+            "default": false,
+            "description": "Also keep a local copy under each field's name (default false: the manager is the truth).",
+            "type": "boolean"
+          },
+          "kms_key_id": {
+            "default": null,
+            "description": "AWS: KMS key; default the connection's, else `aws/secretsmanager`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "AWS: the secret name (`app/ci/token`). Bitwarden: the item's name (`GitHub — CI`).",
+            "type": "string"
+          },
+          "org": {
+            "default": null,
+            "description": "Bitwarden: organisation name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace": {
+            "default": null,
+            "description": "Update this entry (its `ref`) instead of creating one. The card says \"replaces\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.rpc_2estream.output.ConnStatus"
+              }
+            ],
+            "description": "Whether the connection is locked now: the card shows the unlock field first."
+          },
+          "summary": {
+            "description": "The connection's [`ConnInfo::summary`].",
+            "type": "string"
+          },
+          "uri": {
+            "default": null,
+            "description": "Bitwarden: login URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connection",
+          "name",
+          "replace",
+          "keep_local",
+          "kms_key_id",
+          "format",
+          "org",
+          "collection",
+          "folder",
+          "item",
+          "fields",
+          "uri",
+          "backend",
+          "summary",
+          "status",
+          "current_rev"
         ],
         "type": "object"
       },
@@ -26700,6 +26978,17 @@
                   "null"
                 ]
               },
+              "destination": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.rpc_2estream.output.DestinationView"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "221 §7.3: where the answer is stored when not (only) the local vault."
+              },
               "expires": {
                 "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
                 "type": [
@@ -26816,6 +27105,75 @@
             },
             "required": [
               "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "221 §9.4: a call needs a locked connection; frontends show the unlock card and answer\nwith `answer_unlock(id, password)`.",
+            "properties": {
+              "account": {
+                "description": "What the card names: `me@… · vault.bitwarden.eu`.",
+                "type": "string"
+              },
+              "backend": {
+                "description": "`aws` | `bw`.",
+                "type": "string"
+              },
+              "conn": {
+                "description": "The connection.",
+                "type": "string"
+              },
+              "id": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.rpc_2estream.output.RequestId"
+                  }
+                ],
+                "description": "Answer with this id."
+              },
+              "reason": {
+                "description": "Why: `a tool call uses bw/personal/2f1c…#password`.",
+                "type": "string"
+              },
+              "type": {
+                "const": "ExternalUnlockRequested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "conn",
+              "backend",
+              "account",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The unlock card was answered, declined or timed out; frontends drop it.",
+            "properties": {
+              "id": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.rpc_2estream.output.RequestId"
+                  }
+                ],
+                "description": "The card."
+              },
+              "type": {
+                "const": "ExternalUnlockResolved",
+                "type": "string"
+              },
+              "unlocked": {
+                "description": "The connection is unlocked now.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "unlocked"
             ],
             "type": "object"
           }
@@ -26954,6 +27312,36 @@
         ],
         "type": "object"
       },
+      "event.rpc_2estream.receiver.AwsFormat": {
+        "description": "AWS value shape for a `secret_request` destination.",
+        "oneOf": [
+          {
+            "const": "string",
+            "description": "One field → `SecretString`.",
+            "type": "string"
+          },
+          {
+            "const": "json",
+            "description": "Every field → `{\"<field.name>\": value}`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.rpc_2estream.receiver.BwKind": {
+        "description": "The Bitwarden item types theuth creates.",
+        "oneOf": [
+          {
+            "const": "login",
+            "description": "A login item.",
+            "type": "string"
+          },
+          {
+            "const": "secure_note",
+            "description": "A secure note.",
+            "type": "string"
+          }
+        ]
+      },
       "event.rpc_2estream.receiver.Choice": {
         "description": "One selectable answer.",
         "properties": {
@@ -26971,6 +27359,243 @@
         },
         "required": [
           "label"
+        ],
+        "type": "object"
+      },
+      "event.rpc_2estream.receiver.ConnStatus": {
+        "description": "A connection's state, as the UIs show it.",
+        "oneOf": [
+          {
+            "description": "Usable now.",
+            "properties": {
+              "state": {
+                "const": "ready",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Logged in, keys dropped: the unlock card brings it back.",
+            "properties": {
+              "state": {
+                "const": "locked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "No credentials on this engine.",
+            "properties": {
+              "state": {
+                "const": "logged_out",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Credentials expired; `hint` says what the user runs (`aws sso login --profile …`).",
+            "properties": {
+              "detail": {
+                "properties": {
+                  "hint": {
+                    "description": "What to do.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hint"
+                ],
+                "type": "object"
+              },
+              "state": {
+                "const": "expired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last probe failed.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server or build cannot serve this connection.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "unsupported",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.rpc_2estream.receiver.DestinationView": {
+        "description": "§7.3: a [`Destination`] as the request card shows it, resolved on the asking engine.",
+        "properties": {
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "collection": {
+            "default": null,
+            "description": "Bitwarden: collection name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection": {
+            "description": "The connection (`prod`, `personal`).",
+            "type": "string"
+          },
+          "current_rev": {
+            "default": null,
+            "description": "The entry's current revision when `replace` is set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Bitwarden: per form field, the Bitwarden field it fills (`password` | `username` | `totp`\n| `notes` | `field:<name>`).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "folder": {
+            "default": null,
+            "description": "Bitwarden: folder name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.rpc_2estream.receiver.AwsFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "AWS: `string` (one field) | `json` (every field)."
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.rpc_2estream.receiver.BwKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Bitwarden: `login` | `secure_note`."
+          },
+          "keep_local": {
+            "default": false,
+            "description": "Also keep a local copy under each field's name (default false: the manager is the truth).",
+            "type": "boolean"
+          },
+          "kms_key_id": {
+            "default": null,
+            "description": "AWS: KMS key; default the connection's, else `aws/secretsmanager`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "AWS: the secret name (`app/ci/token`). Bitwarden: the item's name (`GitHub — CI`).",
+            "type": "string"
+          },
+          "org": {
+            "default": null,
+            "description": "Bitwarden: organisation name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace": {
+            "default": null,
+            "description": "Update this entry (its `ref`) instead of creating one. The card says \"replaces\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.rpc_2estream.receiver.ConnStatus"
+              }
+            ],
+            "description": "Whether the connection is locked now: the card shows the unlock field first."
+          },
+          "summary": {
+            "description": "The connection's [`ConnInfo::summary`].",
+            "type": "string"
+          },
+          "uri": {
+            "default": null,
+            "description": "Bitwarden: login URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connection",
+          "name",
+          "backend",
+          "summary",
+          "status"
         ],
         "type": "object"
       },
@@ -27364,6 +27989,17 @@
                   "null"
                 ]
               },
+              "destination": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.rpc_2estream.receiver.DestinationView"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "221 §7.3: where the answer is stored when not (only) the local vault."
+              },
               "expires": {
                 "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
                 "type": [
@@ -27476,6 +28112,75 @@
             },
             "required": [
               "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "221 §9.4: a call needs a locked connection; frontends show the unlock card and answer\nwith `answer_unlock(id, password)`.",
+            "properties": {
+              "account": {
+                "description": "What the card names: `me@… · vault.bitwarden.eu`.",
+                "type": "string"
+              },
+              "backend": {
+                "description": "`aws` | `bw`.",
+                "type": "string"
+              },
+              "conn": {
+                "description": "The connection.",
+                "type": "string"
+              },
+              "id": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.rpc_2estream.receiver.RequestId"
+                  }
+                ],
+                "description": "Answer with this id."
+              },
+              "reason": {
+                "description": "Why: `a tool call uses bw/personal/2f1c…#password`.",
+                "type": "string"
+              },
+              "type": {
+                "const": "ExternalUnlockRequested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "conn",
+              "backend",
+              "account",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The unlock card was answered, declined or timed out; frontends drop it.",
+            "properties": {
+              "id": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.rpc_2estream.receiver.RequestId"
+                  }
+                ],
+                "description": "The card."
+              },
+              "type": {
+                "const": "ExternalUnlockResolved",
+                "type": "string"
+              },
+              "unlocked": {
+                "description": "The connection is unlocked now.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "unlocked"
             ],
             "type": "object"
           }
@@ -28992,6 +29697,284 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.secrets_2eevents.output.AwsFormat": {
+        "description": "AWS value shape for a `secret_request` destination.",
+        "oneOf": [
+          {
+            "const": "string",
+            "description": "One field → `SecretString`.",
+            "type": "string"
+          },
+          {
+            "const": "json",
+            "description": "Every field → `{\"<field.name>\": value}`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.secrets_2eevents.output.BwKind": {
+        "description": "The Bitwarden item types theuth creates.",
+        "oneOf": [
+          {
+            "const": "login",
+            "description": "A login item.",
+            "type": "string"
+          },
+          {
+            "const": "secure_note",
+            "description": "A secure note.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.secrets_2eevents.output.ConnStatus": {
+        "description": "A connection's state, as the UIs show it.",
+        "oneOf": [
+          {
+            "description": "Usable now.",
+            "properties": {
+              "state": {
+                "const": "ready",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Logged in, keys dropped: the unlock card brings it back.",
+            "properties": {
+              "state": {
+                "const": "locked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "No credentials on this engine.",
+            "properties": {
+              "state": {
+                "const": "logged_out",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Credentials expired; `hint` says what the user runs (`aws sso login --profile …`).",
+            "properties": {
+              "detail": {
+                "properties": {
+                  "hint": {
+                    "description": "What to do.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hint"
+                ],
+                "type": "object"
+              },
+              "state": {
+                "const": "expired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last probe failed.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server or build cannot serve this connection.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "unsupported",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.secrets_2eevents.output.DestinationView": {
+        "description": "§7.3: a [`Destination`] as the request card shows it, resolved on the asking engine.",
+        "properties": {
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "collection": {
+            "default": null,
+            "description": "Bitwarden: collection name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection": {
+            "description": "The connection (`prod`, `personal`).",
+            "type": "string"
+          },
+          "current_rev": {
+            "default": null,
+            "description": "The entry's current revision when `replace` is set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Bitwarden: per form field, the Bitwarden field it fills (`password` | `username` | `totp`\n| `notes` | `field:<name>`).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "folder": {
+            "default": null,
+            "description": "Bitwarden: folder name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.secrets_2eevents.output.AwsFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "AWS: `string` (one field) | `json` (every field)."
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.secrets_2eevents.output.BwKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Bitwarden: `login` | `secure_note`."
+          },
+          "keep_local": {
+            "default": false,
+            "description": "Also keep a local copy under each field's name (default false: the manager is the truth).",
+            "type": "boolean"
+          },
+          "kms_key_id": {
+            "default": null,
+            "description": "AWS: KMS key; default the connection's, else `aws/secretsmanager`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "AWS: the secret name (`app/ci/token`). Bitwarden: the item's name (`GitHub — CI`).",
+            "type": "string"
+          },
+          "org": {
+            "default": null,
+            "description": "Bitwarden: organisation name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace": {
+            "default": null,
+            "description": "Update this entry (its `ref`) instead of creating one. The card says \"replaces\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.secrets_2eevents.output.ConnStatus"
+              }
+            ],
+            "description": "Whether the connection is locked now: the card shows the unlock field first."
+          },
+          "summary": {
+            "description": "The connection's [`ConnInfo::summary`].",
+            "type": "string"
+          },
+          "uri": {
+            "default": null,
+            "description": "Bitwarden: login URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connection",
+          "name",
+          "replace",
+          "keep_local",
+          "kms_key_id",
+          "format",
+          "org",
+          "collection",
+          "folder",
+          "item",
+          "fields",
+          "uri",
+          "backend",
+          "summary",
+          "status",
+          "current_rev"
+        ],
+        "type": "object"
+      },
       "event.secrets_2eevents.output.KeyInfo": {
         "description": "183 §14.7 (D7): one mesh key's identity and order. Keys order by `(epoch, initiator)`;\nthe legacy key is `(0, \"\")`.",
         "properties": {
@@ -29275,6 +30258,17 @@
                   "null"
                 ]
               },
+              "destination": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.secrets_2eevents.output.DestinationView"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "221 §7.3: where the answer is stored when not (only) the local vault."
+              },
               "expires": {
                 "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
                 "type": [
@@ -29393,6 +30387,75 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "221 §9.4: a call needs a locked connection; frontends show the unlock card and answer\nwith `answer_unlock(id, password)`.",
+            "properties": {
+              "account": {
+                "description": "What the card names: `me@… · vault.bitwarden.eu`.",
+                "type": "string"
+              },
+              "backend": {
+                "description": "`aws` | `bw`.",
+                "type": "string"
+              },
+              "conn": {
+                "description": "The connection.",
+                "type": "string"
+              },
+              "id": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.secrets_2eevents.output.RequestId"
+                  }
+                ],
+                "description": "Answer with this id."
+              },
+              "reason": {
+                "description": "Why: `a tool call uses bw/personal/2f1c…#password`.",
+                "type": "string"
+              },
+              "type": {
+                "const": "ExternalUnlockRequested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "conn",
+              "backend",
+              "account",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The unlock card was answered, declined or timed out; frontends drop it.",
+            "properties": {
+              "id": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.secrets_2eevents.output.RequestId"
+                  }
+                ],
+                "description": "The card."
+              },
+              "type": {
+                "const": "ExternalUnlockResolved",
+                "type": "string"
+              },
+              "unlocked": {
+                "description": "The connection is unlocked now.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "unlocked"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -29400,6 +30463,273 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "event.secrets_2eevents.receiver.AwsFormat": {
+        "description": "AWS value shape for a `secret_request` destination.",
+        "oneOf": [
+          {
+            "const": "string",
+            "description": "One field → `SecretString`.",
+            "type": "string"
+          },
+          {
+            "const": "json",
+            "description": "Every field → `{\"<field.name>\": value}`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.secrets_2eevents.receiver.BwKind": {
+        "description": "The Bitwarden item types theuth creates.",
+        "oneOf": [
+          {
+            "const": "login",
+            "description": "A login item.",
+            "type": "string"
+          },
+          {
+            "const": "secure_note",
+            "description": "A secure note.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.secrets_2eevents.receiver.ConnStatus": {
+        "description": "A connection's state, as the UIs show it.",
+        "oneOf": [
+          {
+            "description": "Usable now.",
+            "properties": {
+              "state": {
+                "const": "ready",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Logged in, keys dropped: the unlock card brings it back.",
+            "properties": {
+              "state": {
+                "const": "locked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "No credentials on this engine.",
+            "properties": {
+              "state": {
+                "const": "logged_out",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Credentials expired; `hint` says what the user runs (`aws sso login --profile …`).",
+            "properties": {
+              "detail": {
+                "properties": {
+                  "hint": {
+                    "description": "What to do.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hint"
+                ],
+                "type": "object"
+              },
+              "state": {
+                "const": "expired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last probe failed.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server or build cannot serve this connection.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "unsupported",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.secrets_2eevents.receiver.DestinationView": {
+        "description": "§7.3: a [`Destination`] as the request card shows it, resolved on the asking engine.",
+        "properties": {
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "collection": {
+            "default": null,
+            "description": "Bitwarden: collection name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection": {
+            "description": "The connection (`prod`, `personal`).",
+            "type": "string"
+          },
+          "current_rev": {
+            "default": null,
+            "description": "The entry's current revision when `replace` is set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Bitwarden: per form field, the Bitwarden field it fills (`password` | `username` | `totp`\n| `notes` | `field:<name>`).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "folder": {
+            "default": null,
+            "description": "Bitwarden: folder name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.secrets_2eevents.receiver.AwsFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "AWS: `string` (one field) | `json` (every field)."
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.secrets_2eevents.receiver.BwKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Bitwarden: `login` | `secure_note`."
+          },
+          "keep_local": {
+            "default": false,
+            "description": "Also keep a local copy under each field's name (default false: the manager is the truth).",
+            "type": "boolean"
+          },
+          "kms_key_id": {
+            "default": null,
+            "description": "AWS: KMS key; default the connection's, else `aws/secretsmanager`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "AWS: the secret name (`app/ci/token`). Bitwarden: the item's name (`GitHub — CI`).",
+            "type": "string"
+          },
+          "org": {
+            "default": null,
+            "description": "Bitwarden: organisation name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace": {
+            "default": null,
+            "description": "Update this entry (its `ref`) instead of creating one. The card says \"replaces\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.secrets_2eevents.receiver.ConnStatus"
+              }
+            ],
+            "description": "Whether the connection is locked now: the card shows the unlock field first."
+          },
+          "summary": {
+            "description": "The connection's [`ConnInfo::summary`].",
+            "type": "string"
+          },
+          "uri": {
+            "default": null,
+            "description": "Bitwarden: login URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connection",
+          "name",
+          "backend",
+          "summary",
+          "status"
+        ],
+        "type": "object"
       },
       "event.secrets_2eevents.receiver.KeyInfo": {
         "description": "183 §14.7 (D7): one mesh key's identity and order. Keys order by `(epoch, initiator)`;\nthe legacy key is `(0, \"\")`.",
@@ -29679,6 +31009,17 @@
                   "null"
                 ]
               },
+              "destination": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.secrets_2eevents.receiver.DestinationView"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "221 §7.3: where the answer is stored when not (only) the local vault."
+              },
               "expires": {
                 "description": "The agent's expiry suggestion for the card's control ([`SecretRequest::expires`]);\nabsent on the wire when `None`.",
                 "type": [
@@ -29791,6 +31132,75 @@
             },
             "required": [
               "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "221 §9.4: a call needs a locked connection; frontends show the unlock card and answer\nwith `answer_unlock(id, password)`.",
+            "properties": {
+              "account": {
+                "description": "What the card names: `me@… · vault.bitwarden.eu`.",
+                "type": "string"
+              },
+              "backend": {
+                "description": "`aws` | `bw`.",
+                "type": "string"
+              },
+              "conn": {
+                "description": "The connection.",
+                "type": "string"
+              },
+              "id": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.secrets_2eevents.receiver.RequestId"
+                  }
+                ],
+                "description": "Answer with this id."
+              },
+              "reason": {
+                "description": "Why: `a tool call uses bw/personal/2f1c…#password`.",
+                "type": "string"
+              },
+              "type": {
+                "const": "ExternalUnlockRequested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "conn",
+              "backend",
+              "account",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The unlock card was answered, declined or timed out; frontends drop it.",
+            "properties": {
+              "id": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.secrets_2eevents.receiver.RequestId"
+                  }
+                ],
+                "description": "The card."
+              },
+              "type": {
+                "const": "ExternalUnlockResolved",
+                "type": "string"
+              },
+              "unlocked": {
+                "description": "The connection is unlocked now.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "unlocked"
             ],
             "type": "object"
           }
@@ -124867,10 +126277,1097 @@
         ],
         "type": "object"
       },
+      "method.secrets.input.AwsFormat": {
+        "description": "AWS value shape for a `secret_request` destination.",
+        "oneOf": [
+          {
+            "const": "string",
+            "description": "One field → `SecretString`.",
+            "type": "string"
+          },
+          {
+            "const": "json",
+            "description": "Every field → `{\"<field.name>\": value}`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.input.BwKind": {
+        "description": "The Bitwarden item types theuth creates.",
+        "oneOf": [
+          {
+            "const": "login",
+            "description": "A login item.",
+            "type": "string"
+          },
+          {
+            "const": "secure_note",
+            "description": "A secure note.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.input.BwLogin": {
+        "description": "How a Bitwarden connection logs in (§6.2).",
+        "oneOf": [
+          {
+            "const": "api_key",
+            "description": "Personal API key (default).",
+            "type": "string"
+          },
+          {
+            "const": "password",
+            "description": "Email + master password + 2FA (B5b).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.input.BwServer": {
+        "description": "Bitwarden server preset (§6.2).",
+        "oneOf": [
+          {
+            "const": "us",
+            "description": "`vault.bitwarden.com`.",
+            "type": "string"
+          },
+          {
+            "const": "eu",
+            "description": "`vault.bitwarden.eu`.",
+            "type": "string"
+          },
+          {
+            "const": "self_hosted",
+            "description": "Official self-host or Vaultwarden at `base_url`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.input.ConnConfig": {
+        "description": "§6.1 / §6.2: a connection's non-secret config, tagged by `backend`.",
+        "oneOf": [
+          {
+            "description": "AWS Secrets Manager.",
+            "properties": {
+              "backend": {
+                "const": "aws",
+                "type": "string"
+              },
+              "kms_key_id": {
+                "default": null,
+                "description": "Default KMS key for create.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prefix": {
+                "default": null,
+                "description": "List/browse scope (a `ListSecrets` name filter).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "profile": {
+                "default": null,
+                "description": "A name from the AWS profile list; `None` = the default chain.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "region": {
+                "description": "Secrets Manager is regional.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "backend",
+              "region"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Bitwarden Password Manager.",
+            "properties": {
+              "api_url": {
+                "default": null,
+                "description": "Override; default `<base>/api`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "backend": {
+                "const": "bw",
+                "type": "string"
+              },
+              "base_url": {
+                "default": null,
+                "description": "`self_hosted`: `https://vault.example.org`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "email": {
+                "description": "Shown on the unlock card; prelogin needs it.",
+                "type": "string"
+              },
+              "identity_url": {
+                "default": null,
+                "description": "Override; default `<base>/identity`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "login": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/method.secrets.input.BwLogin"
+                  }
+                ],
+                "default": "api_key",
+                "description": "`api_key` | `password`."
+              },
+              "server": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/method.secrets.input.BwServer"
+                  }
+                ],
+                "description": "`us` | `eu` | `self_hosted`."
+              },
+              "web_vault_url": {
+                "default": null,
+                "description": "Override of the web vault URL Send links use.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "backend",
+              "server",
+              "email"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.secrets.input.DeleteMode": {
+        "description": "How [`ExternalBackend::delete`] deletes.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "AWS recovery window (`days` 7..=30; `None` = the connection's `delete_recovery_days`) /\nBitwarden trash (`days` ignored).",
+            "properties": {
+              "recoverable": {
+                "properties": {
+                  "days": {
+                    "description": "AWS only: 7..=30.",
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "recoverable"
+            ],
+            "type": "object"
+          },
+          {
+            "const": "permanent",
+            "description": "AWS `ForceDeleteWithoutRecovery` / Bitwarden permanent delete.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.input.Destination": {
+        "description": "§7.3: where a `secret_request` answer is stored instead of (or as well as) the local vault.",
+        "properties": {
+          "collection": {
+            "default": null,
+            "description": "Bitwarden: collection name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection": {
+            "description": "The connection (`prod`, `personal`).",
+            "type": "string"
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Bitwarden: per form field, the Bitwarden field it fills (`password` | `username` | `totp`\n| `notes` | `field:<name>`).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "folder": {
+            "default": null,
+            "description": "Bitwarden: folder name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.input.AwsFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "AWS: `string` (one field) | `json` (every field)."
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.input.BwKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Bitwarden: `login` | `secure_note`."
+          },
+          "keep_local": {
+            "default": false,
+            "description": "Also keep a local copy under each field's name (default false: the manager is the truth).",
+            "type": "boolean"
+          },
+          "kms_key_id": {
+            "default": null,
+            "description": "AWS: KMS key; default the connection's, else `aws/secretsmanager`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "AWS: the secret name (`app/ci/token`). Bitwarden: the item's name (`GitHub — CI`).",
+            "type": "string"
+          },
+          "org": {
+            "default": null,
+            "description": "Bitwarden: organisation name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace": {
+            "default": null,
+            "description": "Update this entry (its `ref`) instead of creating one. The card says \"replaces\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uri": {
+            "default": null,
+            "description": "Bitwarden: login URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connection",
+          "name"
+        ],
+        "type": "object"
+      },
+      "method.secrets.input.ListQuery": {
+        "description": "[`ExternalBackend::list`]'s query.",
+        "properties": {
+          "cursor": {
+            "default": null,
+            "description": "From the previous page's [`ListPage::next`].",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deleted": {
+            "default": false,
+            "description": "List the deleted entries instead (AWS: pending deletion; Bitwarden: the trash), each with\n[`ExtEntry::recoverable_until`].",
+            "type": "boolean"
+          },
+          "query": {
+            "default": null,
+            "description": "Substring on name, folder, collection.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "method.secrets.input.LoginForm": {
+        "description": "§6.3 `connection_login`'s form. Values transit once and are never echoed.",
+        "oneOf": [
+          {
+            "description": "A personal API key (Account settings › Security › Keys).",
+            "properties": {
+              "client_id": {
+                "description": "`user.<uuid>`.",
+                "type": "string"
+              },
+              "client_secret": {
+                "description": "The secret half.",
+                "type": "string"
+              },
+              "method": {
+                "const": "api_key",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "client_id",
+              "client_secret"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Email + master password (+ 2FA), B5b.",
+            "properties": {
+              "email": {
+                "description": "The account.",
+                "type": "string"
+              },
+              "method": {
+                "const": "password",
+                "type": "string"
+              },
+              "new_device_otp": {
+                "description": "The new-device code when the server asked for one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "password": {
+                "description": "The master password.",
+                "type": "string"
+              },
+              "two_factor": {
+                "description": "`[provider, code]` when the server asked for a second factor.",
+                "items": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "maxItems": 2,
+                "minItems": 2,
+                "type": [
+                  "array",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "method",
+              "email",
+              "password"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "method.secrets.input.RequestId": {
         "description": "Correlates a [`SecretsEvent::Requested`] with its [`Answer`].",
         "format": "uuid",
         "type": "string"
+      },
+      "method.secrets.output.AskInfo": {
+        "description": "§6.3 `ConnInfo.ask`: which of the connection's always-ask entries are in the global set.",
+        "properties": {
+          "delete": {
+            "description": "`…:delete`.",
+            "type": "boolean"
+          },
+          "read": {
+            "description": "`secret:<b>/<conn>:read`.",
+            "type": "boolean"
+          },
+          "send": {
+            "description": "`secret:bw/<conn>:send`; `None` for a backend without Sends.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "write": {
+            "description": "`…:write`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "read",
+          "write",
+          "delete",
+          "send"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.AwsFormat": {
+        "description": "AWS value shape for a `secret_request` destination.",
+        "oneOf": [
+          {
+            "const": "string",
+            "description": "One field → `SecretString`.",
+            "type": "string"
+          },
+          {
+            "const": "json",
+            "description": "Every field → `{\"<field.name>\": value}`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.output.BwKind": {
+        "description": "The Bitwarden item types theuth creates.",
+        "oneOf": [
+          {
+            "const": "login",
+            "description": "A login item.",
+            "type": "string"
+          },
+          {
+            "const": "secure_note",
+            "description": "A secure note.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.output.ConnInfo": {
+        "description": "§6.3: one connection as the UIs show it.",
+        "properties": {
+          "ask": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.AskInfo"
+              }
+            ],
+            "description": "The always-ask switches."
+          },
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "conn": {
+            "description": "The connection name.",
+            "type": "string"
+          },
+          "settings": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.ConnSettings"
+              }
+            ],
+            "description": "The D20 settings."
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.ConnStatus"
+              }
+            ],
+            "description": "What the backend says now (no I/O); `unsupported` when this build has no such backend."
+          },
+          "summary": {
+            "description": "`work-admin · eu-west-1` | `me@… · vault.bitwarden.eu`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conn",
+          "backend",
+          "status",
+          "summary",
+          "ask",
+          "settings"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.ConnSettings": {
+        "description": "The per-connection D20 settings (`secrets.connections.<conn>.…`), each at its safe default.",
+        "properties": {
+          "agent_may_request_login": {
+            "default": false,
+            "description": "A logged-out connection raises the login card for the agent's call instead of failing.",
+            "type": "boolean"
+          },
+          "allow_permanent_delete": {
+            "default": false,
+            "description": "`permanent: true` deletes skip the recovery window / trash.",
+            "type": "boolean"
+          },
+          "allow_reveal": {
+            "default": true,
+            "description": "The owner's Reveal action on this connection's values (D25).",
+            "type": "boolean"
+          },
+          "delete_recovery_days": {
+            "default": 30,
+            "description": "AWS recovery window for a delete, 7..=30 days.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expose_password_history": {
+            "default": false,
+            "description": "`bw/…#password:-N` reaches the login's password history.",
+            "type": "boolean"
+          },
+          "expose_totp_seed": {
+            "default": false,
+            "description": "`#totp-seed` expands the seed, not only the current code.",
+            "type": "boolean"
+          },
+          "lock_after_idle_secs": {
+            "default": 900,
+            "description": "Lock after this long without use; `0` = only on quit.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lock_on_sleep": {
+            "default": true,
+            "description": "Lock on sleep or screen lock.",
+            "type": "boolean"
+          },
+          "manage_all_sends": {
+            "default": false,
+            "description": "List and revoke Sends theuth did not create.",
+            "type": "boolean"
+          },
+          "mcp_config_refs": {
+            "default": false,
+            "description": "External references in `mcp/*.json` expand at connect time (only while `read` is not\nalways ask).",
+            "type": "boolean"
+          },
+          "remember_unlock": {
+            "default": false,
+            "description": "Seal the Bitwarden user key in `meta` so a restart needs no master password.",
+            "type": "boolean"
+          },
+          "send_link_to_agent": {
+            "default": false,
+            "description": "The Send receipt carries the link itself (D23).",
+            "type": "boolean"
+          },
+          "send_owner_only": {
+            "default": true,
+            "description": "A Send's card is answerable only by the owner in person.",
+            "type": "boolean"
+          },
+          "write_scope": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.WriteScope"
+              }
+            ],
+            "default": "personal",
+            "description": "Whether writes may target organisation collections."
+          }
+        },
+        "required": [
+          "send_owner_only",
+          "allow_permanent_delete",
+          "delete_recovery_days",
+          "remember_unlock",
+          "lock_after_idle_secs",
+          "lock_on_sleep",
+          "agent_may_request_login",
+          "expose_password_history",
+          "expose_totp_seed",
+          "write_scope",
+          "mcp_config_refs",
+          "manage_all_sends",
+          "send_link_to_agent",
+          "allow_reveal"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.ConnStatus": {
+        "description": "A connection's state, as the UIs show it.",
+        "oneOf": [
+          {
+            "description": "Usable now.",
+            "properties": {
+              "state": {
+                "const": "ready",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Logged in, keys dropped: the unlock card brings it back.",
+            "properties": {
+              "state": {
+                "const": "locked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "No credentials on this engine.",
+            "properties": {
+              "state": {
+                "const": "logged_out",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Credentials expired; `hint` says what the user runs (`aws sso login --profile …`).",
+            "properties": {
+              "detail": {
+                "properties": {
+                  "hint": {
+                    "description": "What to do.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hint"
+                ],
+                "type": "object"
+              },
+              "state": {
+                "const": "expired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last probe failed.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server or build cannot serve this connection.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "unsupported",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.secrets.output.DeleteOutcome": {
+        "description": "What a delete did.",
+        "properties": {
+          "recoverable_until": {
+            "description": "RFC 3339: until when [`ExternalBackend::restore`] can undo it; `None` = gone.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "recoverable_until"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.DestinationView": {
+        "description": "§7.3: a [`Destination`] as the request card shows it, resolved on the asking engine.",
+        "properties": {
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "collection": {
+            "default": null,
+            "description": "Bitwarden: collection name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection": {
+            "description": "The connection (`prod`, `personal`).",
+            "type": "string"
+          },
+          "current_rev": {
+            "default": null,
+            "description": "The entry's current revision when `replace` is set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Bitwarden: per form field, the Bitwarden field it fills (`password` | `username` | `totp`\n| `notes` | `field:<name>`).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "folder": {
+            "default": null,
+            "description": "Bitwarden: folder name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.AwsFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "AWS: `string` (one field) | `json` (every field)."
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.BwKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Bitwarden: `login` | `secure_note`."
+          },
+          "keep_local": {
+            "default": false,
+            "description": "Also keep a local copy under each field's name (default false: the manager is the truth).",
+            "type": "boolean"
+          },
+          "kms_key_id": {
+            "default": null,
+            "description": "AWS: KMS key; default the connection's, else `aws/secretsmanager`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "AWS: the secret name (`app/ci/token`). Bitwarden: the item's name (`GitHub — CI`).",
+            "type": "string"
+          },
+          "org": {
+            "default": null,
+            "description": "Bitwarden: organisation name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace": {
+            "default": null,
+            "description": "Update this entry (its `ref`) instead of creating one. The card says \"replaces\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.ConnStatus"
+              }
+            ],
+            "description": "Whether the connection is locked now: the card shows the unlock field first."
+          },
+          "summary": {
+            "description": "The connection's [`ConnInfo::summary`].",
+            "type": "string"
+          },
+          "uri": {
+            "default": null,
+            "description": "Bitwarden: login URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connection",
+          "name",
+          "replace",
+          "keep_local",
+          "kms_key_id",
+          "format",
+          "org",
+          "collection",
+          "folder",
+          "item",
+          "fields",
+          "uri",
+          "backend",
+          "summary",
+          "status",
+          "current_rev"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.ExtEntry": {
+        "description": "One external entry's metadata. Never a value.",
+        "properties": {
+          "keys": {
+            "description": "AWS JSON keys (names only, from a value fetch the user approved, else empty) /\nBitwarden: `password`, `username`, `totp`, `notes`, `field:<name>`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "description": "`string` | `json` | `binary` | `login` | `secure_note` | `card` | `identity` | `ssh_key`.",
+            "type": "string"
+          },
+          "location": {
+            "description": "AWS: region + KMS alias; Bitwarden: `org / collection / folder`.",
+            "type": "string"
+          },
+          "name": {
+            "description": "AWS name / Bitwarden item name.",
+            "type": "string"
+          },
+          "recoverable_until": {
+            "default": null,
+            "description": "A deleted entry ([`ListQuery::deleted`]): RFC 3339 until when [`ExternalBackend::restore`]\nworks (AWS purge date / Bitwarden trash). `None` for a live entry.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "description": "The placeholder body, `bw/personal/2f1c…` / `aws/prod/db/main`.",
+            "type": "string"
+          },
+          "versions": {
+            "description": "AWS: up to 5 by VersionIdsToStages; Bitwarden: one.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.output.ExtVersion"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ref",
+          "name",
+          "kind",
+          "keys",
+          "location",
+          "versions",
+          "recoverable_until"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.ExtVersion": {
+        "description": "One version of an external entry.",
+        "properties": {
+          "changed": {
+            "description": "RFC 3339.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "AWS: VersionId (UUID). Bitwarden: the cipher's revision_date (RFC 3339).",
+            "type": "string"
+          },
+          "stages": {
+            "description": "AWS: VersionStages (AWSCURRENT, AWSPREVIOUS, custom). Bitwarden: empty.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "stages",
+          "changed"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.ExternalSettings": {
+        "description": "The harness-wide D20 settings and the backend-call bound (`secrets.external.…`).",
+        "properties": {
+          "copy_link_needs_press": {
+            "default": true,
+            "description": "`copy_send_link` from a non-press caller raises a human-only card.",
+            "type": "boolean"
+          },
+          "send_max_file_mb": {
+            "default": 100,
+            "description": "Largest file a Send uploads; the server's own limit still applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timeout_secs": {
+            "default": 20,
+            "description": "Every backend call runs under this bound (221 §4).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeout_secs",
+          "send_max_file_mb",
+          "copy_link_needs_press"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.ListPage": {
+        "description": "One page of [`ExternalBackend::list`].",
+        "properties": {
+          "entries": {
+            "description": "The entries, metadata only.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.output.ExtEntry"
+            },
+            "type": "array"
+          },
+          "next": {
+            "description": "The cursor of the next page; `None` = last page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "entries",
+          "next"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.LoginStep": {
+        "description": "What a login step asks next.",
+        "oneOf": [
+          {
+            "description": "Logged in.",
+            "properties": {
+              "step": {
+                "const": "done",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server wants a second factor from one of `providers`.",
+            "properties": {
+              "providers": {
+                "description": "`authenticator` | `email` | `yubikey`.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "step": {
+                "const": "need_two_factor",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step",
+              "providers"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server wants the new-device code it emailed.",
+            "properties": {
+              "step": {
+                "const": "need_new_device_otp",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "method.secrets.output.RequestId": {
         "description": "Correlates a [`SecretsEvent::Requested`] with its [`Answer`].",
@@ -124946,6 +127443,17 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.DestinationView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "221 §7.3: the request stores into an external manager; names and status, never a value."
           },
           "engine": {
             "description": "Engine the session runs on.",
@@ -125075,6 +127583,145 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.SendRecord": {
+        "description": "One `external_sends` row with its live counts (§12.4); never the link\n(`crates/desktop/ui/src/components/library/secrets/types.ts` `SendRecord`).",
+        "properties": {
+          "access_count": {
+            "description": "Times opened (after the last sync; 0 when unknown).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "conn": {
+            "description": "Connection.",
+            "type": "string"
+          },
+          "created_ms": {
+            "description": "Unix ms.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "deletion_ms": {
+            "description": "Unix ms.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "expiration_ms": {
+            "description": "Unix ms.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "file_bytes": {
+            "description": "File size.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "file_name": {
+            "description": "File name of a file Send.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_password": {
+            "description": "Has an access password.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Row id.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`text` | `file`.",
+            "type": "string"
+          },
+          "link_secret": {
+            "description": "The vault name of the link (`None` with `send_link_to_agent`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_access": {
+            "description": "Opening limit.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Shown to the recipient.",
+            "type": "string"
+          },
+          "source_ref": {
+            "description": "The source reference (vault name, `bw/…`, `aws/…`, path, `artifact:…`).",
+            "type": "string"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.SendStatus"
+              }
+            ],
+            "description": "State."
+          }
+        },
+        "required": [
+          "id",
+          "conn",
+          "kind",
+          "name",
+          "file_name",
+          "file_bytes",
+          "source_ref",
+          "link_secret",
+          "created_ms",
+          "expiration_ms",
+          "deletion_ms",
+          "access_count",
+          "max_access",
+          "has_password",
+          "status"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.SendStatus": {
+        "description": "A Send's state, as the Secrets page shows it.",
+        "oneOf": [
+          {
+            "const": "active",
+            "description": "Open-able.",
+            "type": "string"
+          },
+          {
+            "const": "expired",
+            "description": "Past its expiry.",
+            "type": "string"
+          },
+          {
+            "const": "used_up",
+            "description": "Opened `max_access` times.",
+            "type": "string"
+          },
+          {
+            "const": "revoked",
+            "description": "Revoked by theuth.",
+            "type": "string"
+          },
+          {
+            "const": "deleted_by_bitwarden",
+            "description": "Gone on Bitwarden (deletion date, or deleted elsewhere).",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.output.VersionInfo": {
         "description": "One kept version. Wire-visible: never a value, never a length.",
         "properties": {
@@ -125099,6 +127746,646 @@
           "source"
         ],
         "type": "object"
+      },
+      "method.secrets.output.WriteScope": {
+        "description": "Which items `create` / `update` / `delete` may touch (D20 `write_scope`).",
+        "oneOf": [
+          {
+            "const": "personal",
+            "description": "The personal vault only.",
+            "type": "string"
+          },
+          {
+            "const": "personal_and_org",
+            "description": "Organisation collections too.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.receiver.AskInfo": {
+        "description": "§6.3 `ConnInfo.ask`: which of the connection's always-ask entries are in the global set.",
+        "properties": {
+          "delete": {
+            "description": "`…:delete`.",
+            "type": "boolean"
+          },
+          "read": {
+            "description": "`secret:<b>/<conn>:read`.",
+            "type": "boolean"
+          },
+          "send": {
+            "description": "`secret:bw/<conn>:send`; `None` for a backend without Sends.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "write": {
+            "description": "`…:write`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "read",
+          "write",
+          "delete"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.AwsFormat": {
+        "description": "AWS value shape for a `secret_request` destination.",
+        "oneOf": [
+          {
+            "const": "string",
+            "description": "One field → `SecretString`.",
+            "type": "string"
+          },
+          {
+            "const": "json",
+            "description": "Every field → `{\"<field.name>\": value}`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.receiver.BwKind": {
+        "description": "The Bitwarden item types theuth creates.",
+        "oneOf": [
+          {
+            "const": "login",
+            "description": "A login item.",
+            "type": "string"
+          },
+          {
+            "const": "secure_note",
+            "description": "A secure note.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.secrets.receiver.ConnInfo": {
+        "description": "§6.3: one connection as the UIs show it.",
+        "properties": {
+          "ask": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.AskInfo"
+              }
+            ],
+            "description": "The always-ask switches."
+          },
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "conn": {
+            "description": "The connection name.",
+            "type": "string"
+          },
+          "settings": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.ConnSettings"
+              }
+            ],
+            "description": "The D20 settings."
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.ConnStatus"
+              }
+            ],
+            "description": "What the backend says now (no I/O); `unsupported` when this build has no such backend."
+          },
+          "summary": {
+            "description": "`work-admin · eu-west-1` | `me@… · vault.bitwarden.eu`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conn",
+          "backend",
+          "status",
+          "summary",
+          "ask",
+          "settings"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.ConnSettings": {
+        "description": "The per-connection D20 settings (`secrets.connections.<conn>.…`), each at its safe default.",
+        "properties": {
+          "agent_may_request_login": {
+            "default": false,
+            "description": "A logged-out connection raises the login card for the agent's call instead of failing.",
+            "type": "boolean"
+          },
+          "allow_permanent_delete": {
+            "default": false,
+            "description": "`permanent: true` deletes skip the recovery window / trash.",
+            "type": "boolean"
+          },
+          "allow_reveal": {
+            "default": true,
+            "description": "The owner's Reveal action on this connection's values (D25).",
+            "type": "boolean"
+          },
+          "delete_recovery_days": {
+            "default": 30,
+            "description": "AWS recovery window for a delete, 7..=30 days.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expose_password_history": {
+            "default": false,
+            "description": "`bw/…#password:-N` reaches the login's password history.",
+            "type": "boolean"
+          },
+          "expose_totp_seed": {
+            "default": false,
+            "description": "`#totp-seed` expands the seed, not only the current code.",
+            "type": "boolean"
+          },
+          "lock_after_idle_secs": {
+            "default": 900,
+            "description": "Lock after this long without use; `0` = only on quit.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lock_on_sleep": {
+            "default": true,
+            "description": "Lock on sleep or screen lock.",
+            "type": "boolean"
+          },
+          "manage_all_sends": {
+            "default": false,
+            "description": "List and revoke Sends theuth did not create.",
+            "type": "boolean"
+          },
+          "mcp_config_refs": {
+            "default": false,
+            "description": "External references in `mcp/*.json` expand at connect time (only while `read` is not\nalways ask).",
+            "type": "boolean"
+          },
+          "remember_unlock": {
+            "default": false,
+            "description": "Seal the Bitwarden user key in `meta` so a restart needs no master password.",
+            "type": "boolean"
+          },
+          "send_link_to_agent": {
+            "default": false,
+            "description": "The Send receipt carries the link itself (D23).",
+            "type": "boolean"
+          },
+          "send_owner_only": {
+            "default": true,
+            "description": "A Send's card is answerable only by the owner in person.",
+            "type": "boolean"
+          },
+          "write_scope": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.WriteScope"
+              }
+            ],
+            "default": "personal",
+            "description": "Whether writes may target organisation collections."
+          }
+        },
+        "type": "object"
+      },
+      "method.secrets.receiver.ConnStatus": {
+        "description": "A connection's state, as the UIs show it.",
+        "oneOf": [
+          {
+            "description": "Usable now.",
+            "properties": {
+              "state": {
+                "const": "ready",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Logged in, keys dropped: the unlock card brings it back.",
+            "properties": {
+              "state": {
+                "const": "locked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "No credentials on this engine.",
+            "properties": {
+              "state": {
+                "const": "logged_out",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Credentials expired; `hint` says what the user runs (`aws sso login --profile …`).",
+            "properties": {
+              "detail": {
+                "properties": {
+                  "hint": {
+                    "description": "What to do.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hint"
+                ],
+                "type": "object"
+              },
+              "state": {
+                "const": "expired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last probe failed.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server or build cannot serve this connection.",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "const": "unsupported",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.secrets.receiver.DeleteOutcome": {
+        "description": "What a delete did.",
+        "properties": {
+          "recoverable_until": {
+            "description": "RFC 3339: until when [`ExternalBackend::restore`] can undo it; `None` = gone.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "method.secrets.receiver.DestinationView": {
+        "description": "§7.3: a [`Destination`] as the request card shows it, resolved on the asking engine.",
+        "properties": {
+          "backend": {
+            "description": "`aws` | `bw`.",
+            "type": "string"
+          },
+          "collection": {
+            "default": null,
+            "description": "Bitwarden: collection name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection": {
+            "description": "The connection (`prod`, `personal`).",
+            "type": "string"
+          },
+          "current_rev": {
+            "default": null,
+            "description": "The entry's current revision when `replace` is set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Bitwarden: per form field, the Bitwarden field it fills (`password` | `username` | `totp`\n| `notes` | `field:<name>`).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "folder": {
+            "default": null,
+            "description": "Bitwarden: folder name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.AwsFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "AWS: `string` (one field) | `json` (every field)."
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.BwKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Bitwarden: `login` | `secure_note`."
+          },
+          "keep_local": {
+            "default": false,
+            "description": "Also keep a local copy under each field's name (default false: the manager is the truth).",
+            "type": "boolean"
+          },
+          "kms_key_id": {
+            "default": null,
+            "description": "AWS: KMS key; default the connection's, else `aws/secretsmanager`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "AWS: the secret name (`app/ci/token`). Bitwarden: the item's name (`GitHub — CI`).",
+            "type": "string"
+          },
+          "org": {
+            "default": null,
+            "description": "Bitwarden: organisation name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace": {
+            "default": null,
+            "description": "Update this entry (its `ref`) instead of creating one. The card says \"replaces\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.ConnStatus"
+              }
+            ],
+            "description": "Whether the connection is locked now: the card shows the unlock field first."
+          },
+          "summary": {
+            "description": "The connection's [`ConnInfo::summary`].",
+            "type": "string"
+          },
+          "uri": {
+            "default": null,
+            "description": "Bitwarden: login URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connection",
+          "name",
+          "backend",
+          "summary",
+          "status"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.ExtEntry": {
+        "description": "One external entry's metadata. Never a value.",
+        "properties": {
+          "keys": {
+            "description": "AWS JSON keys (names only, from a value fetch the user approved, else empty) /\nBitwarden: `password`, `username`, `totp`, `notes`, `field:<name>`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "description": "`string` | `json` | `binary` | `login` | `secure_note` | `card` | `identity` | `ssh_key`.",
+            "type": "string"
+          },
+          "location": {
+            "description": "AWS: region + KMS alias; Bitwarden: `org / collection / folder`.",
+            "type": "string"
+          },
+          "name": {
+            "description": "AWS name / Bitwarden item name.",
+            "type": "string"
+          },
+          "recoverable_until": {
+            "default": null,
+            "description": "A deleted entry ([`ListQuery::deleted`]): RFC 3339 until when [`ExternalBackend::restore`]\nworks (AWS purge date / Bitwarden trash). `None` for a live entry.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "description": "The placeholder body, `bw/personal/2f1c…` / `aws/prod/db/main`.",
+            "type": "string"
+          },
+          "versions": {
+            "description": "AWS: up to 5 by VersionIdsToStages; Bitwarden: one.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.receiver.ExtVersion"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ref",
+          "name",
+          "kind",
+          "keys",
+          "location",
+          "versions"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.ExtVersion": {
+        "description": "One version of an external entry.",
+        "properties": {
+          "changed": {
+            "description": "RFC 3339.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "AWS: VersionId (UUID). Bitwarden: the cipher's revision_date (RFC 3339).",
+            "type": "string"
+          },
+          "stages": {
+            "description": "AWS: VersionStages (AWSCURRENT, AWSPREVIOUS, custom). Bitwarden: empty.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "stages"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.ExternalSettings": {
+        "description": "The harness-wide D20 settings and the backend-call bound (`secrets.external.…`).",
+        "properties": {
+          "copy_link_needs_press": {
+            "default": true,
+            "description": "`copy_send_link` from a non-press caller raises a human-only card.",
+            "type": "boolean"
+          },
+          "send_max_file_mb": {
+            "default": 100,
+            "description": "Largest file a Send uploads; the server's own limit still applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timeout_secs": {
+            "default": 20,
+            "description": "Every backend call runs under this bound (221 §4).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "method.secrets.receiver.ListPage": {
+        "description": "One page of [`ExternalBackend::list`].",
+        "properties": {
+          "entries": {
+            "description": "The entries, metadata only.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.receiver.ExtEntry"
+            },
+            "type": "array"
+          },
+          "next": {
+            "description": "The cursor of the next page; `None` = last page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.LoginStep": {
+        "description": "What a login step asks next.",
+        "oneOf": [
+          {
+            "description": "Logged in.",
+            "properties": {
+              "step": {
+                "const": "done",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server wants a second factor from one of `providers`.",
+            "properties": {
+              "providers": {
+                "description": "`authenticator` | `email` | `yubikey`.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "step": {
+                "const": "need_two_factor",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step",
+              "providers"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server wants the new-device code it emailed.",
+            "properties": {
+              "step": {
+                "const": "need_new_device_otp",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "method.secrets.receiver.RequestId": {
         "description": "Correlates a [`SecretsEvent::Requested`] with its [`Answer`].",
@@ -125173,6 +128460,17 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.DestinationView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "221 §7.3: the request stores into an external manager; names and status, never a value."
           },
           "engine": {
             "description": "Engine the session runs on.",
@@ -125296,6 +128594,140 @@
         ],
         "type": "object"
       },
+      "method.secrets.receiver.SendRecord": {
+        "description": "One `external_sends` row with its live counts (§12.4); never the link\n(`crates/desktop/ui/src/components/library/secrets/types.ts` `SendRecord`).",
+        "properties": {
+          "access_count": {
+            "description": "Times opened (after the last sync; 0 when unknown).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "conn": {
+            "description": "Connection.",
+            "type": "string"
+          },
+          "created_ms": {
+            "description": "Unix ms.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "deletion_ms": {
+            "description": "Unix ms.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "expiration_ms": {
+            "description": "Unix ms.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "file_bytes": {
+            "description": "File size.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "file_name": {
+            "description": "File name of a file Send.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_password": {
+            "description": "Has an access password.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Row id.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`text` | `file`.",
+            "type": "string"
+          },
+          "link_secret": {
+            "description": "The vault name of the link (`None` with `send_link_to_agent`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_access": {
+            "description": "Opening limit.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Shown to the recipient.",
+            "type": "string"
+          },
+          "source_ref": {
+            "description": "The source reference (vault name, `bw/…`, `aws/…`, path, `artifact:…`).",
+            "type": "string"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.SendStatus"
+              }
+            ],
+            "description": "State."
+          }
+        },
+        "required": [
+          "id",
+          "conn",
+          "kind",
+          "name",
+          "source_ref",
+          "created_ms",
+          "deletion_ms",
+          "access_count",
+          "has_password",
+          "status"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.SendStatus": {
+        "description": "A Send's state, as the Secrets page shows it.",
+        "oneOf": [
+          {
+            "const": "active",
+            "description": "Open-able.",
+            "type": "string"
+          },
+          {
+            "const": "expired",
+            "description": "Past its expiry.",
+            "type": "string"
+          },
+          {
+            "const": "used_up",
+            "description": "Opened `max_access` times.",
+            "type": "string"
+          },
+          {
+            "const": "revoked",
+            "description": "Revoked by theuth.",
+            "type": "string"
+          },
+          {
+            "const": "deleted_by_bitwarden",
+            "description": "Gone on Bitwarden (deletion date, or deleted elsewhere).",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.receiver.VersionInfo": {
         "description": "One kept version. Wire-visible: never a value, never a length.",
         "properties": {
@@ -125320,6 +128752,21 @@
           "source"
         ],
         "type": "object"
+      },
+      "method.secrets.receiver.WriteScope": {
+        "description": "Which items `create` / `update` / `delete` may touch (D20 `write_scope`).",
+        "oneOf": [
+          {
+            "const": "personal",
+            "description": "The personal vault only.",
+            "type": "string"
+          },
+          {
+            "const": "personal_and_org",
+            "description": "Organisation collections too.",
+            "type": "string"
+          }
+        ]
       },
       "method.sessionsync.input.CreateSessionOptions": {
         "description": "Options of `create_session`. `view` is the client's view id, required\nfor a private root (it names the single owner); `project` is root\nmetadata; `cwd` is recorded on the row.",
@@ -135140,6 +138587,40 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "add_secret_connection",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "cfg",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.secrets.input.ConnConfig"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.ConnInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.ConnInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "add_skill",
       "paramStructure": "by-position",
       "params": [
@@ -135797,6 +139278,58 @@
           "x-theuth-aliases": [
             "expiresMs"
           ]
+        },
+        {
+          "name": "destination",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.input.Destination"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "answer_unlock",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.secrets.input.RequestId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "password",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -139078,6 +142611,100 @@
       "x-theuth-owner": "rpc-compose"
     },
     {
+      "name": "connection_lock",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.ConnInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.ConnInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "connection_login",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "form",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.secrets.input.LoginForm"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.LoginStep"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.LoginStep"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "connection_unlock",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "password",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.ConnInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.ConnInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "contact_answer",
       "paramStructure": "by-position",
       "params": [
@@ -139662,6 +143289,32 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "copy_send_link",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "string"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "string"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "cost_calls",
       "paramStructure": "by-position",
       "params": [
@@ -139719,6 +143372,38 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "agent"
+    },
+    {
+      "name": "create_send",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "args",
+          "required": true,
+          "schema": true,
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.SendRecord"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.SendRecord"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
     },
     {
       "name": "create_session",
@@ -139869,6 +143554,48 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "dreaming"
+    },
+    {
+      "name": "delete_external_secret",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "mode",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.secrets.input.DeleteMode"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.DeleteOutcome"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.DeleteOutcome"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
     },
     {
       "name": "delete_schedule",
@@ -143226,6 +146953,23 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "get_external_settings",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.ExternalSettings"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.ExternalSettings"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "get_prompt",
       "paramStructure": "by-position",
       "params": [
@@ -143398,6 +147142,62 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "agent"
+    },
+    {
+      "name": "import_external_secret",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "r#ref",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "rRef",
+            "r_ref"
+          ]
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "note",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.SecretInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.SecretInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
     },
     {
       "name": "info",
@@ -144622,6 +148422,40 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "list_external_secrets",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "q",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.secrets.input.ListQuery"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.ListPage"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.ListPage"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "list_input_devices",
       "paramStructure": "by-position",
       "params": [],
@@ -145099,6 +148933,29 @@
       "x-theuth-owner": "schedule"
     },
     {
+      "name": "list_secret_connections",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.output.ConnInfo"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.receiver.ConnInfo"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "list_secrets",
       "paramStructure": "by-position",
       "params": [],
@@ -145109,6 +148966,38 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.secrets.receiver.SecretsList"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "list_sends",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.output.SendRecord"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.receiver.SendRecord"
+          },
+          "type": "array"
         }
       },
       "x-theuth-audience": "owner",
@@ -149160,6 +153049,40 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "probe_secret_connection",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "cfg",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.secrets.input.ConnConfig"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.ConnStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.ConnStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "promote_answer",
       "paramStructure": "by-position",
       "params": [
@@ -149835,6 +153758,32 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "remove_secret_connection",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "remove_skill",
       "paramStructure": "by-position",
       "params": [
@@ -150015,6 +153964,40 @@
       "x-theuth-owner": "tasks"
     },
     {
+      "name": "restore_external_secret",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.ExtVersion"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.ExtVersion"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "restore_secret",
       "paramStructure": "by-position",
       "params": [
@@ -150146,6 +154129,69 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "agent"
+    },
+    {
+      "name": "reveal_external_secret",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "r#ref",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "rRef",
+            "r_ref"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "string"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "string"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "revoke_send",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
     },
     {
       "name": "rewrite",
@@ -151220,6 +155266,32 @@
       "x-theuth-owner": "secrets"
     },
     {
+      "name": "secrets_power_event",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "send_input",
       "paramStructure": "by-position",
       "params": [
@@ -152265,6 +156337,46 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "set_connection_setting",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "conn",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "value",
+          "required": true,
+          "schema": true,
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "set_decision_mode",
       "paramStructure": "by-position",
       "params": [
@@ -152582,6 +156694,38 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "rpc-compose"
+    },
+    {
+      "name": "set_external_setting",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "value",
+          "required": true,
+          "schema": true,
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
     },
     {
       "name": "set_harness_option",
@@ -158897,6 +163041,7 @@
       "document",
       "double",
       "dreaming",
+      "external-backends",
       "knowledge",
       "link",
       "meeting",

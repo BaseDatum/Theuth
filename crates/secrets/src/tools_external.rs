@@ -372,57 +372,72 @@ impl Tool for ImportTool {
     }
 
     async fn call(&self, a: ExtImportArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let cx = &self.0;
-        if !vault::valid_name(&a.name) {
-            return Ok(ToolOutput::err("name: [A-Za-z0-9_.-]{1,64}"));
-        }
-        if cx.vault.list().iter().any(|s| s.name == a.name) && !a.replace {
+        if self.0.vault.list().iter().any(|s| s.name == a.name) && !a.replace {
             return Ok(ToolOutput::err(format!(
                 "{} exists; replace: true stores a new version",
                 a.name
             )));
         }
-        let now = crate::now_ms();
-        let expires_ms = match a.expires.as_deref().filter(|e| !e.trim().is_empty()) {
-            Some(e) => match expiry::parse(e, now) {
-                Ok(x) => Some(x.at(now)),
-                Err(e) => return Ok(ToolOutput::err(e)),
-            },
-            None => None,
-        };
-        let (b, r) = match cx.open(&a.r#ref, "the agent imports an entry").await {
-            Ok(x) => x,
-            Err(e) => return Ok(ToolOutput::err(e)),
-        };
-        if r.key.as_deref() == Some("totp") {
-            return Ok(ToolOutput::err(
-                "a TOTP code changes every 30 s; reference it as {{secret:…#totp}} where it is used",
-            ));
-        }
-        let (value, version) = match cx.bounded(&a.r#ref, b.backend(), b.get(&r)).await {
-            Ok(x) => x,
-            Err(e) => return Ok(ToolOutput::err(err_text(&a.r#ref, &e))),
-        };
-        let note = a
-            .note
-            .unwrap_or_else(|| format!("from {} {}", a.r#ref, version.id));
-        let info = match cx
-            .vault
-            .set_expiring(&a.name, &value, Some(&note), Self::NAME, expires_ms)
+        Ok(
+            match import(
+                &self.0,
+                &a.r#ref,
+                &a.name,
+                a.note,
+                a.expires.as_deref(),
+                "the agent imports an entry",
+            )
             .await
-        {
-            Ok(i) => i,
-            Err(e) => return Ok(ToolOutput::err(e)),
-        };
-        drop(value);
-        Ok(ToolOutput::ok(format!(
-            "stored {name} v{v} from {ref} ({ver}); {{{{secret:{name}}}}}",
-            name = a.name,
-            v = info.current,
-            r#ref = a.r#ref,
-            ver = version_line(&version),
-        )))
+            {
+                Ok((info, version)) => ToolOutput::ok(format!(
+                    "stored {name} v{v} from {ref} ({ver}); {{{{secret:{name}}}}}",
+                    name = a.name,
+                    v = info.current,
+                    r#ref = a.r#ref,
+                    ver = version_line(&version),
+                )),
+                Err(e) => ToolOutput::err(e),
+            },
+        )
     }
+}
+
+/// `secret_external_import` and the owner's Import (`import_external_secret`): fetch `ref` and
+/// store it as a new version of local `name` (source: the ref). The value is never returned.
+pub(crate) async fn import(
+    cx: &ExtCx,
+    r#ref: &str,
+    name: &str,
+    note: Option<String>,
+    expires: Option<&str>,
+    why: &str,
+) -> Result<(crate::SecretInfo, ExtVersion), String> {
+    if !vault::valid_name(name) {
+        return Err("name: [A-Za-z0-9_.-]{1,64}".into());
+    }
+    let now = crate::now_ms();
+    let expires_ms = match expires.filter(|e| !e.trim().is_empty()) {
+        Some(e) => Some(expiry::parse(e, now)?.at(now)),
+        None => None,
+    };
+    let (b, r) = cx.open(r#ref, why).await?;
+    if r.key.as_deref() == Some("totp") {
+        return Err(
+            "a TOTP code changes every 30 s; reference it as {{secret:…#totp}} where it is used"
+                .into(),
+        );
+    }
+    let (value, version) = cx
+        .bounded(r#ref, b.backend(), b.get(&r))
+        .await
+        .map_err(|e| err_text(r#ref, &e))?;
+    let note = note.unwrap_or_else(|| format!("from {ref} {}", version.id));
+    let info = cx
+        .vault
+        .set_expiring(name, &value, Some(&note), r#ref, expires_ms)
+        .await?;
+    drop(value);
+    Ok((info, version))
 }
 
 /// `secret_external_create`: put a local secret's current value into the manager as a new entry.

@@ -132,6 +132,18 @@ pub trait CredentialsApi {
     /// Every reveal is audited.
     #[method(name = "reveal_external_secret", with_extensions)]
     async fn reveal_external_secret(&self, conn: String, r#ref: String) -> RpcResult<String>;
+    /// The Secrets page's Import: copy `ref`'s value into the local vault as a new version of
+    /// `name` (source: the ref), as `secret_external_import` does. The owner's press is the
+    /// consent (D25); any other caller with the connection's `…:read` always ask in force gets
+    /// the human-only card `secrets.import`. The value is never returned.
+    #[method(name = "import_external_secret", with_extensions)]
+    async fn import_external_secret(
+        &self,
+        conn: String,
+        r#ref: String,
+        name: String,
+        note: Option<String>,
+    ) -> RpcResult<secrets::SecretInfo>;
     /// D20 `lock_on_sleep`: the desktop reports `sleep` or `screen_lock`; every connection with
     /// the setting on locks.
     #[method(name = "secrets_power_event")]
@@ -448,6 +460,63 @@ impl CredentialsApiServer for Server {
         reveal(&secrets()?, human_press(ext), &conn, &r#ref)
             .await
             .map_err(failed)
+    }
+
+    async fn import_external_secret(
+        &self,
+        ext: &Extensions,
+        conn: String,
+        r#ref: String,
+        name: String,
+        note: Option<String>,
+    ) -> RpcResult<secrets::SecretInfo> {
+        let a = secrets()?;
+        let (backend, r) =
+            parse_bare(&r#ref).ok_or_else(|| failed(format!("{ref} is not a reference")))?;
+        if r.conn != conn {
+            return Err(failed(format!("{ref} is not on connection {conn}")));
+        }
+        let key =
+            ::tools::secrets::always_ask_key(backend, &conn, ::tools::secrets::Direction::Read);
+        let asks = match ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR) {
+            Ok(Some(reg)) => reg
+                .ask(::tools::GetAlwaysAsk { session: None })
+                .await
+                .map(|s| s.global.contains(&key))
+                .unwrap_or(true),
+            _ => false,
+        };
+        confirm_loosening(
+            approval_actor().as_ref(),
+            human_press(ext),
+            asks,
+            "secrets.import",
+            serde_json::json!({ "ref": r#ref, "name": name }),
+        )
+        .await
+        .map_err(failed)?;
+        let cx = secrets::tools_external::ExtCx {
+            actor: a.clone(),
+            vault: send(&a, secrets::Handle).await?,
+            externals: send(&a, GetExternals).await?,
+        };
+        let (info, _) = secrets::tools_external::import(
+            &cx,
+            &r#ref,
+            &name,
+            note,
+            None,
+            "the owner imports an entry",
+        )
+        .await
+        .map_err(failed)?;
+        let _ = a
+            .tell(Audit(format!(
+                "imported {ref} into {name} v{}",
+                info.current
+            )))
+            .await;
+        Ok(info)
     }
 
     async fn secrets_power_event(&self, kind: String) -> RpcResult<()> {
