@@ -11,10 +11,10 @@ describe('ink colours (§8.6, A1)', () => {
     }
   })
 
-  it('every named colour keeps ≥ 3 : 1 against its canvas (A1); carnelian is exempt on soot only', () => {
-    for (const [name, [light, dark]] of Object.entries(INK_COLOURS)) {
+  it('every named colour keeps ≥ 3 : 1 against its canvas (A1)', () => {
+    for (const [light, dark] of Object.values(INK_COLOURS)) {
       expect(contrast(light, CANVAS_BG.light)).toBeGreaterThanOrEqual(3)
-      if (name !== 'red') expect(contrast(dark, CANVAS_BG.dark)).toBeGreaterThanOrEqual(3)
+      expect(contrast(dark, CANVAS_BG.dark)).toBeGreaterThanOrEqual(3)
     }
   })
 
