@@ -1,5 +1,6 @@
 import { open as pickFolder } from '@tauri-apps/plugin-dialog'
-import { ArrowRight, ArrowUp, FolderOpen, FolderTree, HardDrive, LayoutDashboard, LoaderCircle, PenLine, Telescope } from 'lucide-react'
+import { ArrowRight, FolderOpen, FolderTree, HardDrive, LayoutDashboard, LoaderCircle, PenLine, Telescope } from 'lucide-react'
+import { ThetaGlyph } from '@/components/Mark'
 import { useState } from 'react'
 import { useModels } from '@/components/agents/queries'
 import { Button } from '@/components/ui/button'
@@ -155,7 +156,7 @@ function StarterCard({ starter: s, busy, disabled, onSend }: { starter: Starter;
         )}
         <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder={s.input.placeholder} aria-label={s.input.label} spellCheck={s.id !== 'project'} className={s.id === 'project' ? 'font-mono text-[13px]' : undefined} disabled={disabled} />
         <Button type="submit" size="icon" aria-label={`Send: ${title}`} disabled={!ok || disabled}>
-          {busy ? <LoaderCircle className="animate-spin motion-reduce:animate-none" /> : <ArrowUp />}
+          {busy ? <LoaderCircle className="animate-spin motion-reduce:animate-none" /> : <ThetaGlyph />}
         </Button>
       </div>
     </form>

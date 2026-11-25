@@ -2,7 +2,8 @@
 // runs the reducer (`lib/hold.ts`) and drives everything here. The layer is a portal over the page anchored to the
 // mic button; pointer moves write transforms straight to element refs (`track`), React only sees phase changes.
 
-import { ArrowUp, ChevronLeft, ChevronUp, Lock, LockOpen, Mic, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronUp, Lock, LockOpen, Mic, Trash2 } from 'lucide-react'
+import { SendMark } from '@/components/Mark'
 import { type RefObject, useEffect, useImperativeHandle, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Button } from '@/components/ui/button'
@@ -150,8 +151,8 @@ export function DeleteNote({ onClick }: { onClick: () => void }) {
 /** The locked bar's right end, in the mic button's place. */
 export function SendNote({ onClick, disabled, ref }: { onClick: () => void; disabled?: boolean; ref?: RefObject<HTMLButtonElement | null> }) {
   return (
-    <Button ref={ref} className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover" aria-label="Send voice note" disabled={disabled} onClick={onClick}>
-      <ArrowUp className="size-[18px]" />
+    <Button ref={ref} className="size-9 shrink-0 rounded-full bg-transparent p-0 text-fg-primary hover:bg-transparent hover:opacity-80" aria-label="Send voice note" disabled={disabled} onClick={onClick}>
+      <SendMark pulse={0} className="size-8" />
     </Button>
   )
 }

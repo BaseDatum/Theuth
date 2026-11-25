@@ -1,5 +1,5 @@
-import { SendHorizontal } from 'lucide-react'
 import { useState } from 'react'
+import { ThetaGlyph } from '@/components/Mark'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
@@ -54,7 +54,7 @@ export function Reply({ item, size = 'xs', onSent }: { item: AttentionItem; size
           className={cn('min-w-0 flex-1 text-base', size === 'xs' ? 'h-7 md:text-xs' : 'h-8 md:text-sm')}
         />
         <Button size={size} type="submit" disabled={reply.pending || !text.trim()}>
-          <SendHorizontal />
+          <ThetaGlyph />
           Send
         </Button>
       </form>

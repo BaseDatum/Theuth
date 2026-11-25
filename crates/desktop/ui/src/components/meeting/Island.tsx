@@ -7,7 +7,8 @@ import { useQuerySupport } from '@/rpc/capabilities'
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { ArrowUp, ChevronDown, ChevronUp, Eye, EyeOff, LoaderCircle, MoreVertical, Pause, Play, Square, X, Zap, ZoomIn } from 'lucide-react'
+import { ChevronDown, ChevronUp, Eye, EyeOff, LoaderCircle, MoreVertical, Pause, Play, Square, X, Zap, ZoomIn } from 'lucide-react'
+import { ThetaGlyph } from '@/components/Mark'
 import { type ComponentProps, useCallback, useEffect, useRef, useState } from 'react'
 import { IslandTranscript } from '@/components/meeting/IslandTranscript'
 import { useCompanionAlive } from '@/lib/companion'
@@ -411,7 +412,7 @@ function RequestBox({ measure }: { measure: (el: HTMLElement | null) => void }) 
         onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => void send(e.currentTarget.previousElementSibling as HTMLInputElement)}
       >
-        <ArrowUp className="size-3.5" />
+        <ThetaGlyph className="size-3.5" />
       </button>
     </div>
   )

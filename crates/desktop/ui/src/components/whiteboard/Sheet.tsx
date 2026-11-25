@@ -3,7 +3,8 @@
 // chip, the model picker (A2: the bound session's; unbound, the pick the first send creates its session with, R1 — the
 // new-chat draft's pick, as on the new-chat page), Send, and a chevron that opens the session in chat.
 
-import { ArrowUp, ChevronUp, X } from 'lucide-react'
+import { ChevronUp, X } from 'lucide-react'
+import { ThetaGlyph } from '@/components/Mark'
 import { useEffect, useRef, useState } from 'react'
 import { ComposerModel } from '@/components/chat/ModelMenu'
 import type { PlannedImage, SendPlan } from './canvas/api'
@@ -135,7 +136,7 @@ export function Sheet(p: SheetProps) {
           className="flex h-9 items-center gap-1.5 rounded-full bg-fg-accent px-4 text-[13px] font-semibold text-primary-foreground hover:bg-fg-accent-hover disabled:opacity-45"
         >
           {p.pick.session ? (p.pick.busy ? 'Steer' : 'Send') : 'Send to a new session'}
-          <ArrowUp className="size-4" aria-hidden />
+          <ThetaGlyph className="size-4" />
         </button>
       </div>
     </div>

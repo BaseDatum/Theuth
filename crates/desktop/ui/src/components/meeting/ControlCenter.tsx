@@ -14,7 +14,8 @@ import { useQuerySupport } from '@/rpc/capabilities'
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ArrowUp, Check, ChevronRight, LoaderCircle, PanelLeft, Zap } from 'lucide-react'
+import { Check, ChevronRight, LoaderCircle, PanelLeft, Zap } from 'lucide-react'
+import { ThetaGlyph } from '@/components/Mark'
 import { useEffect, useRef, useState } from 'react'
 import { Divider } from '@/components/ui/ratio-divider'
 import { BriefColumn, hhmmss, useBriefs } from '@/components/meeting/BriefColumn'
@@ -398,7 +399,7 @@ function LiveLog({ id }: { id: string }) {
       >
         <Input value={text} placeholder="Ask the meeting session… (answer arrives as a brief)" onChange={(e) => setText(e.target.value)} />
         <Button size="icon-sm" aria-label="Send request" disabled={!text.trim() || request.isPending} type="submit">
-          <ArrowUp />
+          <ThetaGlyph />
         </Button>
       </form>
     </div>

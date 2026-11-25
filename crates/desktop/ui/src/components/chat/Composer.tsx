@@ -5,7 +5,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import {
-  ArrowUp,
   AudioLines,
   ChevronRight,
   CircleAlert,
@@ -17,8 +16,7 @@ import {
   Plus,
   Square,
   StickyNote,
-  X,
-} from 'lucide-react'
+  X } from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -1673,14 +1671,14 @@ export function Composer({
                     <TooltipTrigger asChild>
                       <Button
                         className={cn(
-                          'size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover select-none touch-none',
+                          'size-9 shrink-0 rounded-full bg-transparent p-0 text-fg-primary hover:bg-transparent hover:opacity-80 select-none touch-none',
                           (!filled || busy || readOnly || uploading) && 'opacity-50',
                         )}
                         aria-label="Steer"
                         aria-disabled={!filled || busy || readOnly || !!uploading}
                         {...steerPress}
                       >
-                        <ArrowUp className="size-5" />
+                        <SendMark pulse={sent} className="size-8" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>

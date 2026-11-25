@@ -1250,3 +1250,22 @@ html .tg-canvas .tg-edge {
   82% { transform: translateX(0); animation-timing-function: ease-out; }
   100% { transform: translateX(4px); }
 }
+
+/* ThetaGlyph (components/Mark.tsx): the one-colour eclipse on the 24-unit grid; rest = the logo crescent (+1.2). */
+.theta-glyph-rest,
+.theta-glyph-eclipse {
+  transform: translateX(1.2px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .theta-glyph-eclipse {
+    animation: theta-glyph-eclipse 3s infinite;
+  }
+}
+@keyframes theta-glyph-eclipse {
+  0% { transform: translateX(-26px); animation-timing-function: cubic-bezier(0.3, 0, 0.6, 1); }
+  38% { transform: translateX(0); animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
+  46% { transform: translateX(1.2px); animation-timing-function: linear; }
+  70% { transform: translateX(1.2px); animation-timing-function: cubic-bezier(0.4, 0, 0.7, 1); }
+  94% { transform: translateX(26px); }
+  100% { transform: translateX(26px); }
+}

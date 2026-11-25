@@ -53,3 +53,22 @@ export function SendMark({ pulse, className }: { pulse: number; className?: stri
     </svg>
   )
 }
+
+/**
+ * The mark as a one-colour glyph (option C) on the lucide 24-unit grid, for small sizes beside other glyphs: the moon in
+ * `currentColor`, the pen on top at half strength, no carnelian. `animate` runs the eclipse (`.theta-glyph-eclipse`,
+ * 3 s); still, it rests on the logo crescent.
+ */
+export function ThetaGlyph({ animate = false, className }: { animate?: boolean; className?: string }) {
+  const mask = `theta-glyph-${useId().replace(/:/g, '')}`
+  return (
+    <svg viewBox="0 0 24 24" className={cn('shrink-0', className)} aria-hidden="true">
+      <mask id={mask} maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+        <rect width="24" height="24" fill="#fff" />
+        <circle className={animate ? 'theta-glyph-eclipse' : 'theta-glyph-rest'} cx="12" cy="12" r="8.4" fill="#000" />
+      </mask>
+      <circle cx="12" cy="12" r="9.5" fill="currentColor" mask={`url(#${mask})`} />
+      <path fill="currentColor" opacity={0.55} d="M3.6 11.1 H18.4 L21.8 12 L18.4 12.9 H3.6 Z" />
+    </svg>
+  )
+}
