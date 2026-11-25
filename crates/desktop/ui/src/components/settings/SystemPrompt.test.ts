@@ -14,6 +14,7 @@ const CORE_STANDING: PromptSection = {
   content: 'Always verify changes before reporting.',
   defaultContent: 'Always verify changes before reporting.',
   customized: false,
+  enabled: true,
 }
 
 const CORE_HEADER: PromptSection = {
@@ -24,6 +25,7 @@ const CORE_HEADER: PromptSection = {
   content: 'Custom persona text.',
   defaultContent: 'You are theuth, a meta-harness on the user machine.',
   customized: true,
+  enabled: true,
 }
 
 const PLUGIN_SURFACE: PromptSection = {
@@ -34,12 +36,14 @@ const PLUGIN_SURFACE: PromptSection = {
   content: 'Render visual output first when helpful.',
   defaultContent: 'Render visual output first when helpful.',
   customized: false,
+  enabled: true,
 }
 
 const state = vi.hoisted(() => ({
   sections: [] as PromptSection[],
   list: vi.fn<() => Promise<PromptSection[]>>(),
   set: vi.fn<(id: string, content: string) => Promise<PromptSection>>(),
+  setEnabled: vi.fn<(id: string, enabled: boolean) => Promise<PromptSection>>(),
   reset: vi.fn<(id: string) => Promise<PromptSection>>(),
 }))
 
@@ -48,6 +52,7 @@ vi.mock('@/lib/rpc', async (original) => ({
   useApi: () => ({
     list_prompt_sections: state.list,
     set_prompt_section: state.set,
+    set_prompt_section_enabled: state.setEnabled,
     reset_prompt_section: state.reset,
   }),
 }))
@@ -85,12 +90,19 @@ beforeEach(() => {
     state.sections = state.sections.map((s) => (s.id === id ? updated : s))
     return updated
   })
+  state.setEnabled.mockReset().mockImplementation(async (id, enabled) => {
+    const found = state.sections.find((s) => s.id === id)!
+    const updated: PromptSection = { ...found, enabled }
+    state.sections = state.sections.map((s) => (s.id === id ? updated : s))
+    return updated
+  })
   state.reset.mockReset().mockImplementation(async (id) => {
     const found = state.sections.find((s) => s.id === id)!
     const updated: PromptSection = {
       ...found,
       content: found.defaultContent,
       customized: false,
+      enabled: true,
     }
     state.sections = state.sections.map((s) => (s.id === id ? updated : s))
     return updated
@@ -209,4 +221,58 @@ test('filters by search query and by Modified filter', async () => {
   expect(el.textContent).toContain('System persona')
   expect(el.textContent).not.toContain('Standing instructions')
   expect(el.textContent).not.toContain('Show first, then tell')
+})
+
+test('renders per-section switch reflecting enabled state and toggles without expanding the editor', async () => {
+  state.sections = [
+    { ...CORE_STANDING, enabled: true },
+    { ...CORE_HEADER, enabled: true },
+    { ...PLUGIN_SURFACE, enabled: false },
+  ]
+  const { el, buttonByText, click } = await mount()
+
+  const standingSwitch = el.querySelector<HTMLButtonElement>(
+    'button[role="switch"][aria-label="Enable Standing instructions"]',
+  )
+  const headerSwitch = el.querySelector<HTMLButtonElement>(
+    'button[role="switch"][aria-label="Enable System persona"]',
+  )
+  const surfaceSwitch = el.querySelector<HTMLButtonElement>(
+    'button[role="switch"][aria-label="Enable Show first, then tell"]',
+  )
+
+  expect(standingSwitch?.getAttribute('aria-checked')).toBe('true')
+  expect(headerSwitch?.getAttribute('aria-checked')).toBe('true')
+  expect(surfaceSwitch?.getAttribute('aria-checked')).toBe('false')
+
+  await click(standingSwitch!)
+  await vi.waitFor(() => expect(state.setEnabled).toHaveBeenCalledWith('core.standing', false))
+  await vi.waitFor(() => expect(standingSwitch?.getAttribute('aria-checked')).toBe('false'))
+
+  expect(el.querySelector('textarea[aria-label="Prompt content"]')).toBeNull()
+  expect(buttonByText('Standing instructions')?.getAttribute('aria-expanded')).toBe('false')
+})
+
+test('shows Disabled badge, matches Disabled filter, and enables Reset to default for disabled sections', async () => {
+  state.sections = [
+    { ...CORE_STANDING, enabled: true },
+    { ...CORE_HEADER, enabled: true },
+    { ...PLUGIN_SURFACE, enabled: false },
+  ]
+  const { el, buttonByText, exactButton, click } = await mount()
+
+  expect(el.textContent).toContain('Disabled')
+
+  await click(exactButton('Disabled (1)'))
+  expect(el.textContent).toContain('Show first, then tell')
+  expect(el.textContent).not.toContain('Standing instructions')
+  expect(el.textContent).not.toContain('System persona')
+
+  await click(buttonByText('Show first, then tell'))
+  const resetBtn = exactButton('Reset to default')
+  expect(resetBtn?.disabled).toBe(false)
+
+  await click(resetBtn)
+  await vi.waitFor(() => expect(state.reset).toHaveBeenCalledWith('plugin.surface'))
+  await vi.waitFor(() => expect(el.textContent).toContain('Disabled (0)'))
 })

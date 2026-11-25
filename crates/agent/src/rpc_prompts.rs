@@ -28,6 +28,13 @@ pub trait PromptsApi {
     /// updated section.
     #[method(name = "reset_prompt_section", with_extensions)]
     async fn reset_prompt_section(&self, id: String) -> RpcResult<PromptSection>;
+    /// Enable or disable a system prompt section without losing custom edits.
+    #[method(name = "set_prompt_section_enabled", with_extensions)]
+    async fn set_prompt_section_enabled(
+        &self,
+        id: String,
+        enabled: bool,
+    ) -> RpcResult<PromptSection>;
 }
 
 #[async_trait]
@@ -57,6 +64,17 @@ impl PromptsApiServer for Server {
         rpc_core::owner(ext)?;
         let plugins = plugin_prompts().await?;
         prompt_sections::reset(&self.rt.data_dir, plugins, &id).map_err(failed)
+    }
+
+    async fn set_prompt_section_enabled(
+        &self,
+        ext: &Extensions,
+        id: String,
+        enabled: bool,
+    ) -> RpcResult<PromptSection> {
+        rpc_core::owner(ext)?;
+        let plugins = plugin_prompts().await?;
+        prompt_sections::set_enabled(&self.rt.data_dir, plugins, &id, enabled).map_err(failed)
     }
 }
 

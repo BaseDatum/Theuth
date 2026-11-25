@@ -478,18 +478,19 @@ pub fn baseline_dated(
     cwd: &Path,
 ) -> String {
     let cwd = cwd.display();
-    let overrides = crate::prompt_sections::load_overrides(data_dir);
+    let state = crate::prompt_sections::load_state(data_dir);
     let (persona, standing) = match identity {
         Some(id) => (id, String::new()),
         None => (
-            overrides
-                .get("core.header")
-                .map(String::as_str)
-                .unwrap_or(THEUTH_HEADER),
-            root_only(
-                &std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default(),
-                attended,
-            ),
+            state.resolve("core.header", THEUTH_HEADER),
+            if state.is_disabled(crate::prompt_sections::STANDING_ID) {
+                String::new()
+            } else {
+                root_only(
+                    &std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default(),
+                    attended,
+                )
+            },
         ),
     };
     let m = platform::process::machine();
@@ -521,10 +522,15 @@ pub fn baseline_dated(
     }
     let skills_dir = skills::dir(data_dir);
     let skills = skills::index(&skills_dir);
-    let guidance = overrides
-        .get("core.guidance")
-        .cloned()
-        .unwrap_or_else(|| default_guidance(attended));
+    let guidance = if state.is_disabled("core.guidance") {
+        String::new()
+    } else {
+        state
+            .overrides
+            .get("core.guidance")
+            .cloned()
+            .unwrap_or_else(|| default_guidance(attended))
+    };
     [
         header.as_str(),
         &standing,
@@ -533,18 +539,12 @@ pub fn baseline_dated(
         peer_line,
         plugin_blocks,
         if advised {
-            overrides
-                .get("core.advisory")
-                .map(String::as_str)
-                .unwrap_or(ADVISORY_PARAGRAPH)
+            state.resolve("core.advisory", ADVISORY_PARAGRAPH)
         } else {
             ""
         },
         if consult {
-            overrides
-                .get("core.consult")
-                .map(String::as_str)
-                .unwrap_or(CONSULT_PARAGRAPH)
+            state.resolve("core.consult", CONSULT_PARAGRAPH)
         } else {
             ""
         },

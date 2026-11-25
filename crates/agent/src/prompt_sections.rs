@@ -3,9 +3,11 @@
 //!
 //! Overrides live as plain UTF-8 markdown files under `<data_dir>/prompts/<id>.md`,
 //! except `core.standing` which reads and writes `<data_dir>/prompt.md` directly.
-//! When no override file exists, prompt assembly is byte-identical to the defaults.
+//! Disabled section ids are persisted separately in `<data_dir>/prompts/disabled.json`
+//! so toggling a section off and back on preserves custom text.
+//! When no override or disable file exists, prompt assembly is byte-identical to the defaults.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,6 +39,8 @@ pub struct PromptSection {
     pub default_content: String,
     /// Whether this section currently differs from its default via an override.
     pub customized: bool,
+    /// Whether this section is enabled during system prompt assembly.
+    pub enabled: bool,
 }
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -44,6 +48,11 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Directory storing per-section override files (`<data_dir>/prompts`).
 pub fn overrides_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("prompts")
+}
+
+/// Path storing disabled prompt section ids (`<data_dir>/prompts/disabled.json`).
+pub fn disabled_path(data_dir: &Path) -> PathBuf {
+    overrides_dir(data_dir).join("disabled.json")
 }
 
 /// Validate a prompt section id: must be `core.<key>` or `plugin.<key>`,
@@ -92,6 +101,54 @@ pub fn load_overrides(data_dir: &Path) -> BTreeMap<String, String> {
     out
 }
 
+/// Load disabled prompt section ids from `<data_dir>/prompts/disabled.json`.
+/// Never panics on a missing, unreadable, or malformed file; invalid ids are ignored.
+pub fn load_disabled(data_dir: &Path) -> BTreeSet<String> {
+    let Ok(raw) = std::fs::read_to_string(disabled_path(data_dir)) else {
+        return BTreeSet::new();
+    };
+    let Ok(ids) = serde_json::from_str::<Vec<String>>(&raw) else {
+        return BTreeSet::new();
+    };
+    ids.into_iter()
+        .filter(|id| validate_id(id).is_ok())
+        .collect()
+}
+
+/// Combined persisted override and enable/disable state for system prompt sections.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptState {
+    /// Per-section override text loaded from `<data_dir>/prompts/<id>.md`.
+    pub overrides: BTreeMap<String, String>,
+    /// Disabled section ids loaded from `<data_dir>/prompts/disabled.json`.
+    pub disabled: BTreeSet<String>,
+}
+
+impl PromptState {
+    /// Returns `true` if `id` is currently disabled.
+    pub fn is_disabled(&self, id: &str) -> bool {
+        self.disabled.contains(id)
+    }
+
+    /// Resolve effective text for `id`: returns `""` if disabled, else the override if
+    /// present, else `default`.
+    pub fn resolve<'a>(&'a self, id: &str, default: &'a str) -> &'a str {
+        if self.is_disabled(id) {
+            ""
+        } else {
+            self.overrides.get(id).map(String::as_str).unwrap_or(default)
+        }
+    }
+}
+
+/// Load both override files and disabled section ids from `data_dir`.
+pub fn load_state(data_dir: &Path) -> PromptState {
+    PromptState {
+        overrides: load_overrides(data_dir),
+        disabled: load_disabled(data_dir),
+    }
+}
+
 /// Replace registered plugin prompt texts with any matching `plugin.<key>` overrides.
 #[allow(clippy::ptr_arg)]
 pub fn apply_plugin_overrides(
@@ -100,6 +157,19 @@ pub fn apply_plugin_overrides(
 ) {
     for (plugin, text) in prompts.iter_mut() {
         if let Some(ov) = overrides.get(&format!("plugin.{plugin}")) {
+            *text = ov.clone();
+        }
+    }
+}
+
+/// Apply override and disabled state to registered plugin prompt blocks.
+#[allow(clippy::ptr_arg)]
+pub fn apply_plugin_state(prompts: &mut Vec<(&'static str, String)>, state: &PromptState) {
+    for (plugin, text) in prompts.iter_mut() {
+        let id = format!("plugin.{plugin}");
+        if state.is_disabled(&id) {
+            *text = String::new();
+        } else if let Some(ov) = state.overrides.get(&id) {
             *text = ov.clone();
         }
     }
@@ -318,7 +388,7 @@ fn core_defaults() -> Vec<(&'static str, &'static str, &'static str, String)> {
 
 /// List all core prompt sections followed by all registered plugin prompt sections.
 pub fn list(data_dir: &Path, plugin_prompts: Vec<(&'static str, String)>) -> Vec<PromptSection> {
-    let overrides = load_overrides(data_dir);
+    let state = load_state(data_dir);
     let mut sections = Vec::with_capacity(9 + plugin_prompts.len());
 
     for (id, label, description, default_content) in core_defaults() {
@@ -327,7 +397,7 @@ pub fn list(data_dir: &Path, plugin_prompts: Vec<(&'static str, String)>) -> Vec
                 .unwrap_or_else(|_| STANDING_DEFAULT.to_owned());
             let customized = text.trim() != STANDING_DEFAULT.trim();
             (text, customized)
-        } else if let Some(ov) = overrides.get(id) {
+        } else if let Some(ov) = state.overrides.get(id) {
             (ov.clone(), true)
         } else {
             (default_content.clone(), false)
@@ -340,17 +410,19 @@ pub fn list(data_dir: &Path, plugin_prompts: Vec<(&'static str, String)>) -> Vec
             content,
             default_content,
             customized,
+            enabled: !state.is_disabled(id),
         });
     }
 
     for (plugin, default_content) in plugin_prompts {
         let id = format!("plugin.{plugin}");
         let (label, description) = plugin_meta(plugin);
-        let (content, customized) = if let Some(ov) = overrides.get(&id) {
+        let (content, customized) = if let Some(ov) = state.overrides.get(&id) {
             (ov.clone(), true)
         } else {
             (default_content.clone(), false)
         };
+        let enabled = !state.is_disabled(&id);
         sections.push(PromptSection {
             id,
             group: "plugin".to_owned(),
@@ -359,6 +431,7 @@ pub fn list(data_dir: &Path, plugin_prompts: Vec<(&'static str, String)>) -> Vec
             content,
             default_content,
             customized,
+            enabled,
         });
     }
 
@@ -398,7 +471,33 @@ pub fn set(
     Ok(section)
 }
 
-/// Reset one prompt section back to its default content and return the resulting [`PromptSection`].
+/// Enable or disable one prompt section without altering its override text, returning the
+/// resulting [`PromptSection`].
+pub fn set_enabled(
+    data_dir: &Path,
+    plugin_prompts: Vec<(&'static str, String)>,
+    id: &str,
+    enabled: bool,
+) -> Result<PromptSection, String> {
+    validate_id(id)?;
+    let mut section = list(data_dir, plugin_prompts)
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| format!("unknown prompt section: {id}"))?;
+
+    let mut disabled = load_disabled(data_dir);
+    if enabled {
+        disabled.remove(id);
+    } else {
+        disabled.insert(id.to_owned());
+    }
+    save_disabled(data_dir, &disabled)?;
+    section.enabled = enabled;
+    Ok(section)
+}
+
+/// Reset one prompt section back to its default content and enabled state, returning the
+/// resulting [`PromptSection`].
 pub fn reset(
     data_dir: &Path,
     plugin_prompts: Vec<(&'static str, String)>,
@@ -409,6 +508,12 @@ pub fn reset(
         .into_iter()
         .find(|s| s.id == id)
         .ok_or_else(|| format!("unknown prompt section: {id}"))?;
+
+    let mut disabled = load_disabled(data_dir);
+    if disabled.remove(id) {
+        save_disabled(data_dir, &disabled)?;
+    }
+    section.enabled = true;
 
     if id == STANDING_ID {
         write_atomic(&data_dir.join("prompt.md"), STANDING_DEFAULT)?;
@@ -422,6 +527,16 @@ pub fn reset(
     section.content = section.default_content.clone();
     section.customized = false;
     Ok(section)
+}
+
+fn save_disabled(data_dir: &Path, disabled: &BTreeSet<String>) -> Result<(), String> {
+    let path = disabled_path(data_dir);
+    if disabled.is_empty() {
+        return remove_if_exists(&path);
+    }
+    let json = serde_json::to_string(disabled)
+        .map_err(|e| format!("failed to serialize disabled prompt sections: {e}"))?;
+    write_atomic(&path, &json)
 }
 
 fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
@@ -513,6 +628,7 @@ mod tests {
         );
         for s in &sections {
             assert!(!s.customized, "expected {} to be uncustomized", s.id);
+            assert!(s.enabled, "expected {} to be enabled", s.id);
             assert_eq!(s.content, s.default_content, "mismatch for {}", s.id);
         }
         assert_eq!(sections[9].id, "plugin.knowledge");
@@ -627,5 +743,171 @@ mod tests {
         let mut plugins = sample_plugins();
         apply_plugin_overrides(&mut plugins, &load_overrides(dir.path()));
         assert_eq!(plugins[1], ("surface", String::new()));
+    }
+
+    #[test]
+    fn set_enabled_toggles_and_preserves_custom_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let standing_custom = "Custom standing rule.\n";
+        let header_custom = "Custom header text.";
+        let surface_custom = "Custom surface text.";
+
+        set(dir.path(), sample_plugins(), STANDING_ID, standing_custom).unwrap();
+        set(dir.path(), sample_plugins(), "core.header", header_custom).unwrap();
+        set(dir.path(), sample_plugins(), "plugin.surface", surface_custom).unwrap();
+
+        let h_off = set_enabled(dir.path(), sample_plugins(), "core.header", false).unwrap();
+        assert!(!h_off.enabled);
+        assert!(h_off.customized);
+        assert_eq!(h_off.content, header_custom);
+
+        let st_off = set_enabled(dir.path(), sample_plugins(), STANDING_ID, false).unwrap();
+        assert!(!st_off.enabled);
+        assert!(st_off.customized);
+        assert_eq!(st_off.content, standing_custom);
+
+        let sf_off = set_enabled(dir.path(), sample_plugins(), "plugin.surface", false).unwrap();
+        assert!(!sf_off.enabled);
+        assert!(sf_off.customized);
+        assert_eq!(sf_off.content, surface_custom);
+
+        // disabled.json stores sorted JSON array of ids.
+        let raw = std::fs::read_to_string(disabled_path(dir.path())).unwrap();
+        assert_eq!(raw, r#"["core.header","core.standing","plugin.surface"]"#);
+
+        let listed = list(dir.path(), sample_plugins());
+        for id in ["core.header", STANDING_ID, "plugin.surface"] {
+            let s = listed.iter().find(|s| s.id == id).unwrap();
+            assert!(!s.enabled, "expected {id} disabled");
+            assert!(s.customized, "expected {id} still customized");
+        }
+        assert!(listed.iter().find(|s| s.id == "core.guidance").unwrap().enabled);
+
+        // Re-enabling preserves custom text and removes disabled.json once empty.
+        let h_on = set_enabled(dir.path(), sample_plugins(), "core.header", true).unwrap();
+        assert!(h_on.enabled);
+        assert!(h_on.customized);
+        assert_eq!(h_on.content, header_custom);
+
+        let st_on = set_enabled(dir.path(), sample_plugins(), STANDING_ID, true).unwrap();
+        assert!(st_on.enabled);
+        assert!(st_on.customized);
+        assert_eq!(st_on.content, standing_custom);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("prompt.md")).unwrap(),
+            standing_custom
+        );
+
+        let sf_on = set_enabled(dir.path(), sample_plugins(), "plugin.surface", true).unwrap();
+        assert!(sf_on.enabled);
+        assert!(sf_on.customized);
+        assert_eq!(sf_on.content, surface_custom);
+        assert_eq!(
+            std::fs::read_to_string(overrides_dir(dir.path()).join("plugin.surface.md")).unwrap(),
+            surface_custom
+        );
+        assert!(!disabled_path(dir.path()).exists());
+
+        // Unknown and invalid ids are rejected.
+        assert!(set_enabled(dir.path(), sample_plugins(), "plugin.nope", false).is_err());
+        assert!(set_enabled(dir.path(), sample_plugins(), "../bad", false).is_err());
+    }
+
+    #[test]
+    fn load_disabled_ignores_malformed_file_and_invalid_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_disabled(dir.path()).is_empty());
+
+        std::fs::create_dir_all(overrides_dir(dir.path())).unwrap();
+        std::fs::write(disabled_path(dir.path()), "not valid json").unwrap();
+        assert!(load_disabled(dir.path()).is_empty());
+
+        std::fs::write(
+            disabled_path(dir.path()),
+            r#"["core.advisory","../escape","bad.id","plugin.slack"]"#,
+        )
+        .unwrap();
+        let loaded = load_disabled(dir.path());
+        assert_eq!(
+            loaded,
+            BTreeSet::from(["core.advisory".to_owned(), "plugin.slack".to_owned()])
+        );
+    }
+
+    #[test]
+    fn prompt_state_resolve_returns_empty_for_disabled_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        set(dir.path(), sample_plugins(), "core.header", "Custom header").unwrap();
+        set(dir.path(), sample_plugins(), "core.advisory", "Custom advisory").unwrap();
+        set_enabled(dir.path(), sample_plugins(), "core.header", false).unwrap();
+        set_enabled(dir.path(), sample_plugins(), "core.consult", false).unwrap();
+
+        let state = load_state(dir.path());
+        assert!(state.is_disabled("core.header"));
+        assert!(state.is_disabled("core.consult"));
+        assert!(!state.is_disabled("core.advisory"));
+
+        assert_eq!(state.resolve("core.header", "Default header"), "");
+        assert_eq!(state.resolve("core.consult", "Default consult"), "");
+        assert_eq!(
+            state.resolve("core.advisory", "Default advisory"),
+            "Custom advisory"
+        );
+        assert_eq!(
+            state.resolve("core.guidance", "Default guidance"),
+            "Default guidance"
+        );
+    }
+
+    #[test]
+    fn apply_plugin_state_clears_disabled_plugins() {
+        let dir = tempfile::tempdir().unwrap();
+        set(
+            dir.path(),
+            sample_plugins(),
+            "plugin.knowledge",
+            "Custom knowledge.",
+        )
+        .unwrap();
+        set(
+            dir.path(),
+            sample_plugins(),
+            "plugin.surface",
+            "Custom surface.",
+        )
+        .unwrap();
+        set_enabled(dir.path(), sample_plugins(), "plugin.surface", false).unwrap();
+
+        let state = load_state(dir.path());
+        let mut plugins = sample_plugins();
+        apply_plugin_state(&mut plugins, &state);
+
+        assert_eq!(plugins[0], ("knowledge", "Custom knowledge.".to_owned()));
+        assert_eq!(plugins[1], ("surface", String::new()));
+    }
+
+    #[test]
+    fn reset_reenables_disabled_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        set(dir.path(), sample_plugins(), STANDING_ID, "Custom standing.\n").unwrap();
+        set(dir.path(), sample_plugins(), "plugin.surface", "Custom surface.").unwrap();
+        set_enabled(dir.path(), sample_plugins(), STANDING_ID, false).unwrap();
+        set_enabled(dir.path(), sample_plugins(), "plugin.surface", false).unwrap();
+
+        let reset_standing = reset(dir.path(), sample_plugins(), STANDING_ID).unwrap();
+        assert!(reset_standing.enabled);
+        assert!(!reset_standing.customized);
+        assert_eq!(reset_standing.content, STANDING_DEFAULT);
+        assert_eq!(
+            load_disabled(dir.path()),
+            BTreeSet::from(["plugin.surface".to_owned()])
+        );
+
+        let reset_surface = reset(dir.path(), sample_plugins(), "plugin.surface").unwrap();
+        assert!(reset_surface.enabled);
+        assert!(!reset_surface.customized);
+        assert_eq!(reset_surface.content, "Default surface prompt.");
+        assert!(load_disabled(dir.path()).is_empty());
+        assert!(!disabled_path(dir.path()).exists());
     }
 }

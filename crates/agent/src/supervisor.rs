@@ -8831,12 +8831,12 @@ impl Message<ShowPrompt> for Agents {
             attended = store.depth(s).await.unwrap_or(0) == 0
                 && !store.unattended(s).await.unwrap_or(false);
         }
-        let prompt_overrides = crate::prompt_sections::load_overrides(&self.rt.data_dir);
+        let prompt_state = crate::prompt_sections::load_state(&self.rt.data_dir);
         let mut blocks = String::new();
         if let Some(reg) = &registry
             && let Ok(mut b) = reg.ask(ListPrompts).await
         {
-            crate::prompt_sections::apply_plugin_overrides(&mut b, &prompt_overrides);
+            crate::prompt_sections::apply_plugin_state(&mut b, &prompt_state);
             blocks = prompt_blocks(b, toolset.as_ref(), attended);
         }
         let subagent_model = self.subagent_model_id();
@@ -8873,10 +8873,15 @@ impl Message<ShowPrompt> for Agents {
             && let Some(reg) = registry
             && let Ok(specs) = reg.ask(ListTools(m.session)).await
         {
+            let runtime_header = if prompt_state.is_disabled("core.runtime") {
+                Some("")
+            } else {
+                prompt_state.overrides.get("core.runtime").map(String::as_str)
+            };
             let runtime_block = repl::prompt_block_with_header(
                 &specs,
                 self.cfg.runtime_only,
-                prompt_overrides.get("core.runtime").map(String::as_str),
+                runtime_header,
             );
             if !runtime_block.is_empty() {
                 prompt.push_str("\n\n");

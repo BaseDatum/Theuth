@@ -47666,6 +47666,10 @@
             "description": "One-line explanation of where and when this section is included.",
             "type": "string"
           },
+          "enabled": {
+            "description": "Whether this section is enabled during system prompt assembly.",
+            "type": "boolean"
+          },
           "group": {
             "description": "Section group: `\"core\"` or `\"plugin\"`.",
             "type": "string"
@@ -47686,7 +47690,8 @@
           "description",
           "content",
           "defaultContent",
-          "customized"
+          "customized",
+          "enabled"
         ],
         "type": "object"
       },
@@ -58536,6 +58541,10 @@
             "description": "One-line explanation of where and when this section is included.",
             "type": "string"
           },
+          "enabled": {
+            "description": "Whether this section is enabled during system prompt assembly.",
+            "type": "boolean"
+          },
           "group": {
             "description": "Section group: `\"core\"` or `\"plugin\"`.",
             "type": "string"
@@ -58556,7 +58565,8 @@
           "description",
           "content",
           "defaultContent",
-          "customized"
+          "customized",
+          "enabled"
         ],
         "type": "object"
       },
@@ -153421,6 +153431,40 @@
           "required": true,
           "schema": {
             "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.PromptSection"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.PromptSection"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_prompt_section_enabled",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "enabled",
+          "required": true,
+          "schema": {
+            "type": "boolean"
           },
           "x-theuth-aliases": []
         }

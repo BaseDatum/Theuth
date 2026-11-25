@@ -58,7 +58,12 @@ test('Prompt holds Suffixes and System, and System declares the prompt section m
     ['system', 'System'],
   ])
   const system = prompt.tabs.find((tab) => tab.id === 'system')!
-  expect(system.required?.methods).toEqual(['list_prompt_sections', 'set_prompt_section', 'reset_prompt_section'])
+  expect(system.required?.methods).toEqual([
+    'list_prompt_sections',
+    'set_prompt_section',
+    'set_prompt_section_enabled',
+    'reset_prompt_section',
+  ])
 })
 
 test('216: Plugins is one tab, at `plugins`, needing the plugins methods and the `plugins.ui` topic', () => {

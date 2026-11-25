@@ -8,6 +8,7 @@ import type { TabProps } from '@/components/settings/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { notify as toast } from '@/lib/notify'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
@@ -20,9 +21,17 @@ export interface PromptSection {
   content: string
   defaultContent: string
   customized: boolean
+  enabled: boolean
 }
 
-type GroupFilter = 'all' | 'core' | 'plugin' | 'modified'
+type Filter = 'all' | 'core' | 'plugin' | 'modified' | 'disabled'
+
+const SYSTEM_METHODS = [
+  'list_prompt_sections',
+  'set_prompt_section',
+  'set_prompt_section_enabled',
+  'reset_prompt_section',
+] as const
 
 function matchesQuery(section: PromptSection, needle: string): boolean {
   if (!needle) return true
@@ -41,7 +50,9 @@ function PromptSectionRow({
   dirty,
   savePending,
   resetPending,
+  togglePending,
   onToggle,
+  onToggleEnabled,
   onChange,
   onRevert,
   onSave,
@@ -53,7 +64,9 @@ function PromptSectionRow({
   dirty: boolean
   savePending: boolean
   resetPending: boolean
+  togglePending: boolean
   onToggle: () => void
+  onToggleEnabled: (enabled: boolean) => void
   onChange: (value: string) => void
   onRevert: () => void
   onSave: () => void
@@ -61,29 +74,40 @@ function PromptSectionRow({
 }) {
   return (
     <div className="border-b border-border-subtle last:border-0">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={onToggle}
-        className="flex w-full items-center justify-between gap-3 py-3 text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-      >
-        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-          {open ? (
-            <ChevronDown className="size-4 shrink-0 text-fg-tertiary" />
-          ) : (
-            <ChevronRight className="size-4 shrink-0 text-fg-tertiary" />
-          )}
-          <span className="text-sm font-medium">{section.label}</span>
-          <span className="rounded bg-layer-2 px-1.5 py-0.5 font-mono text-[11px] text-fg-tertiary">{section.id}</span>
-          {section.customized && (
-            <Badge variant="secondary">{section.content.trim() === '' ? 'Empty' : 'Modified'}</Badge>
-          )}
-          {dirty && <Badge variant="outline">Unsaved</Badge>}
-        </span>
-        <span className="shrink-0 text-[12px] tabular-nums text-fg-tertiary">
-          {draft.length.toLocaleString('en-US')} chars
-        </span>
-      </button>
+      <div className="flex items-center justify-between gap-3 py-3">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={onToggle}
+          className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-sm text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+            {open ? (
+              <ChevronDown className="size-4 shrink-0 text-fg-tertiary" />
+            ) : (
+              <ChevronRight className="size-4 shrink-0 text-fg-tertiary" />
+            )}
+            <span className={section.enabled ? 'text-sm font-medium' : 'text-sm font-medium text-fg-tertiary'}>
+              {section.label}
+            </span>
+            <span className="rounded bg-layer-2 px-1.5 py-0.5 font-mono text-[11px] text-fg-tertiary">{section.id}</span>
+            {!section.enabled && <Badge variant="outline">Disabled</Badge>}
+            {section.customized && (
+              <Badge variant="secondary">{section.content.trim() === '' ? 'Empty' : 'Modified'}</Badge>
+            )}
+            {dirty && <Badge variant="outline">Unsaved</Badge>}
+          </span>
+          <span className="shrink-0 text-[12px] tabular-nums text-fg-tertiary">
+            {draft.length.toLocaleString('en-US')} chars
+          </span>
+        </button>
+        <Switch
+          checked={section.enabled}
+          disabled={togglePending}
+          onCheckedChange={onToggleEnabled}
+          aria-label={`Enable ${section.label}`}
+        />
+      </div>
       {open && (
         <div className="flex flex-col gap-3 pb-4 pl-6">
           <p className="text-[12px] text-fg-secondary">{section.description}</p>
@@ -93,7 +117,7 @@ function PromptSectionRow({
               type="button"
               variant="outline"
               size="sm"
-              disabled={!section.customized || resetPending}
+              disabled={!(section.customized || !section.enabled) || resetPending}
               onClick={onReset}
             >
               Reset to default
@@ -116,7 +140,7 @@ function PromptSectionRow({
 }
 
 export function SystemPrompt(_: Partial<TabProps>) {
-  const canQuery = useQuerySupport(['list_prompt_sections', 'set_prompt_section', 'reset_prompt_section'])
+  const canQuery = useQuerySupport(SYSTEM_METHODS)
   const api = useApi()
   const sections = useQuery({
     enabled: canQuery,
@@ -125,7 +149,7 @@ export function SystemPrompt(_: Partial<TabProps>) {
   })
 
   const [query, setQuery] = useState('')
-  const [filter, setFilter] = useState<GroupFilter>('all')
+  const [filter, setFilter] = useState<Filter>('all')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [drafts, setDrafts] = useState<Record<string, string>>({})
 
@@ -156,25 +180,33 @@ export function SystemPrompt(_: Partial<TabProps>) {
     },
   })
 
+  const toggle = useAction(
+    ({ id, enabled }: { id: string; enabled: boolean }) => api.set_prompt_section_enabled(id, enabled),
+    { keys: [queryKeys.promptSections] },
+  )
+
   const list: readonly PromptSection[] = sections.data ?? []
   const modifiedCount = list.filter((s) => s.customized).length
+  const disabledCount = list.filter((s) => !s.enabled).length
   const needle = query.trim().toLowerCase()
 
   const filtered = list.filter((s) => {
     if (filter === 'core' && s.group !== 'core') return false
     if (filter === 'plugin' && s.group !== 'plugin') return false
     if (filter === 'modified' && !s.customized) return false
+    if (filter === 'disabled' && s.enabled) return false
     return matchesQuery(s, needle)
   })
 
   const coreSections = filtered.filter((s) => s.group === 'core')
   const pluginSections = filtered.filter((s) => s.group === 'plugin')
 
-  const filterOptions: { id: GroupFilter; label: string }[] = [
+  const filterOptions: { id: Filter; label: string }[] = [
     { id: 'all', label: 'All' },
     { id: 'core', label: 'Core' },
     { id: 'plugin', label: 'Plugins' },
     { id: 'modified', label: `Modified (${modifiedCount})` },
+    { id: 'disabled', label: `Disabled (${disabledCount})` },
   ]
 
   const renderRows = (items: readonly PromptSection[]) =>
@@ -191,7 +223,9 @@ export function SystemPrompt(_: Partial<TabProps>) {
           dirty={dirty}
           savePending={save.isPending}
           resetPending={reset.isPending}
+          togglePending={toggle.isPending}
           onToggle={() => setExpanded((prev) => ({ ...prev, [section.id]: !prev[section.id] }))}
+          onToggleEnabled={(enabled) => toggle.mutate({ id: section.id, enabled })}
           onChange={(value) => {
             if (value === section.content) clearDraft(section.id)
             else setDrafts((prev) => ({ ...prev, [section.id]: value }))
@@ -207,8 +241,8 @@ export function SystemPrompt(_: Partial<TabProps>) {
     <div>
       <div className="mb-6 flex flex-col gap-3">
         <p className="text-[13px] text-fg-secondary">
-          These sections are assembled into the system prompt on each turn. Edits apply immediately on the next turn
-          without restarting; saving empty text suppresses a section.
+          These sections are assembled into the system prompt on each turn. Edits and toggles apply immediately on the
+          next turn without restarting; disabling a section suppresses it while preserving any custom text.
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Input

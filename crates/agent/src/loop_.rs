@@ -6054,12 +6054,17 @@ impl Turn {
             && toolset
                 .as_ref()
                 .is_none_or(|t| t.prompts.iter().any(|p| p == "cells"));
-        let prompt_overrides = crate::prompt_sections::load_overrides(&self.shared.rt.data_dir);
-        crate::prompt_sections::apply_plugin_overrides(&mut prompts, &prompt_overrides);
+        let prompt_state = crate::prompt_sections::load_state(&self.shared.rt.data_dir);
+        crate::prompt_sections::apply_plugin_state(&mut prompts, &prompt_state);
+        let notebooks_override = if prompt_state.is_disabled("core.notebooks") {
+            Some("")
+        } else {
+            prompt_state.overrides.get("core.notebooks").map(String::as_str)
+        };
         let blocks = crate::notebooks::prompt_blocks_with(
             prompt_blocks(prompts, toolset.as_ref(), attended),
             bound,
-            prompt_overrides.get("core.notebooks").map(String::as_str),
+            notebooks_override,
         );
         let subagent_model = self
             .shared
@@ -6153,10 +6158,7 @@ impl Turn {
                     .is_none_or(|t| t.tools.iter().any(|n| n == status::NAME))
                 && local_ok(status::NAME)
             {
-                let status_prompt = prompt_overrides
-                    .get("core.status")
-                    .map(String::as_str)
-                    .unwrap_or(status::PROMPT);
+                let status_prompt = prompt_state.resolve("core.status", status::PROMPT);
                 if !status_prompt.trim().is_empty() {
                     b.push('\n');
                     b.push_str(status_prompt);
@@ -6178,10 +6180,15 @@ impl Turn {
             && toolset.as_ref().is_none_or(|t| t.runtime)
             && local_ok(repl::NAME)
         {
+            let runtime_header = if prompt_state.is_disabled("core.runtime") {
+                Some("")
+            } else {
+                prompt_state.overrides.get("core.runtime").map(String::as_str)
+            };
             let runtime_block = self.pinned_index(repl::prompt_block_with_header(
                 &specs,
                 self.shared.cfg.runtime_only,
-                prompt_overrides.get("core.runtime").map(String::as_str),
+                runtime_header,
             ));
             if !runtime_block.is_empty() {
                 baseline.push_str("\n\n");
@@ -6194,10 +6201,7 @@ impl Turn {
         }
         // 137 §9: VIEW_DOC closes an endless turn's system prompt (constant bytes).
         if self.view.is_some() {
-            let view_doc = prompt_overrides
-                .get("core.endless")
-                .map(String::as_str)
-                .unwrap_or(Endless::view_doc());
+            let view_doc = prompt_state.resolve("core.endless", Endless::view_doc());
             if !view_doc.trim().is_empty() {
                 baseline.push_str("\n\n");
                 baseline.push_str(view_doc);

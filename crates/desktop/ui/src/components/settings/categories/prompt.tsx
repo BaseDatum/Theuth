@@ -15,7 +15,10 @@ export const prompt: SettingsCategory = {
       label: 'System',
       icon: FileText,
       Component: SystemPrompt,
-      required: { methods: ['list_prompt_sections', 'set_prompt_section', 'reset_prompt_section'], topics: [] },
+      required: {
+        methods: ['list_prompt_sections', 'set_prompt_section', 'set_prompt_section_enabled', 'reset_prompt_section'],
+        topics: [],
+      },
     },
   ],
 }
