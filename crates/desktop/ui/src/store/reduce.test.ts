@@ -1690,7 +1690,7 @@ test('171F B4: reload folds the parked rows into the user entry — same shape a
   st.loadHistory(C, receiveComponent('method.agent.output.Loaded', { ...loaded(), history: [], first_seq: null, more: false }), 'replace')
   st.markSent(C, 'ok done')
   st.applyEvents([
-    { type: 'MessageDelivered', session: C, from: 'cell say-hello', text: CELL_A },
+    { type: 'MessageDelivered', session: C, from: 'cell say-hello', text: CELL_A, contact: false },
     { type: 'TurnStarted', session: C, turn: T, text: JOINED, model: 'm', turn_seq: 5 },
   ])
   const live = useSessions.getState().sessions[C]?.entries ?? []

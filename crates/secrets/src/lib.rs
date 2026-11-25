@@ -317,6 +317,10 @@ impl wire::WireEvent for SecretsEvent {
     const TOPIC: &'static str = "secrets.events";
     /// 216 §7.3 (a): the live masked-entry moment and wording a plugin could imitate.
     const DROP: &'static [&'static str] = &["SecretRequested"];
+    /// 216 §7.3, reviewed: `key` is a `KeyInfo` (key id hash, epoch, members, mint time; no
+    /// material) and `has_key` a per-peer acknowledgement flag.
+    const REVIEWED_PUBLIC: &'static [&'static str] =
+        &["SecretsRotation.key", "SecretsRotation.peers.has_key"];
 }
 
 /// Internal `tell`: the waiter finished (answered, timed out) — drop its pending entry.

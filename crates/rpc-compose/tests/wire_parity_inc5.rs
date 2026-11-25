@@ -50,6 +50,7 @@ async fn feature_golden_parity() {
     app::declare_wire(&rt).await.unwrap();
     secrets::declare_wire(&rt).await.unwrap();
     browser::declare_wire(&rt).await.unwrap();
+    plugins::declare_wire(&rt).await.unwrap();
     let mut feed = rt.wire_events();
     family::<artifact::ArtifactShown>(&rt, &mut feed, "artifact.shown").await;
     family::<artifact::WebViewOpened>(&rt, &mut feed, "artifact.web-view-opened").await;
@@ -100,4 +101,7 @@ async fn feature_golden_parity() {
         "browser.element-form-resolved",
     )
     .await;
+    // 216: the plugins topics keep their JSON and their top-level session scope.
+    family::<plugins::PluginEvent>(&rt, &mut feed, "plugins.events").await;
+    family::<plugins::PluginUi>(&rt, &mut feed, "plugins.ui").await;
 }

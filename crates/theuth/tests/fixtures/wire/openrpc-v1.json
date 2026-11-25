@@ -1946,6 +1946,11 @@
           {
             "description": "Text injected into `session` by the harness (subagent result, peer\nmessage, finished or quiet job), for transcripts.",
             "properties": {
+              "contact": {
+                "default": false,
+                "description": "216 §7.3: the sender is a contact (186, `PeerOrigin.contact_mode` set); external\nplugins then see no `text`. `false` for children, parent, jobs and the owner.",
+                "type": "boolean"
+              },
               "from": {
                 "description": "Sender: a child's name, `\"parent\"`, or `\"job j3\"` for a\n`<job_result>` or a `<job_idle>` (61).",
                 "type": "string"
@@ -1971,7 +1976,8 @@
               "type",
               "session",
               "from",
-              "text"
+              "text",
+              "contact"
             ],
             "type": "object"
           },
@@ -3233,7 +3239,7 @@
                 "$ref": "#/components/schemas/event.agent_2eevents.output.ChannelVia"
               }
             ],
-            "description": "slack | signal | telegram"
+            "description": "slack | signal | telegram | plugin"
           }
         },
         "required": [
@@ -3258,6 +3264,11 @@
           {
             "const": "telegram",
             "description": "Telegram (private chat, group, supergroup or forum topic).",
+            "type": "string"
+          },
+          {
+            "const": "plugin",
+            "description": "216 §10.3: a plugin's `input` request; `ChannelOrigin.from` is the plugin name, `chat` is `dm`.",
             "type": "string"
           }
         ]
@@ -5360,6 +5371,11 @@
           {
             "description": "Text injected into `session` by the harness (subagent result, peer\nmessage, finished or quiet job), for transcripts.",
             "properties": {
+              "contact": {
+                "default": false,
+                "description": "216 §7.3: the sender is a contact (186, `PeerOrigin.contact_mode` set); external\nplugins then see no `text`. `false` for children, parent, jobs and the owner.",
+                "type": "boolean"
+              },
               "from": {
                 "description": "Sender: a child's name, `\"parent\"`, or `\"job j3\"` for a\n`<job_result>` or a `<job_idle>` (61).",
                 "type": "string"
@@ -6637,7 +6653,7 @@
                 "$ref": "#/components/schemas/event.agent_2eevents.receiver.ChannelVia"
               }
             ],
-            "description": "slack | signal | telegram"
+            "description": "slack | signal | telegram | plugin"
           }
         },
         "required": [
@@ -6662,6 +6678,11 @@
           {
             "const": "telegram",
             "description": "Telegram (private chat, group, supergroup or forum topic).",
+            "type": "string"
+          },
+          {
+            "const": "plugin",
+            "description": "216 §10.3: a plugin's `input` request; `ChannelOrigin.from` is the plugin name, `chat` is `dm`.",
             "type": "string"
           }
         ]
@@ -23702,6 +23723,693 @@
           }
         ]
       },
+      "event.plugins_2eevents.output.PluginEvent": {
+        "description": "A plugin emitted one of its declared events (216 §7.6). Topic `plugins.events` v1.",
+        "properties": {
+          "data": {
+            "description": "Redacted, a JSON object."
+          },
+          "event": {
+            "description": "Declared name without the plugin prefix (`limit_reached`).",
+            "type": "string"
+          },
+          "plugin": {
+            "description": "The emitting plugin.",
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.plugins_2eevents.output.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The session it concerns, if any."
+          },
+          "type": {
+            "const": "PluginEvent",
+            "type": "string"
+          },
+          "version": {
+            "description": "The plugin event's own version (`emits.<name>.version`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plugin",
+          "event",
+          "version",
+          "session",
+          "data",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.plugins_2eevents.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.plugins_2eevents.receiver.PluginEvent": {
+        "description": "A plugin emitted one of its declared events (216 §7.6). Topic `plugins.events` v1.",
+        "properties": {
+          "data": {
+            "description": "Redacted, a JSON object."
+          },
+          "event": {
+            "description": "Declared name without the plugin prefix (`limit_reached`).",
+            "type": "string"
+          },
+          "plugin": {
+            "description": "The emitting plugin.",
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.plugins_2eevents.receiver.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The session it concerns, if any."
+          },
+          "type": {
+            "const": "PluginEvent",
+            "type": "string"
+          },
+          "version": {
+            "description": "The plugin event's own version (`emits.<name>.version`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plugin",
+          "event",
+          "version",
+          "data",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.plugins_2eevents.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.plugins_2eui.output.Badge": {
+        "anyOf": [
+          {
+            "description": "A count; 0 hides the badge.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "description": "Up to 4 characters.",
+            "type": "string"
+          }
+        ],
+        "description": "A badge: a count (0 hides it) or up to 4 characters."
+      },
+      "event.plugins_2eui.output.Dot": {
+        "description": "A placement's status dot.",
+        "oneOf": [
+          {
+            "const": "ok",
+            "description": "Green.",
+            "type": "string"
+          },
+          {
+            "const": "busy",
+            "description": "Green, pulsing.",
+            "type": "string"
+          },
+          {
+            "const": "warn",
+            "description": "Amber.",
+            "type": "string"
+          },
+          {
+            "const": "error",
+            "description": "Red.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "Grey.",
+            "type": "string"
+          },
+          {
+            "const": "none",
+            "description": "No dot drawn.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.plugins_2eui.output.PluginRunState": {
+        "description": "Lifecycle of one plugin (216 §5).",
+        "oneOf": [
+          {
+            "const": "invalid",
+            "description": "The manifest does not parse or validate.",
+            "type": "string"
+          },
+          {
+            "const": "awaiting_approval",
+            "description": "No verified grant covers the manifest (and code): a card waits for a human press.",
+            "type": "string"
+          },
+          {
+            "const": "starting",
+            "description": "Spawned, waiting for `hello`.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "Answered `hello`; events flow.",
+            "type": "string"
+          },
+          {
+            "const": "backoff",
+            "description": "Crashed; restarting after a delay.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Crash loop: not restarted until `plugin_restart` or a change.",
+            "type": "string"
+          },
+          {
+            "const": "exited",
+            "description": "Exited with status 0 and stays down.",
+            "type": "string"
+          },
+          {
+            "const": "stopping",
+            "description": "Being stopped (SIGTERM, then SIGKILL after the grace).",
+            "type": "string"
+          },
+          {
+            "const": "disabled",
+            "description": "The grant's `enabled` is false.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.plugins_2eui.output.PluginUi": {
+        "description": "Placement and lifecycle changes for clients (216 §2, §9). Topic `plugins.ui` v1.",
+        "oneOf": [
+          {
+            "description": "A placement's dot/badge/label/tooltip changed (already state-overridden).",
+            "properties": {
+              "badge": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.plugins_2eui.output.Badge"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The badge, if any."
+              },
+              "dot": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.plugins_2eui.output.Dot"
+                  }
+                ],
+                "description": "The dot."
+              },
+              "label": {
+                "description": "The label override.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "placement": {
+                "description": "Placement id.",
+                "type": "string"
+              },
+              "plugin": {
+                "description": "Plugin name.",
+                "type": "string"
+              },
+              "tooltip": {
+                "description": "The tooltip.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "PluginStatus",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plugin",
+              "placement",
+              "dot",
+              "badge",
+              "label",
+              "tooltip"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A placement has new content; fetch it with `plugin_surface` (big sources stay out of the feed).",
+            "properties": {
+              "format": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.plugins_2eui.output.SurfaceFormat"
+                  }
+                ],
+                "description": "Content format."
+              },
+              "placement": {
+                "description": "Placement id.",
+                "type": "string"
+              },
+              "plugin": {
+                "description": "Plugin name.",
+                "type": "string"
+              },
+              "revision": {
+                "description": "New content revision.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "PluginSurface",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plugin",
+              "placement",
+              "format",
+              "revision"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Re-run the placement's OpenUI queries without replacing the source (`invalidate`).",
+            "properties": {
+              "placement": {
+                "description": "Placement id.",
+                "type": "string"
+              },
+              "plugin": {
+                "description": "Plugin name.",
+                "type": "string"
+              },
+              "type": {
+                "const": "PluginInvalidate",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plugin",
+              "placement"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A plugin changed lifecycle state.",
+            "properties": {
+              "error": {
+                "description": "Last error, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plugin": {
+                "description": "Plugin name.",
+                "type": "string"
+              },
+              "state": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.plugins_2eui.output.PluginRunState"
+                  }
+                ],
+                "description": "New state."
+              },
+              "type": {
+                "const": "PluginState",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plugin",
+              "state",
+              "error"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The set of plugins, their placements, order, hidden flags or cards changed: re-read `plugin_list`.",
+            "properties": {
+              "type": {
+                "const": "PluginsChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.plugins_2eui.output.SurfaceFormat": {
+        "description": "Content format of a placement or a command card.",
+        "oneOf": [
+          {
+            "const": "openui",
+            "description": "OpenUI source (`openui`).",
+            "type": "string"
+          },
+          {
+            "const": "json-render",
+            "description": "A json-render spec (`json-render`).",
+            "type": "string"
+          },
+          {
+            "const": "markdown",
+            "description": "Markdown, raw HTML off (`markdown`).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.plugins_2eui.receiver.Badge": {
+        "anyOf": [
+          {
+            "description": "A count; 0 hides the badge.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "description": "Up to 4 characters.",
+            "type": "string"
+          }
+        ],
+        "description": "A badge: a count (0 hides it) or up to 4 characters."
+      },
+      "event.plugins_2eui.receiver.Dot": {
+        "description": "A placement's status dot.",
+        "oneOf": [
+          {
+            "const": "ok",
+            "description": "Green.",
+            "type": "string"
+          },
+          {
+            "const": "busy",
+            "description": "Green, pulsing.",
+            "type": "string"
+          },
+          {
+            "const": "warn",
+            "description": "Amber.",
+            "type": "string"
+          },
+          {
+            "const": "error",
+            "description": "Red.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "Grey.",
+            "type": "string"
+          },
+          {
+            "const": "none",
+            "description": "No dot drawn.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.plugins_2eui.receiver.PluginRunState": {
+        "description": "Lifecycle of one plugin (216 §5).",
+        "oneOf": [
+          {
+            "const": "invalid",
+            "description": "The manifest does not parse or validate.",
+            "type": "string"
+          },
+          {
+            "const": "awaiting_approval",
+            "description": "No verified grant covers the manifest (and code): a card waits for a human press.",
+            "type": "string"
+          },
+          {
+            "const": "starting",
+            "description": "Spawned, waiting for `hello`.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "Answered `hello`; events flow.",
+            "type": "string"
+          },
+          {
+            "const": "backoff",
+            "description": "Crashed; restarting after a delay.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Crash loop: not restarted until `plugin_restart` or a change.",
+            "type": "string"
+          },
+          {
+            "const": "exited",
+            "description": "Exited with status 0 and stays down.",
+            "type": "string"
+          },
+          {
+            "const": "stopping",
+            "description": "Being stopped (SIGTERM, then SIGKILL after the grace).",
+            "type": "string"
+          },
+          {
+            "const": "disabled",
+            "description": "The grant's `enabled` is false.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.plugins_2eui.receiver.PluginUi": {
+        "description": "Placement and lifecycle changes for clients (216 §2, §9). Topic `plugins.ui` v1.",
+        "oneOf": [
+          {
+            "description": "A placement's dot/badge/label/tooltip changed (already state-overridden).",
+            "properties": {
+              "badge": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.plugins_2eui.receiver.Badge"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The badge, if any."
+              },
+              "dot": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.plugins_2eui.receiver.Dot"
+                  }
+                ],
+                "description": "The dot."
+              },
+              "label": {
+                "description": "The label override.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "placement": {
+                "description": "Placement id.",
+                "type": "string"
+              },
+              "plugin": {
+                "description": "Plugin name.",
+                "type": "string"
+              },
+              "tooltip": {
+                "description": "The tooltip.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "PluginStatus",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plugin",
+              "placement",
+              "dot"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A placement has new content; fetch it with `plugin_surface` (big sources stay out of the feed).",
+            "properties": {
+              "format": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.plugins_2eui.receiver.SurfaceFormat"
+                  }
+                ],
+                "description": "Content format."
+              },
+              "placement": {
+                "description": "Placement id.",
+                "type": "string"
+              },
+              "plugin": {
+                "description": "Plugin name.",
+                "type": "string"
+              },
+              "revision": {
+                "description": "New content revision.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "PluginSurface",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plugin",
+              "placement",
+              "format",
+              "revision"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Re-run the placement's OpenUI queries without replacing the source (`invalidate`).",
+            "properties": {
+              "placement": {
+                "description": "Placement id.",
+                "type": "string"
+              },
+              "plugin": {
+                "description": "Plugin name.",
+                "type": "string"
+              },
+              "type": {
+                "const": "PluginInvalidate",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plugin",
+              "placement"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A plugin changed lifecycle state.",
+            "properties": {
+              "error": {
+                "description": "Last error, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plugin": {
+                "description": "Plugin name.",
+                "type": "string"
+              },
+              "state": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.plugins_2eui.receiver.PluginRunState"
+                  }
+                ],
+                "description": "New state."
+              },
+              "type": {
+                "const": "PluginState",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plugin",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The set of plugins, their placements, order, hidden flags or cards changed: re-read `plugin_list`.",
+            "properties": {
+              "type": {
+                "const": "PluginsChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.plugins_2eui.receiver.SurfaceFormat": {
+        "description": "Content format of a placement or a command card.",
+        "oneOf": [
+          {
+            "const": "openui",
+            "description": "OpenUI source (`openui`).",
+            "type": "string"
+          },
+          {
+            "const": "json-render",
+            "description": "A json-render spec (`json-render`).",
+            "type": "string"
+          },
+          {
+            "const": "markdown",
+            "description": "Markdown, raw HTML off (`markdown`).",
+            "type": "string"
+          }
+        ]
+      },
       "event.roster_2eattention.output.Alert": {
         "description": "The alert on one [`AttentionItem`] (155 §7.1): `id` is stable for one\nepisode (`<item id>@<episode start ms>`); clients post one notification\nper id.",
         "properties": {
@@ -23988,7 +24696,7 @@
             ]
           },
           "id": {
-            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…` · `plugin:<name>:<m8>:<c8>:<seq>`.",
             "type": "string"
           },
           "kind": {
@@ -24291,6 +24999,11 @@
           {
             "const": "web_view",
             "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
+            "type": "string"
+          },
+          {
+            "const": "plugin",
+            "description": "216 §10.2: an external plugin waits for a human press — install, widened manifest, or changed\ncode. Id `plugin:<name>:<m8>:<c8>:<seq>`. No timeout; Dismiss leaves it awaiting approval.",
             "type": "string"
           }
         ]
@@ -24834,7 +25547,7 @@
             ]
           },
           "id": {
-            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…` · `plugin:<name>:<m8>:<c8>:<seq>`.",
             "type": "string"
           },
           "kind": {
@@ -25108,6 +25821,11 @@
           {
             "const": "web_view",
             "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
+            "type": "string"
+          },
+          {
+            "const": "plugin",
+            "description": "216 §10.2: an external plugin waits for a human press — install, widened manifest, or changed\ncode. Id `plugin:<name>:<m8>:<c8>:<seq>`. No timeout; Dismiss leaves it awaiting approval.",
             "type": "string"
           }
         ]
@@ -37857,7 +38575,7 @@
         "description": "Which sessions a [`Broadcast`] reaches (62 §0.2).",
         "oneOf": [
           {
-            "description": "Roots whose state is `Running | Awaiting | Approval` or with `jobs + ptys > 0`.",
+            "description": "Roots that are active themselves or have an active descendant subagent\n(child, grandchild, …; advisors excluded). Active = state `Running |\nAwaiting | Approval` or `jobs + ptys > 0`. Never names a subagent.",
             "properties": {
               "kind": {
                 "const": "running",
@@ -40716,7 +41434,7 @@
                 "$ref": "#/components/schemas/method.agent.output.ChannelVia"
               }
             ],
-            "description": "slack | signal | telegram"
+            "description": "slack | signal | telegram | plugin"
           }
         },
         "required": [
@@ -40741,6 +41459,11 @@
           {
             "const": "telegram",
             "description": "Telegram (private chat, group, supergroup or forum topic).",
+            "type": "string"
+          },
+          {
+            "const": "plugin",
+            "description": "216 §10.3: a plugin's `input` request; `ChannelOrigin.from` is the plugin name, `chat` is `dm`.",
             "type": "string"
           }
         ]
@@ -51514,7 +52237,7 @@
                 "$ref": "#/components/schemas/method.agent.receiver.ChannelVia"
               }
             ],
-            "description": "slack | signal | telegram"
+            "description": "slack | signal | telegram | plugin"
           }
         },
         "required": [
@@ -51539,6 +52262,11 @@
           {
             "const": "telegram",
             "description": "Telegram (private chat, group, supergroup or forum topic).",
+            "type": "string"
+          },
+          {
+            "const": "plugin",
+            "description": "216 §10.3: a plugin's `input` request; `ChannelOrigin.from` is the plugin name, `chat` is `dm`.",
             "type": "string"
           }
         ]
@@ -103996,6 +104724,2878 @@
         ],
         "type": "object"
       },
+      "method.plugins.input.Lang": {
+        "description": "SDK language of `plugin_new` / `t plugin new --lang`.",
+        "oneOf": [
+          {
+            "const": "py",
+            "description": "Python.",
+            "type": "string"
+          },
+          {
+            "const": "js",
+            "description": "JavaScript (node).",
+            "type": "string"
+          },
+          {
+            "const": "sh",
+            "description": "POSIX shell.",
+            "type": "string"
+          },
+          {
+            "const": "go",
+            "description": "Go.",
+            "type": "string"
+          },
+          {
+            "const": "rb",
+            "description": "Ruby.",
+            "type": "string"
+          },
+          {
+            "const": "rs",
+            "description": "Rust.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.input.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.plugins.output.Badge": {
+        "anyOf": [
+          {
+            "description": "A count; 0 hides the badge.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "description": "Up to 4 characters.",
+            "type": "string"
+          }
+        ],
+        "description": "A badge: a count (0 hides it) or up to 4 characters."
+      },
+      "method.plugins.output.BindingKind": {
+        "description": "OpenUI statement kind of a binding.",
+        "oneOf": [
+          {
+            "const": "query",
+            "description": "`Query(...)`: delivered as `query`.",
+            "type": "string"
+          },
+          {
+            "const": "mutation",
+            "description": "`Mutation(...)`: delivered as `action`, needs a press.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.CallGrant": {
+        "description": "`call: {tools, max_risk}`.",
+        "properties": {
+          "max_risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Risk"
+              }
+            ],
+            "description": "Highest risk of a call."
+          },
+          "tools": {
+            "description": "Tool names it may call.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools",
+          "max_risk"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.Capabilities": {
+        "description": "Host-brokered powers.",
+        "properties": {
+          "call": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.CallGrant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "May call tools in a headless session."
+          },
+          "input": {
+            "description": "May send input to a session.",
+            "type": "boolean"
+          },
+          "notify": {
+            "description": "May raise inbox items and OS notifications.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "notify",
+          "input",
+          "call"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.CardKind": {
+        "description": "Which card it is.",
+        "oneOf": [
+          {
+            "const": "install",
+            "description": "No grant yet.",
+            "type": "string"
+          },
+          {
+            "const": "widen",
+            "description": "The manifest asks for more than the grant holds.",
+            "type": "string"
+          },
+          {
+            "const": "code_changed",
+            "description": "The code hash changed.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.CatalogEntry": {
+        "description": "One catalog entry (216 §7.1).",
+        "properties": {
+          "delta": {
+            "description": "Delta-class: needs `deltas: true` on the subscription.",
+            "type": "boolean"
+          },
+          "describe": {
+            "description": "First sentence of the schema description, or the manifest's `description`.",
+            "type": "string"
+          },
+          "exposure": {
+            "description": "Always `\"public\"` in the catalog (private and internal topics are absent).",
+            "type": "string"
+          },
+          "name": {
+            "description": "`topic#type`, `topic` or `<plugin>.<event>`.",
+            "type": "string"
+          },
+          "owner": {
+            "description": "Owner crate (`agent`) or `plugin:<name>`.",
+            "type": "string"
+          },
+          "schema": {
+            "description": "JSON Schema: inlined (resolved) for wire topics, the manifest schema for plugin events."
+          },
+          "scoped": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Scoped"
+              }
+            ],
+            "description": "Session-scoped or global."
+          },
+          "topic": {
+            "description": "The wire topic.",
+            "type": "string"
+          },
+          "type": {
+            "description": "The serialized `type` tag (or `<plugin>.<event>`); `None` for single-struct topics.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "description": "The topic's (or plugin event's) version.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "topic",
+          "version",
+          "type",
+          "owner",
+          "exposure",
+          "describe",
+          "scoped",
+          "delta",
+          "schema"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.CheckIssue": {
+        "description": "One located validation problem.",
+        "properties": {
+          "message": {
+            "description": "What is wrong.",
+            "type": "string"
+          },
+          "path": {
+            "description": "JSON Pointer into the manifest (`/placements/0/kind`), or `\"\"` for the whole folder.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "message"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.CheckReport": {
+        "description": "`plugin_check` / `t plugin check`.",
+        "properties": {
+          "code_sha256": {
+            "description": "Code hash, when computable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "errors": {
+            "description": "Errors (any makes `ok` false).",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.output.CheckIssue"
+            },
+            "type": "array"
+          },
+          "lines": {
+            "description": "The install card's lines for this manifest.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.output.GrantLine"
+            },
+            "type": "array"
+          },
+          "manifest_sha256": {
+            "description": "Manifest hash, when it parses.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The plugin name, when the folder has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "description": "No errors.",
+            "type": "boolean"
+          },
+          "warnings": {
+            "description": "Warnings.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.output.CheckIssue"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "name",
+          "errors",
+          "warnings",
+          "manifest_sha256",
+          "code_sha256",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.CommandInfo": {
+        "description": "A `command` placement as clients list it.",
+        "properties": {
+          "args": {
+            "description": "Argument hint (`args:`), shown after the command.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "description": "One line for the slash menu.",
+            "type": "string"
+          },
+          "name": {
+            "description": "As declared (`name:`).",
+            "type": "string"
+          },
+          "slash": {
+            "description": "What the composer inserts: `/<plugin>` when `name == plugin`, else `/<plugin>:<name>`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "slash",
+          "description",
+          "args"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.CommandReply": {
+        "description": "A `/command` reply.",
+        "properties": {
+          "text": {
+            "description": "A note shown in the chat.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ui": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.CommandUi"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An ephemeral card."
+          }
+        },
+        "required": [
+          "text",
+          "ui"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.CommandUi": {
+        "description": "An ephemeral card in a command reply (json-render or markdown; OpenUI is refused in v1 replies).",
+        "properties": {
+          "format": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.SurfaceFormat"
+              }
+            ],
+            "description": "json-render or markdown."
+          },
+          "source": {
+            "description": "The card source.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Text fallback.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "source",
+          "text"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.Dot": {
+        "description": "A placement's status dot.",
+        "oneOf": [
+          {
+            "const": "ok",
+            "description": "Green.",
+            "type": "string"
+          },
+          {
+            "const": "busy",
+            "description": "Green, pulsing.",
+            "type": "string"
+          },
+          {
+            "const": "warn",
+            "description": "Amber.",
+            "type": "string"
+          },
+          {
+            "const": "error",
+            "description": "Red.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "Grey.",
+            "type": "string"
+          },
+          {
+            "const": "none",
+            "description": "No dot drawn.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.Fallback": {
+        "description": "What a surface without a renderer shows.",
+        "oneOf": [
+          {
+            "const": "text",
+            "description": "The plugin's text fallback.",
+            "type": "string"
+          },
+          {
+            "const": "hide",
+            "description": "Nothing.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.GrantKey": {
+        "description": "Which manifest entry a [`GrantLine`] stands for.",
+        "oneOf": [
+          {
+            "const": "run",
+            "description": "`run` / `cwd` / `env`: the command line.",
+            "type": "string"
+          },
+          {
+            "const": "secret",
+            "description": "A vault secret referenced by `env`.",
+            "type": "string"
+          },
+          {
+            "const": "subscribe",
+            "description": "A `subscribe` entry.",
+            "type": "string"
+          },
+          {
+            "const": "emit",
+            "description": "An `emits` entry.",
+            "type": "string"
+          },
+          {
+            "const": "placement",
+            "description": "A placement.",
+            "type": "string"
+          },
+          {
+            "const": "tool",
+            "description": "A tool offered to the model.",
+            "type": "string"
+          },
+          {
+            "const": "call",
+            "description": "The `call` capability.",
+            "type": "string"
+          },
+          {
+            "const": "input",
+            "description": "The `input` capability.",
+            "type": "string"
+          },
+          {
+            "const": "notify",
+            "description": "The `notify` capability.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.GrantLine": {
+        "description": "One plain-words line of an install card (216 §10.1).",
+        "properties": {
+          "key": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.GrantKey"
+              }
+            ],
+            "description": "Which manifest entry the line stands for."
+          },
+          "new": {
+            "description": "On a widen card: this line is new since the last approval.",
+            "type": "boolean"
+          },
+          "risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Risk"
+              }
+            ],
+            "description": "The line's risk."
+          },
+          "text": {
+            "description": "The card wording, e.g. \"Reads agent.events: TurnFinished — a turn finished; …\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "text",
+          "risk",
+          "new"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.Grants": {
+        "description": "What a plugin may do (grants.yaml `grants:`, `hello.params.grants` minus run/cwd/env/secrets).",
+        "properties": {
+          "capabilities": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Capabilities"
+              }
+            ],
+            "description": "Host-brokered powers."
+          },
+          "cwd": {
+            "description": "Working directory as approved, relative to the folder.",
+            "type": "string"
+          },
+          "emits": {
+            "description": "Declared event names it may emit.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Environment as approved, unexpanded.",
+            "type": "object"
+          },
+          "placements": {
+            "description": "Placement ids.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run": {
+            "description": "As approved, unexpanded (a change is widening).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "description": "Vault secret names referenced by `env`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subscribe": {
+            "description": "Catalog names: `topic`, `topic#type`, `<plugin>.<event>`, `<plugin>.*`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tools": {
+            "description": "Tools it offers the model, with their approved risk.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.output.ToolGrant"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "subscribe",
+          "emits",
+          "placements",
+          "tools",
+          "capabilities",
+          "secrets",
+          "run",
+          "cwd",
+          "env"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.InstallCard": {
+        "description": "A pending card, as the install screen and `t plugin approve` show it.",
+        "properties": {
+          "at_ms": {
+            "description": "When the card was filed (ms since epoch).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "changed_paths": {
+            "description": "Code-changed: the relative paths whose bytes changed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "code_sha256": {
+            "description": "Pass back verbatim to `plugin_approve`; `None` when the grant will carry no code hash.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dir": {
+            "description": "Absolute folder path.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Attention item id `plugin:<name>:<m8>:<c8>:<seq>` (m8/c8: first 8 hex of the hashes, `00000000` for no code hash; seq: 0, bumped by each `RequestApproval`).",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.CardKind"
+              }
+            ],
+            "description": "Install, widen or code-changed."
+          },
+          "lines": {
+            "description": "Install: every line. Widen: the new lines, plus \"Runs …\" when run/cwd/env changed.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.output.GrantLine"
+            },
+            "type": "array"
+          },
+          "manifest_sha256": {
+            "description": "Pass back verbatim to `plugin_approve`.",
+            "type": "string"
+          },
+          "plugin": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Risk"
+              }
+            ],
+            "description": "The highest line's risk (always at least `destructive`, because `run` is)."
+          },
+          "unverified": {
+            "description": "The saved approval did not verify (\"the saved approval for <name> could not be verified\").",
+            "type": "boolean"
+          },
+          "version": {
+            "description": "The manifest's `version:`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "plugin",
+          "version",
+          "kind",
+          "manifest_sha256",
+          "code_sha256",
+          "risk",
+          "lines",
+          "changed_paths",
+          "unverified",
+          "dir",
+          "at_ms"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.InstallReport": {
+        "description": "What `plugin_install` did.",
+        "properties": {
+          "dir": {
+            "description": "Absolute folder path under plugins/.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "next": {
+            "description": "How to approve it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "dir",
+          "next"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.Lang": {
+        "description": "SDK language of `plugin_new` / `t plugin new --lang`.",
+        "oneOf": [
+          {
+            "const": "py",
+            "description": "Python.",
+            "type": "string"
+          },
+          {
+            "const": "js",
+            "description": "JavaScript (node).",
+            "type": "string"
+          },
+          {
+            "const": "sh",
+            "description": "POSIX shell.",
+            "type": "string"
+          },
+          {
+            "const": "go",
+            "description": "Go.",
+            "type": "string"
+          },
+          {
+            "const": "rb",
+            "description": "Ruby.",
+            "type": "string"
+          },
+          {
+            "const": "rs",
+            "description": "Rust.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.LogTail": {
+        "description": "A log tail (`plugin_logs`).",
+        "properties": {
+          "lines": {
+            "description": "The lines, oldest first, redacted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Absolute path of the log file.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.OpenMode": {
+        "description": "What a sidebar icon opens.",
+        "oneOf": [
+          {
+            "const": "popover",
+            "description": "A popover beside the icon.",
+            "type": "string"
+          },
+          {
+            "const": "tile",
+            "description": "A tile beside the focused chat.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.PlacementInfo": {
+        "description": "One declared placement, as approved.",
+        "properties": {
+          "command": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.CommandInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`command` placements only."
+          },
+          "fallback": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Fallback"
+              }
+            ],
+            "description": "What a client without a renderer for `format` shows."
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.SurfaceFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent for `status` and `command`."
+          },
+          "hidden": {
+            "description": "The owner hid it (Settings › Plugins / context menu); hidden placements are not drawn, commands still work.",
+            "type": "boolean"
+          },
+          "icon": {
+            "description": "A lucide icon name (kebab-case, e.g. `gauge`), or `svg:<data-url>` for a sanitised SVG from the folder.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The placement id (unique within the plugin).",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.PlacementKind"
+              }
+            ],
+            "description": "Where it is drawn."
+          },
+          "label": {
+            "description": "`label:` (tooltip / menu text / tile title).",
+            "type": "string"
+          },
+          "open": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.OpenMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sidebar only."
+          },
+          "size": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Size"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Default popover / tile size."
+          },
+          "status": {
+            "description": "Draws a status dot fed by `status`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "icon",
+          "status",
+          "open",
+          "size",
+          "format",
+          "fallback",
+          "hidden",
+          "command"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.PlacementKind": {
+        "description": "v1 placement kinds (216 §9.1).",
+        "oneOf": [
+          {
+            "const": "sidebar",
+            "description": "An icon in the sidebar rail / expanded sidebar.",
+            "type": "string"
+          },
+          {
+            "const": "status",
+            "description": "A segment in the status strip.",
+            "type": "string"
+          },
+          {
+            "const": "tile",
+            "description": "A tile beside a chat.",
+            "type": "string"
+          },
+          {
+            "const": "command",
+            "description": "A `/command` in the composer.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.PluginDetail": {
+        "description": "Everything about one plugin (`plugin_get`, `plugin_status` tool).",
+        "properties": {
+          "card": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.InstallCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The card waiting for a press, if any."
+          },
+          "catalog": {
+            "description": "Catalog entries of the events it emits.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.output.CatalogEntry"
+            },
+            "type": "array"
+          },
+          "granted": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Grants"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the verified grant holds; `None` before the first approval or when it does not verify."
+          },
+          "info": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.PluginInfo"
+              }
+            ],
+            "description": "The list row."
+          },
+          "manifest": {
+            "description": "The parsed manifest as JSON (env values unexpanded); `null` when it does not parse."
+          },
+          "requested": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Grants"
+              }
+            ],
+            "description": "What the manifest asks for now."
+          },
+          "stderr_tail": {
+            "description": "Last 40 stderr lines, redacted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "description": "Validation warnings (reserved keys, unknown top-level keys).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "info",
+          "manifest",
+          "requested",
+          "granted",
+          "card",
+          "catalog",
+          "stderr_tail",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.PluginInfo": {
+        "description": "One row of Settings › Plugins and `plugin_list`.",
+        "properties": {
+          "approved_at": {
+            "description": "The grant's `approved_at` (RFC 3339), none before the first approval.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "card": {
+            "description": "Attention item id of that card (`plugin:<name>:<m8>:<c8>:<seq>`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "description": "`description:`; empty when the manifest does not parse.",
+            "type": "string"
+          },
+          "dir": {
+            "description": "Absolute folder path.",
+            "type": "string"
+          },
+          "enabled": {
+            "description": "The grant's `enabled` (false when there is no grant yet).",
+            "type": "boolean"
+          },
+          "error": {
+            "description": "Last error: manifest error (`invalid`), crash reason, stderr's last line.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "log": {
+            "description": "Absolute path of today's log file.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Folder name = plugin name.",
+            "type": "string"
+          },
+          "needs_approval": {
+            "description": "A card waits for a press (install, widen or code-changed), whatever the state.",
+            "type": "boolean"
+          },
+          "order": {
+            "description": "Position in the sidebar/status order (0 = first).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "placements": {
+            "description": "Approved placements (all declared ones while awaiting the first approval).",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.output.PlacementInfo"
+            },
+            "type": "array"
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.PluginRunState"
+              }
+            ],
+            "description": "Lifecycle state."
+          },
+          "tools": {
+            "description": "Names of the tools it offers the model.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "description": "`version:` (free text); empty when the manifest does not parse.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "description",
+          "state",
+          "error",
+          "enabled",
+          "needs_approval",
+          "card",
+          "placements",
+          "tools",
+          "dir",
+          "log",
+          "approved_at",
+          "order"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.PluginRunState": {
+        "description": "Lifecycle of one plugin (216 §5).",
+        "oneOf": [
+          {
+            "const": "invalid",
+            "description": "The manifest does not parse or validate.",
+            "type": "string"
+          },
+          {
+            "const": "awaiting_approval",
+            "description": "No verified grant covers the manifest (and code): a card waits for a human press.",
+            "type": "string"
+          },
+          {
+            "const": "starting",
+            "description": "Spawned, waiting for `hello`.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "Answered `hello`; events flow.",
+            "type": "string"
+          },
+          {
+            "const": "backoff",
+            "description": "Crashed; restarting after a delay.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Crash loop: not restarted until `plugin_restart` or a change.",
+            "type": "string"
+          },
+          {
+            "const": "exited",
+            "description": "Exited with status 0 and stays down.",
+            "type": "string"
+          },
+          {
+            "const": "stopping",
+            "description": "Being stopped (SIGTERM, then SIGKILL after the grace).",
+            "type": "string"
+          },
+          {
+            "const": "disabled",
+            "description": "The grant's `enabled` is false.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.Risk": {
+        "description": "How much damage a tool can do; the only input to the approval policy.",
+        "oneOf": [
+          {
+            "const": "read_only",
+            "description": "Observes only.",
+            "type": "string"
+          },
+          {
+            "const": "mutating",
+            "description": "Changes state that can be undone or is scoped.",
+            "type": "string"
+          },
+          {
+            "const": "destructive",
+            "description": "Irreversible or unbounded (arbitrary shell, delete, network writes).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.ScaffoldReport": {
+        "description": "What `plugin_new` wrote.",
+        "properties": {
+          "dir": {
+            "description": "Absolute folder path.",
+            "type": "string"
+          },
+          "files": {
+            "description": "Relative paths written.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "lang": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Lang"
+              }
+            ],
+            "description": "SDK language."
+          },
+          "name": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "next": {
+            "description": "Always \"awaiting approval: press Approve in theuth or run `t plugin approve <name>`\".",
+            "type": "string"
+          },
+          "raw": {
+            "description": "No SDK (raw protocol template).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "dir",
+          "lang",
+          "raw",
+          "files",
+          "next"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.Scoped": {
+        "description": "How an event is scoped.",
+        "oneOf": [
+          {
+            "const": "session",
+            "description": "Carries a session.",
+            "type": "string"
+          },
+          {
+            "const": "global",
+            "description": "Engine-wide.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.Size": {
+        "description": "Default size of a popover or tile, CSS px.",
+        "properties": {
+          "height": {
+            "description": "Height, CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "width": {
+            "description": "Width, CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.SurfaceBinding": {
+        "description": "One `Query(...)` / `Mutation(...)` statement of a validated OpenUI source (from\n`app::helper::CheckResult.bindings`). The plugin provider routes by it (§12.4).",
+        "properties": {
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.BindingKind"
+              }
+            ],
+            "description": "Query or mutation."
+          },
+          "name": {
+            "description": "The query or mutation name the plugin receives (`query` / `action`).",
+            "type": "string"
+          },
+          "statement_id": {
+            "description": "The statement id the renderer reports as `ProviderContext.statement_id`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "statement_id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.SurfaceContent": {
+        "description": "A placement's content (`plugin_surface`).",
+        "properties": {
+          "bindings": {
+            "description": "OpenUI only; empty for json-render and markdown.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.output.SurfaceBinding"
+            },
+            "type": "array"
+          },
+          "error": {
+            "description": "\"plugin did not render\", \"plugin <name> is not running\", …",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.SurfaceFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Content format."
+          },
+          "placement": {
+            "description": "Placement id.",
+            "type": "string"
+          },
+          "plugin": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "revision": {
+            "description": "Content revision.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "description": "Validated source; `None` while loading.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.SurfaceLoad"
+              }
+            ],
+            "description": "`loading`: the host sent `render` and waits for the plugin's `ui` (a `PluginSurface` event follows)."
+          },
+          "text": {
+            "description": "Text fallback.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "plugin",
+          "placement",
+          "revision",
+          "state",
+          "format",
+          "source",
+          "text",
+          "bindings",
+          "error"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.SurfaceFormat": {
+        "description": "Content format of a placement or a command card.",
+        "oneOf": [
+          {
+            "const": "openui",
+            "description": "OpenUI source (`openui`).",
+            "type": "string"
+          },
+          {
+            "const": "json-render",
+            "description": "A json-render spec (`json-render`).",
+            "type": "string"
+          },
+          {
+            "const": "markdown",
+            "description": "Markdown, raw HTML off (`markdown`).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.SurfaceLoad": {
+        "description": "Whether a surface has content.",
+        "oneOf": [
+          {
+            "const": "ready",
+            "description": "Content held.",
+            "type": "string"
+          },
+          {
+            "const": "loading",
+            "description": "`render` sent; a `PluginSurface` event follows.",
+            "type": "string"
+          },
+          {
+            "const": "error",
+            "description": "See `error`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.output.SurfaceSnapshot": {
+        "description": "The latest status of one placement (snapshot-first for clients, `plugin_surfaces`).",
+        "properties": {
+          "badge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Badge"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The badge, if any."
+          },
+          "dot": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Dot"
+              }
+            ],
+            "description": "Already overridden by state (backoff/failed/exited/awaiting_approval → off/error/off/off)."
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.SurfaceFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Format of the held content."
+          },
+          "label": {
+            "description": "The plugin's label override.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "placement": {
+            "description": "Placement id.",
+            "type": "string"
+          },
+          "plugin": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "revision": {
+            "description": "Content revision, 0 = no content held.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tooltip": {
+            "description": "The plugin's tooltip, or the state when overridden (\"starting\", \"exited\", …).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "plugin",
+          "placement",
+          "dot",
+          "badge",
+          "label",
+          "tooltip",
+          "revision",
+          "format"
+        ],
+        "type": "object"
+      },
+      "method.plugins.output.ToolGrant": {
+        "description": "A manifest tool and the risk it was approved at.",
+        "properties": {
+          "name": {
+            "description": "Tool name.",
+            "type": "string"
+          },
+          "risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.output.Risk"
+              }
+            ],
+            "description": "Approved risk."
+          }
+        },
+        "required": [
+          "name",
+          "risk"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.Badge": {
+        "anyOf": [
+          {
+            "description": "A count; 0 hides the badge.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "description": "Up to 4 characters.",
+            "type": "string"
+          }
+        ],
+        "description": "A badge: a count (0 hides it) or up to 4 characters."
+      },
+      "method.plugins.receiver.BindingKind": {
+        "description": "OpenUI statement kind of a binding.",
+        "oneOf": [
+          {
+            "const": "query",
+            "description": "`Query(...)`: delivered as `query`.",
+            "type": "string"
+          },
+          {
+            "const": "mutation",
+            "description": "`Mutation(...)`: delivered as `action`, needs a press.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.CallGrant": {
+        "description": "`call: {tools, max_risk}`.",
+        "properties": {
+          "max_risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Risk"
+              }
+            ],
+            "description": "Highest risk of a call."
+          },
+          "tools": {
+            "description": "Tool names it may call.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools",
+          "max_risk"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.Capabilities": {
+        "description": "Host-brokered powers.",
+        "properties": {
+          "call": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.CallGrant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "May call tools in a headless session."
+          },
+          "input": {
+            "description": "May send input to a session.",
+            "type": "boolean"
+          },
+          "notify": {
+            "description": "May raise inbox items and OS notifications.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "notify",
+          "input"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.CardKind": {
+        "description": "Which card it is.",
+        "oneOf": [
+          {
+            "const": "install",
+            "description": "No grant yet.",
+            "type": "string"
+          },
+          {
+            "const": "widen",
+            "description": "The manifest asks for more than the grant holds.",
+            "type": "string"
+          },
+          {
+            "const": "code_changed",
+            "description": "The code hash changed.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.CatalogEntry": {
+        "description": "One catalog entry (216 §7.1).",
+        "properties": {
+          "delta": {
+            "description": "Delta-class: needs `deltas: true` on the subscription.",
+            "type": "boolean"
+          },
+          "describe": {
+            "description": "First sentence of the schema description, or the manifest's `description`.",
+            "type": "string"
+          },
+          "exposure": {
+            "description": "Always `\"public\"` in the catalog (private and internal topics are absent).",
+            "type": "string"
+          },
+          "name": {
+            "description": "`topic#type`, `topic` or `<plugin>.<event>`.",
+            "type": "string"
+          },
+          "owner": {
+            "description": "Owner crate (`agent`) or `plugin:<name>`.",
+            "type": "string"
+          },
+          "schema": {
+            "description": "JSON Schema: inlined (resolved) for wire topics, the manifest schema for plugin events."
+          },
+          "scoped": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Scoped"
+              }
+            ],
+            "description": "Session-scoped or global."
+          },
+          "topic": {
+            "description": "The wire topic.",
+            "type": "string"
+          },
+          "type": {
+            "description": "The serialized `type` tag (or `<plugin>.<event>`); `None` for single-struct topics.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "description": "The topic's (or plugin event's) version.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "topic",
+          "version",
+          "owner",
+          "exposure",
+          "describe",
+          "scoped",
+          "delta",
+          "schema"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.CheckIssue": {
+        "description": "One located validation problem.",
+        "properties": {
+          "message": {
+            "description": "What is wrong.",
+            "type": "string"
+          },
+          "path": {
+            "description": "JSON Pointer into the manifest (`/placements/0/kind`), or `\"\"` for the whole folder.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "message"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.CheckReport": {
+        "description": "`plugin_check` / `t plugin check`.",
+        "properties": {
+          "code_sha256": {
+            "description": "Code hash, when computable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "errors": {
+            "description": "Errors (any makes `ok` false).",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.receiver.CheckIssue"
+            },
+            "type": "array"
+          },
+          "lines": {
+            "description": "The install card's lines for this manifest.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.receiver.GrantLine"
+            },
+            "type": "array"
+          },
+          "manifest_sha256": {
+            "description": "Manifest hash, when it parses.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The plugin name, when the folder has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "description": "No errors.",
+            "type": "boolean"
+          },
+          "warnings": {
+            "description": "Warnings.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.receiver.CheckIssue"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "errors",
+          "warnings",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.CommandInfo": {
+        "description": "A `command` placement as clients list it.",
+        "properties": {
+          "args": {
+            "description": "Argument hint (`args:`), shown after the command.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "description": "One line for the slash menu.",
+            "type": "string"
+          },
+          "name": {
+            "description": "As declared (`name:`).",
+            "type": "string"
+          },
+          "slash": {
+            "description": "What the composer inserts: `/<plugin>` when `name == plugin`, else `/<plugin>:<name>`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "slash",
+          "description"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.CommandReply": {
+        "description": "A `/command` reply.",
+        "properties": {
+          "text": {
+            "description": "A note shown in the chat.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ui": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.CommandUi"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An ephemeral card."
+          }
+        },
+        "type": "object"
+      },
+      "method.plugins.receiver.CommandUi": {
+        "description": "An ephemeral card in a command reply (json-render or markdown; OpenUI is refused in v1 replies).",
+        "properties": {
+          "format": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.SurfaceFormat"
+              }
+            ],
+            "description": "json-render or markdown."
+          },
+          "source": {
+            "description": "The card source.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Text fallback.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "source",
+          "text"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.Dot": {
+        "description": "A placement's status dot.",
+        "oneOf": [
+          {
+            "const": "ok",
+            "description": "Green.",
+            "type": "string"
+          },
+          {
+            "const": "busy",
+            "description": "Green, pulsing.",
+            "type": "string"
+          },
+          {
+            "const": "warn",
+            "description": "Amber.",
+            "type": "string"
+          },
+          {
+            "const": "error",
+            "description": "Red.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "Grey.",
+            "type": "string"
+          },
+          {
+            "const": "none",
+            "description": "No dot drawn.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.Fallback": {
+        "description": "What a surface without a renderer shows.",
+        "oneOf": [
+          {
+            "const": "text",
+            "description": "The plugin's text fallback.",
+            "type": "string"
+          },
+          {
+            "const": "hide",
+            "description": "Nothing.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.GrantKey": {
+        "description": "Which manifest entry a [`GrantLine`] stands for.",
+        "oneOf": [
+          {
+            "const": "run",
+            "description": "`run` / `cwd` / `env`: the command line.",
+            "type": "string"
+          },
+          {
+            "const": "secret",
+            "description": "A vault secret referenced by `env`.",
+            "type": "string"
+          },
+          {
+            "const": "subscribe",
+            "description": "A `subscribe` entry.",
+            "type": "string"
+          },
+          {
+            "const": "emit",
+            "description": "An `emits` entry.",
+            "type": "string"
+          },
+          {
+            "const": "placement",
+            "description": "A placement.",
+            "type": "string"
+          },
+          {
+            "const": "tool",
+            "description": "A tool offered to the model.",
+            "type": "string"
+          },
+          {
+            "const": "call",
+            "description": "The `call` capability.",
+            "type": "string"
+          },
+          {
+            "const": "input",
+            "description": "The `input` capability.",
+            "type": "string"
+          },
+          {
+            "const": "notify",
+            "description": "The `notify` capability.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.GrantLine": {
+        "description": "One plain-words line of an install card (216 §10.1).",
+        "properties": {
+          "key": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.GrantKey"
+              }
+            ],
+            "description": "Which manifest entry the line stands for."
+          },
+          "new": {
+            "description": "On a widen card: this line is new since the last approval.",
+            "type": "boolean"
+          },
+          "risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Risk"
+              }
+            ],
+            "description": "The line's risk."
+          },
+          "text": {
+            "description": "The card wording, e.g. \"Reads agent.events: TurnFinished — a turn finished; …\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "text",
+          "risk",
+          "new"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.Grants": {
+        "description": "What a plugin may do (grants.yaml `grants:`, `hello.params.grants` minus run/cwd/env/secrets).",
+        "properties": {
+          "capabilities": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Capabilities"
+              }
+            ],
+            "description": "Host-brokered powers."
+          },
+          "cwd": {
+            "description": "Working directory as approved, relative to the folder.",
+            "type": "string"
+          },
+          "emits": {
+            "description": "Declared event names it may emit.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Environment as approved, unexpanded.",
+            "type": "object"
+          },
+          "placements": {
+            "description": "Placement ids.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run": {
+            "description": "As approved, unexpanded (a change is widening).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "description": "Vault secret names referenced by `env`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subscribe": {
+            "description": "Catalog names: `topic`, `topic#type`, `<plugin>.<event>`, `<plugin>.*`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tools": {
+            "description": "Tools it offers the model, with their approved risk.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.receiver.ToolGrant"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "subscribe",
+          "emits",
+          "placements",
+          "tools",
+          "capabilities",
+          "secrets",
+          "run",
+          "cwd",
+          "env"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.InstallCard": {
+        "description": "A pending card, as the install screen and `t plugin approve` show it.",
+        "properties": {
+          "at_ms": {
+            "description": "When the card was filed (ms since epoch).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "changed_paths": {
+            "description": "Code-changed: the relative paths whose bytes changed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "code_sha256": {
+            "description": "Pass back verbatim to `plugin_approve`; `None` when the grant will carry no code hash.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dir": {
+            "description": "Absolute folder path.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Attention item id `plugin:<name>:<m8>:<c8>:<seq>` (m8/c8: first 8 hex of the hashes, `00000000` for no code hash; seq: 0, bumped by each `RequestApproval`).",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.CardKind"
+              }
+            ],
+            "description": "Install, widen or code-changed."
+          },
+          "lines": {
+            "description": "Install: every line. Widen: the new lines, plus \"Runs …\" when run/cwd/env changed.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.receiver.GrantLine"
+            },
+            "type": "array"
+          },
+          "manifest_sha256": {
+            "description": "Pass back verbatim to `plugin_approve`.",
+            "type": "string"
+          },
+          "plugin": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Risk"
+              }
+            ],
+            "description": "The highest line's risk (always at least `destructive`, because `run` is)."
+          },
+          "unverified": {
+            "description": "The saved approval did not verify (\"the saved approval for <name> could not be verified\").",
+            "type": "boolean"
+          },
+          "version": {
+            "description": "The manifest's `version:`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "plugin",
+          "version",
+          "kind",
+          "manifest_sha256",
+          "risk",
+          "lines",
+          "changed_paths",
+          "unverified",
+          "dir",
+          "at_ms"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.InstallReport": {
+        "description": "What `plugin_install` did.",
+        "properties": {
+          "dir": {
+            "description": "Absolute folder path under plugins/.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "next": {
+            "description": "How to approve it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "dir",
+          "next"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.Lang": {
+        "description": "SDK language of `plugin_new` / `t plugin new --lang`.",
+        "oneOf": [
+          {
+            "const": "py",
+            "description": "Python.",
+            "type": "string"
+          },
+          {
+            "const": "js",
+            "description": "JavaScript (node).",
+            "type": "string"
+          },
+          {
+            "const": "sh",
+            "description": "POSIX shell.",
+            "type": "string"
+          },
+          {
+            "const": "go",
+            "description": "Go.",
+            "type": "string"
+          },
+          {
+            "const": "rb",
+            "description": "Ruby.",
+            "type": "string"
+          },
+          {
+            "const": "rs",
+            "description": "Rust.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.LogTail": {
+        "description": "A log tail (`plugin_logs`).",
+        "properties": {
+          "lines": {
+            "description": "The lines, oldest first, redacted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Absolute path of the log file.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.OpenMode": {
+        "description": "What a sidebar icon opens.",
+        "oneOf": [
+          {
+            "const": "popover",
+            "description": "A popover beside the icon.",
+            "type": "string"
+          },
+          {
+            "const": "tile",
+            "description": "A tile beside the focused chat.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.PlacementInfo": {
+        "description": "One declared placement, as approved.",
+        "properties": {
+          "command": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.CommandInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`command` placements only."
+          },
+          "fallback": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Fallback"
+              }
+            ],
+            "description": "What a client without a renderer for `format` shows."
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.SurfaceFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent for `status` and `command`."
+          },
+          "hidden": {
+            "description": "The owner hid it (Settings › Plugins / context menu); hidden placements are not drawn, commands still work.",
+            "type": "boolean"
+          },
+          "icon": {
+            "description": "A lucide icon name (kebab-case, e.g. `gauge`), or `svg:<data-url>` for a sanitised SVG from the folder.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The placement id (unique within the plugin).",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.PlacementKind"
+              }
+            ],
+            "description": "Where it is drawn."
+          },
+          "label": {
+            "description": "`label:` (tooltip / menu text / tile title).",
+            "type": "string"
+          },
+          "open": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.OpenMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sidebar only."
+          },
+          "size": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Size"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Default popover / tile size."
+          },
+          "status": {
+            "description": "Draws a status dot fed by `status`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "icon",
+          "status",
+          "fallback",
+          "hidden"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.PlacementKind": {
+        "description": "v1 placement kinds (216 §9.1).",
+        "oneOf": [
+          {
+            "const": "sidebar",
+            "description": "An icon in the sidebar rail / expanded sidebar.",
+            "type": "string"
+          },
+          {
+            "const": "status",
+            "description": "A segment in the status strip.",
+            "type": "string"
+          },
+          {
+            "const": "tile",
+            "description": "A tile beside a chat.",
+            "type": "string"
+          },
+          {
+            "const": "command",
+            "description": "A `/command` in the composer.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.PluginDetail": {
+        "description": "Everything about one plugin (`plugin_get`, `plugin_status` tool).",
+        "properties": {
+          "card": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.InstallCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The card waiting for a press, if any."
+          },
+          "catalog": {
+            "description": "Catalog entries of the events it emits.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.receiver.CatalogEntry"
+            },
+            "type": "array"
+          },
+          "granted": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Grants"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the verified grant holds; `None` before the first approval or when it does not verify."
+          },
+          "info": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.PluginInfo"
+              }
+            ],
+            "description": "The list row."
+          },
+          "manifest": {
+            "description": "The parsed manifest as JSON (env values unexpanded); `null` when it does not parse."
+          },
+          "requested": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Grants"
+              }
+            ],
+            "description": "What the manifest asks for now."
+          },
+          "stderr_tail": {
+            "description": "Last 40 stderr lines, redacted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "description": "Validation warnings (reserved keys, unknown top-level keys).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "info",
+          "manifest",
+          "requested",
+          "catalog",
+          "stderr_tail",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.PluginInfo": {
+        "description": "One row of Settings › Plugins and `plugin_list`.",
+        "properties": {
+          "approved_at": {
+            "description": "The grant's `approved_at` (RFC 3339), none before the first approval.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "card": {
+            "description": "Attention item id of that card (`plugin:<name>:<m8>:<c8>:<seq>`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "description": "`description:`; empty when the manifest does not parse.",
+            "type": "string"
+          },
+          "dir": {
+            "description": "Absolute folder path.",
+            "type": "string"
+          },
+          "enabled": {
+            "description": "The grant's `enabled` (false when there is no grant yet).",
+            "type": "boolean"
+          },
+          "error": {
+            "description": "Last error: manifest error (`invalid`), crash reason, stderr's last line.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "log": {
+            "description": "Absolute path of today's log file.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Folder name = plugin name.",
+            "type": "string"
+          },
+          "needs_approval": {
+            "description": "A card waits for a press (install, widen or code-changed), whatever the state.",
+            "type": "boolean"
+          },
+          "order": {
+            "description": "Position in the sidebar/status order (0 = first).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "placements": {
+            "description": "Approved placements (all declared ones while awaiting the first approval).",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.receiver.PlacementInfo"
+            },
+            "type": "array"
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.PluginRunState"
+              }
+            ],
+            "description": "Lifecycle state."
+          },
+          "tools": {
+            "description": "Names of the tools it offers the model.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "description": "`version:` (free text); empty when the manifest does not parse.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "description",
+          "state",
+          "enabled",
+          "needs_approval",
+          "placements",
+          "tools",
+          "dir",
+          "log",
+          "order"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.PluginRunState": {
+        "description": "Lifecycle of one plugin (216 §5).",
+        "oneOf": [
+          {
+            "const": "invalid",
+            "description": "The manifest does not parse or validate.",
+            "type": "string"
+          },
+          {
+            "const": "awaiting_approval",
+            "description": "No verified grant covers the manifest (and code): a card waits for a human press.",
+            "type": "string"
+          },
+          {
+            "const": "starting",
+            "description": "Spawned, waiting for `hello`.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "Answered `hello`; events flow.",
+            "type": "string"
+          },
+          {
+            "const": "backoff",
+            "description": "Crashed; restarting after a delay.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Crash loop: not restarted until `plugin_restart` or a change.",
+            "type": "string"
+          },
+          {
+            "const": "exited",
+            "description": "Exited with status 0 and stays down.",
+            "type": "string"
+          },
+          {
+            "const": "stopping",
+            "description": "Being stopped (SIGTERM, then SIGKILL after the grace).",
+            "type": "string"
+          },
+          {
+            "const": "disabled",
+            "description": "The grant's `enabled` is false.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.Risk": {
+        "description": "How much damage a tool can do; the only input to the approval policy.",
+        "oneOf": [
+          {
+            "const": "read_only",
+            "description": "Observes only.",
+            "type": "string"
+          },
+          {
+            "const": "mutating",
+            "description": "Changes state that can be undone or is scoped.",
+            "type": "string"
+          },
+          {
+            "const": "destructive",
+            "description": "Irreversible or unbounded (arbitrary shell, delete, network writes).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.ScaffoldReport": {
+        "description": "What `plugin_new` wrote.",
+        "properties": {
+          "dir": {
+            "description": "Absolute folder path.",
+            "type": "string"
+          },
+          "files": {
+            "description": "Relative paths written.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "lang": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Lang"
+              }
+            ],
+            "description": "SDK language."
+          },
+          "name": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "next": {
+            "description": "Always \"awaiting approval: press Approve in theuth or run `t plugin approve <name>`\".",
+            "type": "string"
+          },
+          "raw": {
+            "description": "No SDK (raw protocol template).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "dir",
+          "lang",
+          "raw",
+          "files",
+          "next"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.Scoped": {
+        "description": "How an event is scoped.",
+        "oneOf": [
+          {
+            "const": "session",
+            "description": "Carries a session.",
+            "type": "string"
+          },
+          {
+            "const": "global",
+            "description": "Engine-wide.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.Size": {
+        "description": "Default size of a popover or tile, CSS px.",
+        "properties": {
+          "height": {
+            "description": "Height, CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "width": {
+            "description": "Width, CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.SurfaceBinding": {
+        "description": "One `Query(...)` / `Mutation(...)` statement of a validated OpenUI source (from\n`app::helper::CheckResult.bindings`). The plugin provider routes by it (§12.4).",
+        "properties": {
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.BindingKind"
+              }
+            ],
+            "description": "Query or mutation."
+          },
+          "name": {
+            "description": "The query or mutation name the plugin receives (`query` / `action`).",
+            "type": "string"
+          },
+          "statement_id": {
+            "description": "The statement id the renderer reports as `ProviderContext.statement_id`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "statement_id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.SurfaceContent": {
+        "description": "A placement's content (`plugin_surface`).",
+        "properties": {
+          "bindings": {
+            "description": "OpenUI only; empty for json-render and markdown.",
+            "items": {
+              "$ref": "#/components/schemas/method.plugins.receiver.SurfaceBinding"
+            },
+            "type": "array"
+          },
+          "error": {
+            "description": "\"plugin did not render\", \"plugin <name> is not running\", …",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.SurfaceFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Content format."
+          },
+          "placement": {
+            "description": "Placement id.",
+            "type": "string"
+          },
+          "plugin": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "revision": {
+            "description": "Content revision.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "description": "Validated source; `None` while loading.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.SurfaceLoad"
+              }
+            ],
+            "description": "`loading`: the host sent `render` and waits for the plugin's `ui` (a `PluginSurface` event follows)."
+          },
+          "text": {
+            "description": "Text fallback.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "plugin",
+          "placement",
+          "revision",
+          "state",
+          "bindings"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.SurfaceFormat": {
+        "description": "Content format of a placement or a command card.",
+        "oneOf": [
+          {
+            "const": "openui",
+            "description": "OpenUI source (`openui`).",
+            "type": "string"
+          },
+          {
+            "const": "json-render",
+            "description": "A json-render spec (`json-render`).",
+            "type": "string"
+          },
+          {
+            "const": "markdown",
+            "description": "Markdown, raw HTML off (`markdown`).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.SurfaceLoad": {
+        "description": "Whether a surface has content.",
+        "oneOf": [
+          {
+            "const": "ready",
+            "description": "Content held.",
+            "type": "string"
+          },
+          {
+            "const": "loading",
+            "description": "`render` sent; a `PluginSurface` event follows.",
+            "type": "string"
+          },
+          {
+            "const": "error",
+            "description": "See `error`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.plugins.receiver.SurfaceSnapshot": {
+        "description": "The latest status of one placement (snapshot-first for clients, `plugin_surfaces`).",
+        "properties": {
+          "badge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Badge"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The badge, if any."
+          },
+          "dot": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Dot"
+              }
+            ],
+            "description": "Already overridden by state (backoff/failed/exited/awaiting_approval → off/error/off/off)."
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.SurfaceFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Format of the held content."
+          },
+          "label": {
+            "description": "The plugin's label override.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "placement": {
+            "description": "Placement id.",
+            "type": "string"
+          },
+          "plugin": {
+            "description": "Plugin name.",
+            "type": "string"
+          },
+          "revision": {
+            "description": "Content revision, 0 = no content held.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tooltip": {
+            "description": "The plugin's tooltip, or the state when overridden (\"starting\", \"exited\", …).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "plugin",
+          "placement",
+          "dot",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "method.plugins.receiver.ToolGrant": {
+        "description": "A manifest tool and the risk it was approved at.",
+        "properties": {
+          "name": {
+            "description": "Tool name.",
+            "type": "string"
+          },
+          "risk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.receiver.Risk"
+              }
+            ],
+            "description": "Approved risk."
+          }
+        },
+        "required": [
+          "name",
+          "risk"
+        ],
+        "type": "object"
+      },
       "method.roster.input.ActivityFilter": {
         "description": "`activity_list` filter.",
         "properties": {
@@ -104492,6 +108092,11 @@
           {
             "const": "web_view",
             "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
+            "type": "string"
+          },
+          {
+            "const": "plugin",
+            "description": "216 §10.2: an external plugin waits for a human press — install, widened manifest, or changed\ncode. Id `plugin:<name>:<m8>:<c8>:<seq>`. No timeout; Dismiss leaves it awaiting approval.",
             "type": "string"
           }
         ]
@@ -105996,7 +109601,7 @@
             ]
           },
           "id": {
-            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…` · `plugin:<name>:<m8>:<c8>:<seq>`.",
             "type": "string"
           },
           "kind": {
@@ -106299,6 +109904,11 @@
           {
             "const": "web_view",
             "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
+            "type": "string"
+          },
+          {
+            "const": "plugin",
+            "description": "216 §10.2: an external plugin waits for a human press — install, widened manifest, or changed\ncode. Id `plugin:<name>:<m8>:<c8>:<seq>`. No timeout; Dismiss leaves it awaiting approval.",
             "type": "string"
           }
         ]
@@ -108469,7 +112079,7 @@
             ]
           },
           "id": {
-            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…` · `plugin:<name>:<m8>:<c8>:<seq>`.",
             "type": "string"
           },
           "kind": {
@@ -108743,6 +112353,11 @@
           {
             "const": "web_view",
             "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
+            "type": "string"
+          },
+          {
+            "const": "plugin",
+            "description": "216 §10.2: an external plugin waits for a human press — install, widened manifest, or changed\ncode. Id `plugin:<name>:<m8>:<c8>:<seq>`. No timeout; Dismiss leaves it awaiting approval.",
             "type": "string"
           }
         ]
@@ -143474,6 +147089,722 @@
       "x-theuth-owner": "rpc"
     },
     {
+      "name": "plugin_action",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "placement",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "action",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "args",
+          "required": true,
+          "schema": true,
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "activation",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "form",
+          "required": false,
+          "schema": true,
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": true,
+        "x-theuth-receiverSchema": true
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_approve",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "manifest_sha256",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "manifestSha256"
+          ]
+        },
+        {
+          "name": "code_sha256",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "codeSha256"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.PluginInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.PluginInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_catalog",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "topic",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.plugins.output.CatalogEntry"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.plugins.receiver.CatalogEntry"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_check",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.CheckReport"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.CheckReport"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_command",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "command",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "args",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.CommandReply"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.CommandReply"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_get",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.PluginDetail"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.PluginDetail"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_install",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.InstallReport"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.InstallReport"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_list",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.plugins.output.PluginInfo"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.plugins.receiver.PluginInfo"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_logs",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "tail",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.LogTail"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.LogTail"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_new",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "lang",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.input.Lang"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "raw",
+          "required": false,
+          "schema": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.ScaffoldReport"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.ScaffoldReport"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_query",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "placement",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "query",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "args",
+          "required": true,
+          "schema": true,
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": true,
+        "x-theuth-receiverSchema": true
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_restart",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.PluginInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.PluginInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_set_enabled",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "on",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.PluginInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.PluginInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_set_hidden",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "placement",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "hidden",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.PluginInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.PluginInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_set_order",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "order",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.plugins.output.PluginInfo"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.plugins.receiver.PluginInfo"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_surface",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "placement",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.plugins.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.plugins.output.SurfaceContent"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.plugins.receiver.SurfaceContent"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_surfaces",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.plugins.output.SurfaceSnapshot"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.plugins.receiver.SurfaceSnapshot"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
+      "name": "plugin_uninstall",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "keep_data",
+          "required": false,
+          "schema": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "keepData"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "plugins"
+    },
+    {
       "name": "polish",
       "paramStructure": "by-position",
       "params": [
@@ -151745,6 +156076,7 @@
     },
     "events": [
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.a2a_2echanged.receiver.A2aChanged"
         },
@@ -151755,6 +156087,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.a2a_2econtacts.receiver.ContactEvent"
         },
@@ -151765,6 +156098,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2ecommunication.receiver.CommunicationChanged"
         },
@@ -151775,6 +156109,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2ecost_2dcube.receiver.CostCubeChanged"
         },
@@ -151785,6 +156120,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2eendless_2dprogress.receiver.EndlessProgress"
         },
@@ -151795,6 +156131,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2eevents.receiver.AgentEvent"
         },
@@ -151805,6 +156142,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2egraph.receiver.AgentGraphChanged"
         },
@@ -151815,6 +156153,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2elogin.receiver.LoginFinished"
         },
@@ -151825,6 +156164,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2enotebook_2dask.receiver.NotebookAsk"
         },
@@ -151835,6 +156175,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2epeer_2ddelivered.receiver.PeerDelivered"
         },
@@ -151845,6 +156186,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2epeer_2dmessage.receiver.PeerMessageChanged"
         },
@@ -151855,6 +156197,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.agent_2esuffixes.receiver.SuffixesChanged"
         },
@@ -151865,6 +156208,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.app_2ecalls.receiver.AppCallChanged"
         },
@@ -151875,6 +156219,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2ediff_2dview_2dopened.receiver.DiffViewOpened"
         },
@@ -151885,6 +156230,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2efence_2dsnapshot_2drequested.receiver.FenceSnapshotRequested"
         },
@@ -151895,6 +156241,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2efence_2dsnapshot_2dresolved.receiver.FenceSnapshotResolved"
         },
@@ -151905,6 +156252,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2efile_2dview_2dopened.receiver.FileViewOpened"
         },
@@ -151915,6 +156263,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2enote_2dview_2dopened.receiver.NoteViewOpened"
         },
@@ -151925,6 +156274,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2epage_2dpreview_2drequested.receiver.PagePreviewRequested"
         },
@@ -151935,6 +156285,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2epage_2dpreview_2dresolved.receiver.PagePreviewResolved"
         },
@@ -151945,6 +156296,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2epty_2dview_2dopened.receiver.PtyViewOpened"
         },
@@ -151955,6 +156307,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2eshown.receiver.ArtifactShown"
         },
@@ -151965,6 +156318,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2drequested.receiver.WebViewCallRequested"
         },
@@ -151975,6 +156329,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2dresolved.receiver.WebViewCallResolved"
         },
@@ -151985,6 +156340,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.receiver.WebViewOpened"
         },
@@ -151995,6 +156351,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.autoresearch_2eevents.receiver.StudyEvent"
         },
@@ -152005,6 +156362,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.browser_2eelement_2dform_2drequested.receiver.ElementFormRequested"
         },
@@ -152015,6 +156373,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.browser_2eelement_2dform_2dresolved.receiver.ElementFormResolved"
         },
@@ -152025,6 +156384,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.browser_2eevents.receiver.BrowserEvent"
         },
@@ -152035,6 +156395,7 @@
         "version": 1
       },
       {
+        "exposure": "private",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.browser_2eweb_2dprofile_2dchanged.receiver.WebProfileChanged"
         },
@@ -152045,6 +156406,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.cells_2eevents.receiver.CellEvent"
         },
@@ -152055,6 +156417,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.codeindex_2eevents.receiver.CodeindexEvent"
         },
@@ -152065,6 +156428,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.document_2ecell_2dlatest.receiver.CellLatestChanged"
         },
@@ -152075,6 +156439,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.document_2echanged.receiver.DocumentChanged"
         },
@@ -152085,6 +156450,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.document_2esharing.receiver.DocumentSharing"
         },
@@ -152095,6 +156461,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.document_2esources.receiver.SourceEvent"
         },
@@ -152105,6 +156472,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.double_2eanswered.receiver.DoubleAnswered"
         },
@@ -152115,6 +156483,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.double_2epredicted.receiver.DoublePredicted"
         },
@@ -152125,6 +156494,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.double_2etraining.receiver.DoubleTrainingState"
         },
@@ -152135,6 +156505,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.double_2eversion.receiver.DoubleVersionActivated"
         },
@@ -152145,6 +156516,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.dreaming_2efinished.receiver.DreamNightFinished"
         },
@@ -152155,6 +156527,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.dreaming_2estarted.receiver.DreamNightStarted"
         },
@@ -152165,6 +156538,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.dreaming_2eundone.receiver.DreamUndone"
         },
@@ -152175,6 +156549,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.knowledge_2echanged.receiver.KnowledgeChanged"
         },
@@ -152185,6 +156560,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.link_2eevents.receiver.LinkEvent"
         },
@@ -152195,6 +156571,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.meeting_2ebriefs.receiver.BriefEvent"
         },
@@ -152205,6 +156582,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.meeting_2ecalendar.receiver.CalendarEvent"
         },
@@ -152215,6 +156593,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.meeting_2eevents.receiver.MeetingEvent"
         },
@@ -152225,6 +156604,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.mesh_2eevents.receiver.MeshEvent"
         },
@@ -152235,6 +156615,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.nodes_2eevents.receiver.NodeEvent"
         },
@@ -152245,6 +156626,29 @@
         "version": 1
       },
       {
+        "exposure": "public",
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.plugins_2eevents.receiver.PluginEvent"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.plugins_2eevents.output.PluginEvent"
+        },
+        "topic": "plugins.events",
+        "version": 1
+      },
+      {
+        "exposure": "public",
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.plugins_2eui.receiver.PluginUi"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.plugins_2eui.output.PluginUi"
+        },
+        "topic": "plugins.ui",
+        "version": 1
+      },
+      {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.roster_2eattention.receiver.AttentionChanged"
         },
@@ -152255,6 +156659,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.rpc_2estream.receiver.StreamControl"
         },
@@ -152265,6 +156670,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.sandbox_2eevents.receiver.SandboxEvent"
         },
@@ -152275,6 +156681,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.schedule_2eevents.receiver.ScheduleEvent"
         },
@@ -152285,6 +156692,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.secrets_2eevents.receiver.SecretsEvent"
         },
@@ -152295,6 +156703,7 @@
         "version": 1
       },
       {
+        "exposure": "internal",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.sessionsync_2efollow_2dstate.receiver.FollowState"
         },
@@ -152305,6 +156714,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.share_2echanged.receiver.ShareChanged"
         },
@@ -152315,6 +156725,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.share_2estatus.receiver.ShareStatus"
         },
@@ -152325,6 +156736,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.share_2etraffic.receiver.ShareTraffic"
         },
@@ -152335,6 +156747,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.signal_2eevents.receiver.SignalEvent"
         },
@@ -152345,6 +156758,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.slack_2eevents.receiver.SlackEvent"
         },
@@ -152355,6 +156769,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.talk_2eevents.receiver.TalkEvent"
         },
@@ -152365,6 +156780,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.tasks_2eactivity.receiver.ActivityAppended"
         },
@@ -152375,6 +156791,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.tasks_2echanged.receiver.TaskChanged"
         },
@@ -152385,6 +156802,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.telegram_2eevents.receiver.TelegramEvent"
         },
@@ -152395,6 +156813,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.tools_2eapproval_2drequested.receiver.ApprovalRequested"
         },
@@ -152405,6 +156824,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.tools_2eapproval_2dresolved.receiver.ApprovalResolved"
         },
@@ -152415,6 +156835,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.tools_2eask_2drequested.receiver.AskRequested"
         },
@@ -152425,6 +156846,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.tools_2eask_2dresolved.receiver.AskResolved"
         },
@@ -152435,6 +156857,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.tools_2ejobs.receiver.JobEvent"
         },
@@ -152445,6 +156868,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.tools_2emcp_2dprogress.receiver.McpProgress"
         },
@@ -152455,6 +156879,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.tools_2ereminders.receiver.ReminderEvent"
         },
@@ -152465,6 +156890,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.update_2eready.receiver.UpdateReady"
         },
@@ -152475,6 +156901,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.voice_2eevents.receiver.VoiceEvent"
         },
@@ -152485,6 +156912,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.web_2escrape_2dprogress.receiver.ScrapeProgress"
         },
@@ -152514,6 +156942,7 @@
       "meeting",
       "mesh",
       "nodes",
+      "plugins",
       "replica",
       "roster",
       "routes",
