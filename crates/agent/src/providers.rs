@@ -121,10 +121,10 @@ pub fn validate_name(name: &str, local: bool) -> Result<(), String> {
     // 85 §0.8: the built-in key providers are secrets, not gateways.
     if matches!(
         name,
-        "opencode" | "opencode-go" | "openrouter" | "open_router" | "zen"
+        "google" | "opencode" | "opencode-go" | "openrouter" | "open_router" | "zen"
     ) {
         return Err(format!(
-            "`{name}` is a built-in provider — set the `opencode` / `opencode-go` / `openrouter` secret instead"
+            "`{name}` is a built-in provider — set the `google` / `opencode` / `opencode-go` / `openrouter` secret instead"
         ));
     }
     // Which namespaces have a backend (12 §6); the only other place that knows is backend.rs.
@@ -574,6 +574,7 @@ mod tests {
         assert!(validate_name("openai", true).is_err());
         // 85 §0.8: the built-ins are secrets, not gateways; the error points there.
         for name in [
+            "google",
             "opencode",
             "opencode-go",
             "openrouter",
@@ -582,10 +583,15 @@ mod tests {
         ] {
             let err = validate_name(name, false).unwrap_err();
             assert!(
-                err.contains("set the `opencode` / `opencode-go` / `openrouter` secret"),
+                err.contains("set the `google` / `opencode` / `opencode-go` / `openrouter` secret"),
                 "{name}: {err}"
             );
         }
+        // genai's own namespace for Google stays refused too.
+        assert_eq!(
+            validate_name("gemini", false).unwrap_err(),
+            "`gemini` is a built-in provider; pick another name"
+        );
         assert_eq!(
             normalize_url("https://api.ai.rwx.dev/v1").unwrap(),
             "https://api.ai.rwx.dev/v1/"

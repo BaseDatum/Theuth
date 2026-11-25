@@ -49,7 +49,7 @@ export function loginFinished(s: Login, e: { provider: string; error?: string | 
   return { next: { pending: null, failed: null }, provider: [...SUBSCRIPTIONS, ...MORE_SUBSCRIPTIONS].find((x) => x.ns === e.provider)?.provider ?? e.provider }
 }
 
-/** An API key provider: `secret` is the adapter's lower-case name the engine reads the key from (`set_secret`). */
+/** An API key provider: `secret` is the name the engine reads the key from (`set_secret`): the adapter's, or the built-in key provider's. */
 export type KeyProvider = { secret: string; label: string; provider: string; placeholder: string }
 
 export const KEY_PROVIDERS: readonly KeyProvider[] = [
@@ -57,7 +57,7 @@ export const KEY_PROVIDERS: readonly KeyProvider[] = [
   { secret: 'openai', label: 'OpenAI', provider: 'openai', placeholder: 'sk-…' },
   { secret: 'openrouter', label: 'OpenRouter', provider: 'openrouter', placeholder: 'sk-or-…' },
   { secret: 'opencode', label: 'OpenCode', provider: 'opencode', placeholder: 'Your OpenCode Zen key' },
-  { secret: 'gemini', label: 'Google', provider: 'google', placeholder: 'AIza…' },
+  { secret: 'google', label: 'Google', provider: 'google', placeholder: 'AIza…' },
 ]
 
 export const keyNote = (p: KeyProvider): string => `${p.label} API key (added during setup)`

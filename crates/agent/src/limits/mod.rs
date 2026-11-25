@@ -1213,11 +1213,7 @@ fn presence(auth: &Auth) -> Vec<Present> {
                 "Gemini sends no rate-limit headers; quotas live in AI Studio / Cloud Console"
                     .into(),
             ),
-            ..row(
-                "google",
-                "api_key",
-                poll::key(auth, "gemini", "GEMINI_API_KEY").is_some(),
-            )
+            ..row("google", "api_key", auth.google_key().is_some())
         },
         Present {
             headers: false,
