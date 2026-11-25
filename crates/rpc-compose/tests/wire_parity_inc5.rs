@@ -56,6 +56,8 @@ async fn feature_golden_parity() {
     family::<artifact::WebViewOpened>(&rt, &mut feed, "artifact.web-view-opened").await;
     family::<artifact::PtyViewOpened>(&rt, &mut feed, "artifact.pty-view-opened").await;
     family::<artifact::NoteViewOpened>(&rt, &mut feed, "artifact.note-view-opened").await;
+    family::<artifact::WhiteboardViewOpened>(&rt, &mut feed, "artifact.whiteboard-view-opened")
+        .await;
     family::<artifact::FileViewOpened>(&rt, &mut feed, "artifact.file-view-opened").await;
     family::<artifact::DiffViewOpened>(&rt, &mut feed, "artifact.diff-view-opened").await;
     family::<artifact::preview::PagePreviewRequested>(

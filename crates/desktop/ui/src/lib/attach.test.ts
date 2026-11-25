@@ -6,7 +6,7 @@ import type { HistorySearchHit } from "@/rpc/bindings/method.rpc_2dcompose.outpu
 import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
 import type { Meta } from "@/rpc/bindings/method.knowledge.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
-import { type AttachRef, atTrigger, chatName, cleanTitle, compose, marker, parse, size, subtitle, title, toRef } from './attach'
+import { type AttachRef, atTrigger, chatName, cleanTitle, compose, marker, parse, size, subtitle, title, toRef, whiteboardRef } from './attach'
 // One grammar, one fixture (66 §3.3): the same file drives `agent::attach::tests`.
 import fixtures from '../../../../agent/tests/fixtures/attach_markers.json'
 
@@ -53,6 +53,18 @@ test('legacy [doc …] parses as note/knowledge; new sends use the new form', ()
     body: 'add a bullet',
   })
   expect(marker({ kind: 'note', id: 'abc', title: 'Plan "B"', meta: '' })).toBe('[attached note abc "Plan \\"B\\""]')
+})
+
+test('218 §1: the whiteboard marker parses, round-trips and counts cards in the singular', () => {
+  const id = '01a2f3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b'
+  const line = `[attached whiteboard ${id} "Attention inbox" · 5 cards]`
+  const ref = { kind: 'whiteboard', id, title: 'Attention inbox', meta: '5 cards' } as const
+  expect(parse(`${line}\nwhich mock should we keep?`)).toEqual({ refs: [ref], body: 'which mock should we keep?' })
+  expect(whiteboardRef(id, 'Attention inbox', 5)).toEqual(ref)
+  expect(marker(whiteboardRef(id, 'Attention inbox', 5))).toBe(line)
+  expect(marker(whiteboardRef(id, 'Attention inbox', 1))).toBe(`[attached whiteboard ${id} "Attention inbox" · 1 card]`)
+  expect(marker(whiteboardRef(id, 'Attention inbox', 0))).toBe(`[attached whiteboard ${id} "Attention inbox" · 0 cards]`)
+  expect(whiteboardRef(id, '', 2).title).toBe('Untitled whiteboard')
 })
 
 const NOW = new Date(2026, 8, 24, 12, 0, 0)

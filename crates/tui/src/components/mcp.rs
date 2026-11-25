@@ -2,7 +2,7 @@
 use super::*;
 use std::collections::BTreeSet;
 use serde::Deserialize;
-use tools::{Gate, McpAuth, McpProgress, McpServer, McpToolInfo, PolicyAction, RepoInfo};
+use tools::{AlwaysAskState, Gate, McpAuth, McpProgress, McpServer, McpToolInfo, PolicyAction, RepoInfo};
 use tools::git::SyncResult;
 use rpc_compose::api::clients::*;
 
@@ -12,6 +12,8 @@ pub(crate) struct Mcp {
     awaiting: bool,
     progress: Option<McpProgress>,
     refresh: bool,
+    /// 219 §6.2: this chat's always-ask entries (own, inherited, harness-wide) for the `!` markers.
+    always: AlwaysAskState,
 }
 #[derive(Debug)]
 pub(crate) struct Menu {
@@ -27,6 +29,8 @@ pub(crate) enum Request {
     SetHidden { session: Option<SessionId>, tools: Vec<String>, hidden: bool, draft: Option<Box<agent::CreateSessionOptions>> },
     AddMcp { name: String, entry: serde_json::Value }, AddMcpRepo(String), SyncMcp,
     Login(String), Logout(String),
+    GetAlwaysAsk(Option<SessionId>),
+    SetAlwaysAsk { session: SessionId, tool: String, on: bool },
 }
 pub(crate) enum Msg {
     Mcp(Result<Vec<McpServer>, String>),
@@ -34,12 +38,24 @@ pub(crate) enum Msg {
     Added(Result<McpServer, String>), Repo(Result<RepoInfo, String>),
     Synced(Result<Vec<SyncResult>, String>), Info(Result<String, String>),
     Created(SessionId, Request), Mutate(Request),
+    /// `get_always_ask` for the markers; an engine without the method (-32601) reads as nothing marked, any other error
+    /// is shown and keeps the markers as they were.
+    AlwaysAsk(Result<AlwaysAskState, String>),
+    /// The `!` toggle's reply.
+    AlwaysAskSet(Result<AlwaysAskState, String>),
 }
 fn send(cx: &mut Cx<'_, '_, Msg>, request: Request) {
     cx.spawn_request(Lane::Concurrent, request, |api, request| async move {
         match request {
             Request::ListMcp(session) => Msg::Mcp(api.list_mcp(session).await.map_err(crate::reason)),
             Request::McpStatus => Msg::Progress(api.mcp_status().await.map_err(crate::reason)),
+            Request::GetAlwaysAsk(session) => Msg::AlwaysAsk(match api.get_always_ask(session).await {
+                Err(jsonrpsee::core::client::Error::Call(e)) if e.code() == -32601 => Ok(AlwaysAskState::default()),
+                result => result.map_err(crate::reason),
+            }),
+            Request::SetAlwaysAsk { session, tool, on } => {
+                Msg::AlwaysAskSet(api.set_always_ask(Some(session), tool, on).await.map_err(crate::reason))
+            }
             Request::SetGate { server, tool, gate, session } => Msg::Mcp(async {
                 api.set_mcp_gate(server, tool, gate).await.map_err(crate::reason)?;
                 api.list_mcp(session).await.map_err(crate::reason)
@@ -165,6 +181,20 @@ impl Row<'_> {
             Row::Tool(_, t) => t.gate,
         }
     }
+
+    /// The always-ask entry this row stands for (219 §2.1): `mcp:<server>`, or the tool's registered name.
+    fn always_key(&self) -> String {
+        match self {
+            Row::Server(s) => format!("mcp:{}", s.name),
+            Row::Tool(_, t) => t.registered.clone().unwrap_or_else(|| t.name.clone()),
+        }
+    }
+
+    /// Whether any scope marks this row always ask (its `!` marker).
+    fn always_ask(&self, state: &AlwaysAskState) -> bool {
+        let key = self.always_key();
+        [&state.global, &state.session, &state.inherited].iter().any(|names| names.contains(&key))
+    }
 }
 
 /// Lowercase yaml name of a policy action.
@@ -284,6 +314,7 @@ impl Mcp {
             Send(Box<Request>),
             Pending(Option<Target>),
             Close,
+            Reject(String),
             Nothing,
         }
         let Some(Menu {
@@ -352,6 +383,16 @@ impl Mcp {
                 }
                 (KeyCode::Char(' '), Some(r)) => set_gate(r, next_gate(r.gate())),
                 (KeyCode::Backspace, Some(r)) => set_gate(r, None),
+                // 219 §6.2: `!` marks or unmarks the row always ask in this chat. Unmarking from the
+                // TUI goes through the internal connection, so it waits on a human-only card.
+                (KeyCode::Char('!'), Some(r)) => match session {
+                    Some(session) => {
+                        let tool = r.always_key();
+                        let on = !self.always.session.contains(&tool);
+                        Act::Send(Box::new(Request::SetAlwaysAsk { session, tool, on }))
+                    }
+                    None => Act::Reject("always ask needs a chat: send a message first, or /always-ask <tool> always".into()),
+                },
                 _ => Act::Nothing,
             }
         };
@@ -388,6 +429,7 @@ impl Mcp {
             }
             Act::Pending(p) => *pending = p,
             Act::Close => self.menu = None,
+            Act::Reject(reason) => tx.core(CoreAction::Reject(reason)),
             Act::Nothing => {}
         }
     }
@@ -449,7 +491,11 @@ impl Component for Mcp {
         }
         match input {
             Input::Lifecycle(Lifecycle::Mount | Lifecycle::EngineChanged | Lifecycle::Resync) => send(cx, Request::McpStatus),
-            Input::Slash { args: "", .. } => { self.awaiting = true; send(cx, Request::ListMcp(cx.core.session)); }
+            Input::Slash { args: "", .. } => {
+                self.awaiting = true;
+                send(cx, Request::ListMcp(cx.core.session));
+                if let Some(session) = cx.core.session { send(cx, Request::GetAlwaysAsk(Some(session))); }
+            }
             Input::Slash { args, .. } => self.mcp_cmd(args, cx),
             Input::Key(key) if self.menu.is_some() => {
                 self.mcp_key(key.code, cx);
@@ -505,8 +551,16 @@ impl Component for Mcp {
             Input::Message(Msg::Info(Ok(text))) => {
                 cx.plain(Plain::Line(text.clone())); cx.core(CoreAction::Notice(text));
             }
-            Input::Message(Msg::Mcp(Err(error)) | Msg::Progress(Err(error)) | Msg::Added(Err(error)) | Msg::Repo(Err(error)) | Msg::Synced(Err(error)) | Msg::Info(Err(error))) => cx.error(error),
-            Input::Tick { .. } if std::mem::take(&mut self.refresh) => send(cx, Request::ListMcp(cx.core.session)),
+            Input::Message(Msg::AlwaysAsk(Ok(state))) => self.always = state,
+            Input::Message(Msg::AlwaysAskSet(Ok(state))) => {
+                cx.core(CoreAction::Notice(crate::model::always_ask_line(&state)));
+                self.always = state;
+            }
+            Input::Message(Msg::Mcp(Err(error)) | Msg::Progress(Err(error)) | Msg::Added(Err(error)) | Msg::Repo(Err(error)) | Msg::Synced(Err(error)) | Msg::Info(Err(error)) | Msg::AlwaysAsk(Err(error)) | Msg::AlwaysAskSet(Err(error))) => cx.error(error),
+            Input::Tick { .. } if std::mem::take(&mut self.refresh) => {
+                send(cx, Request::ListMcp(cx.core.session));
+                if let Some(session) = cx.core.session { send(cx, Request::GetAlwaysAsk(Some(session))); }
+            }
             Input::Lifecycle(Lifecycle::FocusLost) => self.menu = None,
             Input::Lifecycle(Lifecycle::SessionReset) => { *self = Self::default(); cx.close(); }
             _ => {}
@@ -522,12 +576,14 @@ impl Component for Mcp {
                         "turn off {}{}?   press  s = this session only  ·  a = always (all sessions, saved to mcp/config.yaml)  ·  esc = cancel",
                         t.server, t.tool.as_deref().map_or(String::new(), |n| format!(" › {n}")),
                     ),
-                    None => "mcp  ⏎ turn on/off (asks: this session or always)  ␣ cycle risk  ⌫ reset risk  →/← tools  l login/logout  s sync  esc close".to_owned(),
+                    None => "mcp  ⏎ turn on/off (asks: this session or always)  ␣ cycle risk  ⌫ reset risk  ! always ask (this chat)  →/← tools  l login/logout  s sync  esc close".to_owned(),
                 };
+                // 219 §6.2: the always-ask marker is the first column, apart from the ▸/▾ expander.
+                let mark = |r: &Row<'_>| if r.always_ask(&self.always) { "!" } else { " " };
                 let rows: Vec<_> = self.mcp_rows().iter().map(|r| match r {
                     Row::Server(s) => format!(
-                        "{} {:<16} {:>2} tools   {:<20} {:<18} {}{}",
-                        if expanded.contains(&s.name) { "▾" } else { "▸" }, s.name,
+                        "{} {} {:<16} {:>2} tools   {:<20} {:<18} {}{}",
+                        mark(r), if expanded.contains(&s.name) { "▾" } else { "▸" }, s.name,
                         if s.connected { s.tools.len().to_string() } else { "–".to_owned() },
                         r.switch().label(),
                         match s.gate {
@@ -541,7 +597,7 @@ impl Component for Mcp {
                         s.repo.as_deref().map_or_else(String::new, |r| format!("   ⟳ {r}")),
                     ),
                     Row::Tool(_, t) => format!(
-                        "    {:<24} {:<20} {:<22}{}", t.name, r.switch().label(),
+                        "{}     {:<24} {:<20} {:<22}{}", mark(r), t.name, r.switch().label(),
                         match t.gate {
                             Some(Gate::Off) => String::new(),
                             Some(_) => format!("{}* ({})", crate::ui::risk_name(t.risk), action_name(t.action)),

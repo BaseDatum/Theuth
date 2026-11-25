@@ -1,5 +1,5 @@
 import { useNavigate } from '@tanstack/react-router'
-import { AppWindow, BookOpen, Copy, ExternalLink, FileSearch, FileText, type LucideIcon, MessageSquare, Mic, NotebookText, Paperclip, StickyNote, X } from 'lucide-react'
+import { AppWindow, BookOpen, Copy, ExternalLink, FileSearch, FileText, type LucideIcon, MessageSquare, Mic, NotebookText, Paperclip, Presentation, StickyNote, X } from 'lucide-react'
 import type { DragEvent } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
@@ -19,6 +19,7 @@ export const KIND_ICON: Record<Kind, LucideIcon> = {
   meeting: Mic,
   notebook: NotebookText,
   source: FileSearch,
+  whiteboard: Presentation,
 }
 
 /** Props that make a row a drag source for the composer's drop (§7.8); desktop only — no HTML5 drag on iOS Safari. */
@@ -57,6 +58,8 @@ export function useOpenRef(): (ref: AttachRef) => void {
         return void navigate({ to: '/notebooks/$id', params: { id: ref.id }, search: {} })
       case 'source':
         return void navigate({ to: '/sources/$id', params: { id: ref.id }, search: {} })
+      case 'whiteboard':
+        return void navigate({ to: '/whiteboards/$id', params: { id: ref.id }, search: {} })
     }
   }
 }
@@ -72,6 +75,7 @@ export function popoutOf(ref: AttachRef): PopoutTarget | null {
       return { kind: 'chat', session: ref.id }
     case 'meeting':
       return { kind: 'meeting', meeting: ref.id }
+    case 'whiteboard':
     case 'knowledge':
     case 'notebook':
     case 'source':

@@ -44,7 +44,7 @@
             assert!(m.private.as_ref().unwrap().member(child) && m.private.as_ref().unwrap().member(grandchild));
             let approval = ApprovalId(uuid::Uuid::now_v7());
             let request = |id, session| ApprovalRequested {
-                id, session, tool: "shell".into(), args: serde_json::json!({"command":"echo ok"}), risk: tools::Risk::ReadOnly, human_only: false,
+                id, session, tool: "shell".into(), args: serde_json::json!({"command":"echo ok"}), risk: tools::Risk::ReadOnly, human_only: false, always_ask: false,
             };
             m.apply(wire_event("tools.approval-requested", request(approval, grandchild)));
             m.apply(wire_event("tools.approval-requested", request(ApprovalId(uuid::Uuid::now_v7()), SessionId::new())));
@@ -3119,11 +3119,25 @@
         // `/tools` is `/mcp` (the other tests type `/mcp`).
         m.submit("/tools", &tx);
         assert!(matches!(component_request::<McpRequest>(&mut rx), Ok(McpRequest::ListMcp(Some(s))) if s == sid));
+        // 219 §6.2: the `!` markers read this chat's always-ask entries alongside.
+        assert!(matches!(component_request::<McpRequest>(&mut rx), Ok(McpRequest::GetAlwaysAsk(Some(s))) if s == sid));
         component_reply(&mut m, "mcp", McpMsg::Mcp(Ok(vec![fresh(
             Some(Gate::Destructive),
             None,
             false,
         )])));
+
+        // 219 §6.2: a failed `get_always_ask` is shown and keeps the markers it had, so `!` still unmarks.
+        let marked = tools::AlwaysAskState { session: vec!["mcp:fs".into()], ..Default::default() };
+        component_reply(&mut m, "mcp", McpMsg::AlwaysAsk(Ok(marked)));
+        component_reply(&mut m, "mcp", McpMsg::AlwaysAsk(Err("get_always_ask: engine gone".into())));
+        assert!(matches!(m.entries.last(), Some(Entry::Error(e)) if e == "get_always_ask: engine gone"));
+        component_menu_key(&mut m, "mcp", KeyCode::Char('!'));
+        assert!(matches!(
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetAlwaysAsk { tool, on: false, .. }) if tool == "mcp:fs"
+        ));
+        component_reply(&mut m, "mcp", McpMsg::AlwaysAsk(Ok(tools::AlwaysAskState::default())));
 
         // Space never reaches `off`: destructive wraps to annotations.
         component_menu_key(&mut m, "mcp", KeyCode::Char(' '));
@@ -3218,6 +3232,23 @@
         component_menu_key(&mut m, "mcp", KeyCode::Left);
         assert!(matches!(m.components.get::<Mcp>().unwrap().menu, Some(McpMenu { cursor: 0, .. })));
         assert_eq!(m.components.get::<Mcp>().unwrap().mcp_rows().len(), 1);
+
+        // 219 §6.2: `!` marks the server always ask in this chat (`mcp:<server>`), and again unmarks it.
+        component_menu_key(&mut m, "mcp", KeyCode::Char('!'));
+        assert!(matches!(
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetAlwaysAsk { session, tool, on: true }) if session == sid && tool == "mcp:fs"
+        ));
+        component_reply(&mut m, "mcp", McpMsg::AlwaysAskSet(Ok(tools::AlwaysAskState {
+            global: vec![],
+            session: vec!["mcp:fs".into()],
+            inherited: vec![],
+        })));
+        component_menu_key(&mut m, "mcp", KeyCode::Char('!'));
+        assert!(matches!(
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetAlwaysAsk { tool, on: false, .. }) if tool == "mcp:fs"
+        ));
 
         // Without a session the prompt still shows; `s` asks for one to be created.
         m.session = None;
@@ -8464,6 +8495,7 @@
             args: serde_json::json!({"command": "git push"}),
             risk: tools::Risk::Mutating,
             human_only: false,
+            always_ask: false,
         }));
         assert_eq!(m.components.get::<Double>().unwrap().chip().as_deref(), Some("double: Allow 91 % · L1"));
         // L2: the countdown is derived from `will_act_at` and keeps frames coming.

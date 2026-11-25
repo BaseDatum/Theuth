@@ -3,7 +3,8 @@
 // card is the way in. `openTile` does the placement, the selected-pane takeover and the dedupe (the same job, document,
 // file or diff again retargets its tile).
 
-import { openDiffTile, openFileTile, openJobLogTile, openJobTerminalTile, openNoteTile } from '@/components/tiles/open'
+import { openDiffTile, openFileTile, openJobLogTile, openJobTerminalTile, openNoteTile, openWhiteboardTile } from '@/components/tiles/open'
+import type { WhiteboardViewOpened } from '@/components/whiteboard/wire'
 import { tileable } from '@/lib/tiles'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 
@@ -20,6 +21,18 @@ export function ptyViewOpened(e: { session: string; job: string; title: string; 
 export function noteViewOpened(e: { session: string; doc: string; title: string; block?: string | null }, visible: boolean): void {
   if (!visible || !tileable(e.session)) return
   openNoteTile(e.session, { doc: e.doc, title: e.title, ...(e.block ? { block: e.block } : {}) })
+}
+
+/**
+ * `WhiteboardViewOpened` (218 §8.8): whiteboard `doc`'s tile beside `session`'s chat when that chat is on screen in a
+ * tiling layout; from a chat on screen where no tile can open (a phone, no pane) the whiteboard's own page, bound to
+ * `session`. A chat that is not on screen moves nobody: the user is elsewhere and the whiteboard is in the sidebar.
+ * `go` pushes an app path (the router lives in `App.tsx`).
+ */
+export function whiteboardViewOpened(e: WhiteboardViewOpened, visible: boolean, go: (href: string) => void): void {
+  if (!visible) return
+  if (tileable(e.session) && openWhiteboardTile(e.session, { doc: e.doc, title: e.title }) !== null) return
+  go(`/whiteboards/${encodeURIComponent(e.doc)}?session=${encodeURIComponent(e.session)}`)
 }
 
 /** `FileViewOpened` (212 §4): the file's tile beside `session`'s chat, keyed by the descriptor id, scrolled to `line`

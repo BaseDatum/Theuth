@@ -9,9 +9,10 @@ use jsonrpsee::types::ErrorObjectOwned;
 use rpc_core::{Server, ask};
 use runtime::SessionId;
 use tools::{
-    ApprovalsState, BuiltinCategory, BuiltinsSwitchError, DeleteToolCategory, ListBuiltins,
-    ListToolCategories, SetApprovals, SetBuiltinsDisabled, SetDefaultToolCategories, SetHidden,
-    SetMcpCategory, SetToolCategory, ToolCategoryInfo, ToolRegistry, UpsertToolCategory,
+    AlwaysAskError, AlwaysAskState, ApprovalsState, BuiltinCategory, BuiltinsSwitchError,
+    DeleteToolCategory, GetAlwaysAsk, ListBuiltins, ListToolCategories, SetAlwaysAsk, SetApprovals,
+    SetBuiltinsDisabled, SetDefaultToolCategories, SetHidden, SetMcpCategory, SetToolCategory,
+    ToolCategoryInfo, ToolRegistry, UpsertToolCategory,
 };
 use uuid::Uuid;
 
@@ -115,6 +116,24 @@ pub trait AgentToolingApi {
         enabled: bool,
         clear: Option<bool>,
     ) -> RpcResult<ApprovalsState>;
+    /// 219 §5: the always-ask entries in force for `session` (its own, its ancestors' as
+    /// `inherited`) and harness-wide (`global`), answered by the session's owner; without
+    /// `session`, this engine's global list.
+    #[method(name = "get_always_ask", with_extensions)]
+    async fn get_always_ask(&self, session: Option<SessionId>) -> RpcResult<AlwaysAskState>;
+    /// 219 §5: mark (`on`) or unmark a tool name or `mcp:<server>` key as always ask, for
+    /// `session` (and its subagents) on its owner, or harness-wide (`tools.always_ask`,
+    /// persisted) with `None`. Adding is never gated; removing a present entry needs the
+    /// owner's own press (desktop/app socket), else a human-only card `always_ask.remove`.
+    /// A loop-local or empty name is invalid params; a config that cannot be written or a
+    /// removal not approved is an internal error.
+    #[method(name = "set_always_ask", with_extensions)]
+    async fn set_always_ask(
+        &self,
+        session: Option<SessionId>,
+        tool: String,
+        on: bool,
+    ) -> RpcResult<AlwaysAskState>;
     /// The assembled system prompt; without `session` the peers section is omitted.
     #[method(name = "get_prompt", with_extensions)]
     async fn get_prompt(&self, session: Option<SessionId>) -> RpcResult<String>;
@@ -326,9 +345,221 @@ impl AgentToolingApiServer for Server {
         self.authorize_opt(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, ShowPrompt { session }).await
     }
+
+    async fn get_always_ask(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+    ) -> RpcResult<AlwaysAskState> {
+        self.authorize_opt_fwd(ext, session).await?;
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "get_always_ask", (session,)).await?
+        {
+            return Ok(r);
+        }
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetAlwaysAsk { session }).await
+    }
+
+    async fn set_always_ask(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+        tool: String,
+        on: bool,
+    ) -> RpcResult<AlwaysAskState> {
+        self.authorize_opt_fwd(ext, session).await?;
+        // One normalised name for the forward, the human check and the registry (which trims
+        // too), so `" shell"` cannot pass the check as absent and then remove `shell`.
+        let tool = tool.trim().to_owned();
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "set_always_ask", (session, &tool, on)).await?
+        {
+            return Ok(r);
+        }
+        // §2.4: removing an entry this scope holds needs the human; adding never does.
+        if !on && !human_press(ext) {
+            let state =
+                ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetAlwaysAsk { session }).await?;
+            let own = if session.is_some() {
+                &state.session
+            } else {
+                &state.global
+            };
+            if own.contains(&tool) {
+                let here = match ext.get::<forward::Forwarded>() {
+                    Some(_) => Some(
+                        ask::<agent::Agents, _>(agent::AGENT_ACTOR, agent::DurableStore)
+                            .await?
+                            .engine()
+                            .to_owned(),
+                    ),
+                    None => None,
+                };
+                confirm_removal(session, &tool, here.as_deref()).await?;
+            }
+        }
+        let registry = rpc_core::lookup::<ToolRegistry>(tools::REGISTRY_ACTOR)?;
+        match registry.ask(SetAlwaysAsk { session, tool, on }).await {
+            Ok(state) => Ok(state),
+            Err(kameo::error::SendError::HandlerError(e)) => {
+                let code = match e {
+                    AlwaysAskError::LoopLocal(_) | AlwaysAskError::Empty => {
+                        jsonrpsee::types::error::INVALID_PARAMS_CODE
+                    }
+                    AlwaysAskError::NotWritten(_) => jsonrpsee::types::error::INTERNAL_ERROR_CODE,
+                };
+                Err(ErrorObjectOwned::owned(code, e.to_string(), None::<()>))
+            }
+            Err(e) => Err(ErrorObjectOwned::owned(
+                rpc_core::ASK_FAILED,
+                e.to_string(),
+                None::<()>,
+            )),
+        }
+    }
 }
 
 pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::DescribedModule::new(AgentToolingApiServer::into_rpc(server), rpc_descriptors())
         .expect("agent RPC descriptors")
+}
+
+/// 219 §2.4: a human press in the sense of 171 §12.1 invariant 1, the same rule as the share
+/// crate's `Consent::of_press`: an authenticated, open connection that is neither a share-link
+/// guest nor the internal peer (MCP console, ACP agent half, TUI, family-forwarded calls). What
+/// remains is the owner's desktop/app socket or a paired device, the set that can already
+/// resolve a human-only card, so skipping the card for them grants nothing the card withheld.
+fn human_press(ext: &Extensions) -> bool {
+    ext.get::<rpc_core::RpcPeer>()
+        .is_some_and(|p| p.guest().is_none() && !p.is_internal() && !p.is_closed())
+}
+
+/// 219 §2.4: the human-only card `always_ask.remove` for a removal that is not a press; a
+/// deny, dismissal, timeout or a missing approval service refuses the removal. `forwarded_to`
+/// is this engine's id when the call was forwarded here by the chat's front door: the card is
+/// raised here, so the refusal names where it waited.
+async fn confirm_removal(
+    session: Option<SessionId>,
+    tool: &str,
+    forwarded_to: Option<&str>,
+) -> RpcResult<()> {
+    let scope = if session.is_some() { "chat" } else { "harness" };
+    let req = tools::approval::RequestApproval {
+        session: session.unwrap_or(SessionId(Uuid::nil())),
+        tool: "always_ask.remove".to_owned(),
+        args: serde_json::json!({ "tool": tool, "scope": scope }),
+        risk: tools::Risk::Destructive,
+        call_id: None,
+        always_ask: false,
+    };
+    match tools::ask_human_only(req).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            tracing::info!(tool, scope, "always_ask removal refused: {e:#}");
+            let message = match forwarded_to {
+                Some(engine) => {
+                    let short = engine.get(..8).unwrap_or(engine);
+                    format!("always_ask: removing {tool} needs approval on {short}")
+                }
+                None => format!("always_ask: removing {tool} was not approved"),
+            };
+            Err(ErrorObjectOwned::owned(
+                jsonrpsee::types::error::INTERNAL_ERROR_CODE,
+                message,
+                None::<()>,
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ext(p: rpc_core::RpcPeer) -> Extensions {
+        let mut x = Extensions::new();
+        x.insert(p);
+        x
+    }
+
+    /// 219 §2.4: adding is never gated; removing a present entry from the internal peer
+    /// (agent halves, MCP console, TUI) raises the human-only `always_ask.remove` card and a
+    /// deny keeps it, however the name is padded (`" shell"`, `"shell\n"`: the registry trims,
+    /// so the check must too); the owner's own press removes it with no card; removing an
+    /// absent entry asks nothing.
+    #[test]
+    fn removing_always_ask_needs_the_owners_press_or_the_human_only_card() {
+        crate::with_test_registry(async {
+            let d = crate::test_dir("alwaysask");
+            let rt = runtime::Runtime::new(figment::Figment::new(), d.path().to_path_buf());
+            tools::registry::start(&rt).await.unwrap();
+            let server = Server::new(rt);
+            let internal = ext(rpc_core::RpcPeer::internal());
+            let s = server
+                .set_always_ask(&internal, None, "shell".into(), true)
+                .await
+                .unwrap();
+            assert_eq!(s.global, ["shell"]);
+
+            let approval =
+                rpc_core::lookup::<tools::approval::Approval>(tools::APPROVAL_ACTOR).unwrap();
+            for name in ["shell", " shell", "shell\n"] {
+                let removing = tokio::spawn({
+                    let server = server.clone();
+                    async move {
+                        let internal = ext(rpc_core::RpcPeer::internal());
+                        server
+                            .set_always_ask(&internal, None, name.into(), false)
+                            .await
+                    }
+                });
+                let card = loop {
+                    let pending = approval.ask(tools::PendingApprovals).await.unwrap();
+                    if let Some(c) = pending.into_iter().next() {
+                        break c;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                };
+                assert!(card.human_only, "{name:?}");
+                assert_eq!(card.tool, "always_ask.remove");
+                assert_eq!(
+                    card.args,
+                    serde_json::json!({ "tool": "shell", "scope": "harness" })
+                );
+                approval
+                    .ask(tools::Resolve {
+                        id: card.id,
+                        decision: tools::Decision::Deny,
+                    })
+                    .await
+                    .unwrap();
+                let err = removing.await.unwrap().unwrap_err();
+                assert_eq!(err.message(), "always_ask: removing shell was not approved");
+                let s = server.get_always_ask(&internal, None).await.unwrap();
+                assert_eq!(s.global, ["shell"], "{name:?}");
+            }
+
+            let (ui, _guard) = rpc_core::RpcPeer::open();
+            let s = server
+                .set_always_ask(&ext(ui), None, "shell".into(), false)
+                .await
+                .unwrap();
+            assert!(s.global.is_empty());
+            let s = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                server.set_always_ask(&internal, None, "shell".into(), false),
+            )
+            .await
+            .expect("an absent entry raises no card")
+            .unwrap();
+            assert!(s.global.is_empty());
+            assert!(
+                approval
+                    .ask(tools::PendingApprovals)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        });
+    }
 }

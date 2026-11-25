@@ -99,6 +99,12 @@ export type NoteProps = { doc: string; block?: string; title?: string }
 /** Document `doc` beside the chat in leaf `host`; one tile per document, so the same one again retargets it. */
 export const openNoteTile = (host: string, note: NoteProps): string | null => openTile({ kind: 'note', host, key: note.doc, props: note })
 
+/** A `whiteboard` tile (218 §8.8): document `doc` live on its canvas, bound to the tile's session; `title` names the tile. */
+export type WhiteboardProps = { doc: string; title?: string }
+/** Whiteboard `doc` beside the chat in leaf `host`; one tile per whiteboard, so the same one again retargets it. */
+export const openWhiteboardTile = (host: string, props: WhiteboardProps): string | null =>
+  openTile({ kind: 'whiteboard', host, key: props.doc, props })
+
 /** A `file` tile (212 §4): `show_file`'s file `path` (absolute) of `session`, fetched by the tile with
  * `file_view_read`; `line..end_line` scrolled to and marked; `id` is the tool's descriptor id. */
 export type FileProps = { session: string; path: string; id: string; title: string; lang?: string; line?: number; end_line?: number }

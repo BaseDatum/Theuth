@@ -392,6 +392,207 @@ fn png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// 218 §7: `wb_capture`'s rectangle, CSS px of the main webview (= points).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+pub(crate) struct WbRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// What `wb_capture` refuses with when `rect` shows nothing of the view.
+const WB_EMPTY: &str = "wb_capture: empty rect";
+
+/// How long a whiteboard capture may take before the caller falls back to its own pixels.
+const WB_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The largest `snapshotWidth` honoured, in points: past it a caller asked for an image nobody sends.
+const WB_MAX_WIDTH: f64 = 4096.0;
+
+/// `rect` checked against the web view's visible `bounds` (width, height in points): a rect with no area,
+/// a non-finite number, or no overlap with the view shows nothing. A rect partly off the view is captured
+/// as asked (WebKit leaves the outside transparent), so the image still maps onto `rect` one to one.
+fn wb_check(rect: WbRect, bounds: (f64, f64)) -> Result<(), String> {
+    let finite = [rect.x, rect.y, rect.width, rect.height]
+        .iter()
+        .all(|v| v.is_finite());
+    let overlaps = rect.x < bounds.0
+        && rect.y < bounds.1
+        && rect.x + rect.width > 0.0
+        && rect.y + rect.height > 0.0;
+    if !finite || rect.width <= 0.0 || rect.height <= 0.0 || !overlaps {
+        return Err(WB_EMPTY.to_owned());
+    }
+    Ok(())
+}
+
+/// The `snapshotWidth` to ask for: the caller's, when it is a usable number, capped at [`WB_MAX_WIDTH`].
+fn wb_width(width: Option<f64>) -> Option<f64> {
+    width
+        .filter(|w| w.is_finite() && *w >= 1.0)
+        .map(|w| w.min(WB_MAX_WIDTH))
+}
+
+/// A configuration for `rect` (in the view's own coordinates) at `width` points wide, after the screen's
+/// pending updates so the whiteboard's last frame is in it.
+fn wb_configuration(
+    mtm: MainThreadMarker,
+    rect: NSRect,
+    width: Option<f64>,
+) -> Retained<objc2_web_kit::WKSnapshotConfiguration> {
+    // SAFETY: main thread (the marker); a fresh configuration only this function holds.
+    unsafe {
+        let config = objc2_web_kit::WKSnapshotConfiguration::new(mtm);
+        // `setRect:` is bound behind `objc2-core-foundation`, which this crate does not enable on
+        // `objc2-web-kit`; `NSRect` is `CGRect`, the selector's argument.
+        let _: () = objc2::msg_send![&*config, setRect: rect];
+        if let Some(width) = width {
+            config.setSnapshotWidth(Some(&objc2_foundation::NSNumber::new_f64(width)));
+        }
+        config.setAfterScreenUpdates(true);
+        config
+    }
+}
+
+/// Take a snapshot of `rect` (CSS px) of `view`, the main webview; its `CGImage` goes to `tx`.
+#[cfg(target_os = "macos")]
+fn wb_snapshot(
+    mtm: MainThreadMarker,
+    view: &WKWebView,
+    rect: WbRect,
+    width: Option<f64>,
+    tx: SyncSender<Result<Retained<CGImage>, String>>,
+) {
+    let bounds = view.bounds();
+    if let Err(e) = wb_check(rect, (bounds.size.width, bounds.size.height)) {
+        let _ = tx.try_send(Err(e));
+        return;
+    }
+    // WKWebView is flipped on macOS: its coordinates are the page's, top-left origin, in points.
+    let config = wb_configuration(
+        mtm,
+        NSRect::new(
+            NSPoint::new(rect.x, rect.y),
+            NSSize::new(rect.width, rect.height),
+        ),
+        width,
+    );
+    let done = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
+        // SAFETY: WebKit passes live (or nil) objects for the duration of the call.
+        let reply = match unsafe { (image.as_ref(), error.as_ref()) } {
+            (_, Some(error)) => Err(snapshot_failed(error)),
+            (Some(image), None) => {
+                unsafe { image.CGImageForProposedRect_context_hints(null_mut(), None, None) }
+                    .ok_or_else(|| "snapshot has no bitmap".to_owned())
+            }
+            (None, None) => Err("snapshot returned no image".to_owned()),
+        };
+        let _ = tx.try_send(reply);
+    });
+    // SAFETY: WebKit calls the handler once, on the main thread.
+    unsafe { view.takeSnapshotWithConfiguration_completionHandler(Some(&config), &done) };
+}
+
+/// Take a snapshot of `rect` (CSS px) of `view`, the main webview; its `CGImage` goes to `tx`.
+#[cfg(target_os = "ios")]
+fn wb_snapshot(
+    mtm: MainThreadMarker,
+    view: &WKWebView,
+    rect: WbRect,
+    width: Option<f64>,
+    tx: SyncSender<Result<Retained<CGImage>, String>>,
+) {
+    let bounds = view.bounds();
+    // CSS px of the layout viewport → the web view's own points, through its scroll view (page zoom,
+    // content offset and the safe-area insets), the conversion the tile views use.
+    let frame = crate::ios_webview::frame_in(view, view, rect.x, rect.y, rect.width, rect.height);
+    let local = WbRect {
+        x: frame.origin.x,
+        y: frame.origin.y,
+        width: frame.size.width,
+        height: frame.size.height,
+    };
+    if let Err(e) = wb_check(local, (bounds.size.width, bounds.size.height)) {
+        let _ = tx.try_send(Err(e));
+        return;
+    }
+    let config = wb_configuration(mtm, frame, width);
+    let done = RcBlock::new(move |image: *mut UIImage, error: *mut NSError| {
+        // SAFETY: WebKit passes live (or nil) objects for the duration of the call.
+        let reply = match unsafe { (image.as_ref(), error.as_ref()) } {
+            (_, Some(error)) => Err(snapshot_failed(error)),
+            (Some(image), None) => unsafe { image.CGImage() }
+                .ok_or_else(|| "snapshot has no bitmap".to_owned()),
+            (None, None) => Err("snapshot returned no image".to_owned()),
+        };
+        let _ = tx.try_send(reply);
+    });
+    let config: &AnyObject = &config;
+    // SAFETY: a `WKSnapshotConfiguration` for the untyped parameter; WebKit calls the handler once, on the
+    // main thread.
+    unsafe { view.takeSnapshotWithConfiguration_completionHandler(Some(config), &done) };
+}
+
+/// `image` at its own pixel size as `{ png, width, height, scale }`: `scale` = pixels per point of the
+/// snapshot's width (`points`).
+fn wb_encode(image: &CGImage, points: f64) -> Result<Value, String> {
+    let width = CGImage::width(Some(image));
+    let height = CGImage::height(Some(image));
+    if width == 0 || height == 0 {
+        return Err("the snapshot is empty".to_owned());
+    }
+    let rgba = draw(image, width, height)?;
+    let png = png(width, height, &rgba)?;
+    Ok(json!({
+        "png": base64::engine::general_purpose::STANDARD.encode(png),
+        "width": width,
+        "height": height,
+        "scale": width as f64 / points,
+    }))
+}
+
+/// 218 §7: a PNG of `rect` (CSS px of the main webview) at `width` points wide (default: the rect's
+/// width at the screen's scale), for the whiteboard's card snapshots and the send's images. Main webview
+/// only. The pixels are WebKit's composited view: sibling native views (the web view tiles, the Pencil
+/// overlay) are not in it.
+#[tauri::command]
+pub async fn wb_capture(
+    webview: tauri::Webview,
+    rect: WbRect,
+    width: Option<f64>,
+) -> Result<Value, String> {
+    if webview.label() != "main" {
+        return Err("wb_capture: main webview only".to_owned());
+    }
+    wb_check(rect, (f64::INFINITY, f64::INFINITY))?;
+    let width = wb_width(width);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Retained<CGImage>, String>>(1);
+    webview
+        .with_webview(move |platform| {
+            let Some(mtm) = MainThreadMarker::new() else {
+                let _ = tx.try_send(Err("with_webview ran off the main thread".to_owned()));
+                return;
+            };
+            // SAFETY: on Apple platforms `inner()` is the webview's live `WKWebView`, and `with_webview`
+            // runs on the main thread.
+            let view = unsafe { &*platform.inner().cast::<WKWebView>() };
+            wb_snapshot(mtm, view, rect, width, tx);
+        })
+        .map_err(|e| e.to_string())?;
+    let points = width.unwrap_or(rect.width);
+    tauri::async_runtime::spawn_blocking(move || match rx.recv_timeout(WB_TIMEOUT) {
+        Ok(reply) => wb_encode(&*reply?, points),
+        Err(RecvTimeoutError::Timeout) => Err(format!(
+            "wb_capture: timed out after {} ms",
+            WB_TIMEOUT.as_millis()
+        )),
+        Err(RecvTimeoutError::Disconnected) => Err("wb_capture: the web view went away".to_owned()),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use objc2_core_graphics::{
@@ -569,5 +770,35 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(!Ticket::new(LABEL).stopped());
         assert!(!Ticket::new("web-stop-test-0002").stopped());
+    }
+
+    #[test]
+    fn wb_capture_refuses_an_empty_rect() {
+        let rect = |x, y, width, height| WbRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let view = (1024.0, 768.0);
+        for empty in [
+            rect(10.0, 10.0, 0.0, 50.0),
+            rect(10.0, 10.0, 50.0, -1.0),
+            rect(f64::NAN, 10.0, 50.0, 50.0),
+            rect(10.0, 10.0, f64::INFINITY, 50.0),
+            rect(1024.0, 10.0, 50.0, 50.0),
+            rect(10.0, 800.0, 50.0, 50.0),
+            rect(-60.0, 10.0, 50.0, 50.0),
+            rect(10.0, -50.0, 50.0, 50.0),
+        ] {
+            assert_eq!(wb_check(empty, view).unwrap_err(), WB_EMPTY, "{empty:?}");
+        }
+        assert!(wb_check(rect(0.0, 0.0, 1024.0, 768.0), view).is_ok());
+        // Partly off the view: captured as asked, the outside left transparent.
+        assert!(wb_check(rect(-40.0, 700.0, 100.0, 100.0), view).is_ok());
+        assert_eq!(wb_width(Some(0.0)), None);
+        assert_eq!(wb_width(Some(f64::NAN)), None);
+        assert_eq!(wb_width(Some(9000.0)), Some(WB_MAX_WIDTH));
+        assert_eq!(wb_width(Some(320.0)), Some(320.0));
     }
 }

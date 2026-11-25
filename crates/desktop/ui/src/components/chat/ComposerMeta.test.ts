@@ -284,3 +284,19 @@ test('recording with the picker: the row keeps its height, the picker goes, the 
   expect(row.className).toContain('invisible')
   expect(row.querySelector('[data-tour="chat-model"]')).toBeNull()
 })
+
+test('219 §6.1: always-ask tools add a line that opens the Tools sheet; with approvals off the tooltip counts them', () => {
+  const onAlwaysAsk = vi.fn()
+  mount({ state: 'off', alwaysAsk: 2, onAlwaysAsk })
+  expect(shield().getAttribute('title')).toBe('Approvals off · 2 tools always ask')
+  click(shield())
+  const line = document.querySelector<HTMLElement>('[data-level="always-ask"]')!
+  expect(line.textContent).toBe('Always ask: 2 tools')
+  click(line)
+  expect(onAlwaysAsk).toHaveBeenCalled()
+  act(() => root!.unmount())
+  mount({ state: 'on', alwaysAsk: 0 })
+  expect(shield().getAttribute('title')).toBe('Approvals on: asks before risky tools')
+  click(shield())
+  expect(document.querySelector('[data-level="always-ask"]')).toBeNull()
+})

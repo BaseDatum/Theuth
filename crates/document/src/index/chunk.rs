@@ -111,6 +111,7 @@ pub fn kinds(blocks: &[Block], doc_kind: &str) -> Vec<&'static str> {
         "board" => "board",
         "meeting_note" => "meeting_note",
         "source" => "source",
+        "whiteboard" => "whiteboard",
         _ => "notebook",
     };
     let mut out = Vec::with_capacity(blocks.len());

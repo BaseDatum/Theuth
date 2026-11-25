@@ -50,6 +50,18 @@ pub trait Journal: Send + Sync {
     fn hidden(&self, _session: SessionId, _tools: Vec<String>) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
+    /// 219 §3.2: a session's own always-ask set changed (`SetAlwaysAsk`): the whole set,
+    /// sorted; empty clears `sessions.always_ask`. Unlike the other writes this one is
+    /// fallible: the registry writes first and applies in memory only on `Ok`, so a mark the
+    /// store did not keep never silently disappears at the next spawn. Default `Ok`: only the
+    /// agent's store has a row to write.
+    fn always_ask(
+        &self,
+        _session: SessionId,
+        _names: Vec<String>,
+    ) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// `ask` → `()`: install the agent's journal on the registry, which forwards

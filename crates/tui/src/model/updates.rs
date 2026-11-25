@@ -102,6 +102,7 @@ impl Model {
                     on_off(s.global)
                 )));
             }
+            UiEvent::AlwaysAsk(s) => self.entries.push(Entry::Info(always_ask_line(&s))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             // The note rides the reload (like undo's), so it lands after the
             // transcript the new engine serves — a pushed entry would go with

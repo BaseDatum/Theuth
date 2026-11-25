@@ -14,6 +14,7 @@ export const TAB_LABEL: Record<Tab, string> = {
   meeting: 'Meetings',
   notebook: 'Notebooks',
   source: 'Sources',
+  whiteboard: 'Whiteboards',
 }
 
 /** Which `search` categories a tab requests, in the picker's group order (notes first, as the browse view). */
@@ -35,6 +36,9 @@ export function categoriesFor(tab: Tab): SearchCategory[] {
       return ['notebooks']
     case 'source':
       return ['sources']
+    case 'whiteboard':
+      // 218: no `search` category covers whiteboards; they attach from the whiteboard itself (its marker).
+      return []
   }
 }
 

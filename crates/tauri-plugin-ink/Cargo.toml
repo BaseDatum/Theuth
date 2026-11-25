@@ -1,0 +1,23 @@
+[package]
+name = "tauri-plugin-ink"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "218 §6: native Apple Pencil capture for the whiteboard on iPadOS (PencilKit overlay, tool picker, Pencil taps, Vision handwriting); a stub on desktop"
+links = "tauri-plugin-ink"
+exclude = ["/guest-js"]
+
+[build-dependencies]
+# The version Cargo.lock already resolves for every Tauri plugin in the tree.
+tauri-plugin = { version = "2.7.2", features = ["build"] }
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri = { workspace = true, features = ["wry"] }
+
+[lints]
+workspace = true

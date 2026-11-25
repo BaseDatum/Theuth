@@ -8,6 +8,8 @@
     pub use agent::rpc_documents::AgentDocumentsApiClient;
     pub use agent::rpc_notebooks::AgentNotebooksApiClient;
     pub use document::rpc_notebooks::DocumentNotebooksApiClient;
+    pub use document::rpc_whiteboards::DocumentWhiteboardsApiClient;
+    pub use agent::rpc_whiteboards::AgentWhiteboardsApiClient;
     pub use agent::rpc_sessions::AgentSessionsApiClient;
     pub use sessionsync::rpc_sessions::SessionsyncSessionsApiClient;
     pub use tools::rpc_tooling::ToolsToolingApiClient;

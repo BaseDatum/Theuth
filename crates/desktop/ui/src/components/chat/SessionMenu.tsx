@@ -38,6 +38,7 @@ import { age } from '@/components/tasks/helpers'
 import { useAgents, useMesh } from '@/components/tasks/queries'
 import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
 import { useDrafts } from '@/lib/drafts'
+import { alwaysAskCount, useAlwaysAsk } from '@/lib/always-ask'
 import { usePanes } from '@/lib/panes'
 import { tileable } from '@/lib/tiles'
 import { openJobsTile, openPromptTile, openTasksGraphTile } from '@/components/tiles/open'
@@ -66,6 +67,7 @@ import { type ApprovalLevel, type ApprovalsChoice, type ApprovalsReading, approv
 export type SettingsRow =
   | { id: 'header' | 'offline' | 'separator' | 'move'; label: string }
   | ({ id: 'approvals'; label: string } & ApprovalsChoice)
+  | { id: 'always-ask'; label: string }
   | { id: 'messaging'; label: string; checked: boolean; disabled: boolean }
   | { id: 'model' | 'continue'; label: string; disabled: boolean }
 
@@ -81,6 +83,8 @@ export function settingsRows(o: {
   /** 183 R1 (S7): the owner is pre-183 and answered `get_approvals` -32601; the row says so instead of an error. */
   oldOwner?: boolean
   messaging?: Pick<CommunicationState, 'effective'>
+  /** 219 §6.1: how many tools always ask in this chat (its own, inherited and harness-wide); 0 adds no row. */
+  alwaysAsk?: number
   model: string
   /** The session's effort (`null` = the model's default); the model row names it, the picker it opens has the chips. */
   effort?: string | null
@@ -90,6 +94,7 @@ export function settingsRows(o: {
     ...(o.owner === undefined ? [] : [{ id: 'header' as const, label: `Settings for this session on ${o.owner}` }]),
     ...(off ? [{ id: 'offline' as const, label: `${o.owner} is offline · Continue here` }] : []),
     { id: 'approvals', label: 'Approvals: Ask before risky tools', ...approvalsChoice(o) },
+    ...(o.alwaysAsk ? [{ id: 'always-ask' as const, label: `Always ask: ${o.alwaysAsk} ${o.alwaysAsk === 1 ? 'tool' : 'tools'}` }] : []),
     { id: 'messaging', label: 'Agent messaging', checked: o.messaging?.effective ?? false, disabled: off || !o.messaging },
     // §12.2, 2026-11-11 (Sky): Model ›, with the effort, opens the standard picker; its effort chips replaced the Effort › submenu.
     { id: 'model', label: `Model: ${o.model}${o.effort ? ` · ${o.effort}` : ''}`, disabled: off },
@@ -278,6 +283,7 @@ export function SessionMenu({ session }: { session: string }) {
   const approvals = useQuery({ queryKey: ['approvals', session || null], queryFn: () => api.get_approvals(session || null), enabled: canQuery3_3 && open, retry: false })
   const messaging = useQuery({ queryKey: queryKeys.communication(session || null), queryFn: () => api.get_communication(session || null), enabled: canQuery3_4 && open, retry: false })
   const pending = useDrafts((s) => s.settings)
+  const alwaysAsk = useAlwaysAsk(session, open)
   const pick = useDrafts((s) => s.pick)
   const parked = useOwnerOffline((s) => s.by[session] !== undefined)
   const unreachable = mesh.data?.peers.find((p) => p.id === row?.owner)?.reachable === false
@@ -294,6 +300,7 @@ export function SessionMenu({ session }: { session: string }) {
     offline,
     oldOwner: owner !== undefined && approvals.error instanceof RpcError && approvals.error.code === -32601,
     approvals: !session && approvals.data ? { ...approvals.data, pin: pending.approvals ?? undefined } : approvals.data,
+    alwaysAsk: alwaysAskCount(alwaysAsk),
     messaging: !session && messaging.data ? { effective: pending.communication ?? messaging.data.effective } : messaging.data,
     model: current?.name ?? (session ? model : pick.model) ?? 'default',
     effort: session ? effort : pick.effort,
@@ -399,6 +406,12 @@ export function SessionMenu({ session }: { session: string }) {
                     </DropdownMenuRadioGroup>
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
+              )}
+              {r.id === 'always-ask' && (
+                <DropdownMenuItem onSelect={() => useToolsSheet.getState().show(session)}>
+                  {r.label}
+                  <span className="ml-auto text-fg-tertiary">›</span>
+                </DropdownMenuItem>
               )}
               {r.id === 'messaging' && (
                 <DropdownMenuCheckboxItem checked={r.checked} disabled={r.disabled} onCheckedChange={(on) => session ? set(() => api.set_communication(session, on)) : useDrafts.getState().setSettings({ communication: on })}>

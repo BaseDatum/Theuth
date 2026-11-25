@@ -214,6 +214,8 @@ impl Agents {
                                     call_id: call.call_id.clone(),
                                     decision,
                                     dismissed,
+                                    // 219 §2.3: an always-ask call replays only a human's answer.
+                                    answered_by: row.answered_by,
                                 })
                                 .await;
                             n.honoured += 1;
@@ -656,6 +658,7 @@ mod tests {
                 args: json!({}),
                 risk: Risk::Destructive,
                 call_id: Some("c2".into()),
+                always_ask: false,
             })
             .await
             .unwrap();
@@ -671,6 +674,7 @@ mod tests {
                 args: json!({}),
                 risk: Risk::Destructive,
                 call_id: Some("c4".into()),
+                always_ask: false,
             })
             .await
             .unwrap();
@@ -686,6 +690,7 @@ mod tests {
                 args: json!({}),
                 risk: Risk::Destructive,
                 call_id: Some("c1".into()),
+                always_ask: false,
             })
             .await
             .unwrap();

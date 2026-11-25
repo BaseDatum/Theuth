@@ -83,6 +83,7 @@ impl Model {
                 self.entries.push(Entry::Info("new session".into()));
             }
             "/approvals" => self.approvals_cmd(arg, tx),
+            "/always-ask" => self.always_ask_cmd(arg, tx),
 
             "/parent" => match self.session_parent {
                 Some(parent) => self.resume(parent, tx),

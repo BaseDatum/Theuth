@@ -16,6 +16,8 @@ import type { Loaded as LoadedPage } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
+import type { AlwaysAskState } from '@/rpc/bindings/method.agent.output'
+import { setAlwaysAsk } from '@/lib/always-ask'
 import { EMPTY, openDraftSession, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { useSuffixes } from '@/lib/suffixes'
 import { notebookKeys } from '@/lib/notebooks-rpc'
@@ -135,6 +137,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     name: '/approvals',
     hint: '[on|off] [always]',
     desc: 'tool approval prompts; `always` persists the node-wide default',
+  },
+  {
+    name: '/always-ask',
+    hint: '[<tool> [on|off] [always]]',
+    desc: 'a tool always needs your approval, even with approvals off; `always` = every chat (list without args)',
   },
   {
     name: '/communication',
@@ -305,6 +312,30 @@ const style = (s: string) => STYLES.find((x) => x === s)
 const need = (session: string | null): string => {
   if (!session) throw new Error('no session')
   return session
+}
+
+/** 219 §6.2: `/always-ask <tool> [on|off] [always]`; `on` by default, `always` = harness-wide. */
+export function parseAlwaysAsk(arg: string): { tool: string; on: boolean; always: boolean } {
+  const [tool, ...words] = arg.split(/\s+/).filter(Boolean)
+  if (!tool || tool === 'on' || tool === 'off' || tool === 'always') throw new Error('usage: /always-ask <tool> [on|off] [always]')
+  let on = true
+  let always = false
+  words.forEach((w, i) => {
+    if ((w === 'on' || w === 'off') && i === 0) on = w === 'on'
+    else if (w === 'always' && i === words.length - 1) always = true
+    else throw new Error(`/always-ask: expected on|off then \`always\`, got ${JSON.stringify(w)}`)
+  })
+  return { tool, on, always }
+}
+
+/** The bare `/always-ask` reading, one scope per clause. */
+export function alwaysAskText(s: AlwaysAskState): string {
+  const parts = [
+    s.global.length ? `always: ${s.global.join(', ')}` : '',
+    s.session.length ? `this chat: ${s.session.join(', ')}` : '',
+    s.inherited.length ? `inherited: ${s.inherited.join(', ')}` : '',
+  ].filter(Boolean)
+  return parts.length ? `always ask · ${parts.join(' · ')}` : 'always ask: no tools'
 }
 
 /**
@@ -479,6 +510,19 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       const approvals = await api.set_approvals(rest ? null : session, sub === 'on')
       const { info, setInfo } = useConnection.getState()
       if (info) setInfo({ ...info, approvals })
+      return
+    }
+    case '/always-ask': {
+      if (!arg) {
+        const state = await api.get_always_ask(session)
+        const draft = session ? [] : (useDrafts.getState().settings.alwaysAsk ?? [])
+        toast(alwaysAskText({ ...state, session: [...new Set([...state.session, ...draft])].sort() }))
+        return
+      }
+      const { tool, on, always } = parseAlwaysAsk(arg)
+      await setAlwaysAsk(api, always ? null : (session ?? ''), tool, on)
+      void active().qc.invalidateQueries({ queryKey: ['always-ask'] })
+      toast(`${tool}: ${on ? 'always asks' : 'no longer always asks'} ${always ? 'in every chat' : 'in this chat'}`)
       return
     }
     case '/communication': {

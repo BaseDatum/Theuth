@@ -233,7 +233,11 @@ are rewritten on every start.
   `start` does (`command`, or no arguments for the user's login shell) and
   shows it. `show_note{doc, block?, title?}` opens a note, board, knowledge
   page or meeting note there (`doc` as the `doc_*` tools take it), live as
-  you edit it (design doc 211).
+  you edit it (design doc 211). `show_whiteboard{whiteboard, title?}` opens a
+  whiteboard (design doc 218) the same way; act on it with the `wb_*` runtime
+  functions (`wb_read`, `wb_card`, `wb_crop`, `wb_place`, `wb_update`,
+  `wb_link`, `wb_frame`, `wb_dim`, `wb_resolve`, `wb_remove`, `wb_focus`,
+  `wb_create`, `wb_export`) after `load_skill("whiteboard")`.
 - `show_file{path, line?, end_line?, title?}` opens a source file in the
   same kind of tile, raw and syntax highlighted, scrolled to and marking
   `line`..`end_line`; the tile follows the file as it changes on disk.

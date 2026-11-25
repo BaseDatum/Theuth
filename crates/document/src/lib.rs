@@ -24,12 +24,15 @@ use serde::{Deserialize, Serialize};
 pub mod rpc_documents;
 /// Notebooks RPC methods and typed clients.
 pub mod rpc_notebooks;
+/// Whiteboards RPC methods and typed clients (218 §4.1).
+pub mod rpc_whiteboards;
 
 /// Assemble this plugin's RPC methods.
 pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::merge_described([
         rpc_documents::rpc_module(server.clone()),
-        rpc_notebooks::rpc_module(server),
+        rpc_notebooks::rpc_module(server.clone()),
+        rpc_whiteboards::rpc_module(server),
     ])
     .expect("document RPC composition")
 }
@@ -54,6 +57,7 @@ pub mod share;
 pub mod store;
 pub mod tools;
 pub mod watch;
+pub mod wb;
 
 pub use actor::{
     ApplyUpdate, AwarenessUpdateMsg, Bind, Create, CreateBoard, CreateNote, Delete, DeleteNote,
@@ -371,7 +375,9 @@ impl runtime::Plugin for DocumentPlugin {
             {
                 tools::register(&reg, a.clone(), rt2.data_dir.clone()).await;
                 // 144 §13.2: the wave-1 notebook tools beside the `doc_*` ones.
-                nb_tools::register(&reg, a).await;
+                nb_tools::register(&reg, a.clone()).await;
+                // 218 §3.1: the whiteboard tools.
+                wb::tools::register(&reg, a).await;
             }
         });
         // 69: the derived-file watcher, exports and every write are hub duties. `Reconcile` starts the

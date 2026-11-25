@@ -3,6 +3,7 @@ import { useSearch } from '@tanstack/react-router'
 import { ChevronRight, Search } from 'lucide-react'
 import { useState } from 'react'
 import { CHAT_HINT, Name, RISK_NAME } from '@/components/library/Tools'
+import { AlwaysAskSelect } from '@/components/library/AlwaysAskSelect'
 import { type Action, Empty, Section, errorText, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -182,14 +183,17 @@ function ToolRow({
         </div>
         <div className="line-clamp-2 text-[13px] wrap-break-word text-fg-secondary">{t.description}</div>
       </div>
-      <SwitchGroup
-        compact
-        value={toolSwitch(t)}
-        session={session}
-        label={t.name}
-        disabled={apply.isPending}
-        onChange={(to) => apply.mutate(toolOps(category, t.name, to, session !== null))}
-      />
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <AlwaysAskSelect name={t.name} session={session} />
+        <SwitchGroup
+          compact
+          value={toolSwitch(t)}
+          session={session}
+          label={t.name}
+          disabled={apply.isPending}
+          onChange={(to) => apply.mutate(toolOps(category, t.name, to, session !== null))}
+        />
+      </div>
     </div>
   )
 }

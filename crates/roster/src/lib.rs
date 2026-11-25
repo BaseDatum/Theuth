@@ -6272,6 +6272,7 @@ mod tests {
                             args: serde_json::json!({"command": "rm -rf build"}),
                             risk: ::tools::Risk::Mutating,
                             call_id: Some("c1".into()),
+                            always_ask: false,
                         })
                         .await
                         .unwrap()

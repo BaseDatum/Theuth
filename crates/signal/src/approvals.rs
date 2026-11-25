@@ -159,7 +159,9 @@ impl Pending {
 
 /// The approval prompt sent to the phone (09 §10).
 pub fn message(req: &ApprovalRequested, code: &str) -> String {
-    let mut out = format!("⚠️ {} wants to run\n", req.tool);
+    // 219 §6.3: an always-ask call says so on the tool line.
+    let always = if req.always_ask { " · always ask" } else { "" };
+    let mut out = format!("⚠️ {} wants to run{always}\n", req.tool);
     let shell_cmd = (req.tool == "shell")
         .then(|| req.args.get("command").and_then(|v| v.as_str()))
         .flatten();
@@ -272,7 +274,17 @@ mod tests {
             args,
             risk: tools::Risk::Destructive,
             human_only: false,
+            always_ask: false,
         }
+    }
+
+    #[test]
+    fn an_always_ask_message_says_so_on_the_tool_line() {
+        let r = ApprovalRequested {
+            always_ask: true,
+            ..req("shell", json!({ "command": "ls" }))
+        };
+        assert!(message(&r, "abcd").starts_with("⚠️ shell wants to run · always ask\n  ls\n"));
     }
 
     #[test]

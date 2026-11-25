@@ -204,7 +204,7 @@ async fn private_child_bookkeeping_precedes_topic_selection_and_prompts_are_proj
     let mut prompt_events = topics(&a, json!(["tools.approval-requested", "tools.ask-requested"]), None, false).await;
     assert_eq!(next(&mut prompt_events).await, pending());
     let waiting = tokio::spawn({ let actor = approval.clone(); async move {
-        actor.ask(tools::approval::RequestApproval { session:root, tool:"shell".into(), args:json!({}), risk:tools::Risk::ReadOnly, call_id:None }).await.unwrap()
+        actor.ask(tools::approval::RequestApproval { session:root, tool:"shell".into(), args:json!({}), risk:tools::Risk::ReadOnly, call_id:None, always_ask:false }).await.unwrap()
     }});
     let approved = next(&mut prompt_events).await;
     let asking = tokio::spawn({ let actor = ask.clone(); async move {

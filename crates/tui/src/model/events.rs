@@ -39,6 +39,8 @@ pub enum UiEvent {
     PathComplete(u64, Option<agent::pathac::PathCompletion>),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
+    /// Reply to [`Command::GetAlwaysAsk`] / [`Command::SetAlwaysAsk`] (219 §6.2), shown as a status line.
+    AlwaysAsk(AlwaysAskState),
     /// A command succeeded with nothing to show but a notice.
     Info(String),
     /// Reply to [`Command::GetCompactStyle`].
@@ -231,6 +233,20 @@ pub enum Command {
         session: Option<SessionId>,
         /// On or off.
         enabled: bool,
+    },
+    /// `set_always_ask` (219 §6.2). Removing goes through the internal connection, so it waits on a human-only card.
+    SetAlwaysAsk {
+        /// `None` = harness-wide (`tools.always_ask`).
+        session: Option<SessionId>,
+        /// Registered tool name or `mcp:<server>`.
+        tool: String,
+        /// Mark or unmark.
+        on: bool,
+    },
+    /// `get_always_ask`: the harness-wide list, and the chat's own and inherited entries.
+    GetAlwaysAsk {
+        /// `None` = harness-wide only.
+        session: Option<SessionId>,
     },
 
     /// `set_session_project`: label or clear the root's project (51 §3).

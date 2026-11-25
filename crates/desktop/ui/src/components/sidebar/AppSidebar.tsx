@@ -4,6 +4,7 @@ import { useConnection } from '@/store/connection'
 import { GROUPS } from '@/lib/nav'
 import { requirements as talkRequirements } from '@/components/talk/requirements'
 import { requirements as noteRequirements } from '@/components/notes/requirements'
+import { requirements as whiteboardRequirements } from '@/components/whiteboard/requirements'
 import { requirements as attentionRequirements } from '@/components/attention/requirements'
 import { requirements as costsRequirements } from '@/components/costs/requirements'
 import { broadcastRequirements } from '@/components/chat/requirements'
@@ -53,6 +54,7 @@ import { RAIL_ITEM, RailSections, useSettledRail } from './Rail'
 import { SearchTrigger } from './SearchTrigger'
 import { SessionList } from './SessionList'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
+import { WhiteboardsRail, WhiteboardsRow } from './Whiteboards'
 
 /** Injected by vite `define` from tauri.conf.json. */
 declare const __APP_VERSION__: string
@@ -218,6 +220,9 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 </button>
               </RailTip>
             </Capability>
+            <Capability required={whiteboardRequirements} hide>
+              <WhiteboardsRail itemClass={RAIL_ITEM} wrap={(t) => <RailTip label="Whiteboards">{t}</RailTip>} />
+            </Capability>
             {canRecord && (
               <RailTip label="Meeting">
                 <Link to="/meetings/new" aria-label="Meeting" className={RAIL_ITEM} data-active={section === 'meeting' || undefined}>
@@ -365,6 +370,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </SidebarMenuButton>
             <SidebarPopoutButton target={() => { if (!createNoteAndOpen.isPending) createNoteAndOpen.mutate(true) }} className="top-2 right-2" />
           </SidebarMenuItem></Capability>
+          <Capability required={whiteboardRequirements} hide><WhiteboardsRow className="h-9 rounded-[10px] px-2.5" /></Capability>
           {canRecord && (
             <SidebarMenuItem className="group/popout-row">
               <SidebarMenuButton asChild isActive={section === 'meeting'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>

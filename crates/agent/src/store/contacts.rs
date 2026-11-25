@@ -1201,7 +1201,7 @@ mod tests {
                 .iter()
                 .any(|(t, _)| *t == "contacts")
         );
-        // 0068 left it at 67; 201 PC (0069) and P1 (0070) bumped it since.
-        assert_eq!(crate::store::SESSIONS_WIRE_SCHEMA, 70);
+        // 0068 left it at 67; 201 PC (0069), P1 (0070) and 219 (0078) bumped it since.
+        assert_eq!(crate::store::SESSIONS_WIRE_SCHEMA, 78);
     }
 }

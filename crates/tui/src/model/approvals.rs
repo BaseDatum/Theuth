@@ -220,4 +220,65 @@ impl Model {
         }
         send(tx, Command::SetApprovals { session, enabled });
     }
+
+    /// `/always-ask <tool> [on|off] [always]` (219 §6.2): bare lists the state; `always` is
+    /// harness-wide, otherwise this chat. Removing from here raises the human-only card.
+    pub(super) fn always_ask_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        match parse_always_ask(arg) {
+            Err(e) => self.entries.push(Entry::Error(e)),
+            Ok(None) => send(tx, Command::GetAlwaysAsk { session: self.session }),
+            Ok(Some((tool, on, true))) => send(tx, Command::SetAlwaysAsk { session: None, tool, on }),
+            Ok(Some((tool, on, false))) => match self.session {
+                Some(id) => send(tx, Command::SetAlwaysAsk { session: Some(id), tool, on }),
+                None => self.entries.push(Entry::Error(
+                    "no session yet: send a message first, or add `always` for every chat".into(),
+                )),
+            },
+        }
+    }
+}
+
+/// `/always-ask` arguments: `None` = list; else `(tool, on, always)`. `on` by default.
+pub(crate) fn parse_always_ask(arg: &str) -> Result<Option<(String, bool, bool)>, String> {
+    const USAGE: &str = "usage: /always-ask <tool> [on|off] [always]";
+    let words: Vec<&str> = arg.split_whitespace().collect();
+    let (tool, rest) = match words.split_first() {
+        None => return Ok(None),
+        Some((t, _)) if matches!(*t, "on" | "off" | "always") => return Err(USAGE.into()),
+        Some((t, rest)) => (*t, rest),
+    };
+    let (on, always) = match rest {
+        [] => (true, false),
+        ["always"] => (true, true),
+        [w @ ("on" | "off")] => (*w == "on", false),
+        [w @ ("on" | "off"), "always"] => (*w == "on", true),
+        _ => return Err(USAGE.into()),
+    };
+    Ok(Some((tool.to_owned(), on, always)))
+}
+
+/// The status line for an [`AlwaysAskState`]: one clause per scope.
+pub(crate) fn always_ask_line(s: &AlwaysAskState) -> String {
+    let parts: Vec<String> = [("always", &s.global), ("this chat", &s.session), ("inherited", &s.inherited)]
+        .into_iter()
+        .filter(|(_, names)| !names.is_empty())
+        .map(|(scope, names)| format!("{scope}: {}", names.join(", ")))
+        .collect();
+    if parts.is_empty() {
+        "always ask: no tools".into()
+    } else {
+        format!("always ask · {}", parts.join(" · "))
+    }
+}
+
+#[test]
+fn always_ask_args() {
+    assert_eq!(parse_always_ask(""), Ok(None));
+    assert_eq!(parse_always_ask("shell"), Ok(Some(("shell".into(), true, false))));
+    assert_eq!(parse_always_ask("shell off"), Ok(Some(("shell".into(), false, false))));
+    assert_eq!(parse_always_ask("mcp:k8s always"), Ok(Some(("mcp:k8s".into(), true, true))));
+    assert_eq!(parse_always_ask("shell off always"), Ok(Some(("shell".into(), false, true))));
+    assert!(parse_always_ask("on").is_err());
+    assert!(parse_always_ask("shell always off").is_err());
+    assert!(parse_always_ask("shell maybe").is_err());
 }

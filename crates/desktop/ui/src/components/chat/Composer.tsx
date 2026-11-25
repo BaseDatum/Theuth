@@ -66,7 +66,6 @@ import { label as chordLabel, matches as chord } from '@/lib/chord'
 import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 import { noteText } from '@/lib/voice-note'
-import { MIN_NOTE_MS } from '@/lib/hold'
 import { stripRows } from '@/lib/session-tree'
 import { type Act as StopAct, IDLE as STOP_IDLE, type Stop as StopState, progress as stopProgress, step as stepStop } from '@/lib/stop-gesture'
 import type { CancelScope } from '@/rpc/bindings/method.agent.input'
@@ -83,6 +82,7 @@ import { useNextPick } from './NextSteps'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
 import { MicButton } from './MicButton'
+import { useNoteRecorder } from './use-note-recorder'
 import { StopButton } from './StopButton'
 import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
@@ -92,8 +92,7 @@ import { ApprovalShield, ComposerMeta, useComposerMeta } from './ComposerMeta'
 import { ComposerModel } from './ModelMenu'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
-import type { FrameSource, VisualFrame } from '@/lib/audio/types'
-import { analyserSource, tapOrLevels } from '@/lib/visual-source'
+import { tapOrLevels } from '@/lib/visual-source'
 import { QueuedChips, withdrawInto } from './QueuedChips'
 import { COMMANDS, type Ctx, FRESH, type HarnessMenu, type SlashItem, draftSkill, isCommand, run, sendRaw, slashMenu } from './slash'
 import { PluginCommandCard } from '@/components/plugins/PluginSurface'
@@ -182,8 +181,6 @@ export function spokenSend(auto: string | null, text: string): { fire: boolean; 
   return auto !== null && text === auto ? { fire: true, auto: null } : { fire: false, auto }
 }
 
-/** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the engine decodes all. */
-const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
 /** A send's ack is one round trip ("returns once queued"): longer means a socket the OS never closed (70 SEND-NEVER-LOSES). */
 const SEND_TIMEOUT_MS = 15_000
 class SendTimeout extends Error {
@@ -471,19 +468,9 @@ export function Composer({
   const pickedEngine = useDraftTarget((s) => (session ? null : s.engine))
   const creatingOn = busy && pickedEngine && pickedEngine !== mesh?.self_id ? engineLabel(pickedEngine, mesh?.peers) : null
   const voice = speech.useVoice()
-  const recorder = useRef<{ rec: MediaRecorder; discard: boolean } | null>(null)
-  /** A release (send / cancel) that beat `getUserMedia`: applied the moment the recorder exists. */
-  const pendingStop = useRef<boolean | null>(null)
-  const [recording, setRecording] = useState(false)
+  // 45 §7.2 / 89 VOICE-HOLD: the voice-note recorder (shared with the whiteboard pill, 218); the note is transcribed and sent.
+  const { recording, source: noteSource, record, stop: stopRecording, dropWave: dropNoteWave } = useNoteRecorder((blob) => void sendNote(blob))
   const [secs, setSecs] = useState(0)
-  /** 82 §C: the recorder stream's analyser on its own context; the wave the box shows while `recording`. */
-  const noteWave = useRef<{ dispose: () => void } | null>(null)
-  const [noteSource, setNoteSource] = useState<FrameSource<VisualFrame> | null>(null)
-  const dropNoteWave = () => {
-    noteWave.current?.dispose()
-    noteWave.current = null
-    setNoteSource(null)
-  }
   /** 89 VOICE-HOLD: what the mic gesture wants the row to show (held: dot + timer + hint; locked: Delete … Send). */
   const [stage, setStage] = useState<Stage>('idle')
   /** "‹ slide to cancel" in the text region; `MicButton` moves it with the finger. */
@@ -1177,16 +1164,6 @@ export function Composer({
   }, [running])
 
   // Mic (45 §7.2): click to record, click again to upload → `transcribe` → send as `[voice note, N s] …`; Escape discards.
-  const stopRecording = (discard: boolean) => {
-    const r = recorder.current
-    if (!r) {
-      if (pendingStop.current === null || discard) pendingStop.current = discard
-      return
-    }
-    r.discard = discard
-    r.rec.stop()
-  }
-
   const sendNote = async (blob: Blob) => {
     setTranscribing(true)
     try {
@@ -1200,59 +1177,6 @@ export function Composer({
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setTranscribing(false)
-    }
-  }
-
-  const record = async () => {
-    // A user gesture: the one moment iOS lets the reply's `AudioContext` start (45 §7.3). Released on `onstop`
-    // or a failed start, so an idle session does not keep iOS's Now Playing up.
-    speech.unlock('record')
-    pendingStop.current = null
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const rec = new MediaRecorder(stream, {
-        mimeType: AUDIO_MIMES.find((m) => MediaRecorder.isTypeSupported(m)) ?? '',
-        audioBitsPerSecond: 32_000,
-      })
-      const chunks: Blob[] = []
-      rec.ondataavailable = (e) => chunks.push(e.data)
-      let startedAt = 0
-      rec.onstop = () => {
-        dropNoteWave()
-        for (const track of stream.getTracks()) track.stop()
-        void speech.release('record')
-        const discard = recorder.current?.discard ?? true
-        recorder.current = null
-        setRecording(false)
-        if (discard) return
-        // 89 VOICE-HOLD: a release within `MIN_NOTE_MS` of the start is a slip, not a message — no upload.
-        if (performance.now() - startedAt < MIN_NOTE_MS) toast('Hold to record, release to send', { duration: 2000 })
-        else void sendNote(new Blob(chunks, { type: rec.mimeType }))
-      }
-      // 82 §C: a dedicated context for the wave (speech.ts owns the audio session); closed with the recording.
-      const actx = new AudioContext()
-      const wave = analyserSource(actx, stream)
-      noteWave.current = {
-        dispose: () => {
-          wave.dispose()
-          void actx.close()
-        },
-      }
-      recorder.current = { rec, discard: false }
-      startedAt = performance.now()
-      rec.start()
-      setNoteSource(wave.source)
-      setRecording(true)
-      // The finger already lifted (a hold released before the mic opened): stop with what was said, or discard.
-      const early = pendingStop.current
-      if (early !== null) {
-        pendingStop.current = null
-        stopRecording(early)
-      }
-    } catch (e) {
-      pendingStop.current = null
-      void speech.release('record')
-      toast.error(e instanceof Error ? e.message : String(e))
     }
   }
 

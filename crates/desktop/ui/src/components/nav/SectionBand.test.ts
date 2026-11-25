@@ -41,10 +41,10 @@ test('agents group: four full-width tabs (Autoresearch after Routines, 140), Tas
   expect(html).not.toContain('Show sidebar')
 })
 
-test('library group: seven tabs (Skills after Knowledge, Sky 2026-11-11; Notebooks after Notes, 144), Meetings active under /meetings/briefs', () => {
+test('library group: eight tabs (Skills after Knowledge, Sky 2026-11-11; Notebooks after Notes, 144; Whiteboards, 218), Meetings active under /meetings/briefs', () => {
   env.pathname = '/meetings/briefs'
   const html = render('library')
-  expect(tabs(html)).toBe(7)
+  expect(tabs(html)).toBe(8)
   expect(active(html)).toEqual(['Meetings'])
   expect(html).toContain('title="Artifacts"')
   expect(html).not.toContain('title="Autoresearch"')
@@ -67,7 +67,7 @@ test('a page window keeps the tabs, its way between the section pages, without a
   env.pathname = '/notes'
   env.isMobile = true
   const html = render('library')
-  expect(tabs(html)).toBe(7)
+  expect(tabs(html)).toBe(8)
   expect(active(html)).toEqual(['Notes'])
   expect(html).not.toContain('Show sidebar')
   env.isMobile = false

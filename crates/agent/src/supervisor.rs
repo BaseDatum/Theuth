@@ -31,8 +31,8 @@ use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
     DefaultHiddenCategories, InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId,
     JobKind, Jobs, ListPrompts, ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity,
-    RegisterPrompt, RegisterTool, ReminderEvent, RestoreApprovals, RestoreHidden, Risk, SetCap,
-    SetParent, SetPromoteAfter, Settle, ToolRegistry,
+    RegisterPrompt, RegisterTool, ReminderEvent, RestoreAlwaysAsk, RestoreApprovals, RestoreHidden,
+    Risk, SetCap, SetParent, SetPromoteAfter, Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -1091,11 +1091,11 @@ impl Agents {
                         None,
                     )
                     .await?;
+                // `tool_registry`: under `cfg(test)` only this test's live registry, never a
+                // dead one another test's runtime left registered (that failed every new root).
                 if parent.is_none()
                     && desk.is_none()
-                    && let Some(reg) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
-                        .ok()
-                        .flatten()
+                    && let Some(reg) = crate::communication::network::tool_registry().ok().flatten()
                 {
                     let defaults = reg.ask(DefaultHiddenCategories).await?;
                     if !defaults.is_empty() {
@@ -1527,10 +1527,11 @@ impl Agents {
         Ok(actor)
     }
 
-    /// Subagents inherit the parent's approval switch and hidden tools. 183
-    /// §4.5 (D4): the row's approvals pin, hidden tools and agent-messaging
-    /// opt-out are applied here, so a restart, resume or take keeps them
-    /// before the first tool call.
+    /// Subagents inherit the parent's approval switch, hidden tools and
+    /// always-ask entries. 183 §4.5 (D4): the row's approvals pin, hidden
+    /// tools, always-ask entries (219 §3.2) and agent-messaging opt-out are
+    /// applied here, so a restart, resume or take keeps them before the first
+    /// tool call.
     async fn inherit_approvals(&mut self, id: SessionId, parent: Option<SessionId>) {
         let reg = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
@@ -1564,6 +1565,34 @@ impl Agents {
                 }
                 Err(e) => tracing::error!(session = %id, "hidden tools: {e:#}"),
             }
+            // 219 §3.2: as the hides, but a list that cannot be read fails
+            // closed (`AlwaysAskUnreadable`), never silently open.
+            self.restore_always_ask(reg, id).await;
+            // An ancestor not spawned here yet (a subagent resumed before its
+            // parent) has neither its entries nor its own parent link in the
+            // registry: restore both from the stored chain so the child
+            // inherits them from its first call. A spawned one did this itself.
+            match self.store.ancestors(id).await {
+                Ok(chain) => {
+                    for (i, &a) in chain.iter().enumerate() {
+                        if self.sessions.contains_key(&a) {
+                            continue;
+                        }
+                        if let Some(&parent) = chain.get(i + 1) {
+                            let _ = reg
+                                .ask(tools::registry::LinkAncestor { session: a, parent })
+                                .await;
+                        }
+                        self.restore_always_ask(reg, a).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(session = %id, "always-ask: parent chain unreadable, every mutating call asks: {e:#}");
+                    let _ = reg
+                        .ask(tools::registry::AlwaysAskUnreadable { session: id })
+                        .await;
+                }
+            }
         }
         // 183 R1 (S1): the opt-out both ways, as every reader applies it.
         self.mirror(id).await;
@@ -1575,6 +1604,24 @@ impl Agents {
             && let Some(cwd) = row.cwd.map(PathBuf::from).filter(|c| c.is_dir())
         {
             tools::seat::set_cwd(id, Some(cwd));
+        }
+    }
+
+    /// 219 §3.2: load `id`'s stored always-ask entries into the registry. A
+    /// row that cannot be read or parsed is logged at error level and marks
+    /// the session (and its subagents) "every `Mutating`-or-above call asks"
+    /// until a later restore reads it: unknown entries fail closed.
+    async fn restore_always_ask(&self, reg: &ActorRef<ToolRegistry>, id: SessionId) {
+        match self.store.session_always_ask(id).await {
+            Ok(names) => {
+                let _ = reg.ask(RestoreAlwaysAsk { session: id, names }).await;
+            }
+            Err(e) => {
+                tracing::error!(session = %id, "always-ask tools unreadable, every mutating call asks: {e:#}");
+                let _ = reg
+                    .ask(tools::registry::AlwaysAskUnreadable { session: id })
+                    .await;
+            }
         }
     }
 
@@ -17926,6 +17973,50 @@ pub(crate) mod tests {
         assert!(opted_out(&a));
     }
 
+    /// 219 §3.2 (M1): a subagent spawned before its ancestors (resume order)
+    /// inherits their stored always-ask entries from the stored parent chain,
+    /// not only from ancestors already spawned here.
+    #[test]
+    fn a_subagent_resumed_before_its_parents_inherits_their_always_ask() {
+        crate::with_test_registry(async {
+            let (_scratch, mut a) = agents_with(false).await;
+            tools::registry::start(&a.rt).await.unwrap();
+            let (root, parent, child) = (SessionId::new(), SessionId::new(), SessionId::new());
+            let store = &a.store;
+            store
+                .create_session(root, "m", None, None, None)
+                .await
+                .unwrap();
+            store
+                .create_session(parent, "m", Some(root), Some("p"), None)
+                .await
+                .unwrap();
+            store
+                .create_session(child, "m", Some(parent), Some("c"), None)
+                .await
+                .unwrap();
+            store
+                .set_session_always_ask(root, &["shell".to_owned()])
+                .await
+                .unwrap();
+            store
+                .set_session_always_ask(parent, &["write_file".to_owned()])
+                .await
+                .unwrap();
+            a.inherit_approvals(child, Some(parent)).await;
+            let reg = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+                .unwrap()
+                .unwrap();
+            let state = reg
+                .ask(tools::GetAlwaysAsk {
+                    session: Some(child),
+                })
+                .await
+                .unwrap();
+            assert_eq!(state.inherited, ["shell", "write_file"]);
+        });
+    }
+
     /// 50 §5.3, §8: a wait resolves only by its exact id; a disable expires
     /// it with `communication_disabled` (never a fake reply), suppresses the
     /// accepted row durably, and the same wait cannot be resolved again.
@@ -21071,6 +21162,30 @@ pub(crate) mod tests {
     async fn rooted(mut a: Agents) -> (ActorRef<Agents>, SessionId) {
         let (p, _) = a.session(None, None, None, (None, None)).await.unwrap();
         (Agents::spawn(a), p)
+    }
+
+    /// A registry another test's runtime dropped stays registered under the process-wide name,
+    /// dead: a new root of a later test must not ask it for the default hidden categories (that
+    /// failed `session` with "actor not running" for every test after it).
+    #[test]
+    fn a_dead_registry_left_by_another_test_does_not_fail_a_new_root() {
+        crate::with_test_registry(async {
+            let scratch = crate::test_dir("dead-registry");
+            tools::registry::start(&Runtime::new(
+                figment::Figment::new(),
+                scratch.path().to_path_buf(),
+            ))
+            .await
+            .unwrap();
+        });
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (_scratch, mut a) = agents_with(false).await;
+                a.session(None, None, None, (None, None)).await.unwrap();
+            });
     }
 
     /// Native permits free in `root`'s tree, and whether `child` is queued.

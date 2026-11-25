@@ -134,6 +134,10 @@ HIDDEN.cell_error = true
 // 157 D2: `<notebook_changes notebook>` is the same volatile notebook context as `<notebook>` — what changed since the
 // block — summarised by the context line; it renders nothing either.
 HIDDEN.notebook_changes = true
+// 218 §3.2: `<whiteboard id title>` and `<whiteboard_changes whiteboard>` are a bound chat's volatile whiteboard context
+// (the outline, then what changed and what a send carried) — harness notes like `<notebook>`; they render nothing.
+HIDDEN.whiteboard = true
+HIDDEN.whiteboard_changes = true
 // 155 §4.1 / §5.3: a parent's activity wakes about one child, keyed on the child's name.
 CARD.child_stalled = 'child="'
 CARD.peer_state = 'child="'

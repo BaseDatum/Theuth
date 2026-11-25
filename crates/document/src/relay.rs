@@ -250,6 +250,15 @@ pub enum CreateReq {
         /// The new document's home.
         home: Option<mesh::EngineId>,
     },
+    /// `CreateWhiteboard` (218 §4.1): an empty whiteboard, never imported through the helper.
+    Whiteboard {
+        /// Display title.
+        title: String,
+        /// Who created it.
+        by: Principal,
+        /// The new document's home.
+        home: Option<mesh::EngineId>,
+    },
     /// `NotebookCreate`.
     Notebook {
         /// Display title.
@@ -808,6 +817,14 @@ async fn create(
                 binding,
                 title,
                 markdown,
+                by,
+                home: homing(home),
+            };
+            serde_json::to_value(actor.ask(Relayed(m)).await.map_err(reason_of)?)
+        }
+        CreateReq::Whiteboard { title, by, home } => {
+            let m = crate::wb::CreateWhiteboard {
+                title: Some(title),
                 by,
                 home: homing(home),
             };

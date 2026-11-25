@@ -423,7 +423,7 @@ impl DocumentActor {
         }
         let one_shot = match &req {
             CreateReq::Create { binding, .. } => binding.keyless(),
-            CreateReq::Notebook { .. } => true,
+            CreateReq::Notebook { .. } | CreateReq::Whiteboard { .. } => true,
             CreateReq::Ensure { .. } => false,
         };
         let (me, key) = (self.actor_ref(), (client.clone(), id.clone()));
@@ -943,6 +943,9 @@ impl DocumentActor {
                 return Err("meeting notes stay on the machine that recorded them".into());
             }
             DocKind::TaskThread => return Err("move the task instead".into()),
+            DocKind::Whiteboard => {
+                return Err("whiteboards stay on the machine that holds their images".into());
+            }
             _ => return Err("this document is served by the hub".into()),
         }
         if !self.hub.is_me(to) && !self.legs.reachable(to) {

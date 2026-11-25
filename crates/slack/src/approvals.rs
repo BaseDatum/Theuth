@@ -142,8 +142,10 @@ pub fn body(req: &ApprovalRequested) -> String {
     } else {
         ""
     };
+    // 219 §6.3: an always-ask call says so on the tool line.
+    let always = if req.always_ask { " · always ask" } else { "" };
     format!(
-        "⚠️ **{}** wants to run\n```{lang}\n{args}\n```{owner_only}",
+        "⚠️ **{}** wants to run{always}\n```{lang}\n{args}\n```{owner_only}",
         req.tool
     )
 }
@@ -226,7 +228,17 @@ mod tests {
             args,
             risk: tools::Risk::Destructive,
             human_only: false,
+            always_ask: false,
         }
+    }
+
+    #[test]
+    fn an_always_ask_card_says_so_on_the_tool_line() {
+        let r = ApprovalRequested {
+            always_ask: true,
+            ..req("shell", json!({ "command": "ls" }))
+        };
+        assert!(body(&r).starts_with("⚠️ **shell** wants to run · always ask\n```sh\n"));
     }
 
     fn payload(action_id: &str, value: &str) -> serde_json::Value {

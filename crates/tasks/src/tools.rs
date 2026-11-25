@@ -166,7 +166,7 @@ pub struct TaskCreateArgs {
     #[serde(default)]
     pub done_when: Option<String>,
     /// Things the task is about, as references the owner reads with the per-kind tools (design 66):
-    /// `{kind: note|knowledge|artifact|session|meeting, id, title}`. Carry over the `[attached …]` lines of the
+    /// `{kind: note|knowledge|artifact|session|meeting|notebook|source|whiteboard, id, title}`. Carry over the `[attached …]` lines of the
     /// user's message when the task is drafted from it.
     #[serde(default)]
     pub attachments: Vec<AttachRef>,

@@ -114,6 +114,7 @@ impl Consent {
             args,
             risk: ::tools::Risk::Destructive,
             call_id: None,
+            always_ask: false,
         })
         .await?;
         Self::from_approved(a, Some(asked_ms))
@@ -322,8 +323,11 @@ pub struct Engine {
     /// The edge state machine runs (set by `start`): Stop all may wait for it to attach.
     client: std::sync::atomic::AtomicBool,
     /// The last `POST /v1/names/status` answer: `(at_ms, edge id, domain, names)`.
-    names_status: Mutex<Option<(u64, String, String, Vec<NameInfo>)>>,
+    names_status: Mutex<Option<NamesStatus>>,
 }
+
+/// A cached `POST /v1/names/status` answer: `(at_ms, edge id, domain, names)`.
+type NamesStatus = (u64, String, String, Vec<NameInfo>);
 
 /// Six random bytes (names, labels).
 pub fn random_bytes() -> [u8; names::RANDOM_LEN] {

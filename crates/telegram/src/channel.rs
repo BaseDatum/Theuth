@@ -3341,6 +3341,7 @@ pub(crate) mod tests {
             args: serde_json::json!({ "command": "ls" }),
             risk: Risk::Mutating,
             human_only: false,
+            always_ask: false,
         }
     }
 

@@ -47,6 +47,7 @@ const answers: Record<string, (...a: never[]) => unknown> = {
   mesh_status: () => ({ self_id: 'me', self_name: 'me', peers: [] }),
   get_approvals: () => ({ global: true, session: true }),
   get_communication: () => ({ global: true, effective: true, scope: 'owner', alias: null }),
+  get_always_ask: () => ({ global: [], session: [], inherited: [] }),
   mcp_status: () => ({ connecting: [], connected: [], failed: [], homes_problem: null }),
   list_mcp: (session: string | null) => {
     listed.push(session)

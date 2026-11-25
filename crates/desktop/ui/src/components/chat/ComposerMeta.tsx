@@ -15,6 +15,8 @@ import type { CostBucket } from '@/rpc/bindings/method.agent.output'
 import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
 import { type ApprovalLevel, type ApprovalsChoice, approvalsChoice, setApprovalsLevel } from './approvals-level'
+import { alwaysAskCount, useAlwaysAsk } from '@/lib/always-ask'
+import { useToolsSheet } from './tools-sheet'
 import { band, useContextReading } from './ContextMeter'
 import { useCost } from './CostPill'
 
@@ -129,25 +131,31 @@ const SHIELD = {
 /**
  * The shield and its popover, without data: the state's icon (muted shield-check, amber struck shield, filled red and
  * pulsing while an approval waits), and the levels the engine has (`approvalsChoice`). `waiting` puts a jump row first.
+ * 219 §6.1: `alwaysAsk` tools that ask even with approvals off add a line that opens the chat's Tools sheet.
  */
 export function ApprovalShieldView({
   state,
   choice,
   waiting,
+  alwaysAsk = 0,
   onPick,
   onJump,
+  onAlwaysAsk,
   open,
   onOpenChange,
 }: {
   state: ShieldState
   choice: ApprovalsChoice
   waiting: number
+  alwaysAsk?: number
   onPick(level: ApprovalLevel): void
   onJump(): void
+  onAlwaysAsk?(): void
   open?: boolean
   onOpenChange?(open: boolean): void
 }) {
-  const { icon: Icon, tone, label } = SHIELD[state]
+  const { icon: Icon, tone, label: plain } = SHIELD[state]
+  const label = state === 'off' && alwaysAsk > 0 ? `Approvals off · ${tools(alwaysAsk)} always ask` : plain
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
@@ -185,10 +193,17 @@ export function ApprovalShieldView({
             </button>
           ))}
         </div>
+        {alwaysAsk > 0 && (
+          <button type="button" data-level="always-ask" className="flex w-full items-center rounded-md px-2 py-1.5 text-left hover:bg-foreground/6" onClick={onAlwaysAsk}>
+            Always ask: {tools(alwaysAsk)}
+          </button>
+        )}
       </PopoverContent>
     </Popover>
   )
 }
+
+const tools = (n: number) => `${n} ${n === 1 ? 'tool' : 'tools'}`
 
 /** Scroll the transcript to the approval card `id` (`data-prompt-card`, set by `ApprovalCard`). */
 export function jumpToPrompt(id: string): boolean {
@@ -236,5 +251,10 @@ export function ApprovalShield({ session }: { session: string }) {
     setOpen(false)
     if (waiting[0] && !jumpToPrompt(waiting[0])) toast.message('The approval card is not in this view')
   }
-  return <ApprovalShieldView state={state} choice={choice} waiting={waiting.length} onPick={pick} onJump={jump} open={open} onOpenChange={setOpen} />
+  const alwaysAsk = alwaysAskCount(useAlwaysAsk(session))
+  const openTools = () => {
+    setOpen(false)
+    useToolsSheet.getState().show(session)
+  }
+  return <ApprovalShieldView state={state} choice={choice} waiting={waiting.length} alwaysAsk={alwaysAsk} onPick={pick} onJump={jump} onAlwaysAsk={openTools} open={open} onOpenChange={setOpen} />
 }

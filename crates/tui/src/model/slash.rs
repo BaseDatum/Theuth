@@ -35,6 +35,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "tool approval prompts; `always` persists to config.yaml",
     ),
     (
+        "/always-ask",
+        "[<tool> [on|off] [always]]",
+        "a tool always needs your approval, even with approvals off; `always` = every chat (list without args)",
+    ),
+    (
         "/cancel",
         "",
         "abort the in-flight turn (Esc; Esc x3 within 1 s stops its subagents too)",
@@ -213,13 +218,13 @@ pub(crate) fn command_rank(name: &str) -> usize {
         "/tasks" => 24, "/roster" => 25, "/computer" => 26, "/parent" => 27,
         "/sessions" => 28, "/take" => 29, "/broadcast" => 30, "/search" => 31,
         "/attach" => 32, "/resume" => 33, "/new" => 34, "/clear" => 35,
-        "/approvals" => 36, "/communication" => 37, "/peers" => 38, "/a2a" => 39,
-        "/double" => 40, "/cancel" => 41, "/compact" => 42, "/fractal" => 43,
-        "/shake" => 44, "/undo" => 45, "/redo" => 46, "/edit" => 47,
-        "/regen" => 48, "/fork" => 49, "/quit" => 50, "/provider" => 51,
-        "/secrets" => 52, "/link" => 53, "/mesh" => 54, "/nodes" => 55,
-        "/sandbox" => 56, "/artifacts" => 57, "/apps" => 58, "/tools" => 59,
-        "/exit" => 60, _ => usize::MAX,
+        "/approvals" => 36, "/always-ask" => 37, "/communication" => 38, "/peers" => 39,
+        "/a2a" => 40, "/double" => 41, "/cancel" => 42, "/compact" => 43,
+        "/fractal" => 44, "/shake" => 45, "/undo" => 46, "/redo" => 47,
+        "/edit" => 48, "/regen" => 49, "/fork" => 50, "/quit" => 51,
+        "/provider" => 52, "/secrets" => 53, "/link" => 54, "/mesh" => 55,
+        "/nodes" => 56, "/sandbox" => 57, "/artifacts" => 58, "/apps" => 59,
+        "/tools" => 60, "/exit" => 61, _ => usize::MAX,
     }
 }
 

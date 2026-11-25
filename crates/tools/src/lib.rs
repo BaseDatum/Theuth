@@ -119,9 +119,10 @@ pub use registry::{
     SetTurnCap, mark_non_owner_thread,
 };
 pub use registry::{
-    BuiltinsSwitchError, CloseTreeAll, DefaultHiddenCategories, DeleteToolCategory,
-    ExpectParticipants, HarnessInvoke, HiddenEpoch, InvokeHumanOnly, ListBuiltins,
-    ListToolCategories, MCP_SERVER_HIDE_PREFIX, OpenTree, ParticipantsReady, RegisterLifecycle,
+    AlwaysAskError, AlwaysAskState, BuiltinsSwitchError, CloseTreeAll, DefaultHiddenCategories,
+    DeleteToolCategory, ExpectParticipants, GetAlwaysAsk, HarnessInvoke, HiddenEpoch,
+    InvokeHumanOnly, LOOP_LOCAL_TOOLS, ListBuiltins, ListToolCategories, MCP_SERVER_HIDE_PREFIX,
+    OpenTree, ParticipantsReady, RegisterLifecycle, RestoreAlwaysAsk, SetAlwaysAsk,
     SetBuiltinsDisabled, SetDefaultToolCategories, SetMcpCategory, SetToolCategory,
     UpsertToolCategory, mcp_server_key,
 };
@@ -688,6 +689,9 @@ pub struct ToolsConfig {
     /// High-level tool categories, assignments and new-session defaults.
     #[serde(default)]
     pub categories: ToolCategoriesConfig,
+    /// 219 §3.1: harness-wide always-ask entries (`tools.always_ask`): registered tool
+    /// names or [`registry::mcp_server_key`]s whose calls always raise a human card.
+    pub always_ask: Vec<String>,
 }
 
 impl Default for ToolsConfig {
@@ -704,6 +708,7 @@ impl Default for ToolsConfig {
             reminder_max_secs: 86_400,
             login_path: true,
             pty_shell: None,
+            always_ask: Vec::new(),
             pty_reaction_secs: 10,
             pty_tree_cpu_pct: 2,
             builtins: BuiltinsConfig::default(),
