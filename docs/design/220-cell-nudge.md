@@ -88,8 +88,12 @@ then sends `PromoteFence{seq:None, ordinal, auto:true}`-equivalent to the sessio
 Gate (all): `turn.cells_on`; not `channel_opened`; not `talking`; input text does not start with
 `[spoken` or `[voice note`; depth 0, not advisor/peer/contact/meeting/unattended (copy the checks in
 `suggestions_wanted()`); config `cells.nudge` (bool, default true); per-session count
-`cell_nudges < cells.nudge_max` (u8, default 3); fence `digest(body)` not already in the session's
-`nudged: BTreeSet<String>` (insert before the side call). Counters live in `SessionState`, in memory.
+`cell_nudges < cells.nudge_max` (u32, default 0 = unlimited; a positive value is a per-session
+ceiling); at least `cells.nudge_cooldown_secs` (u32, default 20) since the session's last automatic
+attempt; fence `digest(body)` not already in the session's `nudged: BTreeSet<String>` (insert before
+the side call). Counters live in `SessionState`, in memory. One reply causes at most one automatic call
+(`detect` names only the first qualifying fence). Manual `cell_promote` calls bypass the cap and the
+cooldown and never arm it.
 
 ### RPC — `cell_promote` (trait in `crates/agent/src/rpc_turns.rs`, next to `regenerate`, owner `agent`)
 
@@ -237,3 +241,18 @@ Slack/Signal/Telegram renderers (they keep plain fences), JS/TS auto-promotion, 
   last line before the fence; `e.g. with` does not end a sentence).
 - **Side call** carries no reasoning effort, so the 800-token cap is all answer.
 - Detached tasks hold a `WeakActorRef`; the side call is fenced on the session's `closed` token.
+
+### Follow-up 2026-11-25: unlimited + cooldown
+
+- `cells.nudge_max` is a u32, default `0` = unlimited (was u8, default 3); a positive value stays a
+  per-session ceiling. Both `cells::prompt::PromptConfig` and the agent's `CellsKeys` carry it.
+- New `cells.nudge_cooldown_secs` (u32, default 20): the least gap between two automatic attempts of a
+  session. `NudgeBook` records the `Instant` of the last attempt it planned (`take(digest, max,
+  cooldown, now)`; time is a parameter, so tests need no sleep). The gate (`nudge_wanted`) skips with a
+  debug log (`cell nudge: cooling down`) inside the window; `plan_nudge`'s `take` checks it again.
+- A given-back attempt (outcome `stale`) restores the previous timestamp, unless a later attempt armed
+  the cooldown since; an attempt with a verdict is `settle`d and keeps it. The once-per-digest rule is
+  unchanged.
+- Manual Make runnable (`cell_promote`, `PromoteFence{digest: None}`) never reads or writes the book:
+  no cap, no cooldown, nothing armed or given back.
+- One reply still causes at most one automatic call (`detect` picks the first qualifying fence).

@@ -154,7 +154,8 @@ cells:
   agent_bytes: 8192          # head + tail of output the agent gets
   correct_rounds: 1          # <cell_error> rounds per turn
   nudge: true                # a short run-me snippet in a finished reply becomes a cell
-  nudge_max: 3               # automatic conversions per session
+  nudge_max: 0               # automatic conversions per session; 0 = unlimited
+  nudge_cooldown_secs: 20    # least gap between two automatic conversions
   notify_after_secs: 30
   after_max_age_mins: 60
   ui_tail_lines: 200

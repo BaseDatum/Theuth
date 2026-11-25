@@ -28,15 +28,20 @@ pub const SKILL: &str = include_str!("../cells.md");
 pub struct PromptConfig {
     /// 220: after a finished turn, promote a plain run-me fence of the reply to a user cell.
     pub nudge: bool,
-    /// 220: automatic promotions per session (in memory, per engine run).
-    pub nudge_max: u8,
+    /// 220: automatic promotions per session (in memory, per engine run); `0` = unlimited.
+    /// One reply causes at most one. Make runnable presses never count.
+    pub nudge_max: u32,
+    /// 220: least seconds between two automatic promotion attempts of a session; an attempt
+    /// that got no verdict (stale) does not hold the next one off.
+    pub nudge_cooldown_secs: u32,
 }
 
 impl Default for PromptConfig {
     fn default() -> Self {
         Self {
             nudge: true,
-            nudge_max: 3,
+            nudge_max: 0,
+            nudge_cooldown_secs: 20,
         }
     }
 }

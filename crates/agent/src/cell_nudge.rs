@@ -5,10 +5,10 @@
 //! attempt book ([`NudgeBook`]). The session actor (`loop_`, `PromoteFence`) runs the call and
 //! the compare-and-swap replace.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use genai::chat::{ContentPart, MessageContent};
 use regex::Regex;
@@ -73,37 +73,73 @@ pub enum Repair {
     Rejected(String),
 }
 
-/// 220: the automatic nudges of one session — how many were spent and the digest of every
-/// fence tried, so a fence is tried once. An attempt that never got the model's verdict
-/// (timeout, provider error, a turn started) is given back. In memory only.
+/// 220: the automatic nudges of one session — how many were spent, the digest of every
+/// fence tried, so a fence is tried once, and when the last automatic attempt was planned
+/// (`cells.nudge_cooldown_secs`). An attempt that never got the model's verdict (timeout,
+/// provider error, a turn started) is given back, cooldown included. Manual promotions
+/// (`cell_promote`) never touch the book. In memory only. Time comes in as `now`.
 #[derive(Debug, Default)]
 pub struct NudgeBook {
-    count: u8,
+    count: u32,
     tried: BTreeSet<String>,
+    /// When the last automatic attempt was planned.
+    last: Option<Instant>,
+    /// Per digest in flight: its attempt's instant and the `last` it replaced, restored by
+    /// [`NudgeBook::give_back`].
+    armed: BTreeMap<String, (Instant, Option<Instant>)>,
 }
 
 impl NudgeBook {
     /// Nudges spent.
-    pub fn count(&self) -> u8 {
+    pub fn count(&self) -> u32 {
         self.count
     }
 
-    /// Spend one on the fence `digest`: `false` (nothing spent) when it was tried before or
-    /// `max` are spent.
-    pub fn take(&mut self, digest: &str, max: u8) -> bool {
-        if self.count >= max || self.tried.contains(digest) {
+    /// When the last automatic attempt was planned (`None`: none, or given back).
+    pub fn last(&self) -> Option<Instant> {
+        self.last
+    }
+
+    /// Whether `max` nudges are spent; `0` = unlimited.
+    pub fn spent(&self, max: u32) -> bool {
+        max != 0 && self.count >= max
+    }
+
+    /// Whether the last automatic attempt was planned less than `cooldown` before `now`.
+    pub fn cooling(&self, cooldown: Duration, now: Instant) -> bool {
+        self.last
+            .is_some_and(|last| now.saturating_duration_since(last) < cooldown)
+    }
+
+    /// Spend one on the fence `digest` at `now`: `false` (nothing spent) when it was tried
+    /// before, `max` are spent (`0` = unlimited) or the book is [cooling](Self::cooling).
+    pub fn take(&mut self, digest: &str, max: u32, cooldown: Duration, now: Instant) -> bool {
+        if self.spent(max) || self.cooling(cooldown, now) || self.tried.contains(digest) {
             return false;
         }
         self.tried.insert(digest.to_owned());
+        self.armed.insert(digest.to_owned(), (now, self.last));
+        self.last = Some(now);
         self.count += 1;
         true
     }
 
-    /// Undo a [`NudgeBook::take`] of `digest` whose attempt ended without a verdict.
+    /// Undo a [`NudgeBook::take`] of `digest` whose attempt ended without a verdict: its
+    /// count, its digest and, unless a later attempt armed it since, the cooldown.
     pub fn give_back(&mut self, digest: &str) {
         if self.tried.remove(digest) {
             self.count = self.count.saturating_sub(1);
         }
+        if let Some((at, before)) = self.armed.remove(digest)
+            && self.last == Some(at)
+        {
+            self.last = before;
+        }
+    }
+
+    /// The attempt of `digest` got its verdict: it keeps its count, digest and cooldown.
+    pub fn settle(&mut self, digest: &str) {
+        self.armed.remove(digest);
     }
 }
 
@@ -358,6 +394,10 @@ fn placeholder(body: &str) -> bool {
 /// after, the windows stopping at the neighbouring fences) or a bare `Run this:` right before
 /// it (`"prose"`); a command only the user's shell runs (`sudo`, `ssh -t`, `brew install`, …)
 /// counts only with such prose or an imperative `Run …` clause right before it (`"command"`).
+///
+/// Only the first such fence: one reply causes at most one automatic side call, even with
+/// `cells.nudge_max: 0` (unlimited); later fences stay snippets (the user may press Make
+/// runnable on them).
 pub fn detect(text: &str) -> Verdict {
     let all = fences(text);
     let mut ordinal = 0u32;
@@ -753,15 +793,59 @@ mod tests {
 
     #[test]
     fn cell_nudge_book_spends_once_per_fence_and_gives_back() {
-        let mut book = NudgeBook::default();
-        assert!(book.take("a", 2));
-        assert!(!book.take("a", 2), "tried before");
-        assert!(book.take("b", 2));
-        assert!(!book.take("c", 2), "cap");
+        let (mut book, now) = (NudgeBook::default(), Instant::now());
+        let off = Duration::ZERO;
+        assert!(book.take("a", 2, off, now));
+        assert!(!book.take("a", 2, off, now), "tried before");
+        assert!(book.take("b", 2, off, now));
+        assert!(!book.take("c", 2, off, now), "nudge_max 2 caps at 2");
         book.give_back("b");
         assert_eq!(book.count(), 1);
-        assert!(book.take("b", 2), "a stale attempt may be tried again");
+        assert!(book.take("b", 2, off, now), "a stale attempt may be tried again");
         book.give_back("nope");
         assert_eq!(book.count(), 2);
+    }
+
+    /// `cells.nudge_max: 0` is unlimited; the digest rule still holds.
+    #[test]
+    fn cell_nudge_book_zero_max_is_unlimited() {
+        let (mut book, now) = (NudgeBook::default(), Instant::now());
+        for d in ["a", "b", "c", "d", "e"] {
+            assert!(book.take(d, 0, Duration::ZERO, now), "{d}");
+        }
+        assert_eq!(book.count(), 5);
+        assert!(!book.spent(0));
+        assert!(!book.take("a", 0, Duration::ZERO, now), "tried before");
+    }
+
+    /// `cells.nudge_cooldown_secs`: a second automatic attempt inside the window is
+    /// refused, one after it goes; a given-back attempt leaves the cooldown as it found it.
+    #[test]
+    fn cell_nudge_book_cooldown_and_give_back() {
+        let (mut book, t0) = (NudgeBook::default(), Instant::now());
+        let cool = Duration::from_secs(20);
+        assert!(!book.cooling(cool, t0));
+        assert!(book.take("a", 0, cool, t0));
+        assert!(book.cooling(cool, t0 + Duration::from_secs(19)));
+        assert!(!book.take("b", 0, cool, t0 + Duration::from_secs(19)), "inside the window");
+        assert_eq!(book.count(), 1);
+        let t1 = t0 + Duration::from_secs(20);
+        assert!(book.take("b", 0, cool, t1), "after the window");
+        book.settle("a");
+        // "b" ends stale: the cooldown falls back to "a"'s attempt, which has run out by t1.
+        book.give_back("b");
+        assert_eq!(book.last(), Some(t0));
+        assert!(!book.cooling(cool, t1));
+        assert!(book.take("c", 0, cool, t1));
+        // A lone stale attempt clears the cooldown entirely.
+        let mut book = NudgeBook::default();
+        assert!(book.take("a", 0, cool, t0));
+        book.give_back("a");
+        assert_eq!(book.last(), None);
+        assert!(book.take("b", 0, cool, t0 + Duration::from_secs(1)));
+        // A settled attempt's cooldown is no longer restorable.
+        book.settle("b");
+        book.give_back("b");
+        assert_eq!(book.last(), Some(t0 + Duration::from_secs(1)));
     }
 }

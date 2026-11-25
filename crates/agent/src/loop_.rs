@@ -402,7 +402,8 @@ pub struct PromoteFence {
     /// Fired by the detector after a turn (hook B) rather than asked for.
     pub auto: bool,
     /// The auto path's [`cell_nudge::NudgeBook`] entry: given back when the attempt ends
-    /// `stale` (no verdict), so the fence may be tried after a later turn.
+    /// `stale` (no verdict), cooldown included, so the fence may be tried after a later
+    /// turn. `None` (the RPC) never touches the book: no cap, no cooldown.
     pub digest: Option<String>,
     /// Why: the detector's signal, `"user"` for the RPC.
     pub reason: &'static str,
@@ -2746,10 +2747,13 @@ impl Message<PromoteFence> for Session {
                 Ok(seq) => promote(&shared, &me, seq, &m).await,
                 Err(out) => (out, String::new()),
             };
-            if out.outcome == PromoteOutcome::Stale
-                && let Some(digest) = &m.digest
-            {
-                shared.nudges.lock().give_back(digest);
+            if let Some(digest) = &m.digest {
+                let mut book = shared.nudges.lock();
+                if out.outcome == PromoteOutcome::Stale {
+                    book.give_back(digest);
+                } else {
+                    book.settle(digest);
+                }
             }
             tracing::info!(
                 target: "surface",
@@ -4080,8 +4084,16 @@ struct CellsKeys {
     correct_rounds: u8,
     /// 220: the automatic cell nudge after a turn.
     nudge: bool,
-    /// 220: automatic nudges per session.
-    nudge_max: u8,
+    /// 220: automatic nudges per session; `0` = unlimited.
+    nudge_max: u32,
+    /// 220: least seconds between two automatic nudge attempts of a session.
+    nudge_cooldown_secs: u32,
+}
+
+impl CellsKeys {
+    fn nudge_cooldown(&self) -> Duration {
+        Duration::from_secs(self.nudge_cooldown_secs.into())
+    }
 }
 
 impl Default for CellsKeys {
@@ -4089,7 +4101,8 @@ impl Default for CellsKeys {
         Self {
             correct_rounds: 1,
             nudge: true,
-            nudge_max: 3,
+            nudge_max: 0,
+            nudge_cooldown_secs: 20,
         }
     }
 }
@@ -7338,22 +7351,37 @@ impl Turn {
     }
 
     /// 220 hook B gate: the reply was taught cells (`cells_on`), the opener was typed (not a
-    /// spoken or voice-note input), `cells.nudge` is on and this session has nudges left
-    /// (`cells.nudge_max`), and [`Turn::attended_chat`].
+    /// spoken or voice-note input), `cells.nudge` is on, this session has nudges left
+    /// (`cells.nudge_max`, `0` = unlimited), the last automatic attempt is at least
+    /// `cells.nudge_cooldown_secs` old, and [`Turn::attended_chat`].
     async fn nudge_wanted(&self) -> bool {
         let input = self.input_text.trim_start();
         if !self.cells_on || input.starts_with("[spoken") || input.starts_with("[voice note") {
             return false;
         }
         let keys: CellsKeys = self.shared.rt.section("cells").unwrap_or_default();
-        keys.nudge
-            && self.shared.nudges.lock().count() < keys.nudge_max
-            && self.attended_chat().await
+        if !keys.nudge {
+            return false;
+        }
+        {
+            let book = self.shared.nudges.lock();
+            if book.spent(keys.nudge_max) {
+                return false;
+            }
+            if book.cooling(keys.nudge_cooldown(), Instant::now()) {
+                let id = self.shared.id;
+                tracing::debug!(target: "surface", session = %id, "cell nudge: cooling down");
+                return false;
+            }
+        }
+        self.attended_chat().await
     }
 
     /// 220 hook B: [`cell_nudge::detect`] on this turn's final reply; a fence it fires on,
-    /// tried for the first time this session, is spent from [`Shared::nudges`] and planned
-    /// for the actor ([`SessionState::nudge_plan`]), which runs the side call off the turn.
+    /// tried for the first time this session, is spent from [`Shared::nudges`] (arming the
+    /// cooldown) and planned for the actor ([`SessionState::nudge_plan`]), which runs the
+    /// side call off the turn. One reply plans at most one call: `detect` names only its
+    /// first qualifying fence.
     fn plan_nudge(&mut self) {
         let Some((seq, msg)) = self.state.history.last() else {
             return;
@@ -7374,13 +7402,13 @@ impl Turn {
             return;
         };
         let digest = surface::cell::digest(&fence.body);
-        let max = self
-            .shared
-            .rt
-            .section::<CellsKeys>("cells")
-            .unwrap_or_default()
-            .nudge_max;
-        if !self.shared.nudges.lock().take(&digest, max) {
+        let keys: CellsKeys = self.shared.rt.section("cells").unwrap_or_default();
+        if !self.shared.nudges.lock().take(
+            &digest,
+            keys.nudge_max,
+            keys.nudge_cooldown(),
+            Instant::now(),
+        ) {
             return;
         }
         self.state.nudge_plan = Some(NudgePlan {
@@ -11455,8 +11483,9 @@ mod tests {
     }
 
     /// 220 hook B gate: on for a typed, attended chat turn taught cells; off without the
-    /// block, for a channel-opened turn, during a live talk, for a spoken opener and once
-    /// `cells.nudge_max` nudges ran.
+    /// block, for a channel-opened turn, during a live talk, for a spoken opener, while the
+    /// last automatic attempt is inside `cells.nudge_cooldown_secs` and once
+    /// `cells.nudge_max` nudges ran (`0`, the default, = unlimited).
     #[tokio::test]
     async fn cell_nudge_gate_is_off_for_channels_and_talk() {
         use super::vision_fallback_tests::{Fake, Harness};
@@ -11476,10 +11505,93 @@ mod tests {
         turn.input_text = "[spoken] reload alloy".into();
         assert!(!turn.nudge_wanted().await, "spoken");
         turn.input_text = "reload alloy on Admin".into();
-        for d in ["a", "b", "c"] {
-            assert!(turn.shared.nudges.lock().take(d, 3));
+        // Default `nudge_max: 0`: more than the old three, each long out of the cooldown.
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        for d in ["a", "b", "c", "d"] {
+            assert!(turn.shared.nudges.lock().take(d, 0, Duration::ZERO, long_ago));
         }
+        assert!(turn.nudge_wanted().await, "unlimited");
+        // An attempt just now arms the 20 s default cooldown; giving it back clears it.
+        assert!(turn.shared.nudges.lock().take("e", 0, Duration::ZERO, Instant::now()));
+        assert!(!turn.nudge_wanted().await, "cooling down");
+        turn.shared.nudges.lock().give_back("e");
+        assert!(turn.nudge_wanted().await, "the stale attempt left no cooldown");
+        // A positive `nudge_max` stays a ceiling.
+        let cfg = figment::Figment::new().merge(figment::providers::Serialized::defaults(
+            serde_json::json!({"cells": {"nudge_max": 5}}),
+        ));
+        turn.shared.rt = Runtime::new(cfg, h.dir.clone());
+        assert!(turn.nudge_wanted().await, "4 of 5");
+        assert!(turn.shared.nudges.lock().take("f", 5, Duration::ZERO, long_ago));
         assert!(!turn.nudge_wanted().await, "cap");
+    }
+
+    /// 220 follow-up: with `cells.nudge_max: 0` replies keep being planned past three, each
+    /// after the cooldown; `nudge_max: 2` plans two.
+    #[tokio::test]
+    async fn cell_nudge_plans_past_three_unless_capped() {
+        use super::vision_fallback_tests::{Fake, Harness};
+        let h = Harness::new(Fake::harvest_held(Duration::ZERO)).await;
+        let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
+        turn.finished_written = true;
+        let planned = |turn: &mut Turn, seq: i64| {
+            let reply =
+                format!("Run this yourself:\n\n```bash\nsudo systemctl restart unit{seq}\n```\n");
+            turn.committed(seq, ChatMessage::assistant(reply));
+            turn.plan_nudge();
+            let plan = turn.state.nudge_plan.take();
+            // The test cannot wait 20 s: the attempt is back-dated out of the cooldown.
+            if let Some(p) = &plan {
+                let mut book = turn.shared.nudges.lock();
+                book.give_back(&p.digest);
+                let long_ago = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+                assert!(book.take(&p.digest, 0, Duration::ZERO, long_ago));
+            }
+            plan.is_some()
+        };
+        for seq in 1..=5 {
+            assert!(planned(&mut turn, seq), "reply {seq}");
+        }
+        assert_eq!(turn.shared.nudges.lock().count(), 5);
+        let cfg = figment::Figment::new().merge(figment::providers::Serialized::defaults(
+            serde_json::json!({"cells": {"nudge_max": 2}}),
+        ));
+        let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
+        turn.shared.rt = Runtime::new(cfg, h.dir.clone());
+        turn.finished_written = true;
+        assert!(planned(&mut turn, 1));
+        assert!(planned(&mut turn, 2));
+        assert!(!planned(&mut turn, 3), "nudge_max 2");
+        assert_eq!(turn.shared.nudges.lock().count(), 2);
+    }
+
+    /// 220 follow-up: an automatic attempt planned just now holds the next one off until
+    /// `cells.nudge_cooldown_secs` passed.
+    #[tokio::test]
+    async fn cell_nudge_cooldown_holds_the_next_plan() {
+        use super::vision_fallback_tests::{Fake, Harness};
+        let h = Harness::new(Fake::harvest_held(Duration::ZERO)).await;
+        let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
+        turn.finished_written = true;
+        let reply = |unit: &str| {
+            ChatMessage::assistant(format!(
+                "Run this yourself:\n\n```bash\nsudo systemctl restart {unit}\n```\n"
+            ))
+        };
+        turn.committed(1, reply("a"));
+        turn.plan_nudge();
+        assert!(turn.state.nudge_plan.take().is_some());
+        turn.committed(2, reply("b"));
+        turn.plan_nudge();
+        assert!(turn.state.nudge_plan.is_none(), "inside the cooldown");
+        assert_eq!(turn.shared.nudges.lock().count(), 1);
+        // The window passes (zero-second cooldown standing in for 20 s gone by).
+        let cfg = figment::Figment::new().merge(figment::providers::Serialized::defaults(
+            serde_json::json!({"cells": {"nudge_cooldown_secs": 0}}),
+        ));
+        turn.shared.rt = Runtime::new(cfg, h.dir.clone());
+        turn.plan_nudge();
+        assert!(turn.state.nudge_plan.is_some(), "after the cooldown");
     }
 
     /// 220 hook B: the alloy reply is planned once per fence digest.
@@ -11500,7 +11612,8 @@ mod tests {
     }
 
     /// 220 review: a promote asked while a turn runs is refused `stale` at once — no side
-    /// call; an idle one whose body matches no fence is `not_found`.
+    /// call; an idle one whose body matches no fence is `not_found`. The follow-up: a manual
+    /// promote neither checks the automatic cap or cooldown nor arms or gives them back.
     #[test]
     fn cell_nudge_promote_is_stale_at_once_while_a_turn_runs() {
         crate::with_test_registry(async {
@@ -11520,7 +11633,20 @@ mod tests {
                 .append(h.id, &ChatMessage::assistant(reply))
                 .await
                 .unwrap();
-            let actor = h.actor("openai/textonly").await;
+            let session = h
+                .session_with(
+                    "openai/textonly",
+                    CompactStyle::default(),
+                    AgentConfig::default(),
+                )
+                .await;
+            let nudges = session.shared.nudges.clone();
+            let armed = Instant::now();
+            assert!(nudges.lock().take("auto", 1, Duration::from_secs(20), armed));
+            let actor = {
+                use kameo::actor::Spawn as _;
+                Session::spawn(session)
+            };
             let promote = |body: &str| PromoteFence {
                 seq: Some(seq),
                 ordinal: 0,
@@ -11530,7 +11656,12 @@ mod tests {
                 reason: "user",
             };
             let out = actor.ask(promote("pwd")).await.unwrap();
-            assert_eq!(out.outcome, PromoteOutcome::NotFound);
+            assert_eq!(out.outcome, PromoteOutcome::NotFound, "neither cap nor cooldown");
+            let book = || {
+                let b = nudges.lock();
+                (b.count(), b.last())
+            };
+            assert_eq!(book(), (1, Some(armed)));
             actor
                 .tell(UserInput {
                     channel: None,
@@ -11551,6 +11682,7 @@ mod tests {
                 (out.outcome, out.detail.as_deref()),
                 (PromoteOutcome::Stale, Some(BUSY))
             );
+            assert_eq!(book(), (1, Some(armed)), "a manual stale gives nothing back");
             h.drain_until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
                 .await;
         });
