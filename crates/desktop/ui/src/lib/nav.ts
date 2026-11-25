@@ -6,6 +6,7 @@ import { requirements as autoresearchRequirements } from '@/components/autoresea
 import { requirements as artifactsRequirements } from '@/components/artifacts/requirements'
 import { requirements as knowledgeRequirements } from '@/components/knowledge/requirements'
 import { requirements as notesRequirements } from '@/components/notes/requirements'
+import { requirements as whiteboardRequirements } from '@/components/whiteboard/requirements'
 import { requirements as notebooksRequirements } from '@/components/notebooks/requirements'
 import { requirements as meetingRequirements } from '@/components/meeting/requirements'
 import { skillsRequirements, secretsRequirements } from '@/components/library/requirements'
@@ -13,12 +14,12 @@ import { skillsRequirements, secretsRequirements } from '@/components/library/re
 // URLs do not change; a tab IS a navigation to its route. Sky (2026-11-11): Skills is a Library tab and Tools is
 // Settings › Tools › MCP (143 R1 had both under Agents); Agents keeps the work, Library the content.
 
-import { BookOpen, Bot, CalendarClock, FlaskConical, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Notebook, Sparkles, StickyNote } from 'lucide-react'
+import { BookOpen, Bot, CalendarClock, FlaskConical, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Notebook, Presentation, Sparkles, StickyNote } from 'lucide-react'
 
 export type Group = 'agents' | 'library'
 
 /** A tab's route, as a literal so `navigate({ to })` type-checks. */
-export type Tab = '/agents' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/notebooks' | '/meetings' | '/skills' | '/secrets' | '/autoresearch'
+export type Tab = '/agents' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/whiteboards' | '/notebooks' | '/meetings' | '/skills' | '/secrets' | '/autoresearch'
 
 export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: LucideIcon; required: Requirements }[]> = {
   agents: [
@@ -34,6 +35,8 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
     { required: knowledgeRequirements, to: '/knowledge', label: 'Knowledge', icon: BookOpen },
     { required: skillsRequirements, to: '/skills', label: 'Skills', icon: Sparkles },
     { required: notesRequirements, to: '/notes', label: 'Notes', icon: StickyNote },
+    // 218: a canvas for thinking with the agent (mocks, diagrams, notes, Pencil marks); its own `whiteboard` doc kind.
+    { required: whiteboardRequirements, to: '/whiteboards', label: 'Whiteboards', icon: Presentation },
     { required: notebooksRequirements, to: '/notebooks', label: 'Notebooks', icon: Notebook },
     { required: meetingRequirements, to: '/meetings', label: 'Meetings', icon: Mic },
     { required: secretsRequirements, to: '/secrets', label: 'Secrets', icon: Lock },
