@@ -8,7 +8,7 @@ import { useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { queryKeys } from '@/lib/rpc'
 import { statusDetail, statusLabel } from './labels'
-import { LoginCard, UnlockCard } from './UnlockCard'
+import { type LoginMethod, LoginCard, SSO_HINT, UnlockCard } from './UnlockCard'
 import type { BwServer, ConnConfig } from '@/rpc/bindings/method.secrets.input'
 import type { ConnInfo, ConnStatus } from '@/rpc/bindings/method.secrets.output'
 import type { Backend } from './types'
@@ -45,7 +45,7 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
   // No region is preselected: `list_aws_profiles` carries no profile region (§9.1's "default from the profile"), and a
   // wrong guess lists an empty account.
   const [aws, setAws] = useState({ profile: '', region: '', kms: '', prefix: '' })
-  const [bw, setBw] = useState({ server: 'us' as BwServer, base: '', api: '', identity: '', web: '', email: '', login: 'api_key' as 'api_key' | 'password' })
+  const [bw, setBw] = useState({ server: 'us' as BwServer, base: '', api: '', identity: '', web: '', email: '', login: 'api_key' as LoginMethod, org: '' })
   const [advanced, setAdvanced] = useState(false)
   const [probe, setProbe] = useState<ConnStatus | null>(null)
   const [busy, setBusy] = useState(false)
@@ -58,7 +58,7 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
   const cfg = (): ConnConfig =>
     backend === 'aws'
       ? { backend, profile: aws.profile || null, region: aws.region, kms_key_id: aws.kms.trim() || null, prefix: aws.prefix.trim() || null }
-      : {
+      : ({
           backend,
           server: bw.server,
           base_url: bw.server === 'self_hosted' ? bw.base.trim() || null : null,
@@ -67,7 +67,8 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
           web_vault_url: bw.web.trim() || null,
           email: bw.email.trim(),
           login: bw.login,
-        }
+          org_identifier: bw.login === 'sso' ? bw.org.trim() || null : null,
+        } as ConnConfig)
   const ready = name && !nameError && (backend === 'aws' ? aws.region : bw.email.trim() && (bw.server !== 'self_hosted' || bw.base.trim().startsWith('https://')))
   const run = async <T,>(f: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true)
@@ -91,7 +92,7 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
       else setStage(info.status.state === 'logged_out' ? 'login' : 'unlock')
     })
   if (saved && stage === 'login')
-    return <LoginCard conn={saved.conn} email={bw.email.trim()} method={bw.login} onDone={() => setStage('unlock')} onCancel={onDone} />
+    return <LoginCard conn={saved.conn} email={bw.email.trim()} method={bw.login} org={bw.org.trim() || null} onDone={() => setStage('unlock')} onCancel={onDone} />
   if (saved && stage === 'unlock')
     return (
       <UnlockCard
@@ -195,10 +196,21 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
             aria-label="Account email"
             spellCheck={false}
           />
-          <ToggleGroup type="single" variant="outline" size="sm" aria-label="Login method" value={bw.login} onValueChange={(l) => l && setBw({ ...bw, login: l as 'api_key' | 'password' })}>
+          <ToggleGroup type="single" variant="outline" size="sm" aria-label="Login method" value={bw.login} onValueChange={(l) => l && setBw({ ...bw, login: l as LoginMethod })}>
             <ToggleGroupItem value="api_key">API key (recommended)</ToggleGroupItem>
             <ToggleGroupItem value="password">Password</ToggleGroupItem>
+            <ToggleGroupItem value="sso">Log in with SSO</ToggleGroupItem>
           </ToggleGroup>
+          {bw.login === 'password' && <div className="text-xs text-fg-tertiary">{SSO_HINT}</div>}
+          {bw.login === 'sso' && (
+            <Input
+              value={bw.org}
+              onChange={(e) => setBw({ ...bw, org: e.target.value })}
+              placeholder="Organisation SSO identifier (optional on Vaultwarden)"
+              aria-label="SSO organisation identifier"
+              spellCheck={false}
+            />
+          )}
         </>
       )}
       {probe && (

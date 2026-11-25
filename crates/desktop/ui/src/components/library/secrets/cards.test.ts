@@ -149,3 +149,76 @@ test('§12.5: a text sent as a file shows its file name and no size; a real file
   expect(text).toBe('.env · active')
   expect(rows.find((r) => r.startsWith('dump.sql'))).toContain('dump.sql · 2.0 KB')
 })
+
+function ssoFake() {
+  const browser = Promise.withResolvers<string>()
+  const deps = {
+    listen: vi.fn(async () => 8066),
+    wait: vi.fn(() => browser.promise),
+    cancel: vi.fn(async () => undefined),
+    open: vi.fn(),
+    begin: vi.fn(async () => ({ authorize_url: 'https://id.example/connect/authorize?x', state: 'st', redirect_port: 8066 })),
+    complete: vi.fn(async (): Promise<LoginStep> => ({ step: 'done' })),
+  }
+  return { deps, browser }
+}
+const sso = (onDone = vi.fn(), deps = ssoFake().deps) => h(LoginCard, { conn: 'work', email: 'me@example.org', method: 'sso', org: 'acme', onDone, ssoDeps: deps })
+/** The card's submit (the method toggle has a "Log in with SSO" item too). */
+const ssoSubmit = () => [...document.querySelectorAll<HTMLButtonElement>('button[type="submit"]')].find((b) => b.textContent === 'Log in with SSO')
+
+test('§9.6: SSO binds, begins on that port, opens the browser, waits, and answers 2FA with the same redirect', async () => {
+  const { deps, browser } = ssoFake()
+  deps.complete.mockResolvedValueOnce({ step: 'need_two_factor', providers: ['authenticator', 'email'] })
+  const onDone = vi.fn()
+  await mount(sso(onDone, deps))
+  await click(ssoSubmit()!)
+  expect(deps.begin).toHaveBeenCalledWith('work', 'acme', 8066)
+  expect(deps.open).toHaveBeenCalledWith('https://id.example/connect/authorize?x')
+  expect(deps.wait).toHaveBeenCalledWith(8066)
+  expect(document.querySelector('[role="status"]')?.textContent).toContain('Finish signing in in your browser')
+  expect(button('Cancel')).toBeDefined()
+
+  await act(async () => browser.resolve('http://localhost:8066/?code=c&state=st'))
+  expect(deps.complete).toHaveBeenLastCalledWith('work', 'st', 'http://localhost:8066/?code=c&state=st', null)
+  expect(button('Continue')?.disabled).toBe(true)
+  await type(input('two-factor code'), '654321')
+  await click(button('Continue')!)
+  expect(deps.complete).toHaveBeenLastCalledWith('work', 'st', 'http://localhost:8066/?code=c&state=st', ['authenticator', '654321'])
+  expect(onDone).toHaveBeenCalledOnce()
+})
+
+test('§9.6: Cancel while the browser is open closes the listener and returns to the start', async () => {
+  const { deps, browser } = ssoFake()
+  await mount(sso(vi.fn(), deps))
+  await click(ssoSubmit()!)
+  await click(button('Cancel')!)
+  expect(deps.cancel).toHaveBeenCalled()
+  expect(ssoSubmit()).toBeDefined()
+  // The browser coming back afterwards completes nothing.
+  await act(async () => browser.resolve('http://localhost:8066/?code=c&state=st'))
+  expect(deps.complete).not.toHaveBeenCalled()
+})
+
+test('§9.6: engine refusals show verbatim; one before the browser answers closes the listener', async () => {
+  const { deps } = ssoFake()
+  const prevalidate = 'SSO is not enabled for this organization (SSO identifier acme)'
+  deps.begin.mockRejectedValueOnce(new Error(prevalidate))
+  await mount(sso(vi.fn(), deps))
+  await click(ssoSubmit()!)
+  expect(document.body.textContent).toContain(prevalidate)
+  expect(deps.cancel).toHaveBeenCalledOnce()
+  expect(deps.open).not.toHaveBeenCalled()
+
+  // After the browser answered, the shell already closed the listener; the refusal still shows verbatim.
+  const refusal = "this account unlocks with trusted devices / Key Connector, which theuth doesn't support yet"
+  deps.complete.mockRejectedValueOnce(new Error(refusal))
+  deps.wait.mockResolvedValueOnce('http://localhost:8066/?code=c&state=st')
+  await click(ssoSubmit()!)
+  expect(document.body.textContent).toContain(refusal)
+  expect(ssoSubmit()?.disabled).toBe(false)
+})
+
+test('§9.6: the password option points an SSO organisation to SSO or an API key', async () => {
+  await mount(h(LoginCard, { conn: 'work', email: 'me@example.org', method: 'password', onDone: () => undefined }))
+  expect(document.body.textContent).toContain('Your organisation requires SSO? Use Log in with SSO or API key.')
+})
