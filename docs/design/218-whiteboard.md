@@ -256,16 +256,18 @@ A new `## Whiteboards` block says what a whiteboard is, that it is not a board, 
 
 ## 6. Ink — capture, rendering, and how it reaches the agent
 
-### 6.1 One renderer, two capture paths
+### 6.1 One renderer, one capture path
 
 **Perfect Freehand in the web layer is the single renderer of committed ink on every client**: `getStroke(points, {size, thinning, smoothing, streamline, simulatePressure: !hasPressure})` into SVG paths, in a layer above the cards, or in the card's own coordinate space when anchored. Whatever captured a stroke hands over the same thing — points, pressure, time, tool, colour — through one interface, so the capture path can change without touching storage, crops or undo.
 
-- **Pointer capture (P2; Mac and web always; iPads below iPadOS 26 always).** Pointer events with `pointerType === "pen"` and `pressure`; `getCoalescedEvents()` and `getPredictedEvents()` where WebKit has them (Safari 18.2+, per MDN browser-compat-data `api/PointerEvent.json`). The stroke in flight is drawn on a `<canvas>`; on pointer-up it is simplified and written to Yjs. A capture-phase filter on the React Flow wrapper swallows pen pointers and stylus touches before the pan/zoom handler sees them, so a pen never pans, selects or drags. Mouse and finger ink (the toggle) use the same path with pressure simulated from velocity.
-- **Native capture (P3, iPad).** §6.2.
+- **Pointer capture — the only path, on every platform (iPad, Mac, browser; R13).** Pointer events with `pointerType === "pen"` and `pressure`; `getCoalescedEvents()` and `getPredictedEvents()` where WebKit has them (Safari 18.2+, per MDN browser-compat-data `api/PointerEvent.json`), each sample taken once and in time order. The stroke in flight is drawn on a `<canvas>` once per animation frame (the predicted tail drawn, never committed); on pointer-up it is simplified and written to Yjs. A capture-phase filter on the React Flow wrapper swallows pen pointers and stylus touches before the pan/zoom handler sees them, so a pen never pans, selects or drags. Mouse and finger ink (the toggle) use the same path with pressure simulated from velocity. The cluster's tool picker is the only tool UI; the tool latches until another tool, Select or Esc.
+- **Native capture** (§6.2) was built, shipped in 2.30.2 and removed (R13).
 
-**Palm rule (both paths):** while a pen is down and for 500 ms after, finger touches are ignored — no pan, no chrome toggle, no selection.
+**Palm rule:** while a pen is down and for 500 ms after, finger touches are ignored — no pan, no chrome toggle, no selection, no multi-finger undo. A pen-down also cancels a palm that landed first: its long-press (mark menu) and its multi-finger tap.
 
-### 6.2 Native Pencil — committed, staged second
+### 6.2 Native Pencil — retired (R13)
+
+> **Retired 2026-11-25 by R13.** The native capture layer below was built (P3) and shipped in 2.30.2; Sky turned "Native Pencil ink" off on a real iPad, felt no lag, and chose web-only. Ink is §6.1's pointer path everywhere. `tauri-plugin-ink` keeps two stateless services: Vision handwriting (`recognize_text`, §6.6) and a `UIPencilInteraction` forwarder (`pencil_listen` / `pencil_unlisten`) whose double-tap / squeeze events the web maps to its own tool switch. The hybrid is preserved at the git tag `ink-hybrid-final`. Decision and risks: `218-recon/ink-decision.md`; as built: `218-as-built-ink-web.md`. The text below is the record of what was built.
 
 **Why it is not optional.** Sky named native Pencil quality as essential, and the pointer path cannot give it: every point crosses the web content process and the JS main thread before any ink shows; there is no `PKToolPicker`; double-tap and squeeze cannot follow the user's Settings; palm rejection is ours, not the system's. P2 ships pointer ink first for one reason only — so the productivity test runs on the couch before any Swift exists. **P3's entry gate is P2's exit (the test passes); there is no second decision.** Its exit gate is the acceptance list at the end of this section.
 
@@ -299,7 +301,7 @@ Each mark's line names its card, version and — where the card can say — the 
 
 ### 6.6 Handwriting
 
-Scribble handles handwriting into the composer and stickies. On iPadOS 26+ with native capture (P3), each mark image is also run through on-device Vision text recognition (`VNRecognizeTextRequest`, `.accurate`) and the recognised text rides in the mark's caption line as `handwriting: "…"` (untrusted, capped 200 chars). The image is still sent; the text is a hint (R6). Pointer-ink clients send the image only.
+Scribble handles handwriting into the composer and stickies. In the iOS shell (every iPad, whatever the ink path — R13), each image of one free mark is also run through on-device Vision text recognition (`VNRecognizeTextRequest`, `.accurate`; `tauri-plugin-ink` `recognize_text`) and the recognised text rides in the mark's caption line as `handwriting: "…"` (untrusted, capped 200 chars). The image is still sent; the text is a hint (R6). Clients without the plugin (Mac, browser) send the image only.
 
 ## 7. Decisions and trade-offs
 
@@ -340,7 +342,7 @@ Rev 1 said the ink plugin is "built exactly like `tauri-plugin-glass`" and the p
 | **P0** model, binding, tools | `DocKind::Whiteboard`, the maps, the yrs reader and outline export, `Kind::Whiteboard` marker, binding and alias tables, `<whiteboard>` / `<whiteboard_changes>` injection, `wb_*` tools, blob RPCs, the two prompt sentences. Spikes: `takeSnapshot(rect)` of the main webview includes sandboxed frames on macOS and iOS; the offline kill test | an agent creates a whiteboard, reserves and fills 5 cards of 3 kinds, links them, pushes a version; outline and changes goldens pass, including after a compaction and for two bound sessions |
 | **P1** the table | full-screen view on iPad, Mac and web: cards, LOD, shield / enter, device presets, version stacks, handles and link mode, frames, select / dim, CSS glass composer with grabber, cluster, reply bubble, placeholders, Undo this turn, outline view, sheet drill-in, `show_whiteboard` tile, *Add to whiteboard…*, snapshots | the §1.1 flow works without ink on the iPad simulator and the Mac; 60 fps pan/zoom with the 100-card fixture |
 | **P2** ink over pointer events | pointer capture with Pencil pressure on iPad, the renderer, palm rule, anchoring, marks and ink life, per-card images, captions with `describe-point`, the no-vision path | the §1.1 flow on a real iPad with a Pencil; 2 000 strokes at 60 fps; **Sky runs the productivity test (§9.1) and it passes** |
-| **P3** native Pencil — committed | `tauri-plugin-ink`: capture-only `PKCanvasView`, routing, hand-over, `PKToolPicker`, tap / squeeze, on-device handwriting text (Vision) for mark captions | entry: P1 shipped (built regardless of the §9.1 result — Sky's ruling R11). Exit: the §6.2 gate |
+| **P3** native Pencil — committed, then retired (R13) | `tauri-plugin-ink`: capture-only `PKCanvasView`, routing, hand-over, `PKToolPicker`, tap / squeeze, on-device handwriting text (Vision) for mark captions. After R13 only Vision handwriting and the tap / squeeze forwarder remain | entry: P1 shipped (built regardless of the §9.1 result — Sky's ruling R11, superseded by R13). Exit: the §6.2 gate — not met (gate 4), the layer was removed |
 | **P4** presence | Follow, `wb_focus`, spotlight, edge chevrons, live-talk bubbles | an agent walkthrough of 5 cards plays in sync with speech |
 | **P5** export | whiteboard → note brief, PNG, PDF | a worker briefed only with the exported note builds the right screen |
 
@@ -368,7 +370,7 @@ Two comparable design tasks from the real backlog, one in chat + tiles, one on a
 | Hand-off — a fresh session given only the whiteboard builds the chosen variant | that session | no question about *which* variant; corrections ≤ chat's |
 | Wait — send to first placeholder | client timing | ≤ 3 s |
 
-Pass: the first, second, fourth and fifth rows hold in two of the three pairs. Fail: the review of why goes in this file and drives a rev; native Pencil (P3) is built regardless (R11).
+Pass: the first, second, fourth and fifth rows hold in two of the three pairs. Fail: the review of why goes in this file and drives a rev; native Pencil (P3) was built regardless (R11), then retired (R13).
 
 ## 10. Sky's rulings (2026-11-25) and additions
 
@@ -378,14 +380,15 @@ Pass: the first, second, fourth and fifth rows hold in two of the three pairs. F
 | R2 | Finger ink on iPad with a Pencil paired | **no — Pencil only**; toggle in ⋯ |
 | R3 | React Flow attribution | **shown, top-left, only while the control cluster is up** (free licence; no Pro) |
 | R4 | Manual stroke-to-link | **no** in v1 |
-| R5 | Native capture OS | **iPadOS 26+**; older iPads keep pointer ink |
+| R5 | Native capture OS | ~~**iPadOS 26+**; older iPads keep pointer ink~~ — **superseded by R13**: every iPad uses pointer ink |
 | R6 | Handwriting text with marks | **yes** (§6.6) |
 | R7 | Sharing with a contact | **later** |
 | R8 | Baking answered ink above 2 MiB | **yes, automatic** |
 | R9 | Design 71's files | **do nothing** |
 | R10 | Notebook item kind | **yes, after P2** |
-| R11 | Native Pencil gated on the productivity test | **no — build P3 regardless** |
+| R11 | Native Pencil gated on the productivity test | ~~**no — build P3 regardless**~~ — **superseded by R13**: built, shipped in 2.30.2, lost the A/B, removed |
 | R12 | Session indicator on the composer | **a small dot + short session name** with a link glyph; tap → session picker |
+| R13 | Ink engine (2026-11-25, after a real-iPad test with "Native Pencil ink" off: "no lag") | **web-only on every platform** (Pointer Events + perfect-freehand on iPad, Mac and browser). Supersedes R5 and R11. `tauri-plugin-ink` keeps Vision handwriting (R6) and the Pencil double-tap / squeeze forwarder; the hybrid is at tag `ink-hybrid-final`. Tripwire: a 240 fps latency baseline on the real iPad (`218-recon/ink-decision.md` §4) |
 
 Additions from Sky the same night:
 

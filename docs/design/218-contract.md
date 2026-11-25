@@ -595,6 +595,16 @@ Store API in `crates/agent/src/store/whiteboards.rs`: `bind_whiteboard(session, 
 
 ## 6. Native Pencil plugin — B5 builds `crates/tauri-plugin-ink`, B4 writes the JS side `lib/ink-native.ts`
 
+> **Superseded 2026-11-25 by design R13 (web-only ink).** The capture layer, picker and hand-over below were removed; the text after this note is the record of what was built (tag `ink-hybrid-final`). `tauri-plugin-ink` now has exactly three commands, `ink:default` allows the three, and `PencilKit` is no longer linked (Vision only):
+>
+> | JS call (`invoke('plugin:ink\|<cmd>', args)`) | Args | Result |
+> |---|---|---|
+> | `pencil_listen` | `{ onEvent: Channel<InkEvent> }` | `{ ok: boolean }` — installs one stateless `UIPencilInteraction` on the web view; `ok: false` on desktop, off iPad or below iOS 17.5; a second call replaces the channel |
+> | `pencil_unlisten` | `{}` | `null` — removes it |
+> | `recognize_text` | `{ png: string /* base64 */ }` | unchanged (below) |
+>
+> `InkEvent` = `{ kind: 'pencil'; gesture: 'tap' \| 'squeeze'; action: … }` (the seven actions below) \| `{ kind: 'error'; message: string }`. Native code never sends tool state. `lib/ink-native.ts` exports `recognizeText(png)` and `listenPencil(on)` only; `components/whiteboard/pencil-gestures.ts` maps an action to a store patch.
+
 Layout and build wiring exactly as recon `ios.md` §7 (template: `tauri-plugin-haptics` 2.4.2 in `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`). Plugin name `ink`; Swift entry `@_cdecl("init_plugin_ink")`; `Package.swift` platforms `.iOS(.v17)`, `linkerSettings` PencilKit + Vision; desktop builds get a stub (`src/desktop.rs`) whose `attach` returns `{ native: false, reason: "desktop" }` and whose other commands are no-ops. Capture-only `PKCanvasView` (design §6.2): never transformed, `drawingPolicy = .pencilOnly`, `hitTest` → nil, `drawingGestureRecognizer` on the web view with `allowedTouchTypes = [.pencil]` (route A; route B = own pencil-only recogniser + `CAShapeLayer`, built only if A fails on the simulator/device spike). Native capture needs **iPadOS 26** at run time (`#available(iOS 26.0, *)`, R5); 17.5 APIs gated separately; `PKStroke.id` is never used.
 
 `COMMANDS` (snake_case): `attach`, `detach`, `set_enabled`, `set_viewport`, `set_tool`, `set_picker_visible`, `ack`, `recognize_text`. Permission set `ink:default` allows all eight; B5 adds `"ink:default"` to `crates/desktop/capabilities/mobile.json#L6-L18`.
