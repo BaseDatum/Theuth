@@ -43,7 +43,8 @@ export const createConnection = (): ConnectionApi =>
     retryAt: null,
     attempt: 0,
     retryNow: () => get().client?.retryNow(),
-    setConnState: (state) => set({ state }),
+    // 217 §4: an open socket has no backoff, whatever order the client's two events arrive in.
+    setConnState: (state) => set(state === 'open' ? { state, retryAt: null, attempt: 0 } : { state }),
     setClient: (client, api) => set({ client, api }),
     setDiscovery: (discovery) => set({ discovery }),
     setInfo: (info) => set({ info }),
@@ -94,6 +95,40 @@ export function watchDrops(conn: ConnectionApi): Drops {
     },
     stop,
   }
+}
+
+/**
+ * Mirror `client`'s state and backoff into `conn` until `signal` aborts; `onState` sees every state the store takes.
+ * 217 §4: a window coming back to the foreground re-reads the client's current state (after the client's own
+ * foreground handling, which registered first), so nothing it missed while hidden lingers.
+ */
+export function mirror(conn: ConnectionApi, client: Pick<RpcClient, 'state' | 'retry' | 'onState' | 'onRetry'>, signal: AbortSignal, onState: (s: ConnState) => void = () => {}): void {
+  if (signal.aborted) return
+  // Guarded as well as unlistened: an earlier abort listener may close the client before this one runs.
+  const apply = (s: ConnState) => {
+    if (signal.aborted) return
+    conn.getState().setConnState(s)
+    onState(s)
+  }
+  const offState = client.onState(apply)
+  const offRetry = client.onRetry((r) => {
+    if (!signal.aborted) conn.setState({ retryAt: r.at, attempt: r.attempt })
+  })
+  const resync = () => {
+    if (signal.aborted || document.visibilityState !== 'visible') return
+    const s = client.state
+    if (conn.getState().state !== s) apply(s)
+    const r = client.retry
+    conn.setState(s === 'open' ? { retryAt: null, attempt: 0 } : { retryAt: r.at, attempt: r.attempt })
+  }
+  document.addEventListener('visibilitychange', resync)
+  window.addEventListener('pageshow', resync)
+  signal.addEventListener('abort', () => {
+    offState()
+    offRetry()
+    document.removeEventListener('visibilitychange', resync)
+    window.removeEventListener('pageshow', resync)
+  })
 }
 
 export const useConnection = scoped((st) => st.connection)

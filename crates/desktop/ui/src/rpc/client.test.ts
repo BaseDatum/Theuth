@@ -187,6 +187,38 @@ test('the backoff deadline is observable, and retryNow dials at once and clears 
   expect(t.connects).toBe(1)
 })
 
+test('a transport that reopens on its own cancels the pending redial: the next drop counts down from scratch', async () => {
+  vi.setSystemTime(1_000_000)
+  const t = new Fake()
+  const c = new RpcClient(t)
+  t.state('open')
+  t.state('reconnecting')
+  // A parked link socket: the engine came back before the 500 ms redial fired.
+  t.state('open')
+  expect(c.retry).toEqual({ at: null, attempt: 0 })
+  await vi.advanceTimersByTimeAsync(100)
+  t.state('reconnecting')
+  expect(c.retry).toEqual({ at: Date.now() + 500, attempt: 1 })
+  // The old outage's timer is gone: nothing dials at its (earlier) deadline.
+  await vi.advanceTimersByTimeAsync(400)
+  expect(t.connects).toBe(0)
+  await vi.advanceTimersByTimeAsync(100)
+  expect(t.connects).toBe(1)
+})
+
+test('state and lastRx read the live client: every inbound frame stamps lastRx', async () => {
+  vi.setSystemTime(1_000_000)
+  const t = new Fake()
+  const c = new RpcClient(t)
+  expect(c.state).toBe('closed')
+  expect(c.lastRx).toBe(Number.NEGATIVE_INFINITY)
+  t.state('open')
+  expect(c.state).toBe('open')
+  await vi.advanceTimersByTimeAsync(1_000)
+  reply(t, { method: 'unknown', params: { subscription: 'x', result: null } })
+  expect(c.lastRx).toBe(Date.now())
+})
+
 test('a send in flight when the socket drops is rejected at once, not left hanging', async () => {
   const t = new Fake()
   const c = new RpcClient(t)

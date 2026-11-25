@@ -99,6 +99,10 @@ export class RpcClient {
       this.#setState(s)
       if (this.#closed || generation !== this.#generation) return
       if (s === 'open') {
+        // A transport that came back on its own (a parked link socket's engine returned) beat the pending redial:
+        // cancel it, or the next drop's `#schedule` finds the stale timer and shows no countdown.
+        clearTimeout(this.#timer)
+        this.#timer = undefined
         this.#attempt = 0
         this.#setRetry(null)
         void this.#negotiate(generation)
@@ -167,6 +171,11 @@ export class RpcClient {
   }
 
   get generation(): number { return this.#generation }
+  /** The current state, for a reader that may have missed an event (a window returning from hidden). */
+  get state(): ConnState { return this.#state }
+  /** `Date.now()` of the last inbound frame of any kind (`-Infinity` before the first): 217 §4's evidence of liveness. */
+  get lastRx(): number { return this.#heardAt }
+  get retry(): Retry { return this.#retry }
   get discovery(): Discovery { return this.#discovery }
   onDiscovery(cb: (d: Discovery) => void): () => void {
     this.#discoveryListeners.add(cb)
