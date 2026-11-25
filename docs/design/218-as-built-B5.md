@@ -2,6 +2,11 @@
 
 Builder B5, branch `feat/218-whiteboard`. Scope: contract §6 (`crates/tauri-plugin-ink`), §7 (`wb_capture`), §9 row B5.
 
+Commits:
+- `fac0bab26` 218 B5: tauri-plugin-ink crate, wb_capture, iOS registration and ink:default. The seam and the full build list landed together; the seam commit was not separate.
+- `6de4e34bb` 218 B5: tool picker selects its own items; colour and width through selectedTool.
+- This note.
+
 ## Capture spike (§7, reported first)
 
 **`takeSnapshot(rect)` does contain a sandboxed custom-scheme iframe, on macOS and on the iOS 26 iPad
@@ -105,7 +110,7 @@ It does not affect the app (its page is `tauri://`).
 | `cargo test -p tauri-plugin-ink -- --test-threads=4` | 0 — `models::tests::stroke_batch_serde_shape` ok, `models::tests::ink_event_serde_shape` ok, `desktop::tests::attach_reports_desktop` ok |
 | `cargo clippy -p tauri-plugin-ink --all-targets --no-deps -- -D warnings` | 0 |
 | `cargo test -p desktop --lib wb_capture -- --test-threads=4` | 0 — `apple_tile::tests::wb_capture_refuses_an_empty_rect` ok |
-| `cargo check -p desktop --target aarch64-apple-ios-sim` | IOS_CHECK_RESULT |
+| `cargo check -p desktop --target aarch64-apple-ios-sim` | **not run**: queued on `/tmp/theuth-build.lock` from 02:16 for over 50 min (the lock is shared with other worktrees' builds); still waiting when this note was committed. So the Rust iOS side (`mobile.rs`, `apple_tile::wb_capture` iOS variant, `frame_in` visibility, the new `objc2-web-kit` feature) and the Swift package build in `build.rs` are **compile-unverified** on iOS. The Swift sources themselves type-check (next row). |
 | `swiftc -typecheck` of `ios/Sources/*.swift`, target `arm64-apple-ios17.0-simulator`, SDK iPhoneSimulator26.0. The `Tauri` module was built from the registry's `tauri-api` sources against a one-class stub `SwiftRs` (only `SRString.toString()`, which `Tauri.swift` uses) | 0, no diagnostics (a deliberate type error in a scratch file was reported, so the check is real) |
 | `swift package dump-package` on `ios/Package.swift` (with the tauri-api package beside it) | 0 |
 | Capture spike, macOS + iOS 26 simulator | see the table at the top |
