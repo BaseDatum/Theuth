@@ -16,9 +16,10 @@ use secrets::external::{
     BwField, BwKind, ConnStatus, DeleteMode, ExtError, ExtRef, ExternalBackend, ListQuery,
     Location, Value,
 };
+use secrets::settings::ConnSettings;
 use secrets_bitwarden::{
-    ApiKey, BwBackend, BwConfig, CredentialStore, KEY_DEVICE_ID, KEY_REFRESH_TOKEN, LoginKind,
-    LoginStep, PasswordLogin, Server, TwoFactorKind,
+    ApiKey, BwBackend, BwConfig, CredentialStore, KEY_DEVICE_ID, KEY_REFRESH_TOKEN, KEY_USER_KEY,
+    LoginKind, LoginStep, PasswordLogin, Server, TwoFactorKind,
 };
 use zeroize::Zeroizing;
 
@@ -415,4 +416,78 @@ async fn password_totp_login_then_restart_unlocks_without_2fa() {
     b.logout().await;
     assert_eq!(b.status(), ConnStatus::LoggedOut);
     assert!(store.load(KEY_REFRESH_TOKEN).await.is_none());
+}
+
+/// Wait (up to 5 s) until `key` is present (`true`) or absent (`false`) in `store`.
+async fn settles(store: &MemStore, key: &str, present: bool) -> bool {
+    for _ in 0..50 {
+        if store.load(key).await.is_some() == present {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    false
+}
+
+/// D12 `remember_unlock`: on → the unlock seals the user key → a restart over the same store is
+/// `Ready` without the master password; off → the sealed key is deleted at once; a lock deletes
+/// it too.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a local Vaultwarden (see the module docs)"]
+async fn remember_unlock_survives_a_restart_and_off_deletes_it() {
+    let key = register().await;
+    let store = std::sync::Arc::new(MemStore::default());
+    let on = ConnSettings {
+        remember_unlock: true,
+        ..ConnSettings::default()
+    };
+    let b = BwBackend::with_store("vw", config(false), Some(store.clone()));
+    b.set_settings(&on);
+    b.set_api_key(copy(&key)).await;
+    b.unlock(Zeroizing::new(PASSWORD.into())).await.unwrap();
+    assert!(
+        store.load(KEY_USER_KEY).await.is_some(),
+        "unlock did not seal"
+    );
+    let loc = Location::Bw {
+        org: None,
+        collections: vec![],
+        folder: None,
+        kind: BwKind::SecureNote,
+        item_name: "D12 note".into(),
+        field: BwField::Notes,
+        username: None,
+        uri: None,
+    };
+    let (r, _) = b.create(&loc, Value::Plain("remembered")).await.unwrap();
+    drop(b);
+
+    // "Restart": settings applied, credentials loaded; no master password.
+    let b = BwBackend::with_store("vw", config(false), Some(store.clone()));
+    b.set_settings(&on);
+    b.load_credentials().await;
+    assert_eq!(b.status(), ConnStatus::Ready);
+    assert_eq!(b.get(&r).await.unwrap().0.as_str(), "remembered");
+
+    b.set_settings(&ConnSettings::default());
+    assert!(
+        settles(&store, KEY_USER_KEY, false).await,
+        "off kept the key"
+    );
+    b.set_settings(&on);
+    assert!(
+        settles(&store, KEY_USER_KEY, true).await,
+        "on did not seal the open session"
+    );
+    b.lock().await;
+    assert!(
+        store.load(KEY_USER_KEY).await.is_none(),
+        "lock kept the key"
+    );
+
+    // Locked, the next restart needs the master password again.
+    let b = BwBackend::with_store("vw", config(false), Some(store.clone()));
+    b.set_settings(&on);
+    b.load_credentials().await;
+    assert_eq!(b.status(), ConnStatus::Locked);
 }

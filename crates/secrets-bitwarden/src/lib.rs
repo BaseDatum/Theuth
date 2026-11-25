@@ -96,7 +96,7 @@ pub struct ApiKey {
 
 /// Where a connection keeps its credentials across restarts: the `secrets` crate's engine-local
 /// `meta` rows `ext/bw/<conn>/<key>`, sealed with the engine key (D11). Keys: [`KEY_CLIENT_ID`],
-/// [`KEY_CLIENT_SECRET`], [`KEY_REFRESH_TOKEN`], [`KEY_DEVICE_ID`].
+/// [`KEY_CLIENT_SECRET`], [`KEY_REFRESH_TOKEN`], [`KEY_DEVICE_ID`], [`KEY_USER_KEY`].
 #[async_trait::async_trait]
 pub trait CredentialStore: Send + Sync + 'static {
     /// The stored value, if any.
@@ -113,6 +113,17 @@ pub const KEY_CLIENT_SECRET: &str = "client_secret";
 pub const KEY_REFRESH_TOKEN: &str = "refresh_token";
 /// Password login: this engine's device id towards Bitwarden (kept across logins).
 pub const KEY_DEVICE_ID: &str = "device_id";
+/// `remember_unlock` (D12): the user key, so a restart unlocks without the master password.
+/// Written only while the setting is on; deleted when it goes off and on every lock or logout.
+pub const KEY_USER_KEY: &str = "user_key";
+
+/// How [`BwBackend::unlock_with_tokens`] decrypts the user key.
+enum UnlockWith<'a> {
+    /// The master password (KDF).
+    Master(&'a Zeroizing<String>),
+    /// The sealed user key (`remember_unlock`).
+    Key(&'a Zeroizing<String>),
+}
 
 #[derive(Default)]
 struct Creds {
@@ -142,6 +153,9 @@ pub struct BwBackend {
     session: AsyncMutex<Option<Session>>,
     last_use: Mutex<Instant>,
     idle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Turns `true` once the connection's settings were applied: a restart's remembered unlock
+    /// waits for `remember_unlock` before it uses (or deletes) the sealed key.
+    settings_seen: tokio::sync::watch::Sender<bool>,
 }
 
 impl BwBackend {
@@ -174,6 +188,7 @@ impl BwBackend {
             session: AsyncMutex::new(None),
             last_use: Mutex::new(Instant::now()),
             idle: Mutex::new(None),
+            settings_seen: tokio::sync::watch::channel(false).0,
         })
     }
 
@@ -185,17 +200,55 @@ impl BwBackend {
             .clone()
     }
 
-    /// Apply the connection's D20 settings (the trait's `apply_settings`).
+    /// Apply the connection's D20 settings (the trait's `apply_settings`). Turning
+    /// `remember_unlock` on seals an open session's user key; turning it off deletes it.
     pub fn set_settings(&self, s: &secrets::settings::ConnSettings) {
-        let mut c = self.cfg.write().unwrap_or_else(PoisonError::into_inner);
-        c.allow_permanent_delete = s.allow_permanent_delete;
-        c.lock_after_idle_secs = s.lock_after_idle_secs;
-        c.expose_password_history = s.expose_password_history;
-        c.expose_totp_seed = s.expose_totp_seed;
-        c.write_scope = match s.write_scope {
-            secrets::settings::WriteScope::Personal => WriteScope::Personal,
-            secrets::settings::WriteScope::PersonalAndOrg => WriteScope::PersonalAndOrg,
+        let was = {
+            let mut c = self.cfg.write().unwrap_or_else(PoisonError::into_inner);
+            c.allow_permanent_delete = s.allow_permanent_delete;
+            c.lock_after_idle_secs = s.lock_after_idle_secs;
+            c.expose_password_history = s.expose_password_history;
+            c.expose_totp_seed = s.expose_totp_seed;
+            c.write_scope = match s.write_scope {
+                secrets::settings::WriteScope::Personal => WriteScope::Personal,
+                secrets::settings::WriteScope::PersonalAndOrg => WriteScope::PersonalAndOrg,
+            };
+            c.send_owner_only = s.send_owner_only;
+            std::mem::replace(&mut c.remember_unlock, s.remember_unlock)
         };
+        self.settings_seen.send_replace(true);
+        if was != s.remember_unlock
+            && let (Some(me), Ok(rt)) = (self.me.upgrade(), tokio::runtime::Handle::try_current())
+        {
+            rt.spawn(async move { me.apply_remember().await });
+        }
+    }
+
+    /// D12: seal the open session's user key while `remember_unlock` is on, delete it when off.
+    /// Serialised with unlocks and locks by the session lock.
+    pub async fn apply_remember(&self) {
+        let guard = self.session.lock().await;
+        if !self.config().remember_unlock {
+            self.save(KEY_USER_KEY, None).await;
+        } else if let Some(s) = guard.as_ref() {
+            self.seal_user_key(&s.client).await;
+        }
+    }
+
+    /// Store the unlocked user key under the engine key, when `remember_unlock` is on.
+    async fn seal_user_key(&self, client: &Client) {
+        if self.store.is_none() || !self.config().remember_unlock {
+            return;
+        }
+        match client.crypto().get_user_encryption_key().await {
+            Ok(k) => {
+                let k = Zeroizing::new(k.to_string());
+                self.save(KEY_USER_KEY, Some(&k)).await;
+            }
+            Err(e) => {
+                tracing::warn!(conn = %self.conn, error = %e, "bitwarden: user key not sealed")
+            }
+        }
     }
 
     /// The web vault URL Send links are built on (§6.2), when the URLs are valid.
@@ -213,7 +266,9 @@ impl BwBackend {
         }
     }
 
-    /// Read the stored credentials (after a restart): `Locked` when there are some.
+    /// Read the stored credentials (after a restart): `Locked` when there are some. With a sealed
+    /// user key and `remember_unlock` on, unlock with it (`Ready`, no master password); with the
+    /// setting off, the sealed key is deleted.
     pub async fn load_credentials(&self) {
         let Some(store) = &self.store else { return };
         let id = store.load(KEY_CLIENT_ID).await;
@@ -230,6 +285,80 @@ impl BwBackend {
             c.device_id = device.map(|d| d.to_string());
         }
         self.refresh_status();
+        let Some(key) = store.load(KEY_USER_KEY).await else {
+            return;
+        };
+        // The builder applies the settings right after it spawns this load.
+        let mut seen = self.settings_seen.subscribe();
+        let applied = tokio::time::timeout(Duration::from_secs(10), seen.wait_for(|s| *s)).await;
+        if !matches!(applied, Ok(Ok(_))) || !self.config().remember_unlock {
+            self.save(KEY_USER_KEY, None).await;
+            return;
+        }
+        match self.unlock_remembered(&key).await {
+            Ok(_) => {
+                tracing::info!(conn = %self.conn, "bitwarden: unlocked with the remembered key")
+            }
+            Err(e) => tracing::warn!(conn = %self.conn, "bitwarden: remembered unlock failed: {e}"),
+        }
+    }
+
+    /// Unlock with the sealed user key: a fresh login from the stored API key or refresh token,
+    /// then `DecryptedKey`. A key Bitwarden no longer accepts is deleted; on failure the
+    /// connection is left locked.
+    async fn unlock_remembered(&self, key: &Zeroizing<String>) -> Result<ConnStatus, ExtError> {
+        let r = match self.config().login {
+            LoginKind::ApiKey => self.open_api_key_remembered(key).await,
+            LoginKind::Password => self.open_refresh(UnlockWith::Key(key)).await,
+        };
+        match &r {
+            Ok(_) => {}
+            Err(ExtError::Denied(_) | ExtError::LoggedOut | ExtError::Expired(_)) => {
+                self.save(KEY_USER_KEY, None).await;
+                self.refresh_status();
+            }
+            Err(_) => self.refresh_status(),
+        }
+        r
+    }
+
+    /// API-key restart with the sealed key: the SDK's token handler logs in with the client
+    /// credentials on the first request (no master password involved), then `DecryptedKey`.
+    async fn open_api_key_remembered(
+        &self,
+        key: &Zeroizing<String>,
+    ) -> Result<ConnStatus, ExtError> {
+        let urls = self.urls.clone().map_err(ExtError::Unsupported)?;
+        let (client_id, client_secret) = {
+            let c = self.creds();
+            let k = c.api_key.as_ref().ok_or(ExtError::LoggedOut)?;
+            (k.client_id.clone(), k.client_secret.to_string())
+        };
+        let email = self.config().email.as_deref().map(salt).unwrap_or_default();
+        let kdf = Kdf::default_pbkdf2();
+        let guard = self.fresh_slot().await;
+        let client = Self::new_client(&urls);
+        let tokens = password::Tokens {
+            access_token: String::new(),
+            refresh_token: None,
+            expires_in: 0,
+        };
+        let login = UserLoginMethod::ApiKey {
+            client_id,
+            client_secret,
+            email: email.clone(),
+            kdf: kdf.clone(),
+        };
+        self.unlock_with_tokens(
+            guard,
+            client,
+            tokens,
+            login,
+            &email,
+            kdf,
+            UnlockWith::Key(key),
+        )
+        .await
     }
 
     /// Install (or replace) the API key, saving it to the store: the connection becomes
@@ -263,7 +392,7 @@ impl BwBackend {
     pub async fn unlock(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {
         let r = match self.config().login {
             LoginKind::ApiKey => self.open_api_key(password).await,
-            LoginKind::Password => self.open_refresh(password).await,
+            LoginKind::Password => self.open_refresh(UnlockWith::Master(&password)).await,
         };
         if r.is_err() {
             self.refresh_status();
@@ -310,6 +439,7 @@ impl BwBackend {
             last_sync: None,
         };
         self.sync(&mut s, true).await?;
+        self.seal_user_key(&s.client).await;
         *guard = Some(s);
         drop(guard);
         self.set_status(ConnStatus::Ready);
@@ -423,8 +553,21 @@ impl BwBackend {
             TokenOutcome::Tokens(t) => {
                 let guard = self.fresh_slot().await;
                 self.remember_refresh(t.refresh_token.clone()).await;
-                self.unlock_with_tokens(guard, client, t, &email, kdf, &form.password)
-                    .await?;
+                let login = UserLoginMethod::Username {
+                    client_id: password::CLIENT_ID.into(),
+                    email: email.clone(),
+                    kdf: kdf.clone(),
+                };
+                self.unlock_with_tokens(
+                    guard,
+                    client,
+                    t,
+                    login,
+                    &email,
+                    kdf,
+                    UnlockWith::Master(&form.password),
+                )
+                .await?;
                 Ok(LoginStep::Done)
             }
             TokenOutcome::TwoFactor(codes) => Ok(LoginStep::NeedTwoFactor {
@@ -464,7 +607,7 @@ impl BwBackend {
     }
 
     /// Restart path of a password connection: renew from the stored refresh token, unlock.
-    async fn open_refresh(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {
+    async fn open_refresh(&self, with: UnlockWith<'_>) -> Result<ConnStatus, ExtError> {
         let urls = self.urls.clone().map_err(ExtError::Unsupported)?;
         let refresh = self
             .creds()
@@ -484,8 +627,13 @@ impl BwBackend {
             refresh_token: Some(refresh),
             expires_in: 0,
         };
+        let login = UserLoginMethod::Username {
+            client_id: password::CLIENT_ID.into(),
+            email: email.clone(),
+            kdf: kdf.clone(),
+        };
         match self
-            .unlock_with_tokens(guard, client, tokens, &email, kdf, &password)
+            .unlock_with_tokens(guard, client, tokens, login, &email, kdf, with)
             .await
         {
             Err(ExtError::Network(e) | ExtError::Sdk(e)) if e.contains("invalid_grant") => {
@@ -499,16 +647,19 @@ impl BwBackend {
         }
     }
 
-    /// Hand `tokens` to the SDK (`AUTHENTICATION_TOKENS` + `USER_LOGIN_METHOD`, so it renews
-    /// from the refresh token from now on), fetch the decryption data, unlock, sync.
+    /// Hand `tokens` to the SDK (`AUTHENTICATION_TOKENS` + `USER_LOGIN_METHOD` = `login`, so it
+    /// renews from the refresh token or the API key from now on), fetch the decryption data,
+    /// unlock `with` the master password or the sealed user key, sync.
+    #[allow(clippy::too_many_arguments)]
     async fn unlock_with_tokens(
         &self,
         guard: MutexGuard<'_, Option<Session>>,
         client: Client,
         tokens: password::Tokens,
+        login: UserLoginMethod,
         email: &str,
         kdf: Kdf,
-        master: &Zeroizing<String>,
+        with: UnlockWith<'_>,
     ) -> Result<ConnStatus, ExtError> {
         let state = client.platform().state();
         state
@@ -522,11 +673,7 @@ impl BwBackend {
             .map_err(sdk)?;
         state
             .value::<USER_LOGIN_METHOD>()
-            .set(UserLoginMethod::Username {
-                client_id: password::CLIENT_ID.into(),
-                email: email.to_owned(),
-                kdf: kdf.clone(),
-            })
+            .set(login)
             .await
             .map_err(sdk)?;
         let api = client.internal.get_api_configurations();
@@ -549,37 +696,59 @@ impl BwBackend {
             .ok_or_else(|| ExtError::Sdk("the profile has no private key".into()))?
             .parse()
             .map_err(sdk)?;
-        let unlock = match raw
+        let master_unlock = raw
             .user_decryption
             .as_deref()
             .map(UserDecryptionData::try_from)
             .transpose()
             .map_err(sdk)?
-            .and_then(|d| d.master_password_unlock)
-        {
-            Some(u) => u,
-            // Older servers: the master-key-wrapped user key is the profile's `key`.
-            None => MasterPasswordUnlockData {
-                kdf: kdf.clone(),
-                master_key_wrapped_user_key: profile
-                    .key
-                    .as_deref()
-                    .ok_or_else(|| ExtError::Sdk("the profile has no user key".into()))?
-                    .parse()
-                    .map_err(sdk)?,
-                salt: email.to_owned(),
-                contained_key_id: None,
-            },
+            .and_then(|d| d.master_password_unlock);
+        let (kdf_params, salt_, method, refused) = match with {
+            UnlockWith::Master(master) => {
+                let unlock = match master_unlock {
+                    Some(u) => u,
+                    // Older servers: the master-key-wrapped user key is the profile's `key`.
+                    None => MasterPasswordUnlockData {
+                        kdf: kdf.clone(),
+                        master_key_wrapped_user_key: profile
+                            .key
+                            .as_deref()
+                            .ok_or_else(|| ExtError::Sdk("the profile has no user key".into()))?
+                            .parse()
+                            .map_err(sdk)?,
+                        salt: email.to_owned(),
+                        contained_key_id: None,
+                    },
+                };
+                (
+                    unlock.kdf.clone(),
+                    unlock.salt.clone(),
+                    InitUserCryptoMethod::MasterPasswordUnlock {
+                        password: master.to_string(),
+                        master_password_unlock: unlock,
+                    },
+                    "wrong master password",
+                )
+            }
+            UnlockWith::Key(key) => {
+                let (k, s) = master_unlock.map_or((kdf, email.to_owned()), |u| (u.kdf, u.salt));
+                (
+                    k,
+                    s,
+                    InitUserCryptoMethod::DecryptedKey {
+                        decrypted_user_key: key.to_string(),
+                    },
+                    "the remembered unlock no longer matches this account; unlock with the master \
+                     password",
+                )
+            }
         };
         let req = InitUserCryptoRequest {
             user_id: Some(user_id),
-            kdf_params: unlock.kdf.clone(),
-            email: unlock.salt.clone(),
+            kdf_params,
+            email: salt_,
             account_cryptographic_state: WrappedAccountCryptographicState::V1 { private_key },
-            method: InitUserCryptoMethod::MasterPasswordUnlock {
-                password: master.to_string(),
-                master_password_unlock: unlock,
-            },
+            method,
             upgrade_token: None,
         };
         let init = {
@@ -591,10 +760,10 @@ impl BwBackend {
         };
         self.timed(init).await?.map_err(sdk)?.map_err(|e| {
             tracing::debug!(error = %e, "bitwarden unlock");
-            ExtError::Denied("wrong master password".into())
+            ExtError::Denied(refused.into())
         })?;
         if !has_user_key(&client) {
-            return Err(ExtError::Denied("wrong master password".into()));
+            return Err(ExtError::Denied(refused.into()));
         }
         let _ = client.internal.init_user_id(user_id).await;
         self.install(guard, client).await
@@ -743,6 +912,8 @@ impl BwBackend {
             // in-memory state (ciphers, still encrypted) with it.
             s.client.internal.get_key_store().clear();
         }
+        // D12: a lock is a lock across restarts too.
+        self.save(KEY_USER_KEY, None).await;
         self.refresh_status();
     }
 
@@ -769,6 +940,7 @@ impl BwBackend {
                     if let Some(s) = b.session.lock().await.take() {
                         s.client.internal.get_key_store().clear();
                     }
+                    b.save(KEY_USER_KEY, None).await;
                     b.refresh_status();
                     tracing::info!(conn = %b.conn, "bitwarden: locked after idle");
                     return;
@@ -1477,5 +1649,66 @@ mod tests {
             "The client copy of this cipher is out of date."
         );
         assert_eq!(server_message("plain"), "plain");
+    }
+
+    #[derive(Default)]
+    struct MemStore(Mutex<HashMap<String, String>>);
+
+    #[async_trait::async_trait]
+    impl CredentialStore for MemStore {
+        async fn load(&self, key: &str) -> Option<Zeroizing<String>> {
+            self.0.lock().unwrap().get(key).cloned().map(Zeroizing::new)
+        }
+        async fn save(&self, key: &str, value: Option<&str>) {
+            let mut m = self.0.lock().unwrap();
+            match value {
+                Some(v) => m.insert(key.to_owned(), v.to_owned()),
+                None => m.remove(key),
+            };
+        }
+    }
+
+    fn settings(remember_unlock: bool) -> secrets::settings::ConnSettings {
+        secrets::settings::ConnSettings {
+            remember_unlock,
+            ..Default::default()
+        }
+    }
+
+    /// D12: a sealed user key is deleted when `remember_unlock` goes off, when a restart finds it
+    /// off, and on logout. (Sealing and the remembered unlock need a server: the Vaultwarden
+    /// suite.)
+    #[tokio::test]
+    async fn the_sealed_user_key_goes_when_remember_unlock_is_off() {
+        let store = Arc::new(MemStore::default());
+        let sealed = || async {
+            store.save(KEY_USER_KEY, Some("k")).await;
+        };
+        let b = BwBackend::with_store("p", BwConfig::default(), Some(store.clone()));
+        sealed().await;
+        b.set_settings(&settings(true));
+        b.apply_remember().await;
+        assert!(
+            store.load(KEY_USER_KEY).await.is_some(),
+            "on without a session kept it"
+        );
+        b.set_settings(&settings(false));
+        b.apply_remember().await;
+        assert!(store.load(KEY_USER_KEY).await.is_none(), "off kept it");
+
+        // A restart with the setting off.
+        sealed().await;
+        let b = BwBackend::with_store("p", BwConfig::default(), Some(store.clone()));
+        b.set_settings(&settings(false));
+        b.load_credentials().await;
+        assert!(
+            store.load(KEY_USER_KEY).await.is_none(),
+            "load with off kept it"
+        );
+
+        sealed().await;
+        b.set_settings(&settings(true));
+        b.logout().await;
+        assert!(store.load(KEY_USER_KEY).await.is_none(), "logout kept it");
     }
 }
