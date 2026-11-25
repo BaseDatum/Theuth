@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Row } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -17,10 +17,14 @@ type File = (typeof FILES)[number][0]
 export function Licences() {
   const [open, setOpen] = useState<File | null>(null)
   const [text, setText] = useState<string | null>(null)
+  // Only the latest press writes its text: an earlier, slower read never replaces it.
+  const latest = useRef(0)
   const show = (name: File) => {
+    const seq = ++latest.current
     setOpen(name)
     setText(null)
-    invoke<string>('legal_text', { name }).then(setText, (e: unknown) => setText(`Not in this build: ${String(e)}`))
+    const land = (t: string) => seq === latest.current && setText(t)
+    invoke<string>('legal_text', { name }).then(land, (e: unknown) => land(`Not in this build: ${String(e)}`))
   }
   return (
     <>
