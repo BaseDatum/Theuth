@@ -436,16 +436,14 @@ pub struct Externals {
     /// connection fails the call).
     unlock: Option<(runtime::Runtime, Duration)>,
     /// Unlock cards waiting for [`Externals::answer_unlock`], oldest first.
-    pending: std::sync::Mutex<
-        Vec<(
-            UnlockRequestView,
-            tokio::sync::oneshot::Sender<Option<Zeroizing<String>>>,
-        )>,
-    >,
+    pending: std::sync::Mutex<Vec<(UnlockRequestView, UnlockAnswer)>>,
     /// R17: per connection, one unlock card at a time; calls that waited behind it share its
     /// outcome.
     gates: std::sync::Mutex<BTreeMap<String, Arc<UnlockGate>>>,
 }
+
+/// Where an unlock card's answer goes: the typed master password, or `None` (declined).
+type UnlockAnswer = tokio::sync::oneshot::Sender<Option<Zeroizing<String>>>;
 
 /// One connection's unlock card serialisation (R17).
 #[derive(Default)]
@@ -598,10 +596,7 @@ impl Externals {
     }
 
     /// Remove card `id` from the waiting list.
-    fn take_pending(
-        &self,
-        id: crate::RequestId,
-    ) -> Option<tokio::sync::oneshot::Sender<Option<Zeroizing<String>>>> {
+    fn take_pending(&self, id: crate::RequestId) -> Option<UnlockAnswer> {
         let mut p = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         let i = p.iter().position(|(v, _)| v.id == id)?;
         Some(p.remove(i).1)

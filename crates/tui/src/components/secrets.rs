@@ -1110,7 +1110,7 @@ impl Secrets {
                     let fields = if fields.is_empty() {
                         vec![::secrets::SecretRequestField { name, label: note.clone(), masked: true, current, note: None }]
                     } else { fields };
-                    self.requests.push_back(SecretRequest { id, note, fields, expires, destination, values: Vec::new() });
+                    self.requests.push_back(SecretRequest { id, note, fields, expires, destination: destination.map(|d| *d), values: Vec::new() });
                 }
             }
             Resolved { id, timed_out, .. } => if let Some(i) = self.requests.iter().position(|r| r.id == id) {

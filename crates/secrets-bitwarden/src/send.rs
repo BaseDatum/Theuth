@@ -141,11 +141,10 @@ impl BwBackend {
                     }),
                 );
                 drop(text);
-                let v = self.timed(sends.create(req)).await?.map_err(|e| match e {
+                self.timed(sends.create(req)).await?.map_err(|e| match e {
                     CreateSendError::Api(e) => api_refusal(&e, false),
                     e => sdk(e),
-                })?;
-                v
+                })?
             }
             SendContent::File { name, bytes } => {
                 let req = request(

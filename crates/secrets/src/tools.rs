@@ -369,8 +369,7 @@ async fn run(
             Some(Err(e)) => ToolOutput::err(e),
             None => receipt(&out, single, timeout, &names),
         },
-        Err(SendError::HandlerError(e)) => ToolOutput::err(e),
-        Err(e) => ToolOutput::err(format!("secrets actor: {e}")),
+        Err(e) => ToolOutput::err(e),
     }
 }
 
@@ -425,7 +424,7 @@ async fn request(
     fields: Vec<SecretRequestField>,
     expires: Option<String>,
     destination: Option<crate::connections::DestinationView>,
-) -> Result<Outcome, SendError<crate::RequestTo, String>> {
+) -> Result<Outcome, String> {
     let journal = tools::registry::journal();
     let (row, title, fields, expires) = match tools::registry::take_republish(
         cx.session,
@@ -482,10 +481,10 @@ async fn request(
             (row, title, fields, expires)
         }
     };
-    let id =
-        RequestId(uuid::Uuid::parse_str(&row.id).map_err(|e| {
-            SendError::HandlerError(format!("secret request id {:?}: {e}", row.id))
-        })?);
+    let id = RequestId(
+        uuid::Uuid::parse_str(&row.id)
+            .map_err(|e| format!("secret request id {:?}: {e}", row.id))?,
+    );
     if row.state == QuestionState::Pending {
         journal.question(row.clone()).await;
         journal
@@ -537,7 +536,10 @@ async fn request(
         journal.wait(None, cx.session, &cx.call_id).await;
         journal.question(row).await;
     }
-    out
+    out.map_err(|e| match e {
+        SendError::HandlerError(e) => e,
+        e => format!("secrets actor: {e}"),
+    })
 }
 
 /// `secret_request_form`: the older name for `secret_request` with `title` + `fields`.

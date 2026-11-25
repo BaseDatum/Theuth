@@ -347,9 +347,10 @@ pub enum SecretsEvent {
         /// absent on the wire when `None`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires: Option<String>,
-        /// 221 §7.3: where the answer is stored when not (only) the local vault.
+        /// 221 §7.3: where the answer is stored when not (only) the local vault. Boxed: the
+        /// view is large and most requests have none (`large_enum_variant`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        destination: Option<connections::DestinationView>,
+        destination: Option<Box<connections::DestinationView>>,
     },
     /// The request was answered, declined or timed out; frontends drop the field.
     #[serde(rename = "SecretResolved")]
@@ -615,7 +616,7 @@ impl SecretsActor {
             title,
             fields: fields.clone(),
             expires,
-            destination,
+            destination: destination.map(Box::new),
         };
         let (atx, arx) = oneshot::channel();
         self.pending.insert(id, (m.session, requested.clone(), atx));

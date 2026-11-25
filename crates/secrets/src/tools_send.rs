@@ -143,12 +143,15 @@ pub struct SendCx {
     pub ext: ExtCx,
     /// `secret_send_create` acts on what its card showed (210 §7.3): the preview's plan per
     /// `(session, call_id)`, with when it was made ([`PLAN_TTL`]).
-    plans: Arc<Mutex<HashMap<(SessionId, String), (Instant, Plan)>>>,
+    plans: Arc<Mutex<Plans>>,
     /// `secrets.request_timeout_secs`, for the password card.
     pub request_timeout: Duration,
     /// `artifact:<id>` lookups; `None` = artifact sources are refused.
     pub artifacts: Option<Arc<dyn ArtifactSource>>,
 }
+
+/// The previewed plans by `(session, call_id)`, with when each was made.
+type Plans = HashMap<(SessionId, String), (Instant, Plan)>;
 
 /// How long a previewed plan waits for its call: a denied, timed out or withdrawn card never
 /// calls, so older plans are dropped at the next preview.
