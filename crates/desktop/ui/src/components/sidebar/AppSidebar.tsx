@@ -35,6 +35,8 @@ import { useCanRecord } from '@/components/meeting/MeetingList'
 import { settings } from '@/components/chat/slash'
 import { errorText } from '@/components/settings/shared'
 import { Checklist } from '@/components/onboarding/Checklist'
+import { SidebarSlot } from '@/components/plugins/SidebarSlot'
+import { StatusStrip } from '@/components/plugins/StatusStrip'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { sectionOf } from '@/lib/nav'
 import { canPopout, noteOpenMode, openPopout } from '@/lib/popout'
@@ -249,6 +251,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </Capability>
             <div role="separator" className="my-1.5 h-px w-8 shrink-0 bg-sidebar-border" />
             <RailSections active={session} />
+            <SidebarSlot variant="rail" />
           </nav>
           <div className="flex shrink-0 flex-col items-center py-2">
             <RailTip label={`Settings · v${__APP_VERSION__}`}>
@@ -406,11 +409,15 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           </SidebarMenuItem></Capability>
           <Capability required={{ methods: ['desk_open', 'list_sessions'] }} hide><Desks active={session} /></Capability>
         </SidebarMenu>
+        {/* 216: plugin icons between the desks and the chat list. */}
+        <SidebarSlot variant="row" />
         <SessionList scrollEl={scrollEl} barEl={barEl} active={session} />
       </SidebarContent>
       <div ref={setBarEl} className="shrink-0 empty:hidden" />
       <SidebarFooter className="px-1.5">
         <Checklist />
+        {/* 216: on a phone the status bar is gone; plugin status items live here. */}
+        <StatusStrip variant="sheet" />
         <SidebarMenu>
           <SidebarMenuItem className="group/popout-row" data-tour="nav-settings">
             {/* 188: Settings is a page; a phone opens its category list first. */}

@@ -273,6 +273,14 @@ test('a generic tile pops out at /tile/$kind/$session with its props JSON in the
   expect(soloPopout(t)).toBe(true)
 })
 
+test('216: a plugin tile pops out as a generic tile; its target round-trips and its label keys on the placement', () => {
+  const t = { kind: 'tile', tile: 'plugin', session: 's1', props: { plugin: 'turns', placement: 'turns' } } satisfies PopoutTarget
+  const label = popoutLabel(t)
+  expect(label).toMatch(/^popout-tile-plugin-s1-[0-9a-f]{8}$/)
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutLabel({ ...t, props: { plugin: 'turns', placement: 'other' } })).not.toBe(label)
+})
+
 test('tile props too long for a URL ride in localStorage: the URL names a stash, the popped window reads it back', () => {
   const store = memoryStorage()
   vi.stubGlobal('localStorage', store)

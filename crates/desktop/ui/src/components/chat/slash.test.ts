@@ -4,7 +4,9 @@ import type { Api } from '@/rpc/bindings/client'
 import { NO_PICK, useDrafts } from '@/lib/drafts'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
-import { type Ctx, isCommand, run, sendRaw, slashMenu } from './slash'
+import { placement, pluginInfo } from '@/components/plugins/test-fixtures'
+import { EMPTY_PLUGINS, commandsOf, pluginStore, seed } from '@/lib/plugins'
+import { COMMANDS, type Ctx, isCommand, run, sendRaw, slashMenu } from './slash'
 import { useToolsSheet } from './tools-sheet'
 
 vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
@@ -342,4 +344,50 @@ test('/login on a local engine calls login once and leaves the browser to the en
   expect(open).not.toHaveBeenCalled()
   expect(toast.message).toHaveBeenLastCalledWith("Browser didn't open?", { description: 'https://auth.example/authorize' })
   vi.unstubAllGlobals()
+})
+
+// 216 §9.1: a running plugin's commands, one bare (`/turns`) and one named (`/turns:reset`).
+const TURNS = pluginInfo('turns', [
+  placement('turns-cmd', { kind: 'command', format: null, command: { name: 'turns', slash: '/turns', description: 'Turns today', args: null } }),
+  placement('reset', { kind: 'command', format: null, command: { name: 'reset', slash: '/turns:reset', description: 'Reset the count', args: '[day]' } }),
+])
+const PLUGIN_COMMANDS = commandsOf([TURNS])
+
+test('plugin commands close the menu after the built-ins and the harness, labelled; COMMANDS stay as they were', () => {
+  const before = COMMANDS.map((c) => c.name)
+  const all = slashMenu('/', null, PLUGIN_COMMANDS)
+  expect(all.slice(0, COMMANDS.length).map((c) => c.name)).toEqual(before)
+  expect(all.slice(COMMANDS.length).map((c) => [c.name, c.hint, c.source])).toEqual([
+    ['/turns', '', 'plugin · turns'],
+    ['/turns:reset', '[day]', 'plugin · turns'],
+  ])
+  const harness = { agent: 'omp', commands: [{ name: 'turns', description: "omp's own" }], skills: [] }
+  // A harness command of the same name keeps it; the plugin's other command still lists.
+  expect(slashMenu('/turns', harness, PLUGIN_COMMANDS).map((c) => [c.name, c.source])).toEqual([
+    ['/turns', 'omp'],
+    ['/turns:reset', 'plugin · turns'],
+  ])
+  expect(COMMANDS.map((c) => c.name)).toEqual(before)
+})
+
+test('a plugin command is a command with or without arguments; without the plugin it is text', () => {
+  expect(isCommand('/turns:reset today', [], PLUGIN_COMMANDS)).toBe(true)
+  expect(isCommand('/turns', [], PLUGIN_COMMANDS)).toBe(true)
+  expect(isCommand('/turns:reset today', [])).toBe(false)
+  expect(isCommand('/turns:nope', [], PLUGIN_COMMANDS)).toBe(false)
+})
+
+test('running a plugin command calls plugin_command; a ui reply becomes the card, a text reply a note', async () => {
+  const store = pluginStore(active())
+  store.setState(seed(EMPTY_PLUGINS, 0, [TURNS], []))
+  const ui = { format: 'markdown' as const, source: '**0**', text: '0' }
+  const plugin_command = vi.fn(async () => ({ text: null, ui }))
+  await run('/turns:reset today', ctxFor({ plugin_command }))
+  expect(plugin_command).toHaveBeenCalledExactlyOnceWith('turns', 'reset', 'today', 'abc')
+  expect(store.getState().card).toEqual({ plugin: 'turns', slash: '/turns:reset', session: 'abc', ui })
+  plugin_command.mockResolvedValueOnce({ text: 'Turns today: 3', ui: null } as never)
+  await run('/turns', ctxFor({ plugin_command }, 'abc'))
+  expect(plugin_command).toHaveBeenLastCalledWith('turns', 'turns', '', 'abc')
+  expect(toast).toHaveBeenLastCalledWith('Turns today: 3')
+  store.setState(EMPTY_PLUGINS)
 })

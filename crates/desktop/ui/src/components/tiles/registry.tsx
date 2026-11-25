@@ -12,6 +12,7 @@ import {
   MousePointer2,
   Network,
   NotebookText,
+  Puzzle,
   ScrollText,
   Sparkles,
   SquareTerminal,
@@ -33,6 +34,7 @@ import { jobLogTile, jobsTile } from './kinds/jobs'
 import { mediaTile } from './kinds/media'
 import { memoryTile } from './kinds/memory'
 import { noteTile } from './kinds/note'
+import { pluginTile } from './kinds/plugin'
 import { promptTile } from './kinds/prompt'
 import { skillTile } from './kinds/skill'
 import { tasksGraphTile } from './kinds/tasksGraph'
@@ -53,6 +55,7 @@ export const TILE_KINDS: Record<string, TileKind> = {
   media: mediaTile,
   memory: memoryTile,
   note: noteTile,
+  plugin: pluginTile,
   prompt: promptTile,
   skill: skillTile,
   'tasks-graph': tasksGraphTile,
@@ -74,6 +77,7 @@ export const TILE_ICONS: Record<string, LucideIcon> = {
   media: Image,
   memory: Brain,
   note: NotebookText,
+  plugin: Puzzle,
   prompt: ScrollText,
   skill: BookOpen,
   'tasks-graph': Network,

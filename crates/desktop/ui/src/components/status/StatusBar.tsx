@@ -6,6 +6,7 @@ import { X } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
+import { StatusStrip } from '@/components/plugins/StatusStrip'
 import { formatRate } from '@/store/event-rate'
 import { useNotices } from '@/store/notices'
 import { isDown, secondsUntil, sparkPoints } from './model'
@@ -40,6 +41,8 @@ function EngineBar({ defaultOpen }: { defaultOpen: boolean }) {
       right={
         <>
           {s.needsYou > 0 && <NeedsYou n={s.needsYou} />}
+          {/* 216: plugin status placements (their dots never enter `dotOf`). */}
+          <StatusStrip />
           <Sep />
         </>
       }

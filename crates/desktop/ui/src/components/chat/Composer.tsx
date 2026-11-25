@@ -95,6 +95,8 @@ import type { FrameSource, VisualFrame } from '@/lib/audio/types'
 import { analyserSource, tapOrLevels } from '@/lib/visual-source'
 import { QueuedChips, withdrawInto } from './QueuedChips'
 import { COMMANDS, type Ctx, FRESH, type HarnessMenu, type SlashItem, draftSkill, isCommand, run, sendRaw, slashMenu } from './slash'
+import { PluginCommandCard } from '@/components/plugins/PluginSurface'
+import { usePluginCommands } from '@/lib/plugins'
 
 /** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory. */
 export type DraftCreate = { private: boolean; project: string | null; endless: boolean }
@@ -525,7 +527,9 @@ export function Composer({
     () => (session && agent && harnessCommands?.length ? { agent, commands: harnessCommands, skills: skillIndex?.map((s) => s.name) ?? null } : null),
     [session, agent, harnessCommands, skillIndex],
   )
-  const slashItems = useMemo(() => (slashWord === null ? [] : slashMenu(slashWord, harnessMenu)), [slashWord, harnessMenu])
+  // 216: running plugins' `/<plugin>[:<cmd>]` close the menu and count as commands.
+  const pluginCommands = usePluginCommands()
+  const slashItems = useMemo(() => (slashWord === null ? [] : slashMenu(slashWord, harnessMenu, pluginCommands)), [slashWord, harnessMenu, pluginCommands])
   const slash = slashItems.length > 0
   const held = pastes.size > 0
   /** The attach picker (66 §7.1): `'menu'` from `+`/`theuth:attach-open`, `'at'` from the `@` trigger (§7.8). */
@@ -763,7 +767,7 @@ export function Composer({
   const textMax = topRow ? (touch() ? 'max-h-[144px]' : 'max-h-[184px]') : touch() ? 'max-h-[160px]' : 'max-h-[200px]'
   const pathChanged = (next: string, caret: number) => {
     const t = pathTrigger(next, caret, pathWindows.current)
-    const slashNow = /^\/\S*$/.test(next) && slashMenu(next, harnessMenu).length > 0
+    const slashNow = /^\/\S*$/.test(next) && slashMenu(next, harnessMenu, pluginCommands).length > 0
     if (!t || slashNow || picking !== null) {
       pathDismissed.current = null
       setPath(null)
@@ -927,7 +931,7 @@ export function Composer({
         if (session) setText(words.join(' '))
         return
       }
-      if (!pick && isCommand(line, skillIndex?.map((s) => s.name) ?? null)) {
+      if (!pick && isCommand(line, skillIndex?.map((s) => s.name) ?? null, pluginCommands)) {
         await run(line, ctx)
         reset()
         return
@@ -1379,6 +1383,7 @@ export function Composer({
         </div>
       )}
       {session && <QueuedChips session={session} onEdit={editQueued} />}
+      <PluginCommandCard session={session} />
       {/* 215 C2/G5: skills and the prompt suffix share one left-aligned, wrapping row. */}
       <PillRow
         skills={skills}

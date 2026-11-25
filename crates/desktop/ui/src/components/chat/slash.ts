@@ -27,6 +27,7 @@ import { onboardingHere } from '@/lib/onboarding/detect'
 import { useOnboarding } from '@/lib/onboarding/state'
 import { isPopout } from '@/lib/popout'
 import { isIsland, isOverlay } from '@/lib/tauri'
+import { type PluginCommand, commandsOf, pluginStore, setCommandCard } from '@/lib/plugins'
 
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
 export const COMMANDS: readonly { name: string; hint: string; desc: string }[] = [
@@ -201,18 +202,24 @@ export type HarnessMenu = { agent: string; commands: readonly HarnessCommand[]; 
  * D15 (b): the slash menu's rows for the typed `word`. theuth's built-ins first; in an ACP session the harness's
  * commands follow, every row labelled with its source. A harness `skill:<name>` that theuth also has as a skill is
  * listed twice, theuth's row first — typed `/skill:<name>` ⏎ keeps parking theuth's skill, as the hint says; the
- * harness's row is sent raw when picked.
+ * harness's row is sent raw when picked. 216 §9.1: running plugins' `/<plugin>[:<cmd>]` close the list, labelled
+ * `plugin · <name>`; a name a built-in or the harness already lists stays theirs.
  */
-export function slashMenu(word: string, harness: HarnessMenu | null | undefined): SlashItem[] {
+export function slashMenu(word: string, harness: HarnessMenu | null | undefined, plugins: readonly PluginCommand[] = []): SlashItem[] {
   const own = matches(word)
-  if (!harness) return own
-  const items: SlashItem[] = own.map((c) => ({ ...c, source: 'theuth' }))
-  for (const c of harness.commands) {
-    const name = `/${c.name}`
-    if (!name.startsWith(word)) continue
-    const skill = c.name.startsWith('skill:') ? c.name.slice('skill:'.length) : null
-    if (skill && harness.skills?.includes(skill)) items.push({ name, hint: '[words]', desc: `park theuth's ${skill} skill on the next message (typed ⏎)`, source: 'theuth' })
-    items.push({ name, hint: c.hint ?? '', desc: `${c.description}${skill && harness.skills?.includes(skill) ? ` (${harness.agent}'s — picked, sent as typed)` : ''}`, source: harness.agent, raw: true })
+  const items: SlashItem[] = harness ? own.map((c) => ({ ...c, source: 'theuth' })) : own
+  if (harness)
+    for (const c of harness.commands) {
+      const name = `/${c.name}`
+      if (!name.startsWith(word)) continue
+      const skill = c.name.startsWith('skill:') ? c.name.slice('skill:'.length) : null
+      if (skill && harness.skills?.includes(skill)) items.push({ name, hint: '[words]', desc: `park theuth's ${skill} skill on the next message (typed ⏎)`, source: 'theuth' })
+      items.push({ name, hint: c.hint ?? '', desc: `${c.description}${skill && harness.skills?.includes(skill) ? ` (${harness.agent}'s — picked, sent as typed)` : ''}`, source: harness.agent, raw: true })
+    }
+  const taken = new Set(items.map((i) => i.name))
+  for (const { plugin, command } of plugins) {
+    if (!command.slash.startsWith(word) || taken.has(command.slash)) continue
+    items.push({ name: command.slash, hint: command.args ?? '', desc: command.description, source: `plugin · ${plugin}` })
   }
   return items
 }
@@ -234,14 +241,16 @@ export async function sendRaw(api: Api, session: string, text: string): Promise<
 }
 
 /**
- * Is `line` a slash command: its first word is a built-in (`COMMANDS`) or names a known skill. Anything else —
- * `/Users/x/y is broken`, `/etc/hosts`, a bare `/` — is message text. `skills === null` (index not loaded yet):
- * a plain `/word` still counts, the agent names an unknown skill; a word holding another `/` or a `.` is a path.
+ * Is `line` a slash command: its first word is a built-in (`COMMANDS`), a running plugin's command (216), or names a
+ * known skill. Anything else — `/Users/x/y is broken`, `/etc/hosts`, a bare `/` — is message text. `skills === null`
+ * (index not loaded yet): a plain `/word` still counts, the agent names an unknown skill; a word holding another `/`
+ * or a `.` is a path.
  */
-export function isCommand(line: string, skills: readonly string[] | null): boolean {
+export function isCommand(line: string, skills: readonly string[] | null, plugins: readonly PluginCommand[] = []): boolean {
   const word = line.split(/\s/, 1)[0] ?? ''
   if (word.length < 2 || !word.startsWith('/')) return false
   if (ALIASES.includes(word) || COMMANDS.some((c) => c.name === word)) return true
+  if (plugins.some((p) => p.command.slash === word)) return true
   const name = word.slice(1)
   return skills ? skills.includes(name) : !/[/.]/.test(name)
 }
@@ -779,6 +788,15 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     default: {
+      // 216 §9.1: a running plugin's `/<plugin>[:<cmd>]` (the cases above, the built-ins, win). The reply's card shows
+      // above the composer, attributed; a text-only reply is a note.
+      const plugin = commandsOf(pluginStore().getState().plugins).find((c) => c.command.slash === cmd)
+      if (plugin) {
+        const reply = await api.plugin_command(plugin.plugin, plugin.command.name, arg, session)
+        if (reply.ui) setCommandCard({ plugin: plugin.plugin, slash: cmd, session, ui: reply.ui })
+        else if (reply.text) toast(reply.text)
+        return
+      }
       // `/<skill> [args]` hands the skill to the model now (04 §2.4): `isCommand` let only a known skill (or, before
       // the index loads, a plain word the agent may name) through; unknown words are message text, never an error.
       // `/skill:<name>` never reaches here: the composer parks it (`draftSkill`) and keeps the words typed after it.

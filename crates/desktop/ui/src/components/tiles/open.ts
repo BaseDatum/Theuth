@@ -118,3 +118,9 @@ export const openVmTile = (host: string, name: string): string | null => openTil
 export type TasksGraphProps = { project: string | null }
 export const openTasksGraphTile = (host: string, project: string | null): string | null =>
   openTile({ kind: 'tasks-graph', host, props: { project } satisfies TasksGraphProps })
+
+/** 216 §9.1: an external plugin's `tile` placement. */
+export type PluginTileProps = { plugin: string; placement: string }
+/** The plugin's tile beside the chat in leaf `host`; one tile per placement, so opening it again focuses it. */
+export const openPluginTile = (host: string, p: PluginTileProps): string | null =>
+  openTile({ kind: 'plugin', host, key: `${p.plugin}/${p.placement}`, props: p satisfies PluginTileProps })
