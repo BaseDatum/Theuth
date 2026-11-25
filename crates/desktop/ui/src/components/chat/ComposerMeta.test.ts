@@ -129,9 +129,9 @@ test('the row exists for an existing session with a reading only (never the draf
   expect(src).toContain('hidden={stage !== \'idle\'}')
 })
 
-const META = { pct: 78, estimated: false, ctxTitle: '780k / 1000k tokens\nCache 75%', cost: { short: '~$131', exact: '$131.40', title: '$131.40' } }
+const META = { cost: { short: '~$131', exact: '$131.40', title: '$131.40' } }
 
-test('the row: both numbers always shown, right-aligned 16 px, the % banded Egyptian blue from 75, carnelian from 90; the cost opens the breakdown', () => {
+test('the row: only the cost, right-aligned; no context percent (the context button has it); the cost opens the breakdown', () => {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -139,23 +139,19 @@ test('the row: both numbers always shown, right-aligned 16 px, the % banded Egyp
   const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
   expect(row.className).toContain('h-3')
   expect(row.className).toContain('justify-end')
-  // Only the numbers: no picker in the row.
-  expect([...row.children].map((c) => (c as HTMLElement).dataset.meta)).toEqual(['context', 'cost'])
+  expect([...row.children].map((c) => (c as HTMLElement).dataset.meta)).toEqual(['cost'])
+  expect(row.querySelector('[data-meta="context"]')).toBeNull()
+  expect(row.textContent).not.toContain('%')
   expect(row.querySelector('[data-tour="chat-model"]')).toBeNull()
   expect(row.className).not.toContain('invisible')
-  const pct = row.querySelector<HTMLElement>('[data-meta="context"]')!
-  expect(pct.textContent).toBe('78%')
-  expect(pct.className).toContain('text-warning')
-  expect(pct.title).toBe('780k / 1000k tokens\nCache 75%')
   const cost = row.querySelector<HTMLElement>('[data-meta="cost"]')!
   expect(cost.textContent).toBe('~$131')
+  expect(cost.title).toBe('$131.40')
   const opened = vi.fn()
   window.addEventListener('theuth:open-cost', opened)
   click(cost)
   window.removeEventListener('theuth:open-cost', opened)
   expect((opened.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ session: 's1' })
-  act(() => root!.render(h(ComposerMeta, { session: 's1', meta: { ...META, pct: 91 } })))
-  expect(row.querySelector<HTMLElement>('[data-meta="context"]')!.className).toContain('text-danger')
 })
 
 test('recording: the row keeps its height but shows nothing and takes no focus', () => {
@@ -262,30 +258,100 @@ test('219 §6.1: always-ask tools add a line that opens the Tools sheet; with ap
   expect(document.querySelector('[data-level="always-ask"]')).toBeNull()
 })
 
-test('context button: the ring fills with the used share and warns from 80 %, danger from 95 %; its rows run /compact, /shake and /clear', () => {
-  host = document.createElement('div')
-  document.body.append(host)
-  root = createRoot(host)
-  const onAction = vi.fn()
-  const show = (pct: number | null) => act(() => root!.render(h(ContextButtonView, { reading: pct === null ? null : { used: 128_000, limit: 200_000, pct, cache: null, estimated: false }, onAction })))
-  const button = () => document.querySelector<HTMLButtonElement>('[data-context-button]')!
-  const tone = () => button().className.split(' ').filter((c) => /^text-(fg-tertiary|warning|danger)$/.test(c))
-  show(null)
-  expect(tone()).toEqual(['text-fg-tertiary'])
-  expect(button().querySelector('[data-ring-used]')).toBeNull()
-  for (const [pct, want] of [[64, 'text-fg-tertiary'], [79, 'text-fg-tertiary'], [80, 'text-warning'], [94, 'text-warning'], [95, 'text-danger']] as const) {
-    show(pct)
-    expect(tone(), `${pct}%`).toEqual([want])
+test('context button: the ring fills with the used share and warns from 80 %, danger from 95 %; compact by style, shake, and a two-tap clear', () => {
+  vi.useFakeTimers()
+  try {
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    const onAction = vi.fn()
+    const show = (pct: number | null) => act(() => root!.render(h(ContextButtonView, { reading: pct === null ? null : { used: 128_000, limit: 200_000, pct, cache: null, estimated: false }, onAction })))
+    const button = () => document.querySelector<HTMLButtonElement>('[data-context-button]')!
+    const tone = () => button().className.split(' ').filter((c) => /^text-(fg-tertiary|warning|danger)$/.test(c))
+    show(null)
+    expect(tone()).toEqual(['text-fg-tertiary'])
+    expect(button().querySelector('[data-ring-used]')).toBeNull()
+    for (const [pct, want] of [[64, 'text-fg-tertiary'], [79, 'text-fg-tertiary'], [80, 'text-warning'], [94, 'text-warning'], [95, 'text-danger']] as const) {
+      show(pct)
+      expect(tone(), `${pct}%`).toEqual([want])
+    }
+    show(64)
+    const used = button().querySelector('[data-ring-used]')!.getAttribute('stroke-dasharray')!.split(' ').map(Number)
+    expect(used[0]! / used[1]!).toBeCloseTo(0.64)
+    click(button())
+    expect(document.body.textContent).toContain('128k of 200k · 64%')
+
+    // Compact: one icon button per style, each labelled, ≥ 36 px, running exactly that style.
+    const styles = [...document.querySelectorAll<HTMLButtonElement>('[data-compact-style]')]
+    expect(styles.map((b) => b.dataset.compactStyle)).toEqual(['summary', 'cut', 'snap'])
+    expect(styles.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Compact: summary — fold older turns into a summary',
+      'Compact: cut — drop older turns, keep the recent ones',
+      'Compact: snap — keep older turns as images',
+    ])
+    expect(styles.every((b) => b.title === b.getAttribute('aria-label') && b.className.split(' ').includes('size-9'))).toBe(true)
+    const caption = () => document.querySelector('[data-compact-caption]')!.textContent
+    // The popover focuses its first control on open, so the caption starts on summary; hover moves it, leaving restores the static line.
+    expect(caption()).toBe('Summary — fold older turns into a summary')
+    act(() => void styles[2]!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    expect(caption()).toBe('Snap — keep older turns as images')
+    act(() => void styles[2]!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body })))
+    act(() => styles[0]!.blur())
+    expect(caption()).toBe('Fold older turns: summary, cut or snap')
+    act(() => styles[1]!.focus())
+    expect(caption()).toBe('Cut — drop older turns, keep the recent ones')
+    act(() => styles[1]!.blur())
+    expect(caption()).toBe('Fold older turns: summary, cut or snap')
+    for (const b of styles) click(b)
+    expect(onAction.mock.calls).toEqual([[{ compact: 'summary' }], [{ compact: 'cut' }], [{ compact: 'snap' }]])
+    onAction.mockClear()
+
+    const rows = [...document.querySelectorAll<HTMLElement>('[data-context-action]')]
+    expect(rows.map((r) => r.dataset.contextAction)).toEqual(['/shake', '/clear'])
+    expect(rows.every((r) => r.className.split(' ').includes('min-h-9'))).toBe(true)
+    const clear = rows[1]!
+    const armed = () => clear.hasAttribute('data-confirm')
+
+    // Clear: the first tap only arms it; the second within 4 s clears.
+    click(clear)
+    expect(onAction).not.toHaveBeenCalled()
+    expect(armed()).toBe(true)
+    expect(clear.className.split(' ')).toContain('bg-danger')
+    expect(clear.textContent).toContain('Tap again to clear')
+    expect(clear.textContent).toContain('This drops the whole conversation')
+    act(() => void vi.advanceTimersByTime(3900))
+    click(clear)
+    expect(onAction.mock.calls).toEqual([['/clear']])
+    expect(armed()).toBe(false)
+    onAction.mockClear()
+
+    // It disarms by itself after 4 s: the next tap arms again rather than clearing.
+    click(clear)
+    act(() => void vi.advanceTimersByTime(4000))
+    expect(armed()).toBe(false)
+    expect(clear.textContent).toContain('Clear')
+    expect(clear.textContent).not.toContain('Tap again')
+    click(clear)
+    expect(onAction).not.toHaveBeenCalled()
+    expect(armed()).toBe(true)
+
+    // Using another row disarms it.
+    click(rows[0]!)
+    expect(onAction.mock.calls).toEqual([['/shake']])
+    expect(armed()).toBe(false)
+    onAction.mockClear()
+
+    // Closing the popover disarms it.
+    click(clear)
+    expect(armed()).toBe(true)
+    act(() => void document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.querySelector('[data-context-action="/clear"]')).toBeNull()
+    click(button())
+    const reopened = document.querySelector<HTMLElement>('[data-context-action="/clear"]')!
+    expect(reopened.hasAttribute('data-confirm')).toBe(false)
+    click(reopened)
+    expect(onAction).not.toHaveBeenCalled()
+  } finally {
+    vi.useRealTimers()
   }
-  show(64)
-  const used = button().querySelector('[data-ring-used]')!.getAttribute('stroke-dasharray')!.split(' ').map(Number)
-  expect(used[0]! / used[1]!).toBeCloseTo(0.64)
-  click(button())
-  expect(document.body.textContent).toContain('128k of 200k · 64%')
-  const rows = [...document.querySelectorAll<HTMLElement>('[data-context-action]')]
-  expect(rows.map((r) => r.dataset.contextAction)).toEqual(['/compact', '/shake', '/clear'])
-  expect(rows.map((r) => r.firstElementChild?.textContent)).toEqual(['Compact', 'Shake…', 'Clear'])
-  expect(rows.every((r) => r.className.split(' ').includes('min-h-9'))).toBe(true)
-  click(rows[2]!)
-  expect(onAction).toHaveBeenCalledWith('/clear')
 })

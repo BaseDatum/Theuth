@@ -858,6 +858,11 @@ export function contextCommand(api: Api, session: string, cmd: '/compact' | '/sh
   compact(api, session, cmd === '/clear' ? 'clear' : null)
 }
 
+/** `/compact <style>`: the context button's per-style compact buttons. */
+export function compactWith(api: Api, session: string, style: Exclude<CompactStyle, 'clear'>): void {
+  compact(api, session, style)
+}
+
 // A command whose RPC waits on a model call must not be awaited by `submit` (it holds `busy`, locking the
 // composer for the whole compaction): fire, flip `compacting` so a send steers/queues (07 §8.6), settle on failure.
 function compact(api: Api, session: string, s: CompactStyle | null): void {
