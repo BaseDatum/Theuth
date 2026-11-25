@@ -104,6 +104,15 @@ test('the ↵ send hint is never rendered on touch', () => {
   expect(html).not.toContain('↵ send')
 })
 
+test('on touch the rows are roomier: 40 px tall, 14 px text, 4 px apart; desktop stays compact', () => {
+  const roomy = renderToStaticMarkup(NextSteps({ items: ITEMS, onPick: () => {}, roomy: true }))
+  expect(roomy).toContain('min-h-10 py-2 text-[14px]')
+  expect(roomy).toContain('flex flex-col gap-1')
+  const compact = renderToStaticMarkup(NextSteps({ items: ITEMS, onPick: () => {}, roomy: false }))
+  expect(compact).toContain('py-[5px] text-[13px]')
+  expect(compact).not.toContain('min-h-10')
+})
+
 test('clicking a chip hands its exact text to the pick handler', () => {
   const onPick = vi.fn()
   const buttons = elements(NextSteps({ items: ITEMS, onPick })).filter((e) => e.type === 'button')

@@ -55,9 +55,9 @@ export const useNextPick = create<Picks>()((set, get) => ({
  * the message column. Hover or keyboard focus tints a row and shows `↵ send` (never on touch). One line each,
  * truncated, the full text as the tooltip. A pick goes to `onPick`.
  */
-export function NextSteps({ items, onPick, hint = !touch() }: { items: readonly string[]; onPick: (text: string) => void; hint?: boolean }) {
+export function NextSteps({ items, onPick, hint = !touch(), roomy = touch() }: { items: readonly string[]; onPick: (text: string) => void; hint?: boolean; roomy?: boolean }) {
   return (
-    <div data-next-steps="" className="flex flex-col">
+    <div data-next-steps="" className={cn('flex flex-col', roomy && 'gap-1')}>
       <span className="mb-0.5 text-[11.5px] text-fg-tertiary">Next:</span>
       {items.map((item) => (
         <button
@@ -67,7 +67,9 @@ export function NextSteps({ items, onPick, hint = !touch() }: { items: readonly 
           data-next-step={item}
           onClick={() => onPick(item)}
           className={cn(
-            'group -mx-2 flex min-w-0 items-center justify-between gap-3 rounded-[7px] px-2 py-[5px] text-left text-[13px] text-fg-secondary outline-none transition-colors',
+            'group -mx-2 flex min-w-0 items-center justify-between gap-3 rounded-[7px] px-2 text-left text-fg-secondary outline-none transition-colors',
+            // Touch: a 40 px row, 14 px text and 4 px between rows, so a thumb does not land on the neighbour.
+            roomy ? 'min-h-10 py-2 text-[14px]' : 'py-[5px] text-[13px]',
             'hover:bg-foreground/6 hover:text-foreground focus-visible:bg-foreground/6 focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50',
           )}
         >
