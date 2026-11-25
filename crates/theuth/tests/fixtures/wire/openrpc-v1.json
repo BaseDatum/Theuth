@@ -158098,6 +158098,7 @@
         "version": 1
       },
       {
+        "exposure": "public",
         "receiverSchema": {
           "$ref": "#/components/schemas/event.autoresearch_2eevents.receiver.StudyEvent"
         },
