@@ -65,6 +65,7 @@ import * as talk from '@/lib/talk'
 import { label as chordLabel, matches as chord } from '@/lib/chord'
 import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
+import { SendMark } from '@/components/Mark'
 import { noteText } from '@/lib/voice-note'
 import { stripRows } from '@/lib/session-tree'
 import { type Act as StopAct, IDLE as STOP_IDLE, type Stop as StopState, progress as stopProgress, step as stepStop } from '@/lib/stop-gesture'
@@ -450,6 +451,9 @@ export function Composer({
   /** D15: a harness command picked from the menu that takes arguments; the next send goes to the harness verbatim. */
   const [rawCmd, setRawCmd] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  /** The send button's eclipse: `sent` counts sends (each plays it once); `playing` keeps the button 1.4 s before Stop takes its place. */
+  const [sent, setSent] = useState(0)
+  const [playing, setPlaying] = useState(false)
   /** 68 §5 / 183 §4.4: a routed call the owner could not take (this send, a ⋯ setter, a stop…); the card above the
    * composer offers to take the session here, then runs it. */
   const offline = useOwnerOffline((s) => (session ? s.by[session] : undefined))
@@ -926,6 +930,11 @@ export function Composer({
     setBusy(true)
     // Something is sent: the last turn's "Next:" suggestions are spent (typing alone keeps them).
     if (session) useSessions.getState().dismissSuggestions(session)
+    setSent((n) => n + 1)
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setPlaying(true)
+      setTimeout(() => setPlaying(false), 1400)
+    }
     const mode = (id: string) => speech.setVoiceMode(id, spoken !== undefined)
     const clientId = (!pick && unsent) || crypto.randomUUID()
     /** The session the input went to (a new chat's once created), and how — for the rollback in `catch`. */
@@ -1655,7 +1664,7 @@ export function Composer({
           )}
           {/* 89 VOICE-HOLD: while a note is held or locked the row is the recording's; these come back on reset. */}
           {stage === 'idle' &&
-            (at !== 'idle' && session ? (
+            (at !== 'idle' && session && !playing ? (
               <>
                 {/* Item 7: a finger's steer. Tap queues the box into the running turn; hold interrupts (with the box,
                     or the queued steers when it is empty). Not `disabled`: an empty box still takes the hold. */}
@@ -1682,7 +1691,7 @@ export function Composer({
                 <StopButton count={descendants} ring={ring} onStop={stop} />
               </>
             ) : (
-              <SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading} onSend={() => gesture('press')} />
+              <SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading} onSend={() => gesture('press')} sent={sent} playing={playing} />
             ))}
         </div>
       </div>
@@ -1735,15 +1744,21 @@ function DictatedText({
  * The idle Send. `waiting` (an attachment still uploading, `uploadWait`) disables it and says why in a tooltip: a
  * disabled button gets no pointer events, so the tooltip hangs on a focusable wrapper.
  */
-export function SendButton({ disabled, waiting, onSend }: { disabled: boolean; waiting: string | null; onSend(): void }) {
+export function SendButton({
+  disabled,
+  waiting,
+  onSend,
+  sent = 0,
+  playing = false,
+}: { disabled: boolean; waiting: string | null; onSend(): void; sent?: number; playing?: boolean }) {
   const button = (
     <Button
-      className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
+      className={cn('size-9 shrink-0 rounded-full bg-transparent p-0 text-fg-primary hover:bg-transparent hover:opacity-80', playing && 'disabled:opacity-100')}
       aria-label="Send"
       disabled={disabled || waiting !== null}
       onClick={onSend}
     >
-      <ArrowUp className="size-5" />
+      <SendMark pulse={sent} className="size-8" />
     </Button>
   )
   if (waiting === null) return button

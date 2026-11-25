@@ -1232,3 +1232,21 @@ html .tg-canvas .tg-edge {
   94% { transform: translateX(90px); }
   100% { transform: translateX(90px); }
 }
+
+/* SendMark (components/Mark.tsx): at rest on the crescent; one eclipse per send. Composer holds the button 1.4 s. */
+.theta-eclipse-rest,
+.theta-eclipse-once {
+  transform: translateX(4px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .theta-eclipse-once {
+    animation: theta-eclipse-once 1.4s both;
+  }
+}
+@keyframes theta-eclipse-once {
+  0% { transform: translateX(4px); animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.6); }
+  30% { transform: translateX(90px); }
+  30.01% { transform: translateX(-90px); animation-timing-function: cubic-bezier(0.2, 0.6, 0.4, 1); }
+  82% { transform: translateX(0); animation-timing-function: ease-out; }
+  100% { transform: translateX(4px); }
+}

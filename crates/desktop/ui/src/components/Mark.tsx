@@ -35,3 +35,21 @@ export function EclipseMark({ className, duration = 8 }: { className?: string; d
     </svg>
   )
 }
+
+/**
+ * The send button's glyph: the mark at rest; each new `pulse` (> 0) plays the eclipse once (1.4 s, `.theta-eclipse-once`
+ * in styles.css): the shadow slides off to the full moon, comes back round and settles on the crescent. The pen never moves.
+ */
+export function SendMark({ pulse, className }: { pulse: number; className?: string }) {
+  const mask = `theta-send-${useId().replace(/:/g, '')}`
+  return (
+    <svg viewBox="14 14 92 92" className={cn('shrink-0', className)} aria-hidden="true">
+      <mask id={mask} maskUnits="userSpaceOnUse" x="0" y="0" width="120" height="120">
+        <rect width="120" height="120" fill="#fff" />
+        <circle key={pulse} className={pulse > 0 ? 'theta-eclipse-once' : 'theta-eclipse-rest'} cx="60" cy="60" r="37" fill="#000" />
+      </mask>
+      <path fill="currentColor" d={DISC} mask={`url(#${mask})`} />
+      <path fill={PEN} d={BAR} />
+    </svg>
+  )
+}
