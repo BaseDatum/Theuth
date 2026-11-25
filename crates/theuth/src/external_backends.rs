@@ -145,6 +145,7 @@ mod bitwarden {
                 web_vault_url,
                 email,
                 login,
+                ..
             } = cfg
             else {
                 return Err(format!("{conn} is not a Bitwarden connection"));
@@ -163,6 +164,7 @@ mod bitwarden {
                 login: match login {
                     BwLogin::ApiKey => LoginKind::ApiKey,
                     BwLogin::Password => LoginKind::Password,
+                    BwLogin::Sso => LoginKind::Sso,
                 },
                 ..BwConfig::default()
             };

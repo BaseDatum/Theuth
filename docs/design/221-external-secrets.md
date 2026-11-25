@@ -1455,12 +1455,14 @@ docker run -d --rm --name sso-vw --network container:sso-kc \
   `password_totp_login_then_restart_unlocks_without_2fa` does.
 
 **Engine.**
-- Config: `login: sso` with `org_identifier: <identifier>` on the connection (`BwLogin::Sso { org_identifier }`
-  in `ConnConfig::Bw`; `LoginKind::Sso` in `secrets-bitwarden`). `email` stays required, because
-  prelogin (KDF) and the unlock card need it.
-- Two owner RPCs, audience owner, `with_extensions`, refused unless `human_press(ext)`. Note that
-  `connection_login` is not press-gated today; the SSO pair is stricter by design, since it opens an
-  account login.
+- Config: flat. `login: sso` (`BwLogin::Sso`, still a unit variant) and `org_identifier: <identifier>`
+  beside it in `ConnConfig::Bw` (`Option<String>`, default none; `LoginKind::Sso` in
+  `secrets-bitwarden`). `email` stays required, because prelogin (KDF) and the unlock card need
+  it. `ConnInfo` gains `login: Option<BwLogin>` (`None` for AWS), so the UIs know a logged-out
+  connection is SSO.
+- Two owner RPCs, `with_extensions`. Like `connection_login`, which gets the same gate: the
+  owner's press runs directly, and any other caller gets the human-only card
+  `secrets.connection_login` (args: the connection and the method, never a credential).
 
   ```rust
   #[method(name = "connection_sso_begin", with_extensions)]

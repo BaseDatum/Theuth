@@ -25,6 +25,9 @@ pub enum LoginKind {
     ApiKey,
     /// Email + master password + 2FA (B5b).
     Password,
+    /// The organisation's SSO (§9.6); afterwards like `Password`: a stored refresh token, the
+    /// master password on the unlock card.
+    Sso,
 }
 
 /// Where creates and updates may go.

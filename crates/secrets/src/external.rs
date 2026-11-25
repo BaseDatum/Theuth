@@ -87,6 +87,34 @@ pub trait ExternalBackend: Send + Sync + 'static {
             self.backend()
         )))
     }
+    /// §9.6 `connection_sso_begin`: begin an SSO login for organisation `org_identifier`, the
+    /// browser coming back to `http://localhost:<redirect_port>`. Default: no SSO.
+    async fn sso_begin(
+        &self,
+        org_identifier: &str,
+        redirect_port: Option<u16>,
+    ) -> Result<SsoBegin, ExtError> {
+        let _ = (org_identifier, redirect_port);
+        Err(ExtError::Unsupported(format!(
+            "{} connections have no SSO login",
+            self.backend()
+        )))
+    }
+    /// §9.6 `connection_sso_complete`: exchange the code of the SSO login `state`
+    /// (`code_or_redirect_url`: the bare code or the address the browser landed on);
+    /// `two_factor` = `(provider, code)` on the retry after `NeedTwoFactor`. Default: no SSO.
+    async fn sso_complete(
+        &self,
+        state: &str,
+        code_or_redirect_url: &str,
+        two_factor: Option<(String, String)>,
+    ) -> Result<LoginStep, ExtError> {
+        let _ = (state, code_or_redirect_url, two_factor);
+        Err(ExtError::Unsupported(format!(
+            "{} connections have no SSO login",
+            self.backend()
+        )))
+    }
     /// §6.3 `connection_unlock` / the unlock card: turn the master password into keys.
     /// Default: nothing to unlock.
     async fn unlock(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {
@@ -175,6 +203,19 @@ pub enum LoginStep {
     },
     /// The server wants the new-device code it emailed.
     NeedNewDeviceOtp,
+}
+
+/// §9.6: what `connection_sso_begin` hands the UI. `authorize_url` carries no secret (the PKCE
+/// verifier stays in the engine).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SsoBegin {
+    /// Open this in the browser: the identity server's authorize URL.
+    pub authorize_url: String,
+    /// Pass back to `connection_sso_complete`.
+    pub state: String,
+    /// The browser comes back to `http://localhost:<redirect_port>`.
+    pub redirect_port: u16,
 }
 
 /// A parsed reference inside one connection: the part of `{{secret:<backend>/<conn>/<id>#<key>:-N}}`

@@ -13,6 +13,7 @@ pub mod fields;
 pub mod password;
 pub mod refs;
 pub mod send;
+pub mod sso;
 mod sync;
 
 use std::collections::HashMap;
@@ -156,6 +157,8 @@ pub struct BwBackend {
     /// Turns `true` once the connection's settings were applied: a restart's remembered unlock
     /// waits for `remember_unlock` before it uses (or deletes) the sealed key.
     settings_seen: tokio::sync::watch::Sender<bool>,
+    /// §9.6: the SSO login begun and not yet completed (state, PKCE verifier), memory only.
+    sso: Mutex<Option<sso::Pending>>,
 }
 
 impl BwBackend {
@@ -189,6 +192,7 @@ impl BwBackend {
             last_use: Mutex::new(Instant::now()),
             idle: Mutex::new(None),
             settings_seen: tokio::sync::watch::channel(false).0,
+            sso: Mutex::new(None),
         })
     }
 
@@ -314,7 +318,7 @@ impl BwBackend {
     async fn unlock_remembered(&self, key: &Zeroizing<String>) -> Result<ConnStatus, ExtError> {
         let r = match self.config().login {
             LoginKind::ApiKey => self.open_api_key_remembered(key).await,
-            LoginKind::Password => self.open_refresh(UnlockWith::Key(key)).await,
+            LoginKind::Password | LoginKind::Sso => self.open_refresh(UnlockWith::Key(key)).await,
         };
         match &r {
             Ok(_) => {}
@@ -397,7 +401,9 @@ impl BwBackend {
     pub async fn unlock(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {
         let r = match self.config().login {
             LoginKind::ApiKey => self.open_api_key(password).await,
-            LoginKind::Password => self.open_refresh(UnlockWith::Master(&password)).await,
+            LoginKind::Password | LoginKind::Sso => {
+                self.open_refresh(UnlockWith::Master(&password)).await
+            }
         };
         if r.is_err() {
             self.refresh_status();
@@ -527,11 +533,20 @@ impl BwBackend {
     }
 
     async fn login_password_inner(&self, form: PasswordLogin) -> Result<LoginStep, ExtError> {
-        if self.config().login != LoginKind::Password {
-            return Err(ExtError::Unsupported(format!(
-                "bw/{} logs in with an API key",
-                self.conn
-            )));
+        match self.config().login {
+            LoginKind::Password => {}
+            LoginKind::ApiKey => {
+                return Err(ExtError::Unsupported(format!(
+                    "bw/{} logs in with an API key",
+                    self.conn
+                )));
+            }
+            LoginKind::Sso => {
+                return Err(ExtError::Unsupported(format!(
+                    "bw/{} logs in with SSO",
+                    self.conn
+                )));
+            }
         }
         let urls = self.urls.clone().map_err(ExtError::Unsupported)?;
         let email = salt(&form.email);
@@ -579,7 +594,7 @@ impl BwBackend {
                 providers: password::supported_factors(&codes).map_err(ExtError::Unsupported)?,
             }),
             TokenOutcome::NewDevice => Ok(LoginStep::NeedNewDeviceOtp),
-            TokenOutcome::Refused(why) => Err(ExtError::Denied(why)),
+            TokenOutcome::Refused(why) => Err(ExtError::Denied(sso::reword_sso_required(why))),
         }
     }
 
@@ -826,7 +841,7 @@ impl BwBackend {
 
     /// A password connection's refresh token rotates on renewal; store the new one.
     async fn persist_rotated(&self, s: &Session) {
-        if self.config().login != LoginKind::Password {
+        if self.config().login == LoginKind::ApiKey {
             return;
         }
         let Ok(Some(t)) = s
@@ -892,7 +907,7 @@ impl BwBackend {
             let c = self.creds();
             match self.config().login {
                 LoginKind::ApiKey => c.api_key.is_some(),
-                LoginKind::Password => c.refresh_token.is_some(),
+                LoginKind::Password | LoginKind::Sso => c.refresh_token.is_some(),
             }
         };
         let s = match &self.urls {
@@ -1491,8 +1506,13 @@ impl ExternalBackend for BwBackend {
             } => {
                 if kind != LoginKind::ApiKey {
                     return Err(ExtError::Unsupported(format!(
-                        "bw/{} logs in with email and master password",
-                        self.conn
+                        "bw/{} logs in with {}",
+                        self.conn,
+                        if kind == LoginKind::Sso {
+                            "SSO"
+                        } else {
+                            "email and master password"
+                        }
                     )));
                 }
                 self.set_api_key(ApiKey {
@@ -1510,19 +1530,7 @@ impl ExternalBackend for BwBackend {
             } => {
                 let two_factor = match two_factor {
                     None => None,
-                    Some((p, code)) => Some((
-                        match p.as_str() {
-                            "authenticator" => TwoFactorKind::Authenticator,
-                            "email" => TwoFactorKind::Email,
-                            "yubikey" => TwoFactorKind::YubiKey,
-                            p => {
-                                return Err(ExtError::Unsupported(format!(
-                                    "second factor {p:?}: authenticator, email or yubikey"
-                                )));
-                            }
-                        },
-                        Zeroizing::new(code),
-                    )),
+                    Some((p, code)) => Some((sso::factor(&p)?, Zeroizing::new(code))),
                 };
                 let step = self
                     .login_password(PasswordLogin {
@@ -1532,25 +1540,32 @@ impl ExternalBackend for BwBackend {
                         new_device_otp: new_device_otp.map(Zeroizing::new),
                     })
                     .await?;
-                Ok(match step {
-                    LoginStep::Done => Step::Done,
-                    LoginStep::NeedNewDeviceOtp => Step::NeedNewDeviceOtp,
-                    LoginStep::NeedTwoFactor { providers } => Step::NeedTwoFactor {
-                        providers: providers
-                            .into_iter()
-                            .map(|k| {
-                                match k {
-                                    TwoFactorKind::Authenticator => "authenticator",
-                                    TwoFactorKind::Email => "email",
-                                    TwoFactorKind::YubiKey => "yubikey",
-                                }
-                                .to_owned()
-                            })
-                            .collect(),
-                    },
-                })
+                Ok(sso::wire_step(step))
             }
         }
+    }
+
+    async fn sso_begin(
+        &self,
+        org_identifier: &str,
+        redirect_port: Option<u16>,
+    ) -> Result<secrets::external::SsoBegin, ExtError> {
+        BwBackend::sso_begin(self, org_identifier, redirect_port).await
+    }
+
+    async fn sso_complete(
+        &self,
+        state: &str,
+        code_or_redirect_url: &str,
+        two_factor: Option<(String, String)>,
+    ) -> Result<secrets::external::LoginStep, ExtError> {
+        let two_factor = match two_factor {
+            None => None,
+            Some((p, code)) => Some((sso::factor(&p)?, Zeroizing::new(code))),
+        };
+        BwBackend::sso_complete(self, state, code_or_redirect_url, two_factor)
+            .await
+            .map(sso::wire_step)
     }
 
     async fn unlock(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {

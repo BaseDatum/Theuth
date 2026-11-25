@@ -15,7 +15,7 @@ use secrets::connections::{
 };
 use secrets::external::{
     ConnStatus, DeleteMode, DeleteOutcome, ExtRef, ExtVersion, ExternalBackend, ListPage,
-    ListQuery, LoginForm, LoginStep, parse_bare,
+    ListQuery, LoginForm, LoginStep, SsoBegin, parse_bare,
 };
 use secrets::rpc_support::secrets;
 use secrets::settings::ExternalSettings;
@@ -80,9 +80,34 @@ pub trait CredentialsApi {
     /// press; any other caller gets the human-only card `secrets.connection.remove`.
     #[method(name = "remove_secret_connection", with_extensions)]
     async fn remove_secret_connection(&self, conn: String) -> RpcResult<()>;
-    /// Log a connection in (credentials sealed in this engine's `meta`, never replicated).
-    #[method(name = "connection_login")]
+    /// Log a connection in (credentials sealed in this engine's `meta`, never replicated). The
+    /// owner's own press runs directly; any other caller gets the human-only card
+    /// `secrets.connection_login`.
+    #[method(name = "connection_login", with_extensions)]
     async fn connection_login(&self, conn: String, form: LoginForm) -> RpcResult<LoginStep>;
+    /// §9.6: begin a Bitwarden SSO login. `org_identifier: Some` stores it on the connection,
+    /// `None` uses the stored one. `redirect_port` is where the browser comes back
+    /// (`http://localhost:<port>`, 8065..=8070; `None` = 8065). Open `authorize_url` in the browser,
+    /// then call `connection_sso_complete`. Gated like `connection_login`.
+    #[method(name = "connection_sso_begin", with_extensions)]
+    async fn connection_sso_begin(
+        &self,
+        conn: String,
+        org_identifier: Option<String>,
+        redirect_port: Option<u16>,
+    ) -> RpcResult<SsoBegin>;
+    /// §9.6: finish the SSO login `state` with the code, or the whole address the browser landed
+    /// on. `NeedTwoFactor`: call again with the same `state` and input plus `two_factor`
+    /// (`[provider, code]`). `Done` = logged in, `Locked` (the unlock card follows). Gated like
+    /// `connection_login`.
+    #[method(name = "connection_sso_complete", with_extensions)]
+    async fn connection_sso_complete(
+        &self,
+        conn: String,
+        state: String,
+        code_or_redirect_url: String,
+        two_factor: Option<(String, String)>,
+    ) -> RpcResult<LoginStep>;
     /// Unlock with the master password (never stored).
     #[method(name = "connection_unlock")]
     async fn connection_unlock(&self, conn: String, password: String) -> RpcResult<ConnInfo>;
@@ -273,6 +298,21 @@ async fn backend(conn: &str) -> RpcResult<Arc<dyn ExternalBackend>> {
     })
 }
 
+/// A login of `conn` (`connection_login`, the SSO pair): the owner's press runs directly; any
+/// other caller needs the human-only card `secrets.connection_login`. The card names the
+/// connection and the method, never a credential.
+async fn login_gate(ext: &Extensions, conn: &str, how: &str) -> RpcResult<()> {
+    confirm_loosening(
+        approval_actor().as_ref(),
+        human_press(ext),
+        true,
+        "secrets.connection_login",
+        serde_json::json!({ "connection": conn, "method": how }),
+    )
+    .await
+    .map_err(failed)
+}
+
 /// `id` (a full ref `aws/prod/x#k` or a bare id) as an [`ExtRef`] of `b`.
 fn ext_ref(b: &dyn ExternalBackend, id: &str) -> ExtRef {
     match parse_bare(id) {
@@ -438,9 +478,48 @@ impl CredentialsApiServer for Server {
         Ok(())
     }
 
-    async fn connection_login(&self, conn: String, form: LoginForm) -> RpcResult<LoginStep> {
+    async fn connection_login(
+        &self,
+        ext: &Extensions,
+        conn: String,
+        form: LoginForm,
+    ) -> RpcResult<LoginStep> {
         let b = backend(&conn).await?;
+        login_gate(ext, &conn, "login").await?;
         bounded(b.login(form)).await
+    }
+
+    async fn connection_sso_begin(
+        &self,
+        ext: &Extensions,
+        conn: String,
+        org_identifier: Option<String>,
+        redirect_port: Option<u16>,
+    ) -> RpcResult<SsoBegin> {
+        let b = backend(&conn).await?;
+        login_gate(ext, &conn, "SSO login").await?;
+        let org = send(
+            &secrets()?,
+            secrets::connections::SsoIdentifier {
+                conn,
+                set: org_identifier,
+            },
+        )
+        .await?;
+        bounded(b.sso_begin(&org, redirect_port)).await
+    }
+
+    async fn connection_sso_complete(
+        &self,
+        ext: &Extensions,
+        conn: String,
+        state: String,
+        code_or_redirect_url: String,
+        two_factor: Option<(String, String)>,
+    ) -> RpcResult<LoginStep> {
+        let b = backend(&conn).await?;
+        login_gate(ext, &conn, "SSO login").await?;
+        bounded(b.sso_complete(&state, &code_or_redirect_url, two_factor)).await
     }
 
     async fn connection_unlock(&self, conn: String, password: String) -> RpcResult<ConnInfo> {

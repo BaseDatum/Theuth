@@ -49,6 +49,8 @@ pub enum BwLogin {
     ApiKey,
     /// Email + master password + 2FA (B5b).
     Password,
+    /// The organisation's SSO, then the master password on the unlock card (§9.6).
+    Sso,
 }
 
 /// §6.1 / §6.2: a connection's non-secret config, tagged by `backend`.
@@ -88,9 +90,12 @@ pub enum ConnConfig {
         web_vault_url: Option<String>,
         /// Shown on the unlock card; prelogin needs it.
         email: String,
-        /// `api_key` | `password`.
+        /// `api_key` | `password` | `sso`.
         #[serde(default)]
         login: BwLogin,
+        /// `sso`: the organisation's SSO identifier (`connection_sso_begin` may set it).
+        #[serde(default)]
+        org_identifier: Option<String>,
     },
 }
 
@@ -238,6 +243,9 @@ pub struct ConnInfo {
     pub ask: AskInfo,
     /// The D20 settings.
     pub settings: ConnSettings,
+    /// Bitwarden: how it logs in (`None` for AWS).
+    #[serde(default)]
+    pub login: Option<BwLogin>,
 }
 
 /// AWS value shape for a `secret_request` destination.
@@ -589,6 +597,10 @@ impl SecretsActor {
                     .contains(&Direction::Send)
                     .then(|| on(Direction::Send)),
             },
+            login: match &cfg {
+                ConnConfig::Bw { login, .. } => Some(*login),
+                ConnConfig::Aws { .. } => None,
+            },
             settings,
         })
     }
@@ -701,6 +713,64 @@ impl Message<ConnInfoOf> for SecretsActor {
 
     async fn handle(&mut self, m: ConnInfoOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.info(&m.0).await
+    }
+}
+
+/// `ask` → `Result<String, String>`: §9.6, the SSO identifier `connection_sso_begin` uses for
+/// `conn`. `set: Some` stores it in `config.yaml` first; `None` reads the stored one. `Err` for a
+/// connection that does not log in with SSO, or has no identifier.
+#[derive(Clone, Debug)]
+pub struct SsoIdentifier {
+    /// The connection.
+    pub conn: String,
+    /// A new identifier to store.
+    pub set: Option<String>,
+}
+
+impl Message<SsoIdentifier> for SecretsActor {
+    type Reply = Result<String, String>;
+
+    async fn handle(
+        &mut self,
+        m: SsoIdentifier,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (cfg, _) = self.conn_parts(&m.conn)?;
+        let ConnConfig::Bw {
+            login: BwLogin::Sso,
+            org_identifier,
+            ..
+        } = cfg
+        else {
+            return Err(format!("{} does not log in with SSO", m.conn));
+        };
+        let Some(set) = m.set.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) else {
+            return org_identifier.filter(|s| !s.is_empty()).ok_or_else(|| {
+                format!("{} has no SSO identifier; enter the organisation's", m.conn)
+            });
+        };
+        if org_identifier.as_deref() == Some(set.as_str()) {
+            return Ok(set);
+        }
+        let entry = self
+            .connections
+            .conns
+            .get_mut(&m.conn)
+            .ok_or_else(|| format!("unknown connection {}", m.conn))?;
+        let old = entry.other.insert(
+            "org_identifier".into(),
+            serde_yaml::Value::String(set.clone()),
+        );
+        if let Err(e) = self.persist_connections() {
+            if let Some(entry) = self.connections.conns.get_mut(&m.conn) {
+                match old {
+                    Some(v) => entry.other.insert("org_identifier".into(), v),
+                    None => entry.other.remove("org_identifier"),
+                };
+            }
+            return Err(e);
+        }
+        Ok(set)
     }
 }
 
@@ -1114,6 +1184,7 @@ pub(crate) mod tests {
             web_vault_url: None,
             email: "me@example.org".into(),
             login: BwLogin::ApiKey,
+            org_identifier: None,
         }
     }
 
@@ -1128,6 +1199,7 @@ pub(crate) mod tests {
             web_vault_url: None,
             email: "me@example.org".into(),
             login: BwLogin::ApiKey,
+            org_identifier: None,
         };
         for ok in [
             "https://vault.example.org",

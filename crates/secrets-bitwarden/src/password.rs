@@ -111,6 +111,35 @@ pub fn token_form(
     f.finish()
 }
 
+/// `application/x-www-form-urlencoded` body of the SSO code exchange (§9.6): the
+/// `authorization_code` grant with the PKCE verifier and the exact `redirect_uri` of the
+/// authorize URL; on a 2FA retry, the same code with the factor.
+pub fn sso_token_form(
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+    device_id: &str,
+    two_factor: Option<(TwoFactorKind, &str)>,
+) -> String {
+    let device_type = device_type().to_string();
+    let mut f = url::form_urlencoded::Serializer::new(String::new());
+    f.append_pair("grant_type", "authorization_code")
+        .append_pair("code", code)
+        .append_pair("code_verifier", verifier)
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("scope", "api offline_access")
+        .append_pair("client_id", CLIENT_ID)
+        .append_pair("deviceType", &device_type)
+        .append_pair("deviceIdentifier", device_id)
+        .append_pair("deviceName", "theuth");
+    if let Some((kind, token)) = two_factor {
+        f.append_pair("twoFactorToken", token)
+            .append_pair("twoFactorProvider", &kind.code().to_string())
+            .append_pair("twoFactorRemember", "0");
+    }
+    f.finish()
+}
+
 /// `POST {api}/two-factor/send-email-login`'s JSON body.
 pub fn email_code_body(email: &str, password_hash: &str, device_id: &str) -> Json {
     serde_json::json!({
