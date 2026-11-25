@@ -1,15 +1,18 @@
-import { expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import {
   BOOTSTRAP_JS,
   CONSOLE,
+  DESCRIBE_POINT,
   OPEN_LINK,
   SIZE_CHANGED,
+  describePoint,
   hostContext,
   injectBootstrap,
   readConsole,
   readOpenLink,
   readSizeChanged,
   result,
+  sanitizeDescription,
   sanitizeVariables,
   themeFragment,
 } from './page-bootstrap'
@@ -99,7 +102,7 @@ function boot(theme = hostContext(THEME), hash = '') {
   const timers: (null | (() => void))[] = []
   const style = { textContent: '' }
   const root = { scrollHeight: 300, clientHeight: 300, getBoundingClientRect: () => ({ height: 300 }) }
-  const doc = {
+  const doc: Record<string, unknown> = {
     readyState: 'complete',
     documentElement: root,
     body: {},
@@ -123,7 +126,7 @@ function boot(theme = hostContext(THEME), hash = '') {
   new Function('window', 'document', 'console', 'THEME', BOOTSTRAP_JS)(win, doc, con, theme)
   const fire = (key: string, ev: unknown) => listeners[key]?.forEach((cb) => cb(ev))
   const flush = () => timers.splice(0).forEach((cb) => cb?.())
-  return { posted, style, root, con, fire, flush }
+  return { posted, style, root, con, fire, flush, doc }
 }
 
 test('console_caps_at_twenty_by_five_hundred', () => {
@@ -193,4 +196,111 @@ test('the script asks the host for http(s) links only and lets same-document has
   expect(click('javascript:alert(1)').prevented).toBe(true)
   expect(click('https://example.com', { isTrusted: false }).prevented).toBe(false)
   expect(posted).toHaveLength(n)
+})
+
+type Fake = { tagName: string; id: string; parentElement: Fake | null; children: Fake[]; innerText: string; getAttribute: (n: string) => string | null; getBoundingClientRect: () => { left: number; top: number; width: number; height: number } }
+const el = (tagName: string, attrs: Record<string, string> = {}, parent: Fake | null = null, innerText = ''): Fake => {
+  const e: Fake = {
+    tagName,
+    id: attrs.id ?? '',
+    parentElement: parent,
+    children: [],
+    innerText,
+    getAttribute: (n) => attrs[n] ?? null,
+    getBoundingClientRect: () => ({ left: 10.4, top: 20, width: 80, height: 32.6 }),
+  }
+  parent?.children.push(e)
+  return e
+}
+
+test('the script describes the point: role, label with its ordinal in a tab bar, a short selector, the rect', () => {
+  const { posted, fire, doc } = boot()
+  const body = el('BODY')
+  const app = el('DIV', { id: 'app' }, body)
+  const bar = el('DIV', { role: 'tablist', class: 'tabs strip' }, app)
+  el('BUTTON', { role: 'tab' }, bar, 'One')
+  el('BUTTON', { role: 'tab' }, bar, 'Two')
+  const third = el('BUTTON', { role: 'tab' }, bar, '  Settings\n')
+  const span = el('SPAN', {}, third, 'Settings')
+  doc.elementFromPoint = (x: number, y: number) => (x === 40 && y === 30 ? span : null)
+  fire('win:message', { data: { jsonrpc: '2.0', id: 7, method: DESCRIBE_POINT, params: { x: 40, y: 30 } } })
+  expect(posted[posted.length - 1]).toEqual({
+    jsonrpc: '2.0',
+    id: 7,
+    result: { selector: '#app div.tabs button:nth-of-type(3)', role: 'tab', label: 'Settings (tab bar, item 3)', rect: [10, 20, 80, 33] },
+  })
+  // Nothing there: answered with `null`, never silence.
+  fire('win:message', { data: { jsonrpc: '2.0', id: 'q', method: DESCRIBE_POINT, params: { x: 1, y: 1 } } })
+  expect(posted[posted.length - 1]).toEqual({ jsonrpc: '2.0', id: 'q', result: null })
+})
+
+test('sanitizeDescription strips newlines and brackets, caps lengths, rejects non-finite rects', () => {
+  expect(sanitizeDescription({ selector: '#a > b', role: 'tab', label: 'Save\n[draft] <b>now</b>', rect: [1, 2, 3, 4] })).toEqual({
+    selector: '#a b',
+    role: 'tab',
+    label: 'Save draft bnow/b',
+    rect: [1, 2, 3, 4],
+  })
+  const long = sanitizeDescription({ selector: 's'.repeat(300), role: 'r'.repeat(40), label: 'l'.repeat(300), rect: [0, 0, 0, 0] })
+  expect(long?.label).toHaveLength(120)
+  expect(long?.selector).toHaveLength(120)
+  expect(long?.role).toHaveLength(24)
+  expect(sanitizeDescription({ selector: 'a', role: 'b', label: 'c', rect: [0, Number.NaN, 1, 1] })).toBeNull()
+  expect(sanitizeDescription({ selector: 'a', role: 'b', label: 'c', rect: [0, Infinity, 1, 1] })).toBeNull()
+  expect(sanitizeDescription({ selector: 'a', rect: [0, 0, 1] })).toBeNull()
+  expect(sanitizeDescription(null)).toBeNull()
+  expect(sanitizeDescription('x')).toBeNull()
+  expect(sanitizeDescription({ label: 7, rect: [0, 0, 1, 1] })).toEqual({ selector: '', role: '', label: '', rect: [0, 0, 1, 1] })
+})
+
+function stubWindow() {
+  const listeners = new Set<(ev: unknown) => void>()
+  vi.stubGlobal('window', {
+    addEventListener: (_: string, cb: (ev: unknown) => void) => listeners.add(cb),
+    removeEventListener: (_: string, cb: (ev: unknown) => void) => listeners.delete(cb),
+  })
+  const sent: { msg: { id: string; method: string; params: unknown }; origin: string }[] = []
+  const contentWindow = { postMessage: (msg: never, origin: string) => sent.push({ msg, origin }) }
+  const frame = { contentWindow } as unknown as HTMLIFrameElement
+  const dispatch = (ev: unknown) => [...listeners].forEach((cb) => cb(ev))
+  return { listeners, sent, contentWindow, frame, dispatch }
+}
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
+
+test('describePoint resolves the sanitised reply from its own frame, by id', async () => {
+  const { sent, contentWindow, frame, dispatch, listeners } = stubWindow()
+  const p = describePoint(frame, 12, 34)
+  expect(sent).toHaveLength(1)
+  expect(sent[0]?.origin).toBe('*')
+  expect(sent[0]?.msg.method).toBe(DESCRIBE_POINT)
+  expect(sent[0]?.msg.params).toEqual({ x: 12, y: 34 })
+  const id = sent[0]?.msg.id
+  const reply = { jsonrpc: '2.0', id, result: { selector: 'a', role: 'link', label: 'Go\nhome', rect: [1, 2, 3, 4] } }
+  dispatch({ source: {}, data: reply }) // another window
+  dispatch({ source: contentWindow, data: { ...reply, id: 'other' } })
+  dispatch({ source: contentWindow, data: reply })
+  await expect(p).resolves.toEqual({ selector: 'a', role: 'link', label: 'Go home', rect: [1, 2, 3, 4] })
+  expect(listeners.size).toBe(0)
+})
+
+test('describePoint: timeout, refusal and no contentWindow are null', async () => {
+  vi.useFakeTimers()
+  const { frame, contentWindow, sent, dispatch, listeners } = stubWindow()
+  const p = describePoint(frame, 1, 1)
+  vi.advanceTimersByTime(299)
+  dispatch({ source: contentWindow, data: { jsonrpc: '2.0', id: 'nope', result: null } })
+  vi.advanceTimersByTime(1)
+  await expect(p).resolves.toBeNull()
+  expect(listeners.size).toBe(0)
+  const refused = describePoint(frame, 1, 1)
+  dispatch({ source: contentWindow, data: { jsonrpc: '2.0', id: sent[1]?.msg.id, result: null } })
+  await expect(refused).resolves.toBeNull()
+  await expect(describePoint({ contentWindow: null } as unknown as HTMLIFrameElement, 1, 1)).resolves.toBeNull()
+  const throwing = { contentWindow: { postMessage: () => { throw new Error('gone') } } } as unknown as HTMLIFrameElement
+  await expect(describePoint(throwing, 1, 1)).resolves.toBeNull()
+  expect(listeners.size).toBe(0)
 })

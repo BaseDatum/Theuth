@@ -1,10 +1,19 @@
 import '../components/settings/test-dom'
-import { afterEach, beforeEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { openWhiteboardTile } from '@/components/tiles/open'
+import type * as Open from '@/components/tiles/open'
 import { tileLeaf, usePanes } from './panes'
 import { tileIds, tileProps, tiling, untile } from './panes.testing'
-import { diffViewOpened, fileViewOpened, noteViewOpened, ptyViewOpened } from './tile-arrival'
+import { diffViewOpened, fileViewOpened, noteViewOpened, ptyViewOpened, whiteboardViewOpened } from './tile-arrival'
 import { tileId, tiles } from './tiles'
 import { useWebViews } from './web-views'
+
+// The whiteboard opener alone is stubbed (the Trellis test workspace registers no `tile:whiteboard` view type); every
+// other opener stays real. `tileable` stays real too: a chat on screen in a tiling pane.
+vi.mock('@/components/tiles/open', async (actual) => ({
+  ...(await actual<typeof Open>()),
+  openWhiteboardTile: vi.fn((): string | null => 'whiteboard-tile'),
+}))
 
 const DOC = '01jabcdefghjkmnpqrstvwxyz0'
 const pty = { type: 'PtyViewOpened', session: 's1', call_id: 'c1', job: 'j3', name: 'dev', title: 'Dev server', running: true, pty: true, spawned: false }
@@ -108,4 +117,30 @@ test('no file or diff tile opens for a hidden chat or one outside a tiling pane'
   fileViewOpened(file, true)
   diffViewOpened(diff, true)
   expect(tileIds()).toEqual([])
+})
+
+const WB = '01a2f3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b'
+const board = { type: 'WhiteboardViewOpened', session: 's1', call_id: 'c5', doc: WB, title: 'Attention inbox' } as const
+const opened = vi.mocked(openWhiteboardTile)
+
+test('218: a visible, tileable chat gets the whiteboard tile for the document; nothing navigates', () => {
+  opened.mockClear()
+  onScreen('s1')
+  const go = vi.fn()
+  whiteboardViewOpened(board, true, go)
+  expect(opened.mock.calls).toEqual([['s1', { doc: WB, title: 'Attention inbox' }]])
+  expect(go).not.toHaveBeenCalled()
+})
+
+test('218: a hidden chat, one outside a tiling pane, or a tile that cannot open navigates to the whiteboard page', () => {
+  opened.mockClear()
+  const go = vi.fn()
+  onScreen('s1')
+  whiteboardViewOpened(board, false, go)
+  opened.mockReturnValueOnce(null)
+  whiteboardViewOpened(board, true, go)
+  document.body.innerHTML = ''
+  whiteboardViewOpened({ ...board, session: 's 2' }, true, go)
+  expect(opened).toHaveBeenCalledTimes(1)
+  expect(go.mock.calls).toEqual([[`/whiteboards/${WB}?session=s1`], [`/whiteboards/${WB}?session=s1`], [`/whiteboards/${WB}?session=s%202`]])
 })
