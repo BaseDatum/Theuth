@@ -2681,7 +2681,6 @@ impl Message<SetDefaultToolCategories> for ToolRegistry {
         self.categories.default_disabled = m.disabled;
         Ok(())
     }
-    }
 }
 
 impl Message<SetAlwaysAsk> for ToolRegistry {

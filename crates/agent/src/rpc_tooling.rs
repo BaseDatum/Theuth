@@ -10,9 +10,9 @@ use rpc_core::{Server, ask};
 use runtime::SessionId;
 use tools::{
     AlwaysAskError, AlwaysAskState, ApprovalsState, BuiltinCategory, BuiltinsSwitchError,
-    DeleteToolCategory, GetAlwaysAsk, ListBuiltins, ListToolCategories, SetAlwaysAsk,
-    SetApprovals, SetBuiltinsDisabled, SetDefaultToolCategories, SetHidden, SetMcpCategory,
-    SetToolCategory, ToolCategoryInfo, ToolRegistry, UpsertToolCategory,
+    DeleteToolCategory, GetAlwaysAsk, ListBuiltins, ListToolCategories, SetAlwaysAsk, SetApprovals,
+    SetBuiltinsDisabled, SetDefaultToolCategories, SetHidden, SetMcpCategory, SetToolCategory,
+    ToolCategoryInfo, ToolRegistry, UpsertToolCategory,
 };
 use uuid::Uuid;
 
