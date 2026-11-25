@@ -283,27 +283,27 @@ test('context button: the ring fills with the used share and warns from 80 %, da
 
     // Compact: one icon button per style, each labelled, ≥ 36 px, running exactly that style.
     const styles = [...document.querySelectorAll<HTMLButtonElement>('[data-compact-style]')]
-    expect(styles.map((b) => b.dataset.compactStyle)).toEqual(['summary', 'cut', 'snap'])
+    expect(styles.map((b) => b.dataset.compactStyle)).toEqual(['snap', 'cut', 'summary'])
     expect(styles.map((b) => b.getAttribute('aria-label'))).toEqual([
-      'Compact: summary — fold older turns into a summary',
-      'Compact: cut — drop older turns, keep the recent ones',
       'Compact: snap — keep older turns as images',
+      'Compact: cut — drop older turns, keep the recent ones',
+      'Compact: summary — fold older turns into a summary',
     ])
     expect(styles.every((b) => b.title === b.getAttribute('aria-label') && b.className.split(' ').includes('size-9'))).toBe(true)
     const caption = () => document.querySelector('[data-compact-caption]')!.textContent
-    // The popover focuses its first control on open, so the caption starts on summary; hover moves it, leaving restores the static line.
-    expect(caption()).toBe('Summary — fold older turns into a summary')
-    act(() => void styles[2]!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    // The popover focuses its first control on open, so the caption starts on snap; hover moves it, leaving restores the static line.
     expect(caption()).toBe('Snap — keep older turns as images')
+    act(() => void styles[2]!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    expect(caption()).toBe('Summary — fold older turns into a summary')
     act(() => void styles[2]!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body })))
     act(() => styles[0]!.blur())
-    expect(caption()).toBe('Fold older turns: summary, cut or snap')
+    expect(caption()).toBe('Fold older turns: snap, cut or summary')
     act(() => styles[1]!.focus())
     expect(caption()).toBe('Cut — drop older turns, keep the recent ones')
     act(() => styles[1]!.blur())
-    expect(caption()).toBe('Fold older turns: summary, cut or snap')
+    expect(caption()).toBe('Fold older turns: snap, cut or summary')
     for (const b of styles) click(b)
-    expect(onAction.mock.calls).toEqual([[{ compact: 'summary' }], [{ compact: 'cut' }], [{ compact: 'snap' }]])
+    expect(onAction.mock.calls).toEqual([[{ compact: 'snap' }], [{ compact: 'cut' }], [{ compact: 'summary' }]])
     onAction.mockClear()
 
     const rows = [...document.querySelectorAll<HTMLElement>('[data-context-action]')]

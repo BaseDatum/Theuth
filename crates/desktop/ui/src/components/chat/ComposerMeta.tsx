@@ -259,9 +259,9 @@ type CompactPick = Exclude<CompactStyle, 'clear'>
 export type ContextAction = { compact: CompactPick } | '/shake' | '/clear'
 
 const COMPACT_STYLES: readonly { style: CompactPick; icon: typeof ScrollText; does: string }[] = [
-  { style: 'summary', icon: ScrollText, does: 'fold older turns into a summary' },
-  { style: 'cut', icon: Scissors, does: 'drop older turns, keep the recent ones' },
   { style: 'snap', icon: Images, does: 'keep older turns as images' },
+  { style: 'cut', icon: Scissors, does: 'drop older turns, keep the recent ones' },
+  { style: 'summary', icon: ScrollText, does: 'fold older turns into a summary' },
 ]
 
 /** How long a first tap on Clear stays armed before it disarms itself. */
@@ -311,7 +311,7 @@ function ContextActions({ onAction }: { onAction(action: ContextAction): void })
           ))}
         </div>
         <span data-compact-caption="" className="truncate text-[11px] text-fg-tertiary">
-          {hinted ? `${hinted.style[0]!.toUpperCase()}${hinted.style.slice(1)} — ${hinted.does}` : 'Fold older turns: summary, cut or snap'}
+          {hinted ? `${hinted.style[0]!.toUpperCase()}${hinted.style.slice(1)} — ${hinted.does}` : 'Fold older turns: snap, cut or summary'}
         </span>
       </div>
       <button type="button" data-context-action="/shake" className={cn(ROW, 'hover:bg-foreground/6')} onClick={() => run('/shake')}>
