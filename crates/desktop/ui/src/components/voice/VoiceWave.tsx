@@ -1,4 +1,4 @@
-// theuth's one dictation / voice-note / talk waveform: the Dialogue single-line wave (lib/audio/dialogue-waveform)
+// theuth's one dictation / voice-note / talk waveform: the single-line physics wave (lib/audio/waveform)
 // in the accent colour. `text-fg-accent` (or a caller's `text-*`) is the only colour hook: the line is the resolved
 // CSS `color`, re-read when the theme or the element's classes change.
 
@@ -6,7 +6,7 @@ import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 
 import { useFrameSource } from '@/hooks/use-frame-source'
 import { useReducedMotion } from '@/hooks/use-reduced-motion'
 import { useVisibility } from '@/hooks/use-visibility'
-import { type AudioFeatures, SILENT_FEATURES, WaveformEngine, visualFrameToAudioFeatures } from '@/lib/audio/dialogue-waveform'
+import { type AudioFeatures, SILENT_FEATURES, WaveformEngine, visualFrameToAudioFeatures } from '@/lib/audio/waveform'
 import { subscribeFrame } from '@/lib/audio/frame-loop'
 import type { FrameSource, VisualFrame } from '@/lib/audio/types'
 import { cn } from '@/lib/utils'
@@ -170,7 +170,7 @@ export function VoiceWave({ source, state, className, style, label }: { source: 
       ref={rootRef}
       role="img"
       aria-label={label}
-      data-slot="dialogue-waveform"
+      data-slot="waveform"
       data-state={state}
       data-loading={thinking ? '' : undefined}
       className={cn('text-fg-accent relative h-full w-full', className)}

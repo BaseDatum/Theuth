@@ -1,5 +1,4 @@
-// The Dialogue single-line waveform: a 1:1 port of DialogueMockup's `WaveformEngine`
-// (dialogue_mockup/ui/waveform_widget.py). Idle "ocean" motion, voice packets injected at the right edge that travel
+// Single-line physics waveform engine: idle "ocean" motion, voice packets injected at the right edge that travel
 // left, a pressure sink that absorbs them at the left edge, a 3-tap smoothing pass and a tanh soft limiter.
 // The constants and the math are the reference's; do not tune them here.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { type AudioFeatures, SILENT_FEATURES, WAVEFORM_CONSTANTS, WaveformEngine, visualFrameToAudioFeatures } from '@/lib/audio/dialogue-waveform'
+import { type AudioFeatures, SILENT_FEATURES, WAVEFORM_CONSTANTS, WaveformEngine, visualFrameToAudioFeatures } from '@/lib/audio/waveform'
 import type { VisualFrame } from '@/lib/audio/types'
 
 const DT = 1 / 60
