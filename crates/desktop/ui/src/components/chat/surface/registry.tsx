@@ -17,7 +17,7 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { Children, type ComponentProps, isValidElement, type ReactNode } from 'react'
-import { notify as toast } from '@/lib/notify'
+import { copyText, copyToClipboard } from '@/lib/code-copy'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Separator } from '@/components/ui/separator'
@@ -481,7 +481,7 @@ const components: Components<typeof catalog> = {
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Copy code"
-                onClick={() => navigator.clipboard.writeText(props.text).then(() => toast.message('Copied'), () => toast.error('Copy failed'))}
+                onClick={() => void copyToClipboard(copyText(props.lang ?? '', props.text))}
               >
                 <Copy />
               </Button>

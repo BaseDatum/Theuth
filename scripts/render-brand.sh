@@ -33,39 +33,41 @@ r "$BRAND/theta-mark-mono.svg" "$ICONS/tray.png" 22
 r "$BRAND/theta-mark-mono.svg" "$ICONS/tray@2x.png" 44
 r "$BRAND/tray-windows.svg" "$ICONS/tray-windows.png" 32
 
-echo "== iOS / iPadOS AppIcon: light (papyrus), dark (ink), tinted; opaque, no alpha"
-python3 - "$IOS" <<'EOF'
-import json, sys
-d = sys.argv[1]
-c = json.load(open(f"{d}/Contents.json"))
-base = [i for i in c["images"] if "appearances" not in i]
-out = []
-for i in base:
-    out.append(i)
-    stem = i["filename"][:-4]
-    for v in ("dark", "tinted"):
-        j = dict(i); j["filename"] = f"{stem}-{v}.png"
-        j["appearances"] = [{"appearance": "luminosity", "value": v}]
-        out.append(j)
-c["images"] = out
-json.dump(c, open(f"{d}/Contents.json", "w"), indent=2)
-open(f"{d}/Contents.json", "a").write("\n")
-for i in out:
-    w = float(i["size"].split("x")[0]) * float(i["scale"].rstrip("x"))
-    v = next((a["value"] for a in i.get("appearances", [])), "light")
-    print(f'{i["filename"]} {round(w)} {v}')
+echo "== iOS / iPadOS AppIcon: single-size (Xcode 14+) light (papyrus), dark (ink), tinted; opaque, no alpha"
+# Dark and tinted appearances only take effect in the single-size format (one 1024 px universal image per
+# appearance); a per-size legacy set with "appearances" compiles but iOS always shows the light icon.
+find "$IOS" -name '*.png' -delete
+for v in light dark tinted; do
+  r "$BRAND/ios-icon-$v.svg" "$TMP/ios-$v.png" 1024
+  magick "$TMP/ios-$v.png" -background black -alpha remove -alpha off "PNG24:$IOS/AppIcon-$v.png"
+done
+cat > "$IOS/Contents.json" <<'EOF'
+{
+  "images" : [
+    {
+      "filename" : "AppIcon-light.png",
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    },
+    {
+      "appearances" : [ { "appearance" : "luminosity", "value" : "dark" } ],
+      "filename" : "AppIcon-dark.png",
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    },
+    {
+      "appearances" : [ { "appearance" : "luminosity", "value" : "tinted" } ],
+      "filename" : "AppIcon-tinted.png",
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }
+}
 EOF
-python3 - "$IOS" <<'EOF' > "$TMP/ios.txt"
-import json, sys
-for i in json.load(open(f"{sys.argv[1]}/Contents.json"))["images"]:
-    w = float(i["size"].split("x")[0]) * float(i["scale"].rstrip("x"))
-    v = next((a["value"] for a in i.get("appearances", [])), "light")
-    print(i["filename"], round(w), v)
-EOF
-while read -r f px v; do
-  r "$BRAND/ios-icon-$v.svg" "$TMP/$f" "$px"
-  magick "$TMP/$f" -background black -alpha remove -alpha off "PNG24:$IOS/$f"
-done < "$TMP/ios.txt"
 
 echo "== companion harness glyph (white, like the others)"
 sed 's/fill="#000"/fill="#fff"/g' "$BRAND/theta-mark-mono.svg" > "$ROOT/crates/desktop/companion-assets/harness/theuth.svg"

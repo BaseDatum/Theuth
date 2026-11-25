@@ -9,6 +9,7 @@ import { Play } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { isApple } from '@/lib/chord'
+import { copyLine, copyToClipboard } from '@/lib/code-copy'
 import { tokensOf } from '@/lib/shiki'
 import { cn } from '@/lib/utils'
 import type { CellRun } from "@/rpc/bindings/method.cells.output"
@@ -67,6 +68,30 @@ export function gutterMark(mark: LineMark | null, n: number, hovered: number | f
   if (mark?.line === n) return MARKS[mark.phase]
   return hovered === n ? (danger ? RUN_DANGER : RUN) : null
 }
+
+/** 220: lucide's `Copy` glyph at `size-3.5`, drawn by hand (a gutter marker is plain DOM). */
+class CopyMarker extends GutterMarker {
+  override eq(other: GutterMarker): boolean {
+    return other === this
+  }
+  override toDOM() {
+    const ns = 'http://www.w3.org/2000/svg'
+    const svg = document.createElementNS(ns, 'svg')
+    for (const [k, v] of Object.entries({ width: '14', height: '14', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }))
+      svg.setAttribute(k, v)
+    const rect = document.createElementNS(ns, 'rect')
+    for (const [k, v] of Object.entries({ width: '14', height: '14', x: '8', y: '8', rx: '2', ry: '2' })) rect.setAttribute(k, v)
+    const path = document.createElementNS(ns, 'path')
+    path.setAttribute('d', 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2')
+    svg.append(rect, path)
+    const el = document.createElement('span')
+    el.title = 'Copy this line'
+    el.setAttribute('aria-label', 'Copy this line')
+    el.append(svg)
+    return el
+  }
+}
+const COPY = new CopyMarker()
 const setMark = StateEffect.define<LineMark | null>()
 const marked = StateField.define<LineMark | null>({
   create: () => null,
@@ -173,6 +198,26 @@ export function CellEditor({ lang, code, runnable, danger, disarmed, title, iden
           mousedown: (v, line) => {
             const unit = unitOf(live.current.units, v.state.doc.lineAt(line.from).number)
             return pointAt(unit[0], unit[1], unitMode(v.state.doc.toString(), unit), 'line')
+          },
+          mousemove: (v, line) => {
+            pointer(v, { kind: 'move', line: v.state.doc.lineAt(line.from).number })
+            return false
+          },
+        },
+      }),
+      // 220: the hovered line's copy (`copyLine`), on every cell, runnable or not. Mouse only: on touch and from the
+      // keyboard the header's whole-cell Copy button (`Cell`'s `CopyCell`) is the fallback.
+      gutter({
+        class: 'cm-copy-gutter',
+        lineMarker: (v, line) => {
+          const l = v.state.doc.lineAt(line.from)
+          return v.state.field(hovered) === l.number && l.text.trim() !== '' ? COPY : null
+        },
+        lineMarkerChange: (u) => u.transactions.some((tr) => tr.effects.some((e) => e.is(hover))),
+        domEventHandlers: {
+          mousedown: (v, line) => {
+            void copyToClipboard(copyLine(v.state.doc.lineAt(line.from).text))
+            return true
           },
           mousemove: (v, line) => {
             pointer(v, { kind: 'move', line: v.state.doc.lineAt(line.from).number })

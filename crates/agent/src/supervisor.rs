@@ -67,7 +67,7 @@ use crate::lifecycle::{
 use crate::loop_::{
     CancelPeerScope, CancelTurn, CatalogChanged, CompactNow, CompactionOverride,
     ContextBreakdownNow, ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning,
-    PEER_INTAKE, PeerInput, QueuedInputs, QuietInput, RedoTurn, RemoveContextNow, ResetRuntimeNow,
+    PEER_INTAKE, PeerInput, PromoteFence, QueuedInputs, QuietInput, RedoTurn, RemoveContextNow, ResetRuntimeNow,
     RestartTurn, ResumedTurn, Session, SessionState, SetBudgetNow, SetCompactionOverride,
     SetMemoryNow, SetPendingEffort, SetTalking, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
     SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
@@ -102,7 +102,7 @@ use crate::{
     SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel,
     SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt, SideCall,
     SideCallable, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
-    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, UserRenameSession, Withdraw,
+    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, UserRenameSession, Withdraw, CellPromote,
     effort_of,
 };
 use crate::{
@@ -4157,6 +4157,59 @@ impl Message<EditTurn> for Agents {
             self.ledger.release(m.session, ticket);
         }
         r
+    }
+}
+
+/// 220: off the mailbox — the session's side call takes up to its 20 s budget.
+impl Message<CellPromote> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<crate::rpc_turns::CellPromotion, String>>;
+
+    async fn handle(&mut self, m: CellPromote, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let actor = match self
+            .actor(m.session)
+            .await
+            .and_then(|a| a.native().cloned())
+        {
+            Ok(actor) => actor,
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
+        tokio::spawn(async move {
+            tx.send(
+                actor
+                    .ask(PromoteFence {
+                        seq: Some(m.seq),
+                        ordinal: m.fence,
+                        body: Some(m.body),
+                        auto: false,
+                        digest: None,
+                        reason: "user",
+                    })
+                    .await
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        reply
+    }
+}
+
+/// `tell` (220): a session rewrote a reply's fence as a cell in place — the RPC's or the
+/// automatic nudge. A context edit like [`TrimAssistant`]: cached searches and admitted
+/// candidates are stale.
+pub(crate) struct CellPromoted {
+    pub session: SessionId,
+}
+
+impl Message<CellPromoted> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: CellPromoted, _: &mut Context<Self, Self::Reply>) {
+        self.search.invalidate();
+        self.ledger.bump(m.session);
     }
 }
 

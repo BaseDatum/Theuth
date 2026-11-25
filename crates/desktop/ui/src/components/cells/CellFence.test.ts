@@ -4,10 +4,11 @@ import { expect, test } from 'vitest'
 import { FenceContext } from '@/components/chat/surface/JsonRenderFence'
 import { classify } from '@/lib/injected'
 import { active } from '@/store/engine-scope'
+import { useConnection } from '@/store/connection'
 import type { Entry } from '@/store/sessions'
 import { cellDomId } from './Cell'
-import { CELL_LANGUAGES, CellFence, CellOrdinals, cellOrdinals } from './CellFence'
-import { replyCells, restated } from './fences'
+import { CELL_LANGUAGES, CellFence, CellOrdinals, cellOrdinals, snippetLines } from './CellFence'
+import { plainFences, replyCells, restated } from './fences'
 import { cells, refKey, scopeKey } from './store'
 import { REPLY, SESSION, chatRef, render, run, state } from './test-fixtures'
 
@@ -20,17 +21,18 @@ const assistant = (node: ReactNode, o: { session?: string; entry?: string | null
     h(CellOrdinals, { value: cellOrdinals(o.text ?? REPLY, o.entry === undefined ? '42' : o.entry, !!o.running) }, node),
   )
 
-test('a fence without a #| header renders exactly as streamdown’s own code path, controls included (171 §4.1)', () => {
+test('a fence without a #| header renders streamdown’s own code block, controls included (171 §4.1)', () => {
   for (const text of ['```bash\necho hi\nls -la\n```\n', '```python\nprint(1)\n```\n', '```sh\n# just a comment\n```\n']) {
     const html = render(assistant(md(text, withCells), { text }))
-    expect(html).toBe(render(md(text)))
     expect(html).toContain('data-streamdown="code-block"')
+    expect(html).toContain('data-streamdown="code-block-copy-button"')
+    expect(html).toContain('data-streamdown="code-block-download-button"')
     expect(html).not.toMatch(/data-cell/)
   }
 })
 
 test('the renderer claims exactly the shell and python fence languages', () => {
-  expect([...CELL_LANGUAGES].sort()).toEqual(['bash', 'powershell', 'pwsh', 'py', 'python', 'sh', 'zsh'])
+  expect([...CELL_LANGUAGES].sort()).toEqual(['bash', 'powershell', 'pwsh', 'py', 'python', 'sh', 'shellscript', 'zsh'])
 })
 
 test('a header fence outside assistant markdown stays code — e.g. inside a <subagent_result> card (§12.2)', () => {
@@ -88,6 +90,90 @@ test('ordinals follow document order; identical cells get distinct ordinals', ()
   expect(o.claim('b', body)).toBe(2)
   expect(o.claim('a', body)).toBe(1)
   expect(o.claim('c', body)).toBeNull()
+})
+
+test('220: plain fences are numbered from 0 among closed, runnable, header-less fences; claims go by language and body', () => {
+  const text = [
+    '```bash\necho a\n```',
+    '```bash\n#| cwd: /tmp\necho cell\n```',
+    '```js\nconsole.log(1)\n```',
+    '```rust\nfn main() {}\n```',
+    '```python\nprint(1)\n```',
+    '```sh\necho a\n```',
+    '```bash\necho a\n```',
+    '```bash\necho open',
+  ].join('\n\n')
+  const o = cellOrdinals(text, '1', false)
+  expect(o.plain).toEqual([
+    { ordinal: 0, lang: 'bash', body: 'echo a' },
+    { ordinal: 1, lang: 'python', body: 'print(1)' },
+    { ordinal: 2, lang: 'sh', body: 'echo a' },
+    { ordinal: 3, lang: 'bash', body: 'echo a' },
+  ])
+  expect(o.claimPlain('a', 'bash', 'echo a')).toBe(0)
+  expect(o.claimPlain('s', 'sh', 'echo a')).toBe(2)
+  // `shellscript` is `bash`: the second identical bash body.
+  expect(o.claimPlain('b', 'shellscript', 'echo a')).toBe(3)
+  expect(o.claimPlain('a', 'bash', 'echo a')).toBe(0)
+  expect(o.claimPlain('c', 'bash', 'echo open')).toBeNull()
+  expect(o.claimPlain('d', 'rust', 'fn main() {}')).toBeNull()
+})
+
+test('220: the plain-fence scanner is strict CommonMark, as the engine counts', () => {
+  const bodies = (text: string) => plainFences(text).map((p) => `${p.lang}:${p.body}`)
+  expect(bodies('~~~bash\necho tilde\n~~~')).toEqual(['bash:echo tilde'])
+  expect(bodies('~~~bash\necho x\n```\n~~~')).toEqual(['bash:echo x\n```'])
+  expect(bodies('    ```bash\n    echo indented\n    ```')).toEqual([])
+  expect(bodies('   ```bash\n   echo three\n   ```')).toEqual(['bash:echo three'])
+  expect(bodies('\t```bash\necho tab\n```')).toEqual([])
+  expect(bodies('> ```bash\n> echo quoted\n> ```')).toEqual([])
+  expect(bodies('```bash title=x\necho titled\n```')).toEqual(['bash:echo titled'])
+  expect(bodies('```BASH\necho upper\n```')).toEqual(['bash:echo upper'])
+  expect(bodies('```shellscript\necho blocknote\n```')).toEqual(['bash:echo blocknote'])
+  expect(bodies('````bash\necho x\n```\n````')).toEqual(['bash:echo x\n```'])
+  expect(bodies('```bash\necho done\n```\n\n```bash\necho open')).toEqual(['bash:echo done'])
+  expect(plainFences('```bash\necho twin\n```\n\n```bash\necho twin\n```')).toEqual([
+    { ordinal: 0, lang: 'bash', body: 'echo twin' },
+    { ordinal: 1, lang: 'bash', body: 'echo twin' },
+  ])
+})
+
+test('220: a snippet’s per-line copy maps line N to streamdown’s Nth rendered line, blank lines included', () => {
+  const code = '\necho a\n\n  echo <b> && x\n\n'
+  const html = render(md(`\`\`\`bash\n${code}\`\`\`\n`, withCells))
+  const inner = /<code[^>]*>([\s\S]*?)<\/code>/.exec(html)?.[1] ?? ''
+  const decode = (s: string) => s.replace(/<[^>]*>/g, '').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&').replace(/^\n$/, '')
+  const rendered = inner.split('<span class="block').slice(1).map((chunk) => decode(`<span class="block${chunk}`))
+  expect(snippetLines(code)).toEqual(rendered)
+  expect(snippetLines(code)).toEqual(['', 'echo a', '', '  echo <b> && x'])
+  // The keyboard route: the button is always in the tab order, named for the first non-blank line.
+  expect(html).toContain('aria-label="Copy line 2"')
+})
+
+test('220: Make runnable shows only on plain runnable fences of a stored, settled reply in a live session', () => {
+  const text = 'Run this yourself:\n\n```bash\nsudo systemctl restart x\n```\n\n```bash\n#| cwd: /tmp\n#| label: Go\necho go\n```\n\n```python\nprint(1)\n```\n'
+  const marks = (html: string) => [...html.matchAll(/data-make-runnable="(\d+)"/g)].map((m) => m[1])
+  useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' } })
+  try {
+    const html = render(assistant(md(text, withCells), { text }))
+    expect(marks(html)).toEqual(['0', '1'])
+    expect(html).toContain('Make runnable')
+    // Not while the turn runs, before the reply is stored, without a session, read-only, or outside an assistant reply.
+    expect(marks(render(assistant(md(text, withCells), { text, running: true })))).toEqual([])
+    expect(marks(render(assistant(md(text, withCells), { text, entry: null })))).toEqual([])
+    expect(marks(render(assistant(md(text, withCells), { text, session: undefined })))).toEqual([])
+    const readOnly = h(
+      FenceContext,
+      { value: { running: false, hasLaterAssistant: false, session: SESSION, entry: 'x', readOnly: true } },
+      h(CellOrdinals, { value: cellOrdinals(text, '42', false) }, md(text, withCells)),
+    )
+    expect(marks(render(readOnly))).toEqual([])
+    expect(marks(render(md(text, withCells)))).toEqual([])
+  } finally {
+    useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'connecting' } })
+  }
+  // An engine without `cell_promote` never offers it.
+  expect(marks(render(assistant(md(text, withCells), { text })))).toEqual([])
 })
 
 test('the host chip (§14.2, L11 `CellState.host`) shows only when the record names another engine', () => {

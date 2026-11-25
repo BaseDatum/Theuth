@@ -2724,6 +2724,93 @@ impl Store {
         ))
     }
 
+    /// 220: the reply text ([`crate::cell_nudge::reply_text`]) of the visible assistant row
+    /// `seq`; `None` when the row is gone, hidden or not an assistant reply.
+    pub async fn assistant_text(&self, id: SessionId, seq: i64) -> anyhow::Result<Option<String>> {
+        let mut conn = self.read.acquire().await?;
+        Ok(rows_in(&mut conn, id, seq)
+            .await?
+            .into_iter()
+            .next()
+            .filter(|r| r.seq == seq && r.message.role == ChatRole::Assistant && !r.is_note())
+            .map(|r| crate::cell_nudge::reply_text(&r.message.content)))
+    }
+
+    /// 220 cell nudge: replace the text of the visible assistant row `seq` with `new_text`,
+    /// compare-and-swap: refused (`Ok(None)`) when the row is gone, hidden, not an assistant
+    /// reply, or its current text (text parts joined, [`crate::cell_nudge::reply_text`]) is not
+    /// `expected` — a concurrent edit wins. Non-text parts stay in place: a single text part is
+    /// rewritten where it stands (an exclusion mask keeps its coordinates); several text parts
+    /// collapse into the first one, refused when a mask addresses parts. One transaction with
+    /// the revision bump; returns the new revision.
+    pub async fn replace_assistant_text(
+        &self,
+        id: SessionId,
+        seq: i64,
+        expected: &str,
+        new_text: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let sid = id.to_string();
+        let mut tx = self.begin_write().await?;
+        let Some(row) = rows_in(&mut tx, id, seq)
+            .await?
+            .into_iter()
+            .next()
+            .filter(|r| r.seq == seq && r.message.role == ChatRole::Assistant && !r.is_note())
+        else {
+            return Ok(None);
+        };
+        if crate::cell_nudge::reply_text(&row.message.content) != expected {
+            return Ok(None);
+        }
+        let texts = row
+            .message
+            .content
+            .iter()
+            .filter(|p| matches!(p, ContentPart::Text(_)))
+            .count();
+        let addressed = !(row.mask.binaries.is_empty()
+            && row.mask.fences.is_empty()
+            && row.mask.sources.is_empty());
+        if texts > 1 && addressed {
+            return Ok(None);
+        }
+        let mut placed = false;
+        let parts: Vec<ContentPart> = row
+            .message
+            .content
+            .into_parts()
+            .into_iter()
+            .filter_map(|p| match p {
+                ContentPart::Text(_) if placed => None,
+                ContentPart::Text(_) => {
+                    placed = true;
+                    Some(ContentPart::Text(new_text.to_owned()))
+                }
+                other => Some(other),
+            })
+            .collect();
+        let message = ChatMessage {
+            content: MessageContent::from_parts(parts),
+            ..row.message
+        };
+        sqlx::query("UPDATE messages SET body = ? WHERE session_id = ? AND seq = ?")
+            .bind(serde_json::to_string(&message)?)
+            .bind(&sid)
+            .bind(seq)
+            .execute(&mut *tx)
+            .await?;
+        let (revision,): (i64,) = sqlx::query_as(
+            "UPDATE sessions SET context_revision = context_revision + 1 WHERE id = ? \
+             RETURNING context_revision",
+        )
+        .bind(&sid)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(revision.to_string()))
+    }
+
     /// New session with the source's title/model/effort/cwd and copies of the
     /// visible rows and epochs before the turn after `through` (all visible
     /// rows when `None`). With `reply`, the copy ends at the `reply`-th
@@ -8669,4 +8756,51 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
     }
 
     // endregion: --- Capture (68 §3)
+
+    /// 220: `replace_assistant_text` is a compare-and-swap on the row's text: a stale
+    /// `expected`, a user row or an unknown seq write nothing; a match rewrites the text in
+    /// place, keeps non-text parts and bumps the revision.
+    #[tokio::test]
+    async fn cell_nudge_replace_assistant_text_is_a_compare_and_swap() {
+        let (store, id, _dir) = fresh().await;
+        let user = store.append(id, &ChatMessage::user("hi")).await.unwrap();
+        let img = genai::chat::Binary::from_base64("image/png", "AAAA", Some("a.png".into()));
+        let reply = ChatMessage::assistant(MessageContent::from_parts(vec![
+            ContentPart::Text("run ```bash\nls\n```".into()),
+            ContentPart::Binary(img.clone()),
+        ]));
+        let seq = store.append(id, &reply).await.unwrap();
+        let rev = store.context_revision(id).await.unwrap();
+        let old = "run ```bash\nls\n```";
+        let new = "run ```bash\n#| cwd: /tmp\nls\n```";
+        for (at, expected) in [(seq, "stale"), (user, "hi"), (seq + 9, old)] {
+            assert_eq!(
+                store.replace_assistant_text(id, at, expected, new).await.unwrap(),
+                None
+            );
+        }
+        assert_eq!(store.context_revision(id).await.unwrap(), rev);
+        let got = store
+            .replace_assistant_text(id, seq, old, new)
+            .await
+            .unwrap()
+            .expect("swapped");
+        assert_ne!(got, rev);
+        assert_eq!(store.context_revision(id).await.unwrap(), got);
+        let (_, _, history) = store.frame(id).await.unwrap();
+        let (_, msg) = history.iter().find(|(s, _)| *s == seq).unwrap();
+        let want = MessageContent::from_parts(vec![
+            ContentPart::Text(new.into()),
+            ContentPart::Binary(img),
+        ]);
+        assert_eq!(
+            serde_json::to_value(&msg.content).unwrap(),
+            serde_json::to_value(&want).unwrap()
+        );
+        // The old text no longer matches: a second swap from it is refused.
+        assert_eq!(
+            store.replace_assistant_text(id, seq, old, "x").await.unwrap(),
+            None
+        );
+    }
 }

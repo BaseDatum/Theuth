@@ -41,6 +41,8 @@ pub enum CallKind {
     Consult,
     /// 153 §9: a dictation polish/rewrite side call.
     Polish,
+    /// 219: the cell-nudge repair call (a plain run-me fence rewritten as a user cell).
+    CellNudge,
 }
 
 impl CallKind {
@@ -59,6 +61,7 @@ impl CallKind {
             Self::CodeMap => "codemap",
             Self::Consult => "consult",
             Self::Polish => "polish",
+            Self::CellNudge => "cell_nudge",
         }
     }
 }
@@ -85,6 +88,7 @@ impl FromStr for CallKind {
             "codemap" => Ok(Self::CodeMap),
             "consult" => Ok(Self::Consult),
             "polish" => Ok(Self::Polish),
+            "cell_nudge" => Ok(Self::CellNudge),
             _ => Err(format!("unknown CallKind: {s:?}")),
         }
     }
@@ -189,6 +193,7 @@ mod tests {
             CallKind::CodeMap,
             CallKind::Consult,
             CallKind::Polish,
+            CallKind::CellNudge,
         ] {
             assert_eq!(k.as_str().parse::<CallKind>().unwrap(), k);
         }

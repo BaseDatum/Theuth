@@ -316,17 +316,11 @@ desktop-check:
 ios-init:
     cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri ios init --ci --config tauri.ios.conf.json
 
-# Every raster icon from icons/icon.svg (the same mark everywhere): desktop PNGs +
-# icns, the iOS AppIcon set (gen/apple is committed; `ios-init` resets it), and the
-# menu-bar template from icons/tray.svg. App Store Connect rejects icons with an
-# alpha channel; `tauri icon` keeps one, so the iOS set is flattened afterwards.
+# Every logo raster from the masters in assets/brand (T0 Theta moon): desktop PNGs + icns + ico,
+# the iOS AppIcon set (single-size light/dark/tinted, opaque; gen/apple is committed and
+# `ios-init` resets it), the menu-bar/tray templates, the companion glyph and the site icon.
 icons:
-    cd crates/desktop && cargo tauri icon icons/icon.svg -o /tmp/theuth-icons --ios-color '#E8DCC8' \
-      && cp /tmp/theuth-icons/{32x32,64x64,128x128,128x128@2x,icon}.png /tmp/theuth-icons/icon.icns icons/ \
-      && cp /tmp/theuth-icons/ios/*.png gen/apple/Assets.xcassets/AppIcon.appiconset/ \
-      && swift ../../scripts/flatten-png.swift gen/apple/Assets.xcassets/AppIcon.appiconset/*.png \
-      && swift ../../scripts/svg2png.swift icons/tray.svg 22 icons/tray.png \
-      && swift ../../scripts/svg2png.swift icons/tray.svg 44 icons/tray@2x.png
+    scripts/render-brand.sh
 
 # iOS app in dev mode on a simulator/device. tauri.ios.conf.json overlays the bundle
 # id, iOS 17 floor and the universal-link host: `plugins.deep-link.mobile[].host`
