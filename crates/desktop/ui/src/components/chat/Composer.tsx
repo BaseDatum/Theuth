@@ -614,6 +614,8 @@ export function Composer({
   const lastDictation = useRef<string | null>(null)
   /** 153 §7.4 "send it": the landed value to `submit()` once the box says it; `null` otherwise. */
   const [autoSend, setAutoSend] = useState<string | null>(null)
+  /** Pending send gesture triggered by pressing Send/Steer while dictating; consumed on dictation finish. */
+  const sendAfterDictate = useRef<'press' | 'interrupt' | null>(null)
   /** This pane's identity for `correction` → the suggestion card lands under the pane that sent (§6.3 step 4). */
   const me = useRef({})
   const suggestion = dictation.useSuggestion()
@@ -623,7 +625,9 @@ export function Composer({
         if (!ownerRef.current) return
         setPending({ text: value, caret })
         lastDictation.current = id || null
-        if (send) setAutoSend(value)
+        const pendingSend = sendAfterDictate.current
+        sendAfterDictate.current = null
+        if (send || pendingSend) setAutoSend(value)
       }),
     [],
   )
@@ -637,7 +641,10 @@ export function Composer({
   // Idle again (finished, discarded, or `start` failed) → nobody owns it. `start` flips the phase synchronously,
   // so the same batch that sets `owner` never sees idle.
   useEffect(() => {
-    if (dict.phase === 'idle') setOwner(false)
+    if (dict.phase === 'idle') {
+      setOwner(false)
+      sendAfterDictate.current = null
+    }
   }, [dict.phase])
   /** The chips `next` still carries, through the shelf (138 UNDO D3): a text block whose token left waits there for a redo. */
   const reconcileHeld = (next: string) =>
@@ -1116,9 +1123,20 @@ export function Composer({
   }
 
   // The composer's phase and its two gestures (`lib/composer-state`): Enter / the button, and ⌘↩ / a long press.
-  const filled = Boolean(text.trim() || skills.length || held)
+  const dictatedFilled = Boolean(
+    dictating &&
+      dict.active &&
+      (dict.active.before.trim() || dict.active.after.trim() || dict.active.utts.some((u) => dictation.shown(u).trim() !== '')),
+  )
+  const filled = Boolean(text.trim() || skills.length || held || dictatedFilled)
   const at = phase(Boolean(session && running), queued?.length ?? 0)
   const gesture = (g: 'press' | 'interrupt') => {
+    if (dictating) {
+      if (!filled) return
+      sendAfterDictate.current = g
+      if (dict.phase === 'dictating') void dictation.stop(api)
+      return
+    }
     const a = g === 'press' ? press(at, filled) : interrupt(at, filled)
     if (a === 'flush') void flush()
     else if (a) void submit(undefined, a === 'interject')
@@ -1645,10 +1663,10 @@ export function Composer({
                       <Button
                         className={cn(
                           'size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover select-none touch-none',
-                          (!filled || busy || dictating || readOnly || uploading) && 'opacity-50',
+                          (!filled || busy || readOnly || uploading) && 'opacity-50',
                         )}
                         aria-label="Steer"
-                        aria-disabled={!filled || busy || dictating || readOnly || !!uploading}
+                        aria-disabled={!filled || busy || readOnly || !!uploading}
                         {...steerPress}
                       >
                         <ArrowUp className="size-5" />
@@ -1662,7 +1680,7 @@ export function Composer({
                 <StopButton count={descendants} ring={ring} onStop={stop} />
               </>
             ) : (
-              <SendButton disabled={!filled || busy || dictating || readOnly || !!starting} waiting={uploading} onSend={() => gesture('press')} />
+              <SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading} onSend={() => gesture('press')} />
             ))}
         </div>
       </div>
