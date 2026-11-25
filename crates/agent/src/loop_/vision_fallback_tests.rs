@@ -614,8 +614,18 @@ impl Harness {
         style: CompactStyle,
         cfg: AgentConfig,
     ) -> ActorRef<Session> {
+        Session::spawn(self.session_with(main, style, cfg).await)
+    }
+
+    /// The unspawned session of [`Harness::actor_with`], so a test can keep its `shared`.
+    pub(super) async fn session_with(
+        &self,
+        main: &str,
+        style: CompactStyle,
+        cfg: AgentConfig,
+    ) -> Session {
         let (epoch, head, history) = self.store.frame(self.id).await.unwrap();
-        Session::spawn(Session::new(
+        Session::new(
             self.id,
             0,
             (self.resolve(main), None),
@@ -635,7 +645,7 @@ impl Harness {
             self.pool.clone(),
             Arc::new(Semaphore::new(1)),
             SessionResources::durable_arc(&self.dir),
-        ))
+        )
     }
 
     pub(super) fn input(&self, text: &str, with_image: bool) -> Input {
