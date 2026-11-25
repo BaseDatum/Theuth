@@ -5,6 +5,7 @@ import { ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Fragment, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { type HomeAction, homeActions, homeChip, stateText } from '@/components/library/mcp-home'
+import { AlwaysAskSelect } from '@/components/library/AlwaysAskSelect'
 import { segments } from '@/components/library/names'
 import { type Action, Dot, Empty, Section, errorText, toastSync, useAction } from '@/components/settings/shared'
 import { type Engine, engines } from '@/components/tasks/home'
@@ -35,6 +36,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
+import { serverKey } from '@/lib/always-ask'
 import { useDrafts } from '@/lib/drafts'
 import { type HideOp, serverOps, toolOps, useMcpHide, withDraftHides } from '@/lib/mcp-hide'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -377,6 +379,7 @@ function ServerRow({
             onChange={(category) => act.category.mutate({ server: s.name, category })}
           />
         )}
+        <AlwaysAskSelect name={serverKey(s.name)} session={session} />
         {s.auth !== 'none' && (
           <>
             {s.auth === 'logged_in' && <span className="text-[13px] text-fg-secondary">logged in</span>}
@@ -462,6 +465,7 @@ function ToolRow({
           off
           onChange={(gate) => act.gate.mutate({ server: server.name, tool: t.name, gate })}
         />
+        <AlwaysAskSelect name={t.registered ?? t.name} session={session} />
         <Switch
           checked={!t.hidden}
           disabled={session === null || t.registered === null}

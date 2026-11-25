@@ -4,7 +4,7 @@ import type { Api } from '@/rpc/bindings/client'
 import { NO_PICK, useDrafts } from '@/lib/drafts'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
-import { type Ctx, isCommand, run, sendRaw, slashMenu } from './slash'
+import { type Ctx, isCommand, parseAlwaysAsk, run, sendRaw, slashMenu } from './slash'
 import { useToolsSheet } from './tools-sheet'
 
 vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
@@ -342,4 +342,31 @@ test('/login on a local engine calls login once and leaves the browser to the en
   expect(open).not.toHaveBeenCalled()
   expect(toast.message).toHaveBeenLastCalledWith("Browser didn't open?", { description: 'https://auth.example/authorize' })
   vi.unstubAllGlobals()
+})
+
+test('219 §6.1: /always-ask <tool> [on|off] [always] — on by default, `always` is harness-wide, bad words are refused', () => {
+  expect(parseAlwaysAsk('shell')).toEqual({ tool: 'shell', on: true, always: false })
+  expect(parseAlwaysAsk('shell off')).toEqual({ tool: 'shell', on: false, always: false })
+  expect(parseAlwaysAsk('mcp:k8s always')).toEqual({ tool: 'mcp:k8s', on: true, always: true })
+  expect(parseAlwaysAsk('shell  off  always')).toEqual({ tool: 'shell', on: false, always: true })
+  for (const bad of ['on', 'always', 'shell always off', 'shell maybe', 'shell on off']) expect(() => parseAlwaysAsk(bad)).toThrow()
+})
+
+test('219 §6.1: /always-ask sets this chat or every chat; the draft keeps it pending; bare lists every scope', async () => {
+  useDrafts.setState({ settings: {} })
+  const set_always_ask = vi.fn(async () => ({ global: [], session: [], inherited: [] }))
+  const get_always_ask = vi.fn(async () => ({ global: ['shell'], session: [], inherited: ['write_file'] }))
+  await run('/always-ask shell', ctxFor({ set_always_ask }))
+  await run('/always-ask mcp:k8s off always', ctxFor({ set_always_ask }))
+  expect(set_always_ask.mock.calls).toEqual([['abc', 'shell', true], [null, 'mcp:k8s', false]])
+  const draft = { ...ctxFor({ set_always_ask, get_always_ask }), session: null }
+  await run('/always-ask edit', draft)
+  expect(set_always_ask).toHaveBeenCalledTimes(2)
+  expect(useDrafts.getState().settings).toEqual({ alwaysAsk: ['edit'] })
+  vi.mocked(toast).mockClear()
+  await run('/always-ask', draft)
+  expect(get_always_ask).toHaveBeenCalledWith(null)
+  expect(toast).toHaveBeenCalledWith('always ask · always: shell · this chat: edit · inherited: write_file')
+  await run('/always-ask edit off', draft)
+  expect(useDrafts.getState().settings).toEqual({})
 })

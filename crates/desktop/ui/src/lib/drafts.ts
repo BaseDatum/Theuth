@@ -43,6 +43,8 @@ export type DraftSettings = {
   approvals?: boolean | null
   communication?: boolean
   hidden?: Record<string, boolean>
+  /** 219: tools the chat marks always-ask (`set_always_ask(id, name, true)` once it exists). */
+  alwaysAsk?: string[]
   compactorModel?: string | null
   compactorEffort?: string | null
   /** The chat's own knowledge harvester `[model, effort]`; `null` or absent = the default. */
@@ -77,6 +79,8 @@ type Store = {
   setSettings(patch: Partial<DraftSettings>): void
   setCreate(patch: Partial<CreateSessionOptions>): void
   setHidden(names: string[], hidden: boolean): void
+  /** 219: mark (`on`) or unmark `name` always-ask in the draft; the last unmark drops the setting (nothing pending). */
+  setAlwaysAsk(name: string, on: boolean): void
   setOpening(opening: Opening | null): void
   spend(): void
   set(key: string, draft: Draft): void
@@ -132,6 +136,13 @@ export const useDrafts = create<Store>()((set, get) => ({
   },
   setHidden(names, hidden) {
     get().setSettings({ hidden: { ...get().settings.hidden, ...Object.fromEntries(names.map((name) => [name, hidden])) } })
+  },
+  setAlwaysAsk(name, on) {
+    const { alwaysAsk = [], ...others } = get().settings
+    const names = on ? [...new Set([...alwaysAsk, name])].sort() : alwaysAsk.filter((n) => n !== name)
+    const settings = names.length ? { ...others, alwaysAsk: names } : others
+    save({ ...get(), settings })
+    set({ settings })
   },
   setOpening(opening) {
     save({ ...get(), opening })
@@ -268,7 +279,7 @@ const LIVE_WAIT_MS = 2_000
 /**
  * Open the session a draft's first action creates (send, Talk or skill). Any pending option selects
  * `create_session`; project, memory and other creation fields go in that call. Then approvals, messaging,
- * tool switches, summary model/effort, view size and scope/alias are awaited in order. Only successful
+ * tool switches, always-ask marks, summary model/effort, view size and scope/alias are awaited in order. Only successful
  * application spends the pick/settings. A failed setter names the setting and leaves the draft and its
  * created chat intact for retry; no first input can run before this resolves.
  */
@@ -308,6 +319,7 @@ export async function openDraftSession(
     const names = Object.entries(settings.hidden ?? {}).filter(([, value]) => value === hidden).map(([name]) => name)
     if (names.length) await apply('tools and MCP switches', () => api.set_mcp_hidden(id, names, hidden))
   }
+  for (const name of settings.alwaysAsk ?? []) await apply('always ask', () => api.set_always_ask(id, name, true))
   // A model change can clear its effort, so the model must be installed first.
   if (settings.compactorModel !== undefined) await apply('summary model', () => api.set_session_compactor_model(id, settings.compactorModel!))
   if (settings.compactorEffort !== undefined) await apply('summary effort', () => api.set_session_compactor_effort(id, settings.compactorEffort!))

@@ -13,6 +13,9 @@ import { ApprovalCard, relayedLine } from './ApprovalCard'
 const CLOUD = 'c10d'.repeat(16)
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<object>()), useApi: () => ({ list_sessions: async () => [] }) }))
 vi.mock('@/components/tasks/queries', () => ({ useMesh: () => ({ data: { self_id: 'me', peers: [{ id: CLOUD, name: 'cloud-1', reachable: true }] } }) }))
+// A static render reads the stores' initial state, so the engine's methods are stubbed here: only `set_always_ask` is offered.
+const can = vi.hoisted(() => ({ mark: false }))
+vi.mock('@/rpc/capabilities', async (original) => ({ ...(await original<object>()), useQuerySupport: (methods: string[]) => can.mark && methods.includes('set_always_ask') }))
 
 const approval = (session: string): ApprovalRequested => ({ type: 'ApprovalRequested', id: `ap-${session}`, session, tool: 'shell', args: { command: 'cargo test -p replica' }, risk: 'mutating', human_only: false })
 const render = (session: string, rows: Pick<SessionSummary, 'id' | 'owner' | 'here'>[]) => {
@@ -67,4 +70,26 @@ test('183 R2: a prompt the engine flags `replay: true` (a refocus replay) has no
   dispatch([{key: 'tools.ask-requested@1', event: { type: 'AskRequested', id: 'k1', session: 'again', questions: [], replay: true } as AskRequested}])
   expect(asks.getState().pending.map((p) => p.id)).toContain('k1')
   expect(asks.getState().arrived.has('k1')).toBe(false)
+})
+
+test('219 §6.1: an always-ask card carries the badge and no offer; any other card offers "Always ask for <tool>"', () => {
+  can.mark = true
+  try {
+    const card = (always_ask: boolean) => {
+      const client = new QueryClient()
+      client.setQueryData(queryKeys.sessions, [{ id: 'here', owner: 'me', here: true }])
+      return renderToStaticMarkup(createElement(QueryClientProvider, { client, children: createElement(ApprovalCard, { approval: { ...approval('here'), always_ask } }) as ReactNode }))
+    }
+    const always = card(true)
+    expect(always).toContain('>approval: shell (mutating)</div>')
+    expect(always).toMatch(/<span[^>]*data-slot="badge"[^>]*>always ask<\/span>/)
+    expect(always).toContain('>Allow</button>')
+    expect(always).toContain('>Deny</button>')
+    expect(always).not.toContain('Always ask for')
+    const plain = card(false)
+    expect(plain).not.toContain('>always ask</span>')
+    expect(plain).toContain('>Always ask for shell</button>')
+  } finally {
+    can.mark = false
+  }
 })

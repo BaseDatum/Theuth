@@ -97,3 +97,11 @@ test('183 R1 (S7): an owner from before 183 greys the approvals row and says it 
   const row = settingsRows({ owner: 'old-box', self: 'mac', offline: false, oldOwner: true, model: 'm' }).find((r) => r.id === 'approvals')
   expect(row).toMatchObject({ disabled: true, note: 'old-box needs an update' })
 })
+
+test('219 §6.1: tools that always ask add one row under Approvals; none adds no row', () => {
+  const rows = (alwaysAsk: number) => settingsRows({ self: 'mac', offline: false, approvals: { global: false }, alwaysAsk, model: 'm' }).map((r) => r.id)
+  expect(rows(0)).toEqual(['approvals', 'messaging', 'model', 'separator', 'continue', 'move'])
+  expect(rows(3)).toEqual(['approvals', 'always-ask', 'messaging', 'model', 'separator', 'continue', 'move'])
+  expect(settingsRows({ self: 'mac', offline: false, alwaysAsk: 3, model: 'm' }).find((r) => r.id === 'always-ask')?.label).toBe('Always ask: 3 tools')
+  expect(settingsRows({ self: 'mac', offline: false, alwaysAsk: 1, model: 'm' }).find((r) => r.id === 'always-ask')?.label).toBe('Always ask: 1 tool')
+})

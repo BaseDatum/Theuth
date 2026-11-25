@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { memo, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -11,6 +12,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { setAlwaysAsk, useInvalidateAlwaysAsk } from '@/lib/always-ask'
 import { chatName } from '@/lib/attach'
 import { describe } from '@/lib/describe'
 import { useEngineLabel } from '@/lib/owner'
@@ -43,7 +45,9 @@ export function relayedLine(risk: Risk, owner: string, deadline: number | null):
 
 /** `approval: tool (risk)`, the described arguments, Allow / Deny. Rendered at the tool row or at the transcript's end.
  * 126 §10: the double's chip beside the title; at L1 its choice is the filled button; at L2 the whole card takes over.
- * 183 §12.3: a session owned elsewhere reads `<owner> asks: tool` with the relayed line; the answer forwards. */
+ * 183 §12.3: a session owned elsewhere reads `<owner> asks: tool` with the relayed line; the answer forwards.
+ * 219 §6.1: an always-ask call is the human's alone (an `always ask` badge, no double chip); any other card offers to
+ * make its tool always ask in this chat. */
 export const ApprovalCard = memo(function ApprovalCard({
   approval,
 }: {
@@ -60,9 +64,13 @@ export const ApprovalCard = memo(function ApprovalCard({
   const arrived = useApprovals.getState().arrived.get(approval.id)
   const deadline = arrived === undefined ? null : arrived + OWNER_TIMEOUT_MS
   const [busy, setBusy] = useState(false)
+  const [marked, setMarked] = useState(false)
+  const canMark = useQuerySupport(['set_always_ask'])
+  const refetchAlwaysAsk = useInvalidateAlwaysAsk()
   const double = useDoubleCard([approval.id])
-  // L1+: the double's pick is the filled button (the model has no `recommended` on an approval).
-  const pick = preselect(double.prediction, ['Allow', 'Deny'])
+  const always = approval.always_ask === true
+  // L1+: the double's pick is the filled button (the model has no `recommended` on an approval); it never answers always-ask.
+  const pick = always ? null : preselect(double.prediction, ['Allow', 'Deny'])
   const decide = async (decision: Decision) => {
     setBusy(true)
     try {
@@ -77,6 +85,17 @@ export const ApprovalCard = memo(function ApprovalCard({
       setBusy(false)
     }
   }
+  // Adding is never gated (219 §2.4), so no confirm; only this chat's scope is offered here.
+  const mark = async () => {
+    try {
+      await setAlwaysAsk(api, approval.session, approval.tool, true)
+      setMarked(true)
+      void refetchAlwaysAsk()
+      toast(`${approval.tool} always asks in this chat`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
   // 210 §7.3: human-only, so no double chip; the share layout replaces the generic argument dump.
   if (approval.tool === 'share_publish') return <SharePublishApproval args={approval.args} busy={busy} decide={(d) => void decide(d)} />
   return (
@@ -85,13 +104,19 @@ export const ApprovalCard = memo(function ApprovalCard({
         <div className="font-medium text-warning">
           {relayed ? `${owner} asks: ${approval.tool}` : `approval: ${approval.tool} (${RISK[approval.risk]})`}
         </div>
-        <DoubleChip ids={[approval.id]} />
+        {always ? (
+          <Badge variant="outline" className="font-normal text-warning">
+            always ask
+          </Badge>
+        ) : (
+          <DoubleChip ids={[approval.id]} />
+        )}
       </div>
       {relayed && <div className="mt-0.5 text-xs text-fg-secondary">{relayedLine(approval.risk, owner, deadline)}</div>}
       <pre className="mt-1 max-w-full overflow-x-auto font-mono text-xs leading-5 text-fg-secondary whitespace-pre-wrap">
         {describe(approval.tool, approval.args).join('\n')}
       </pre>
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
           variant={pick === 1 ? 'outline' : 'default'}
           size="sm"
@@ -110,6 +135,11 @@ export const ApprovalCard = memo(function ApprovalCard({
         >
           Deny
         </Button>
+        {!always && canMark && !marked && (
+          <Button variant="ghost" size="sm" className="ml-auto text-fg-secondary pointer-coarse:h-11" onClick={() => void mark()}>
+            {`Always ask for ${approval.tool}`}
+          </Button>
+        )}
       </div>
     </DoubleCard>
   )
