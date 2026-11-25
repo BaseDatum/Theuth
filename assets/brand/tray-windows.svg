@@ -2,5 +2,5 @@
   <title>theuth</title>
   <rect width="32" height="32" rx="7" fill="#12100e"/>
   <g transform="translate(2.75 2.75) scale(0.2208)"><path fill="#e8dcc8" fill-rule="evenodd" d="M18 60 a42 42 0 1 0 84 0 a42 42 0 1 0 -84 0 Z M27.5 60 a36 36 0 1 0 72 0 a36 36 0 1 0 -72 0 Z"/>
-  <path fill="#b4531e" d="M24 56 H85 L99.5 60 L85 64 H24 Z"/></g>
+  <path fill="#8f2f1f" d="M24 56 H85 L99.5 60 L85 64 H24 Z"/></g>
 </svg>

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render every theuth logo raster from the masters in assets/brand (T0 "Theta moon": a Θ whose ring is a crescent
-# moon and whose bar is a reed pen; ring soot #1a1612 / bone #e8dcc8, bar ochre #b4531e in both themes;
+# moon and whose bar is a reed pen; ring soot #1a1612 / bone #e8dcc8, bar carnelian #8f2f1f in both themes;
 # wordmark = Copperplate, outlined). Needs inkscape + ImageMagick + iconutil (macOS). Run from anywhere:
 #   scripts/render-brand.sh
 set -euo pipefail

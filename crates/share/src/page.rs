@@ -66,10 +66,10 @@ a:hover{color:var(--link);text-decoration-thickness:2px}\
 a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}\
 @media (prefers-reduced-motion:reduce){button{transition:none}}";
 
-/// The theuth mark (T0 "Theta moon", `crates/desktop/ui/src/components/Mark.tsx`): ring in `currentColor`, pen bar in ochre.
+/// The theuth mark (T0 "Theta moon", `crates/desktop/ui/src/components/Mark.tsx`): ring in `currentColor`, pen bar in carnelian.
 const MARK: &str = "<svg viewBox=\"14 14 92 92\" aria-hidden=\"true\" focusable=\"false\">\
 <path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M18 60 a42 42 0 1 0 84 0 a42 42 0 1 0 -84 0 Z M27 60 a37 37 0 1 0 74 0 a37 37 0 1 0 -74 0 Z\"/>\
-<path fill=\"#b4531e\" d=\"M24 56.5 H86 L101 60 L86 63.5 H24 Z\"/></svg>";
+<path fill=\"#8f2f1f\" d=\"M24 56.5 H86 L101 60 L86 63.5 H24 Z\"/></svg>";
 
 /// HTML-escape text or a double-quoted attribute value.
 pub fn escape(s: &str) -> String {

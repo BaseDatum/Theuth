@@ -26,12 +26,12 @@ function detectOs(): Os {
   return "macos";
 }
 
-/** The brand mark (assets/brand, T0 "Theta moon"): a Θ whose ring is a crescent moon and whose bar is a reed pen in ochre. */
+/** The brand mark (assets/brand, T0 "Theta moon"): a Θ whose ring is a crescent moon and whose bar is a reed pen in carnelian. */
 function Theta({ size = 22 }: { size?: number }) {
   return (
     <svg viewBox="14 14 92 92" width={size} height={size} aria-hidden>
       <path fill="currentColor" fillRule="evenodd" d="M18 60 a42 42 0 1 0 84 0 a42 42 0 1 0 -84 0 Z M27 60 a37 37 0 1 0 74 0 a37 37 0 1 0 -74 0 Z" />
-      <path fill="#b4531e" d="M24 56.5 H86 L101 60 L86 63.5 H24 Z" />
+      <path fill="#8f2f1f" d="M24 56.5 H86 L101 60 L86 63.5 H24 Z" />
     </svg>
   );
 }
