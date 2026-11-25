@@ -489,11 +489,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             .peer_name(req.session)
             .map_or_else(String::new, |n| format!("  [agent: {n}]"));
         let open = if Some(req.session) == m.session { "" } else { "  [o] open" };
+        // 219 §2.3: the double never answers an always-ask card, so no chip.
         let chip = m.component_text(Surface::PromptBadge);
-        let chip = (!chip.is_empty()).then_some(chip);
+        let chip = (!chip.is_empty() && !req.always_ask).then_some(chip);
         element! {
             View(border_style: BorderStyle::Double, border_color: OCHRE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
-                Text(content: format!("approval: {}  ({}){agent}", req.tool, risk_name(req.risk)), weight: Weight::Bold)
+                Text(content: format!("approval: {}  ({}){}{agent}", req.tool, risk_name(req.risk), if req.always_ask { " · always ask" } else { "" }), weight: Weight::Bold)
                 #(describe(&req.tool, &req.args).into_iter().map(|l| element!(Text(content: l, color: FAIENCE, wrap: TextWrap::Wrap))))
                 #(chip.map(|c| element!(Text(content: c, color: SAND, italic: true))))
                 Text(content: format!("[y] allow  [n/esc] deny{open}"), color: OCHRE)

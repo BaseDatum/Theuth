@@ -529,6 +529,10 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::SetApprovals { session, enabled } => {
             UiEvent::Approvals(msg(api.set_approvals(session, enabled, None).await)?)
         }
+        Command::SetAlwaysAsk { session, tool, on } => {
+            UiEvent::AlwaysAsk(msg(api.set_always_ask(session, tool, on).await)?)
+        }
+        Command::GetAlwaysAsk { session } => UiEvent::AlwaysAsk(msg(api.get_always_ask(session).await)?),
     };
     let _ = tx.send(reply);
     Ok(())
@@ -912,11 +916,13 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             if s.session { "on" } else { "off" },
             if s.global { "on" } else { "off" }
         ),
+        UiEvent::AlwaysAsk(s) => writeln!(out, "{}", model::always_ask_line(&s)),
         UiEvent::Approval(req) => writeln!(
             out,
-            "approve {} ({:?}){}? [y/n]\n{}",
+            "approve {} ({:?}){}{}? [y/n]\n{}",
             req.tool,
             req.risk,
+            if req.always_ask { " · always ask" } else { "" },
             model
                 .peer_name(req.session)
                 .map_or_else(String::new, |n| format!(" [agent: {n}]")),

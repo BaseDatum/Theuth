@@ -25,8 +25,8 @@ use models::Catalog;
 use runtime::{InputId, SessionId, TurnId};
 use tokio::sync::mpsc::UnboundedSender;
 use tools::{
-    Answer, ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, AskId, AskRequested,
-    AskResolved, Decision,
+    AlwaysAskState, Answer, ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, AskId,
+    AskRequested, AskResolved, Decision,
 };
 use uuid::Uuid;
 
@@ -256,6 +256,7 @@ pub(crate) use sessions::{project_heading, project_order};
 pub use lifecycle::removal_line;
 pub use slash::{COMMANDS, SlashRow};
 pub(crate) use slash::command_rank;
+pub(crate) use approvals::always_ask_line;
 pub(crate) use platform::time::now_ms;
 pub(crate) use status::{when, ago, on_off};
 pub use status::{Level, k};
