@@ -54,17 +54,12 @@ describe('input routing (§8.4)', () => {
     expect(routePointer('mouse', s({ mode: 'erase', pan: true }))).toBe('pass')
   })
 
-  it('picking a pen in the cluster arms draw, so the desktop mouse inks; picking it again disarms', () => {
-    for (const from of ['idle', 'erase', 'select', 'link', 'frame'] as const) {
-      const p = pickInkTool(from, 'pen', 'pen')
-      expect(p).toEqual({ tool: 'pen', mode: 'draw' })
-      expect(routePointer('mouse', s({ mode: p.mode }))).toBe('ink')
-      expect(routePointer('touch', s({ mode: p.mode }))).toBe('pass') // fingers stay pen-only (R2)
-    }
-    expect(pickInkTool('draw', 'pen', 'marker')).toEqual({ tool: 'marker', mode: 'draw' })
-    const off = pickInkTool('draw', 'pen', 'pen')
-    expect(off.mode).toBe('idle')
-    expect(routePointer('mouse', s({ mode: off.mode }))).toBe('pass')
+  it('picking a pen in the cluster arms draw, so the desktop mouse inks', () => {
+    const p = pickInkTool('pen')
+    expect(p).toEqual({ tool: 'pen', mode: 'draw' })
+    expect(routePointer('mouse', s({ mode: p.mode }))).toBe('ink')
+    expect(routePointer('touch', s({ mode: p.mode }))).toBe('pass') // fingers stay pen-only (R2)
+    expect(pickInkTool('marker')).toEqual({ tool: 'marker', mode: 'draw' })
   })
 
   it('palm window: while the pen is down and for 500 ms after, touches are ignored', () => {

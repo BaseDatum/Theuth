@@ -115,11 +115,11 @@ function InkTools({ store, onActivity, onOpenChange }: { store: WbStore; onActiv
         <div className="flex flex-col gap-2" role="group" aria-label="Ink">
           <div className="flex gap-1">
             {TOOLS.map((t) => (
-              <ClusterButton key={t.tool} label={t.label} on={mode === 'draw' && tool === t.tool} onClick={() => pick({ ...pickInkTool(mode, tool, t.tool), width: WIDTH[t.tool] })}>
+              <ClusterButton key={t.tool} label={t.label} on={mode === 'draw' && tool === t.tool} onClick={() => pick({ ...pickInkTool(t.tool), width: WIDTH[t.tool] })}>
                 {t.icon}
               </ClusterButton>
             ))}
-            <ClusterButton label="Eraser" on={mode === 'erase'} onClick={() => pick({ mode: mode === 'erase' ? 'idle' : 'erase' })}>
+            <ClusterButton label="Eraser" on={mode === 'erase'} onClick={() => pick({ mode: 'erase' })}>
               <Eraser className="size-5" />
             </ClusterButton>
           </div>

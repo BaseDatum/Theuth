@@ -101,12 +101,14 @@ export async function connectNativeInk(o: {
   const onEvent = (e: InkEvent) => {
     const st = o.store.getState()
     if (e.kind === 'state') {
-      st.set({ penDown: e.drawing })
-      if (e.drawing) st.set({ clusterOpen: false })
+      st.set({ penDown: e.drawing }) // the shell hides the cluster on pen-down (its timer watches `penDown`)
     } else if (e.kind === 'tool') {
+      // The picker reporting what is already chosen (an echo of `set_tool`) changes nothing: the tool latches.
+      if (e.tool === 'eraser' ? st.mode === 'erase' : st.mode !== 'erase' && e.tool === st.tool && nearestInk(e.colour) === st.colour && e.width === st.width) return
       previous = { tool: st.tool, erase: st.mode === 'erase' }
+      // A pen picked in the system picker is armed, as one picked in the cluster.
       if (e.tool === 'eraser') st.set({ mode: 'erase' })
-      else st.set({ tool: e.tool, colour: nearestInk(e.colour), width: e.width, mode: st.mode === 'erase' ? 'idle' : st.mode })
+      else st.set({ tool: e.tool, colour: nearestInk(e.colour), width: e.width, mode: 'draw' })
     } else if (e.kind === 'pencil') {
       if (e.action === 'switchEraser') st.set({ mode: st.mode === 'erase' ? 'idle' : 'erase' })
       else if (e.action === 'switchPrevious') {
@@ -128,7 +130,9 @@ export async function connectNativeInk(o: {
   let shown = true
   const push = () => {
     const s = o.store.getState()
-    const enabled = owned && shown && s.inkEngine === 'auto' && s.mode !== 'link' && s.mode !== 'erase' && !s.composerOpen
+    // Off while the cluster is up: the recogniser covers the whole web view, so a Pencil tap on a cluster button would
+    // be a native stroke (and its pen-down hides the cluster) instead of a tap. Pointer ink draws meanwhile.
+    const enabled = owned && shown && s.inkEngine === 'auto' && s.mode !== 'link' && s.mode !== 'erase' && !s.composerOpen && !s.clusterOpen
     ink.setTool({ tool: s.mode === 'erase' ? 'eraser' : s.tool, colour: inkCss(s.colour, o.dark()), width: s.width })
     ink.setEnabled(enabled)
     ink.setPickerVisible(shown && !s.composerOpen && s.inkEngine === 'auto')
@@ -136,7 +140,7 @@ export async function connectNativeInk(o: {
   }
   push()
   const unsub = o.store.subscribe((s, p) => {
-    if (s.mode !== p.mode || s.tool !== p.tool || s.colour !== p.colour || s.width !== p.width || s.composerOpen !== p.composerOpen || s.inkEngine !== p.inkEngine) push()
+    if (s.mode !== p.mode || s.tool !== p.tool || s.colour !== p.colour || s.width !== p.width || s.composerOpen !== p.composerOpen || s.clusterOpen !== p.clusterOpen || s.inkEngine !== p.inkEngine) push()
   })
   return {
     viewEnd: (view, frame) => ink.setViewport({ tx: view.x + frame.left, ty: view.y + frame.top, zoom: view.zoom }),

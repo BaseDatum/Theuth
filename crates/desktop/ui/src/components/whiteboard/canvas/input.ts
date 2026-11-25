@@ -32,10 +32,11 @@ export type RouteState = {
 
 /**
  * The cluster's ink tool pick: choosing a pen arms `draw` (so a mouse or, with fingerInk, a finger inks; a Pencil inks
- * in every mode anyway); choosing the armed pen again disarms it back to `idle` (drag pans again).
+ * in every mode anyway). It latches: picking the armed pen again keeps it (a re-fired pick never switches it off);
+ * another tool, select or Esc leaves it.
  */
-export function pickInkTool(mode: Mode, current: InkTool, picked: InkTool): { tool: InkTool; mode: Mode } {
-  return { tool: picked, mode: mode === 'draw' && current === picked ? 'idle' : 'draw' }
+export function pickInkTool(picked: InkTool): { tool: InkTool; mode: Mode } {
+  return { tool: picked, mode: 'draw' }
 }
 
 export const palmActive = (s: Pick<RouteState, 'penDown' | 'palmUntil' | 'now'>) => s.penDown || s.now < s.palmUntil

@@ -786,7 +786,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       if (e.key === 'Escape') {
         if (s.entered) return // the shell leaves the card
         if (menuOpen.current) setMenu(null)
-        if (s.mode === 'link' || s.mode === 'select' || s.mode === 'frame') s.set({ mode: 'idle' })
+        // Esc also puts down an ink tool (it latches through every pick and pen-up otherwise).
+        if (s.mode === 'link' || s.mode === 'select' || s.mode === 'frame' || s.mode === 'draw' || s.mode === 'erase') s.set({ mode: 'idle' })
         else if (s.selection.length || inkSelRef.current.length) {
           s.set({ selection: [] })
           setInkSel([])
