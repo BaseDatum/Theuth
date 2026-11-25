@@ -61,10 +61,12 @@
   }
 }
 
-/* Floating chrome sits clear of the home indicator and the window corner. */
-.wb-corner {
-  right: calc(24px + var(--safe-right, 0px));
-  bottom: calc(24px + var(--safe-bottom, 0px));
+/* The composer dock: bottom right, iPhone-wide at most (shrinks on a narrow window), clear of the safe areas and the
+   window corner. The frame is the visible band (`h-band`), so with the software keyboard up the dock sits on top of it. */
+.wb-dock {
+  right: calc(12px + var(--safe-right, 0px));
+  bottom: calc(12px + var(--safe-bottom, 0px));
+  width: min(390px, calc(100% - 24px - var(--safe-left, 0px) - var(--safe-right, 0px)));
 }
 
 .wb-rise {

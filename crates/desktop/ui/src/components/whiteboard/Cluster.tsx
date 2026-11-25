@@ -316,12 +316,24 @@ export function Cluster(p: ClusterProps) {
   )
 }
 
+/** A menu over the canvas closes on a press on the canvas. Radix defers an outside press to its click, and React Flow's
+ *  d3-zoom stops the canvas's mousedown, so Radix reads the press as handled and leaves the menu open. */
+export function useCloseOnCanvas(open: boolean, close: () => void) {
+  useEffect(() => {
+    if (!open) return
+    const press = (e: PointerEvent) => e.target instanceof Element && e.target.closest('.wb-canvas') && close()
+    document.addEventListener('pointerdown', press, true)
+    return () => document.removeEventListener('pointerdown', press, true)
+  }, [open, close])
+}
+
 /** The composer's tools button: shows the active tool (Hand included) and opens the ink panel with the cluster's
  *  actions under it. */
 export function ToolsMenu(p: Omit<ClusterProps, 'onHold'>) {
   const tool = useStore(p.store, (s) => s.tool)
   const mode = useStore(p.store, (s) => s.mode)
   const [open, setOpen] = useState(false)
+  useCloseOnCanvas(open, () => setOpen(false))
   const face = toolFace(mode, tool)
   return (
     <Popover open={open} onOpenChange={setOpen}>

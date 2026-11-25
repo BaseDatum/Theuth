@@ -1,20 +1,19 @@
 // 218 §8.8: the whiteboard — full window from the route (over sidebar and status bar), or inside a tile. Owns the view
-// store, the CanvasHost, the lazy canvas, and the shell around it: pill, cluster, composer sheet, reply bubble, card
-// sheet, outline view, the Pencil gestures and the keyboard. Reads the document through `useBoard`, writes through
-// `canvas/ops` and the canvas handle; RPCs through `wbRpc`.
+// store, the CanvasHost, the lazy canvas, and the shell around it: the composer dock (the session view's composer),
+// cluster, reply bubble, card sheet, outline view, the Pencil gestures and the keyboard. Reads the document through
+// `useBoard`, writes through `canvas/ops` and the canvas handle; RPCs through `wbRpc`.
 
 import './glass.css'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Check, ChevronRight, X } from 'lucide-react'
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from 'zustand'
 import { useNoteTitle } from '@/components/notes/NotePage'
 import { useDocument } from '@/components/editor/useDocument'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { PLAIN_OPTIONS, useDrafts } from '@/lib/drafts'
-import { extFor, putAttachment } from '@/lib/files'
-import { noteText } from '@/lib/voice-note'
+import { putAttachment } from '@/lib/files'
 import { usePointerCoarse } from '@/lib/mobile'
 import { notify } from '@/lib/notify'
 import { base64Blob, wbCapture } from '@/lib/wb-capture'
@@ -28,15 +27,11 @@ import { useNotices } from '@/store/notices'
 import { statusLine, useSessionField, useSessions } from '@/store/sessions'
 import { ApprovalCard } from '@/components/chat/ApprovalCard'
 import { useTerminals } from '@/components/chat/TerminalViewer'
-import { MicButton } from '@/components/chat/MicButton'
-import { useNoteRecorder } from '@/components/chat/use-note-recorder'
-import { CancelHint, DeleteNote, RecordingMeta, type Stage } from '@/components/chat/VoiceHold'
-import { type AddKind, Cluster } from './Cluster'
+import { type AddKind, Cluster, type ClusterProps } from './Cluster'
 import { Bubble } from './Bubble'
 import { CardSheet } from './CardSheet'
 import { OutlineView, outlineText } from './OutlineView'
-import { Pill, type SessionPick, useSessionTitle } from './Pill'
-import { Sheet } from './Sheet'
+import { type SessionPick, WhiteboardComposer, useSessionTitle } from './WhiteboardComposer'
 import { asUrl, excerptOf, parseFileRef, place, placeFromClipboard, placeImage } from './add'
 import { bubbleAnchor, lastReply } from './reply'
 import type { PlannedImage, SendPlan, WhiteboardCanvasHandle } from './canvas/api'
@@ -49,7 +44,7 @@ import { createHost } from './host'
 import { briefMarkdown } from './export'
 import { type EdgeMark, FOLLOW_PAUSE_MS, edgeMarks } from './edges'
 import { pencilGestures } from './pencil-gestures'
-import { sendWhiteboard, withoutImage } from './send/send'
+import { imageKey, sendWhiteboard, withoutImage } from './send/send'
 import { type WbTurnInfo, wbRpc } from './wire'
 
 const Canvas = lazy(() => import('./canvas/Canvas'))
@@ -80,12 +75,13 @@ export function WhiteboardView(props: WhiteboardViewProps) {
       </div>
     )
   if (!live.provider) return <div className={`${frame} animate-pulse`} aria-busy aria-label="Opening the whiteboard" />
-  return <Shell key={props.doc} {...props} provider={live.provider} frame={frame} />
+  return <WhiteboardShell key={props.doc} {...props} provider={live.provider} frame={frame} />
 }
 
 type Chooser = { title: string; items: { key: string; label: string; detail?: string; run(): void }[] } | { title: string; input: string; placeholder: string; run(value: string): void }
 
 const cardsOf = (b: Board) => Object.values(b.cards).filter((c) => c.state !== 'archived').length
+const NO_PLAN: SendPlan = { marks: [], images: [], offScreen: 0 }
 
 /** The bound session's history, loaded once, so the reply bubble has its text. */
 function useLoadedSession(session: string | null) {
@@ -103,7 +99,8 @@ function useLoadedSession(session: string | null) {
   }, [api, session, can])
 }
 
-function Shell({ doc, session: wanted = null, embedded = false, onSession, onClose, provider, frame }: WhiteboardViewProps & { provider: EngineProvider; frame: string }) {
+/** The whiteboard on an open document (tests and the dev fixture mount it on a local provider). */
+export function WhiteboardShell({ doc, session: wanted = null, embedded = false, onSession, onClose, provider, frame }: WhiteboardViewProps & { provider: EngineProvider; frame: string }) {
   const api = useApi()
   const client = useConnection((s) => s.client)
   const qc = useQueryClient()
@@ -161,9 +158,25 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
       if (rpc) void rpc.unbind(s, doc).then(refreshBound, (e: Error) => notify.error(e.message))
       if (s === session) setTarget(null)
     },
+    onOpen: (s) => void navigate({ to: '/c/$session', params: { session: s } }),
   }
 
-  // ── Notices while full-window show in the pill (the status bar is covered).
+  // ── The composer dock: its top edge (from the frame's bottom, plus a gap) is `--wb-dock`, what floats above it.
+  const frameEl = useRef<HTMLDivElement>(null)
+  const dock = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const f = frameEl.current
+    const d = dock.current
+    if (!f || !d) return
+    const measure = () => f.style.setProperty('--wb-dock', `${Math.round(f.getBoundingClientRect().bottom - d.getBoundingClientRect().top + 12)}px`)
+    const ro = new ResizeObserver(measure)
+    ro.observe(f)
+    ro.observe(d)
+    measure()
+    return () => ro.disconnect()
+  }, [])
+
+  // ── Notices while full-window show above the composer (the status bar is covered).
   const notice = useNotices((s) => s.current)
   const [noticeShown, setNoticeShown] = useState<string | null>(null)
   useEffect(() => {
@@ -183,7 +196,6 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
   useEffect(() => () => timer.dispose(), [timer])
   const clusterOpen = useStore(store, (s) => s.clusterOpen)
   const keepControls = useStore(store, (s) => s.keepControls)
-  const composerOpen = useStore(store, (s) => s.composerOpen)
   useEffect(() => timer.keep(keepControls), [timer, keepControls])
   useEffect(() => store.subscribe((s, p) => s.penDown && !p.penDown && timer.pen()), [store, timer])
 
@@ -204,29 +216,26 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
     }
   }, [store, timer, readOnly])
 
-  // ── Composer: plan when opened, tray removals, the off-screen opt-in.
-  const [text, setText] = useState('')
-  const [plan, setPlan] = useState<SendPlan>({ marks: [], images: [], offScreen: 0 })
+  // ── Composer tray: what a send carries besides the words, re-planned as the board and the view change; an image
+  // removed from the tray stays removed (by its key) and the off-screen opt-in stays on until the next send.
+  const [planned, setPlanned] = useState<SendPlan>(NO_PLAN)
   const [offScreen, setOffScreen] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [focusField, setFocusField] = useState(false)
-  const replan = useCallback((off: boolean) => {
-    const h = handle.current
-    setPlan(h ? h.planSend({ offScreen: off }) : { marks: [], images: [], offScreen: 0 })
-  }, [])
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set())
+  const replanTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const replan = useCallback(() => {
+    clearTimeout(replanTimer.current)
+    replanTimer.current = setTimeout(() => setPlanned(handle.current?.planSend({ offScreen }) ?? NO_PLAN), 200)
+  }, [offScreen])
+  useEffect(() => {
+    replan()
+    return () => clearTimeout(replanTimer.current)
+  }, [replan, board])
+  const plan = useMemo(() => [...removed].reduce((p, key) => withoutImage(p, p.images.findIndex((i) => imageKey(i) === key)), planned), [planned, removed])
   const composeThumb = useCallback((i: PlannedImage) => handle.current?.composeImage(i, 160) ?? Promise.reject(new Error('no canvas')), [])
-  const openComposer = (focus = true) => {
-    timer.hide()
-    store.getState().set({ composerOpen: true })
-    setOffScreen(false)
-    replan(false)
-    setFocusField(focus)
-  }
-  const closeComposer = () => store.getState().set({ composerOpen: false })
   const can = useQuerySupport(['list_models', 'vision_model'])
   const models = useQuery({ enabled: can, queryKey: queryKeys.models, queryFn: () => api.list_models() }).data
   const visionModel = useQuery({ enabled: can, queryKey: queryKeys.visionModel, queryFn: () => api.vision_model() }).data
-  // Unbound (R1): the new session's pick from the sheet's picker (the new-chat draft's, A2), else the engine default.
+  // Unbound (R1): the new session's pick from the composer's picker (the new-chat draft's, A2), else the engine default.
   const draftModel = useDrafts((s) => s.pick.model)
   const sessionModel = useSessionField(session ?? '', 'model')
   const model = (session ? sessionModel : draftModel) ?? useConnection.getState().info?.default_model
@@ -331,11 +340,12 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
   }
   const openSession = (s: string | null = session) => s && void navigate({ to: '/c/$session', params: { session: s } })
 
-  /** `spoken`: a voice note from the pill's mic — it goes with a fresh plan (the marks in view), the typed text stays. */
-  const send = async (spoken?: string) => {
+  /** The composer's plain send (typed, dictated, or a voice note): the words and its attachments go with the
+   * whiteboard — the tray's images and marks, handwriting, the selection, the context — into the picked session, or
+   * a new one made by this first send (R1). Answers the session it went to; a failure leaves the ink fresh (M2). */
+  const deliver = async (m: { text: string; files: string[]; clientId: string }): Promise<string> => {
     const h = handle.current
-    if (!h || !rpc || sending) return
-    setSending(true)
+    if (!h || !rpc) throw new Error('The whiteboard is still opening')
     setBubble(null)
     try {
       const r = await sendWhiteboard(
@@ -354,96 +364,38 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           doc,
           title: title || 'Whiteboard',
           cards: cardsOf(board),
-          text: spoken ?? text,
+          text: m.text,
           session,
           running,
           bound: !!session && boundList.some((b) => b.session === session),
           vision: !noVision,
           selection: store.getState().selection,
-          clientId: crypto.randomUUID(),
-          plan: spoken !== undefined && !store.getState().composerOpen ? undefined : plan,
+          clientId: m.clientId,
+          // The tray as shown when it was edited; else planned now (the marks in view at the moment of sending).
+          plan: removed.size > 0 || offScreen ? plan : undefined,
           frameOf: (c) => board.cards[c]?.frame,
           pick: session ? undefined : useDrafts.getState().pick,
+          files: m.files,
         },
       )
-      // A first send (R1) made the session: it becomes the target (and `?session=`); the engine's echo fills its rows.
-      if (r.session && r.session !== session) {
-        setTarget(r.session)
-        useSessions.getState().ensure(r.session)
-        // The pick went into this session (as `openDraftSession` spends it).
-        useDrafts.getState().resetPick()
-      }
-      refreshBound()
-      if (spoken === undefined) setText('')
-      closeComposer()
+      return r.session
     } catch (e) {
-      // M2: nothing was marked sent; the ink stays fresh and the text stays in the sheet for a retry.
-      notify.error('Not sent — your marks are kept for the next try', { description: e instanceof Error ? e.message : String(e) })
-    } finally {
-      setSending(false)
+      throw new Error(`Not sent — your marks are kept for the next try: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
-
-  // ── Hold-to-talk (89 VOICE-HOLD, the recorder shared with the chat composer): a voice note is transcribed and sent
-  // with the whiteboard as `[voice note, N s] …`; a tap opens the sheet for system dictation.
-  const [stage, setStage] = useState<Stage>('idle')
-  const [secs, setSecs] = useState(0)
-  const [transcribing, setTranscribing] = useState(false)
-  const hint = useRef<HTMLSpanElement>(null)
-  const voice = useNoteRecorder((blob) => {
-    setTranscribing(true)
-    void (async () => {
-      try {
-        const t = await api.transcribe(await putAttachment(api, blob, extFor(blob)))
-        if (!t.text.trim()) notify('Nothing recognized')
-        else await send(noteText(t.text, Number(t.duration_ms)))
-      } catch (e) {
-        notify.error(e instanceof Error ? e.message : String(e))
-      } finally {
-        setTranscribing(false)
-      }
-    })()
-  })
-  useEffect(() => {
-    if (!voice.recording) return
-    setSecs(0)
-    const tick = setInterval(() => setSecs((s) => s + 1), 1000)
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      e.preventDefault()
-      voice.stop(true)
+  const sent = (s: string) => {
+    // A first send (R1) made the session: it becomes the target (and `?session=`); the engine's echo fills its rows.
+    if (s && s !== session) {
+      setTarget(s)
+      useSessions.getState().ensure(s)
+      // The pick went into this session (as `openDraftSession` spends it).
+      useDrafts.getState().resetPick()
     }
-    window.addEventListener('keydown', onKey)
-    return () => {
-      clearInterval(tick)
-      window.removeEventListener('keydown', onKey)
-      voice.dropWave()
-    }
-    // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the recording flag, as the composer's
-  }, [voice.recording])
-  const mic = (
-    <MicButton
-      recording={voice.recording}
-      source={voice.source}
-      hint={hint}
-      onStage={setStage}
-      disabled={sending || transcribing}
-      reason={null}
-      onTap={() => openComposer(true)}
-      onRecord={() => void voice.record()}
-      onStop={voice.stop}
-    />
-  )
-  const recordingRow =
-    stage !== 'idle' ? (
-      <>
-        {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
-        {stage === 'locked' && <DeleteNote onClick={() => voice.stop(true)} />}
-        <RecordingMeta secs={secs} stage={stage} />
-      </>
-    ) : transcribing ? (
-      <span className="wb-muted truncate text-[14px]">Listening back…</span>
-    ) : undefined
+    refreshBound()
+    setRemoved(new Set())
+    setOffScreen(false)
+    replan()
+  }
 
   // ── Add.
   const terminals = useTerminals(session ?? '')
@@ -533,7 +485,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
   }
   const addable: Record<AddKind, boolean> = { sticky: true, note: true, web: true, image: true, clipboard: true, artifact: !!session, excerpt: !!session, diff: !!session, terminal: !!session && terminals.length > 0 }
 
-  // ── Keyboard (desktop, full window): V P E L F N O, ⌘0, ⌘↵, Esc.
+  // ── Keyboard (desktop, full window): V H P E L F N O, ⌘0, ⌘↵, Esc.
   useEffect(() => {
     if (embedded) return
     const onKey = (e: KeyboardEvent) => {
@@ -542,16 +494,15 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
       const st = store.getState()
       const mod = e.metaKey || e.ctrlKey
       if (mod && e.key === '0') return e.preventDefault(), handle.current?.fit('all')
-      if (mod && e.key === 'Enter') return e.preventDefault(), openComposer()
+      if (mod && e.key === 'Enter') return e.preventDefault(), dock.current?.querySelector('textarea')?.focus()
       if (mod || e.altKey) return
       const k = e.key.toLowerCase()
       if (e.key === 'Escape') {
         if (openCard) return setOpenCard(null)
         if (st.entered) return st.set({ entered: null })
-        if (st.composerOpen) return closeComposer()
         return timer.hide()
       }
-      const modes: Record<string, 'select' | 'draw' | 'erase' | 'link' | 'frame'> = { v: 'select', p: 'draw', e: 'erase', l: 'link', f: 'frame' }
+      const modes: Record<string, 'select' | 'hand' | 'draw' | 'erase' | 'link' | 'frame'> = { v: 'select', h: 'hand', p: 'draw', e: 'erase', l: 'link', f: 'frame' }
       const m = modes[k]
       if (m) return st.set({ mode: st.mode === m ? 'idle' : m })
       if (k === 'n' && !readOnly) return void add('sticky')
@@ -568,9 +519,10 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
     const r = e.currentTarget.getBoundingClientRect()
     const inQuad = e.clientX > r.left + r.width / 2 && e.clientY > r.top + r.height / 2
     if (rest.current) clearTimeout(rest.current)
-    // Not while the sheet is up: the pill sits in that quadrant, and the cluster (with the attribution, R3) is hidden under it.
-    const idle = () => !store.getState().clusterOpen && !store.getState().composerOpen
-    rest.current = inQuad && idle() ? setTimeout(() => idle() && timer.show(), 600) : null
+    // Not over the composer, which sits in that quadrant.
+    const over = e.target instanceof Element && e.target.closest('[data-whiteboard-composer]') !== null
+    const idle = () => !store.getState().clusterOpen
+    rest.current = inQuad && !over && idle() ? setTimeout(() => idle() && timer.show(), 600) : null
     if (store.getState().clusterOpen) timer.activity()
   }
 
@@ -633,9 +585,25 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
       beside={clusterOpen}
     />
   ) : null
+  const controls: Omit<ClusterProps, 'onHold'> = {
+    store,
+    onActivity: () => timer.activity(),
+    onAdd: (k: AddKind) => void add(k),
+    onFit: () => handle.current?.fit(store.getState().selection.length ? 'selection' : 'all'),
+    onOutline: () => {
+      timer.hide()
+      setOutline(true)
+    },
+    onUndo: () => handle.current?.undo(),
+    onRedo: () => handle.current?.redo(),
+    canUndo: handle.current?.canUndo() ?? false,
+    canRedo: handle.current?.canRedo() ?? false,
+    more,
+    addable: readOnly ? { sticky: false, note: false, web: false, image: false, clipboard: false, artifact: false, excerpt: false, diff: false, terminal: false } : addable,
+  }
 
   return (
-    <div className={frame} data-whiteboard={doc} onPointerMove={onPointerMove}>
+    <div ref={frameEl} className={frame} data-whiteboard={doc} onPointerMove={onPointerMove}>
       {outline ? (
         <div className="absolute inset-0 overflow-y-auto">
           <OutlineView
@@ -683,12 +651,12 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
             embedded={embedded}
             className="size-full"
             anchored={bubble && anchor && !outline ? [{ key: 'reply', card: anchor, node: bubbleNode }] : []}
-            onCanvasTap={() => {
-              if (store.getState().composerOpen) return closeComposer()
-              timer.tap()
-            }}
+            onCanvasTap={() => timer.tap()}
             onPenActivity={(down) => down && timer.pen()}
-            onViewChange={() => recomputeEdges()}
+            onViewChange={() => {
+              recomputeEdges()
+              replan()
+            }}
             onCardOpen={setOpenCard}
           />
         </Suspense>
@@ -710,63 +678,42 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
             </button>
           )
         })}
-      {!outline && clusterOpen && !composerOpen && (
-        <Cluster
-          store={store}
-          onActivity={() => timer.activity()}
-          onAdd={(k: AddKind) => void add(k)}
-          onFit={() => handle.current?.fit(store.getState().selection.length ? 'selection' : 'all')}
-          onOutline={() => {
-            timer.hide()
-            setOutline(true)
-          }}
-          onUndo={() => handle.current?.undo()}
-          onRedo={() => handle.current?.redo()}
-          canUndo={handle.current?.canUndo() ?? false}
-          canRedo={handle.current?.canRedo() ?? false}
-          more={more}
-          addable={readOnly ? { sticky: false, note: false, web: false, image: false, clipboard: false, artifact: false, excerpt: false, diff: false, terminal: false } : addable}
-          onHold={timer.hold}
-        />
-      )}
+      {!outline && clusterOpen && <Cluster {...controls} onHold={timer.hold} />}
       {!embedded && onClose && clusterOpen && !outline && (
         <button type="button" aria-label="Close the whiteboard" onClick={onClose} className="wb-glass wb-rise absolute top-[calc(16px+var(--safe-top,0px))] right-[calc(24px+var(--safe-right,0px))] z-20 grid size-11 place-items-center rounded-full">
           <X className="size-5" />
         </button>
       )}
       {bubble && (!anchor || outline) && bubbleNode}
-      {waiting && !composerOpen && (
+      {waiting && (
         <div
-          className={`wb-rise absolute z-20 bottom-[calc(80px+var(--safe-bottom,0px))] w-[min(360px,calc(100vw-48px))] rounded-xl shadow-lg [&>*]:my-0 ${clusterOpen && !outline ? 'right-[calc(94px+var(--safe-right,0px))]' : 'right-[calc(24px+var(--safe-right,0px))]'}`}
+          className={`wb-rise absolute z-20 bottom-[var(--wb-dock,calc(80px+var(--safe-bottom,0px)))] w-[min(360px,calc(100vw-48px))] rounded-xl shadow-lg [&>*]:my-0 ${clusterOpen && !outline ? 'right-[calc(94px+var(--safe-right,0px))]' : 'right-[calc(24px+var(--safe-right,0px))]'}`}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <ApprovalCard approval={waiting} />
         </div>
       )}
-      {composerOpen ? (
-        <Sheet
-          pick={pick}
-          board={board}
-          plan={plan}
-          offScreen={offScreen}
-          onOffScreen={(on) => {
-            setOffScreen(on)
-            replan(on)
-          }}
-          onRemove={(i) => setPlan((p) => withoutImage(p, i))}
-          compose={composeThumb}
-          noVision={noVision}
-          sending={sending}
-          text={text}
-          onText={setText}
-          onSend={() => void send()}
-          onClose={closeComposer}
-          onOpenSession={() => openSession()}
-          autoFocus={focusField}
-        />
-      ) : (
-        <Pill pick={pick} status={status} onGrabber={() => timer.grabber()} onOpen={() => openComposer()} mic={mic} recording={recordingRow} />
-      )}
+      <WhiteboardComposer
+        doc={doc}
+        pick={pick}
+        tools={controls}
+        tray={{
+          board,
+          plan,
+          offScreen,
+          onOffScreen: setOffScreen,
+          onRemove: (i) => {
+            const image = plan.images[i]
+            if (image) setRemoved((r) => new Set(r).add(imageKey(image)))
+          },
+          compose: composeThumb,
+          noVision,
+          status,
+        }}
+        deliver={deliver}
+        onSent={sent}
+        dockRef={dock}
+      />
       {card && <CardSheet card={card} phone={phone} blobUrl={host.blobUrl} onClose={() => setOpenCard(null)} onSession={(s) => openSession(s)} />}
       {chooser && <ChooserDialog c={chooser} onDone={() => setChooser(null)} />}
       <input
