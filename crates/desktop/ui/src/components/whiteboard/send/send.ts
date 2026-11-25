@@ -27,6 +27,8 @@ export type SendDeps = {
   putAttachment(blob: Blob, ext: string, session?: string): Promise<string>
   sendInput(session: SessionId | null, body: string, files: string[], clientId: string): Promise<string>
   steer(session: SessionId, body: string, clientId: string, files: string[]): Promise<unknown>
+  /** `create_session` with the new session's model/effort pick (the new-chat draft's, A2), for a first send (R1). */
+  createSession?(pick: NewSessionPick): Promise<SessionId>
   /** Device pixels per CSS px (natural size of a captured rect). */
   dpr?: number
 }
@@ -49,7 +51,11 @@ export type SendInput = {
   plan?: SendPlan
   /** Card id → frame id, for merging per frame. */
   frameOf?: (card: Id) => Id | undefined
+  /** No session yet (R1): the model/effort picked in the sheet for the session this send creates; null = defaults. */
+  pick?: NewSessionPick
 }
+
+export type NewSessionPick = { model: string | null; effort: string | null }
 
 export type SendResult = { session: SessionId; plan: SendPlan; images: number; omitted: number }
 
@@ -130,8 +136,16 @@ export async function sendWhiteboard(d: SendDeps, i: SendInput): Promise<SendRes
       sent.push({ card: image.card, marks: image.marks })
     }
   }
-  // 5. Bind, then the context the injection consumes.
-  if (i.session && !i.bound) await d.wb.bind(i.session, i.doc)
+  // 5. A first send with a model/effort pick creates its session with them (as the new-chat page does), late so a
+  // failure in the steps above leaves no empty session; without a pick `send_input(null)` creates it with the defaults.
+  let session = i.session
+  let bound = i.bound
+  if (!session && d.createSession && i.pick && (i.pick.model || i.pick.effort)) {
+    session = await d.createSession(i.pick)
+    bound = false
+  }
+  // 6. Bind, then the context the injection consumes.
+  if (session && !bound) await d.wb.bind(session, i.doc)
   const seen = d.handle.visible()
   const omitted = i.vision ? budget.omitted : blobs.length + budget.omitted
   const context: WbSendContext = {
@@ -141,13 +155,12 @@ export async function sendWhiteboard(d: SendDeps, i: SendInput): Promise<SendRes
     omitted,
     omitted_why: omitted === 0 ? null : i.vision ? 'budget' : 'no vision',
   }
-  await d.wb.sendContext(i.session, i.doc, context)
-  // 6. The message.
+  await d.wb.sendContext(session, i.doc, context)
+  // 7. The message.
   const body = sendBody(i.doc, i.title, i.cards, i.text)
-  let session = i.session
-  if (session && i.running) await d.steer(session, body, i.clientId, files)
+  if (session && i.running && session === i.session) await d.steer(session, body, i.clientId, files)
   else session = await d.sendInput(session, body, files, i.clientId)
-  // 7. Only now do the marks become `sent` (one wb-local transaction, B3): a failure above leaves the ink fresh, nothing
+  // 8. Only now do the marks become `sent` (one wb-local transaction, B3): a failure above leaves the ink fresh, nothing
   // hidden, ready to send again (218 review M2). The update follows the input by one round trip; an injection that
   // already read the outline lists these marks as `+m…` on the next turn.
   d.handle.commitSend(plan, { to: session, hw, blobs: [...stored] })

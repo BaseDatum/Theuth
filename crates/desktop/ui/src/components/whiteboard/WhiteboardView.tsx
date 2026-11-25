@@ -12,6 +12,7 @@ import { useStore } from 'zustand'
 import { useNoteTitle } from '@/components/notes/NotePage'
 import { useDocument } from '@/components/editor/useDocument'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { PLAIN_OPTIONS, useDrafts } from '@/lib/drafts'
 import { extFor, putAttachment } from '@/lib/files'
 import { noteText } from '@/lib/voice-note'
 import { usePointerCoarse } from '@/lib/mobile'
@@ -229,7 +230,10 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
   const can = useQuerySupport(['list_models', 'vision_model'])
   const models = useQuery({ enabled: can, queryKey: queryKeys.models, queryFn: () => api.list_models() }).data
   const visionModel = useQuery({ enabled: can, queryKey: queryKeys.visionModel, queryFn: () => api.vision_model() }).data
-  const model = useSessionField(session ?? '', 'model') ?? useConnection.getState().info?.default_model
+  // Unbound (R1): the new session's pick from the sheet's picker (the new-chat draft's, A2), else the engine default.
+  const draftModel = useDrafts((s) => s.pick.model)
+  const sessionModel = useSessionField(session ?? '', 'model')
+  const model = (session ? sessionModel : draftModel) ?? useConnection.getState().info?.default_model
   const info = models?.find((m) => m.id === model)
   const noVision = !!info && !info.image && !visionModel
 
@@ -347,6 +351,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           putAttachment: (blob, ext, s) => putAttachment(api, blob, ext, s),
           sendInput: (s, body, files, id) => api.send_input(s, body, files, null, id),
           steer: (s, body, id, files) => api.steer(s, body, id, files),
+          createSession: async (p) => (await api.create_session({ ...PLAIN_OPTIONS, model: p.model, effort: p.effort })).session,
           dpr: globalThis.devicePixelRatio || 1,
         },
         {
@@ -362,12 +367,15 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           clientId: crypto.randomUUID(),
           plan: spoken !== undefined && !store.getState().composerOpen ? undefined : plan,
           frameOf: (c) => board.cards[c]?.frame,
+          pick: session ? undefined : useDrafts.getState().pick,
         },
       )
       // A first send (R1) made the session: it becomes the target (and `?session=`); the engine's echo fills its rows.
       if (r.session && r.session !== session) {
         setTarget(r.session)
         useSessions.getState().ensure(r.session)
+        // The pick went into this session (as `openDraftSession` spends it).
+        useDrafts.getState().resetPick()
       }
       refreshBound()
       if (spoken === undefined) setText('')
