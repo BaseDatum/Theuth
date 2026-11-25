@@ -136,7 +136,7 @@ test('the row: both numbers always shown, right-aligned 16 px, the % banded ambe
   root = createRoot(host)
   act(() => root!.render(h(ComposerMeta, { session: 's1', meta: META })))
   const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
-  expect(row.className).toContain('h-4')
+  expect(row.className).toContain('h-3')
   expect(row.className).toContain('justify-end')
   // Only the numbers: no picker in the row.
   expect([...row.children].map((c) => (c as HTMLElement).dataset.meta)).toEqual(['context', 'cost'])
@@ -164,7 +164,7 @@ test('recording: the row keeps its height but shows nothing and takes no focus',
   act(() => root!.render(h(ComposerMeta, { session: 's1', meta: META, hidden: true })))
   const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
   expect(row.className).toContain('invisible')
-  expect(row.className).toContain('h-4')
+  expect(row.className).toContain('h-3')
   expect(row.getAttribute('aria-hidden')).toBe('true')
   expect(row.querySelector<HTMLElement>('[data-meta="cost"]')!.tabIndex).toBe(-1)
 })

@@ -85,7 +85,7 @@ export function useComposerMeta(session: string | null | undefined): MetaData | 
  */
 export function ComposerMeta({ session, meta, hidden = false }: { session: string; meta: MetaData; hidden?: boolean }) {
   return (
-    <div data-composer-meta="" aria-hidden={hidden || undefined} className={cn('flex h-4 items-center justify-end gap-2 px-1 text-[11px] leading-4 text-fg-tertiary tabular-nums', hidden && 'invisible')}>
+    <div data-composer-meta="" aria-hidden={hidden || undefined} className={cn('flex h-3 items-center justify-end gap-2 px-1 text-[11px] leading-3 text-fg-tertiary tabular-nums', hidden && 'invisible')}>
       {meta.pct !== null && (
         <span data-meta="context" className={cn('cursor-default', PCT_TONE[band(meta.pct)])} title={meta.ctxTitle}>
           {meta.estimated && '≈'}
