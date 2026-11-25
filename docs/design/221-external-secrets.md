@@ -1999,7 +1999,12 @@ messages, the B0 note (`docs/design/221-as-built-B0.md`) and the fix round on th
   Send link/password secrets as the `from` of `secret_external_create` / `_update` and the Send
   sources and `password.from`.
 - **`send_owner_only`** is read per connection when the Send gate runs, from the Bitwarden backend's
-  own settings; no tool-wide switch.
+  own settings (`SendBackend::send_owner_only`, through `Tool::human_only_for(args)`); no tool-wide
+  switch.
+- **Send ids.** `secret_send_revoke` / `revoke_send` and `copy_send_link` accept the
+  `external_sends` row id as well as the link name and the Bitwarden Send id.
+- **`remember_unlock` (D12).** With it on, every lock (manual, idle, on sleep), logout and rebuild
+  deletes the sealed key, so after an idle lock the master password is needed again.
 - **Owner RPCs and the press.** `delete_external_secret`, `restore_external_secret`, `create_send`
   and `revoke_send` take the caller: the owner's own press runs directly; any other caller gets a
   human-only card (`secrets.external.delete`, `secrets.external.restore`, `secrets.send.create`,
@@ -2032,7 +2037,8 @@ messages, the B0 note (`docs/design/221-as-built-B0.md`) and the fix round on th
 - **AWS update** is check-then-put: `PutSecretValue` has no version precondition, so a writer
   landing between the `expected` check and the put is overwritten (its value stays reachable as
   `:-1` until the next write).
-- **Desktop.** No CA-file field (the backends take no `ca_file`); `lock_after_idle_secs` and
+- **Desktop.** No CA-file field (the backends take no `ca_file`). `list_aws_profiles` returns no
+  regions, so the AWS region is not defaulted from the profile. `lock_after_idle_secs` and
   `send_max_file_mb` have no UI clamps beyond AWS's 7–30 day recovery window.
 - **Packaging (B10).** See the B10 deviation above: the `t` archives do not carry the licence
   files.
