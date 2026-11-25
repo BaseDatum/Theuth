@@ -12,7 +12,13 @@
   --wb-frame: color-mix(in oklab, var(--fg-primary) 24%, transparent);
   --wb-accent: var(--fg-accent);
   --wb-shimmer: color-mix(in oklab, var(--wb-accent) 22%, transparent);
-  --wb-pinned: #b7791f;
+  /* Light twins keep ≥ 3 : 1 on bone #e8dcc8 (ink/colour.ts INK_COLOURS; green and amber darkened from the contract, A1). */
+  --wb-pinned: #aa701d;
+  --wb-blue: #1f6feb;
+  --wb-green: #2a8e3d;
+  --wb-amber: #aa701d;
+  --wb-red: #d9480f;
+  --wb-violet: #7048e8;
   background: var(--bg-page);
   touch-action: none;
   -webkit-user-select: none;
@@ -25,6 +31,11 @@
   --wb-sticky-border: #6b5a1a;
   --wb-sticky-fg: #f3e7b0;
   --wb-pinned: #f2c14e;
+  --wb-blue: #6ea8ff;
+  --wb-green: #5fd27a;
+  --wb-amber: #f2c14e;
+  --wb-red: #ff7a45;
+  --wb-violet: #a78bfa;
 }
 .wb-canvas .react-flow {
   --xy-background-color: var(--bg-page);
@@ -165,11 +176,12 @@
   color: var(--fg-tertiary);
   white-space: nowrap;
 }
-.wb-frame[data-colour='blue'] { --wb-frame: color-mix(in oklab, #1f6feb 55%, transparent); background: color-mix(in oklab, #1f6feb 4%, transparent); }
-.wb-frame[data-colour='green'] { --wb-frame: color-mix(in oklab, #2f9e44 55%, transparent); background: color-mix(in oklab, #2f9e44 4%, transparent); }
-.wb-frame[data-colour='amber'] { --wb-frame: color-mix(in oklab, #b7791f 55%, transparent); background: color-mix(in oklab, #b7791f 4%, transparent); }
-.wb-frame[data-colour='red'] { --wb-frame: color-mix(in oklab, #d9480f 55%, transparent); background: color-mix(in oklab, #d9480f 4%, transparent); }
-.wb-frame[data-colour='violet'] { --wb-frame: color-mix(in oklab, #7048e8 55%, transparent); background: color-mix(in oklab, #7048e8 4%, transparent); }
+/* Frame colours are the ink palette's theme pairs at full strength: a dashed border must keep ≥ 3 : 1 on the canvas. */
+.wb-frame[data-colour='blue'] { --wb-frame: var(--wb-blue); background: color-mix(in oklab, var(--wb-blue) 5%, transparent); }
+.wb-frame[data-colour='green'] { --wb-frame: var(--wb-green); background: color-mix(in oklab, var(--wb-green) 5%, transparent); }
+.wb-frame[data-colour='amber'] { --wb-frame: var(--wb-amber); background: color-mix(in oklab, var(--wb-amber) 5%, transparent); }
+.wb-frame[data-colour='red'] { --wb-frame: var(--wb-red); background: color-mix(in oklab, var(--wb-red) 5%, transparent); }
+.wb-frame[data-colour='violet'] { --wb-frame: var(--wb-violet); background: color-mix(in oklab, var(--wb-violet) 5%, transparent); }
 
 .wb-canvas .react-flow__handle.wb-handle {
   width: 13px;

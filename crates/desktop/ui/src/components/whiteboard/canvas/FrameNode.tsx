@@ -11,7 +11,7 @@ export type FrameNodeType = Node<FrameNodeData, 'frame'>
 
 const COLOURS: FrameColour[] = ['neutral', 'blue', 'green', 'amber', 'red', 'violet']
 const SWATCH: Record<FrameColour, string> = {
-  neutral: 'var(--fg-tertiary)', blue: '#1f6feb', green: '#2f9e44', amber: '#b7791f', red: '#d9480f', violet: '#7048e8',
+  neutral: 'var(--fg-tertiary)', blue: 'var(--wb-blue)', green: 'var(--wb-green)', amber: 'var(--wb-amber)', red: 'var(--wb-red)', violet: 'var(--wb-violet)',
 }
 
 export const FrameNode = memo(function FrameNode({ data, selected }: NodeProps<FrameNodeType>) {

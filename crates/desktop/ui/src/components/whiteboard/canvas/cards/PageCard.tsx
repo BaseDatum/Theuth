@@ -9,6 +9,7 @@ import { useHtmlPageTheme } from '@/lib/page-theme'
 import { pageDrop, pagePut } from '@/lib/pages'
 import { useApi } from '@/lib/rpc'
 import { isTauri } from '@/lib/tauri'
+import type { Artifact } from '@/rpc/bindings/method.artifact.output'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useSessions } from '@/store/sessions'
 import { useCanvas } from '../context'
@@ -30,7 +31,8 @@ export function pagePoint(card: Card, framePreset: 'phone' | 'tablet' | 'desktop
   return [lx / scale, (ly - CARD_HEADER) / scale]
 }
 
-function useArtifactText(session: string, callId: string): { text: string | null; gone: boolean } {
+/** A session's artifact by call id: the session store's cache when that session is loaded, else `list_artifacts`. */
+export function useArtifact(session: string, callId: string): { artifact: Artifact | null; gone: boolean } {
   const api = useApi()
   const can = useQuerySupport(['list_artifacts'])
   const cached = useSessions((s) => s.sessions[session]?.artifacts.get(callId))
@@ -40,9 +42,14 @@ function useArtifactText(session: string, callId: string): { text: string | null
     queryFn: async () => (await api.list_artifacts(session, null)).find((a) => a.call_id === callId) ?? null,
     staleTime: 60_000,
   })
-  const a = cached ?? listed.data ?? null
-  const text = useText(a?.path ?? null, session)
-  return { text, gone: !a && !listed.isPending }
+  const artifact = cached ?? listed.data ?? null
+  return { artifact, gone: !artifact && (!can || !listed.isPending) }
+}
+
+function useArtifactText(session: string, callId: string): { text: string | null; gone: boolean } {
+  const { artifact, gone } = useArtifact(session, callId)
+  const text = useText(artifact?.path ?? null, session)
+  return { text, gone }
 }
 
 export function PageCard({ card, callId, session, live }: { card: Card; callId: string; session: string; live: boolean }) {

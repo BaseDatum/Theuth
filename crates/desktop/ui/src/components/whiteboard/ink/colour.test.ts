@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CANVAS_BG, contrast, inkCss, INK_COLOURS, nearestInk } from './colour'
+import { CANVAS_BG, contrast, inkCss, INK_COLOURS, nearestInk, readable } from './colour'
 
 describe('ink colours (§8.6, A1)', () => {
   it('theme flip: ink is near-black on paper and bone on soot; named colours use their dark twins', () => {
@@ -11,12 +11,16 @@ describe('ink colours (§8.6, A1)', () => {
     }
   })
 
-  it('named colours: ≥ 3 : 1 on soot; on bone the contract palette keeps ≥ 2.5 (green 2.54 and amber 2.69 are the contract’s values)', () => {
+  it('every named colour keeps ≥ 3 : 1 against its canvas (A1)', () => {
     for (const [light, dark] of Object.values(INK_COLOURS)) {
-      expect(contrast(light, CANVAS_BG.light)).toBeGreaterThanOrEqual(2.5)
+      expect(contrast(light, CANVAS_BG.light)).toBeGreaterThanOrEqual(3)
       expect(contrast(dark, CANVAS_BG.dark)).toBeGreaterThanOrEqual(3)
     }
-    for (const name of ['ink', 'red', 'blue', 'violet'] as const) expect(contrast(INK_COLOURS[name][0], CANVAS_BG.light)).toBeGreaterThanOrEqual(3)
+  })
+
+  it("light green and amber are the contract's hues with lightness moved just far enough", () => {
+    expect(readable('#2f9e44', false)).toBe(INK_COLOURS.green[0])
+    expect(readable('#b7791f', false)).toBe(INK_COLOURS.amber[0])
   })
 
   it('a free #rrggbb is moved to ≥ 3 : 1 in both themes, keeping a readable colour', () => {

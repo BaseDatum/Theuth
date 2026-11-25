@@ -6,8 +6,10 @@ export const INK_COLOURS = {
   ink: ['#1a1612', '#e8dcc8'],
   red: ['#d9480f', '#ff7a45'],
   blue: ['#1f6feb', '#6ea8ff'],
-  green: ['#2f9e44', '#5fd27a'],
-  amber: ['#b7791f', '#f2c14e'],
+  // Light green and amber are darkened from the contract's #2f9e44 (2.54 : 1) and #b7791f (2.69 : 1), same hue, to keep
+  // ≥ 3 : 1 on bone (design A1); `readable()` of the contract values gives exactly these.
+  green: ['#2a8e3d', '#5fd27a'],
+  amber: ['#aa701d', '#f2c14e'],
   violet: ['#7048e8', '#a78bfa'],
 } as const satisfies Record<string, readonly [light: string, dark: string]>
 

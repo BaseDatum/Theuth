@@ -2,14 +2,20 @@
 // CardNode's. Heavy live views (pages) are budgeted by lod.ts; terminals and web views never run live on the canvas.
 import { AppWindow, FileCode2, FileDiff, FileText, Globe, Image as ImageIcon, MessageSquare, Shapes, StickyNote, Terminal as TerminalIcon, type LucideIcon } from 'lucide-react'
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { CustomRendererProps } from 'streamdown'
+import { useFileUrl } from '@/components/chat/Attachments'
+import { privateOwner } from '@/lib/private'
+import { useApi } from '@/lib/rpc'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
+import { useQuerySupport } from '@/rpc/capabilities'
 import { useSessions } from '@/store/sessions'
 import { useCanvas } from '../context'
 import type { Card, CardKind, Source } from '../model'
 import { STICKY_MAX, setSticky } from '../ops'
 import { EXCERPT_PAD, EXCERPT_ROW } from '../send'
-import { PageCard } from './PageCard'
+import { lastTurns } from '../turns'
+import { PageCard, useArtifact } from './PageCard'
 
 const MermaidFence = lazy(() => import('@/components/chat/Mermaid').then((m) => ({ default: m.MermaidFence })))
 const JsonRenderFence = lazy(() => import('@/components/chat/surface/JsonRenderFence').then((m) => ({ default: m.JsonRenderFence })))
@@ -91,24 +97,79 @@ function Excerpt({ s }: { s: Extract<Source, { t: 'excerpt' }> }) {
   )
 }
 
-function ImageBody({ s, title }: { s: Extract<Source, { t: 'image' }>; title: string }) {
+function Picture({ src, title }: { src: string | null; title: string }) {
+  if (src === null) return <Pending />
+  if (src === '') return <Info icon={ImageIcon} lines={[title || 'Image', 'image unavailable']} />
+  return <img src={src} alt={title} className="absolute inset-0 size-full object-contain" draggable={false} />
+}
+
+/** An engine file (`path`), read through the shared file cache (`asset://` locally, else bytes over RPC). */
+function PathImage({ path, session, title }: { path: string; session?: string; title: string }) {
+  return <Picture src={useFileUrl(path, session)} title={title} />
+}
+
+/** An image artifact of a session: its path from the artifact list, then as a file. */
+function ArtifactImage({ session, callId, title }: { session: string; callId: string; title: string }) {
+  const { artifact, gone } = useArtifact(session, callId)
+  if (artifact) return <PathImage path={artifact.path} session={privateOwner(artifact.session)} title={title} />
+  return gone ? <Info icon={ImageIcon} lines={[title || 'Image', 'source gone']} /> : <Pending />
+}
+
+function BlobImage({ blob, title }: { blob: string; title: string }) {
   const { host } = useCanvas()
   const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
     let alive = true
-    if (s.blob) void host.blobUrl(s.blob).then((u) => alive && setUrl(u))
+    setUrl(null)
+    void host.blobUrl(blob).then((u) => alive && setUrl(u ?? ''))
     return () => {
       alive = false
     }
-  }, [s.blob, host])
-  if (url) return <img src={url} alt={title} className="absolute inset-0 size-full object-contain" draggable={false} />
-  return <Info icon={ImageIcon} lines={[title || 'Image', s.path ?? (s.call_id ? 'artifact image — open to view' : '')]} />
+  }, [blob, host])
+  return <Picture src={url} title={title} />
 }
 
-function SessionBody({ id }: { id: string }) {
+function ImageBody({ s, title }: { s: Extract<Source, { t: 'image' }>; title: string }) {
+  if (s.blob) return <BlobImage blob={s.blob} title={title} />
+  if (s.path) return <PathImage path={s.path} session={s.session ? privateOwner(s.session) : undefined} title={title} />
+  if (s.call_id && s.session) return <ArtifactImage session={s.session} callId={s.call_id} title={title} />
+  return <Info icon={ImageIcon} lines={[title || 'Image', 'no source']} />
+}
+
+const TAIL = 40
+
+/** The session's last turns, read-only: live from the session store when that session is loaded, else one history page. */
+function SessionBody({ id, title }: { id: string; title: string }) {
+  const api = useApi()
   const s = useSessions((st) => st.sessions[id])
-  const title = (s as { title?: string } | undefined)?.title
-  return <Info icon={MessageSquare} lines={[title || 'Session', 'open to read its turns']} />
+  const can = useQuerySupport(['load_session'])
+  const loaded = s !== undefined && s.entries.length > 0
+  const page = useQuery({
+    enabled: can && !loaded,
+    queryKey: ['whiteboard', 'session-tail', id],
+    queryFn: () => api.load_session(id, null, TAIL),
+    staleTime: 30_000,
+  })
+  const turns = lastTurns(loaded ? s.entries : (page.data?.history ?? []))
+  const name = s?.title || page.data?.name || title || 'Session'
+  if (!loaded && page.isPending && can) return <Pending />
+  if (turns.length === 0) return <Info icon={MessageSquare} lines={[name, page.isError || !can ? 'session unavailable' : 'no turns yet']} />
+  return (
+    <div className="absolute inset-0 flex flex-col justify-end gap-1.5 overflow-hidden p-2.5 text-[12px] leading-snug">
+      {turns.map((t, i) => (
+        <div
+          key={i}
+          className={
+            t.role === 'user'
+              ? 'max-w-[85%] self-end rounded-xl rounded-br-sm bg-layer-2 px-2.5 py-1.5 text-fg-primary'
+              : 'max-w-[95%] self-start px-0.5 text-fg-secondary'
+          }
+        >
+          <p className="line-clamp-4 whitespace-pre-wrap break-words">{t.text}</p>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 /** One card's renderer failing must not take the whole whiteboard down: it shows a chip saying so. */
@@ -184,7 +245,7 @@ export function LiveBody({ card, source, editing }: { card: Card; source: Source
     case 'image':
       return <ImageBody s={source} title={card.title} />
     case 'session':
-      return <SessionBody id={source.session} />
+      return <SessionBody id={source.session} title={card.title} />
   }
 }
 
