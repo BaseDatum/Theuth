@@ -48,7 +48,26 @@ Builder B4, night of 2026-11-25. `UI` = `crates/desktop/ui/src`. Two sub-builder
 
 ## Not built / unverified
 
-- Not built: file excerpt in Add; hold-to-talk mic (stretch; mic opens the sheet focused for system dictation); Follow toggle and edge chevrons (stretch P4); *Add to whiteboard…* in chat (stretch); export beyond *Copy outline* (P5).
+- Not built: *Add to whiteboard…* from a chat message or a fence (only the artifact card's menu has it); PDF export; a file picker for the excerpt (a typed path).
+
+## Follow-up round (02:18 request)
+
+| sha | subject |
+|---|---|
+| bdad00111 | extract the voice-note recorder from Composer into useNoteRecorder (no behaviour change) |
+| b6acefd0e | Add to whiteboard… from an artifact card |
+| c2151f82c | hold-to-talk on the pill |
+| ba04b889d | Follow toggle and off-screen work chevrons |
+| 10e60577c | file excerpt in Add |
+| 59aa17350 | export — note brief, view as a picture |
+
+1. **Add to whiteboard…** (`whiteboard/AddToWhiteboard.tsx`, `place-elsewhere.ts`; one menu item in `chat/ArtifactCard.tsx`'s `ArtifactMenu`): pick a whiteboard or *New whiteboard*; html → `page`, image/svg → `image`, markdown/text/csv → `excerpt` (≤ 16 000 chars), mermaid → `diagram`; other kinds have no item. The card is written through a briefly acquired provider (wait for `live`, one `wb-owner` transaction, release 2.5 s later so the `doc_update` in flight leaves), placed right of the right-most live card (no ink check: the canvas's `freeSpot` needs a mounted canvas). A notice offers *Open*.
+2. **Hold-to-talk:** the recorder moved verbatim into `chat/use-note-recorder.ts`; `Composer.tsx` now calls `useNoteRecorder` (the note handler is captured when recording starts, exactly as the old closure was; `AUDIO_MIMES`, slip rule, early release, wave and audio-session handling unchanged). The pill uses the same `MicButton` (tap → the sheet for system dictation; hold → voice note, slide up locks, left cancels; Esc discards) with `CancelHint`/`DeleteNote`/`RecordingMeta` in the pill; the note is transcribed and sent with the whiteboard as `[voice note, N s] …` with a fresh plan of the marks in view. `components/chat` tests: green (one `ComposerMeta` layout test failed once under the parallel run and passed alone, 18/18).
+3. **Follow + chevrons:** a Follow button (Crosshair) in the cluster toggles `store.follow` (B3's canvas already reacts to `meta.focus`); a finger or mouse press on the canvas turns it off and back on after 60 s (`edges.ts` `FOLLOW_PAUSE_MS`); a toggle in between cancels the return. Chevrons (`edges.ts` `edgeMarks`, tested) point from the edge to each out-of-view placeholder and each card the target session's latest turn touched (`whiteboard_turn`, re-read ~1 s after board changes); tap → `handle.focus` (cut under Reduce Motion). No 218-TEMP was needed: B3's `focus`/`screenRectOf`/`frameRect` exist.
+4. **File excerpt:** Add → *File excerpt* (with a session): `path`, `path:a`, `path:a-b` or `path#La-Lb`, read through `file_view_read(session, path)` (relative to the session's tree); no range → the first 80 lines; capped at 16 000 chars with `end` adjusted (`add.ts` `parseFileRef`/`excerptOf`, tested).
+5. **Export:** ⋯ → *Export as a note* (`export.ts` `briefMarkdown`, tested: title, frames in reading order, loose cards, links, pinned marks; every card a `theuth://whiteboards/<id>#<card>` link; created with `doc_create`, notice with *Open*) and *Copy view as a picture* (hides the cluster, waits two frames, `wb_capture` of the canvas rect → a promised `ClipboardItem` so WKWebView keeps the gesture). In a plain browser it says it needs the app.
+
+Checks after the round: `bun run check` exit 0 (whole UI); `bunx vitest run` over the whiteboard, attach, page-bootstrap, tile-arrival, injected-wrappers and Composer tests: 16 files, 140 tests, all pass. Unverified: the voice note and the PNG copy on a device; chevron placement and Follow against live agent turns.
 - Unverified (no runtime tonight): nothing was rendered in a browser or simulator — layout of pill/cluster/sheet/bubble in light and dark, the keyboard-riding sheet on iPad, native ink end to end (needs B5's plugin and a Pencil), `wb_capture` sizing (the `width` argument is computed as points so the PNG's long side ≈ `maxSide` px).
 
 ## For the orchestrator and other builders
