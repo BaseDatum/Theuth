@@ -88,14 +88,12 @@ fn rename_code(text: &str, name: &str) -> String {
         let mut escaped = false;
         let mut rest = line;
         while let Some(c) = rest.chars().next() {
-            if quote.is_none() || !escaped {
-                if let Some(tail) = rest.strip_prefix(PLACEHOLDER) {
-                    let ident_tail = tail.starts_with('_');
-                    out.push_str(if quote.is_some() && !ident_tail { name } else { &snake });
-                    rest = tail;
-                    escaped = false;
-                    continue;
-                }
+            // Outside a string `escaped` is always false.
+            if !escaped && let Some(tail) = rest.strip_prefix(PLACEHOLDER) {
+                let ident_tail = tail.starts_with('_');
+                out.push_str(if quote.is_some() && !ident_tail { name } else { &snake });
+                rest = tail;
+                continue;
             }
             match (quote, c) {
                 (Some(_), '\\') if !escaped => escaped = true,

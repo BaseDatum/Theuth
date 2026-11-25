@@ -4,6 +4,9 @@
 //! Every tool is one `ask` to [`PLUGINS_ACTOR`]; a missing actor answers "plugins is not running",
 //! a refusal its [`PluginsError`] text. Output: a short text plus `structured` = the reply as JSON.
 //! Descriptions and the prompt are constants (no config in them: the system-prompt cache).
+// `Result<_, ToolOutput>` is the tool-body idiom (the `Err` is what the model reads), as in
+// `sandbox/src/tools.rs`.
+#![allow(clippy::result_large_err)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -415,9 +418,9 @@ mod tests {
             ("plugin_approve_request", Risk::ReadOnly),
         ];
         assert_eq!(all, want);
-        // No tool is an approval path of its own.
-        assert!(![ListTool::HUMAN_ONLY, StatusTool::HUMAN_ONLY, ApproveRequestTool::HUMAN_ONLY].contains(&true));
-        assert!(!ApproveRequestTool::CONSUMES_SECRETS && !ApproveRequestTool::DIRECT);
+        // No tool is an approval path of its own (checked at compile time).
+        const _: () = assert!(!ListTool::HUMAN_ONLY && !StatusTool::HUMAN_ONLY && !ApproveRequestTool::HUMAN_ONLY);
+        const _: () = assert!(!ApproveRequestTool::CONSUMES_SECRETS && !ApproveRequestTool::DIRECT);
     }
 
     #[test]
