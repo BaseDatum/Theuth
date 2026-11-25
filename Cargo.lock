@@ -234,6 +234,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aead-stream"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a901e5bcd15b4a9555a8f17a608d28ef92cf77bc4aa3b4a0c1a3fce1a9cc0bac"
+dependencies = [
+ "aead 0.6.1",
+]
+
+[[package]]
 name = "aes"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -318,8 +327,7 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "async-trait",
- "aws-config",
- "aws-types",
+ "aws-profiles",
  "base64 0.23.1",
  "blake3",
  "chrono",
@@ -834,14 +842,16 @@ dependencies = [
 
 [[package]]
 name = "argon2"
-version = "0.6.0"
+version = "0.6.0-rc.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c"
+checksum = "7af50940b73bf4e16c15c448a2b121c63f2d68e3e54b6a8731673cb4aa0cdff5"
 dependencies = [
  "base64ct",
  "blake2 0.11.0",
  "cpufeatures 0.3.1",
+ "kdf",
  "password-hash 0.6.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -1716,7 +1726,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "hex",
- "http",
+ "http 1.5.0",
  "sha1 0.10.7",
  "time",
  "tokio",
@@ -1762,6 +1772,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-profiles"
+version = "2.30.4"
+dependencies = [
+ "aws-config",
+ "aws-types",
+ "schemars 1.2.3",
+ "serde",
+ "tempfile",
+ "tokio",
+ "ts-rs",
+]
+
+[[package]]
 name = "aws-runtime"
 version = "1.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1778,12 +1801,37 @@ dependencies = [
  "bytes",
  "bytes-utils",
  "fastrand",
- "http",
+ "http 1.5.0",
  "http-body",
  "percent-encoding",
  "pin-project-lite",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aws-sdk-secretsmanager"
+version = "1.125.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea7f719fbeab11b0215659f9b633649e2ebf94469d218304235368024174f7fc"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
 ]
 
 [[package]]
@@ -1806,7 +1854,7 @@ dependencies = [
  "aws-types",
  "bytes",
  "fastrand",
- "http",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -1831,7 +1879,7 @@ dependencies = [
  "aws-types",
  "bytes",
  "fastrand",
- "http",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -1857,7 +1905,7 @@ dependencies = [
  "aws-smithy-xml",
  "aws-types",
  "fastrand",
- "http",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -1876,7 +1924,7 @@ dependencies = [
  "form_urlencoded",
  "hex",
  "hmac 0.13.0",
- "http",
+ "http 1.5.0",
  "percent-encoding",
  "sha2 0.11.1",
  "time",
@@ -1906,7 +1954,7 @@ dependencies = [
  "bytes-utils",
  "futures-core",
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "percent-encoding",
@@ -1921,17 +1969,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "859a81364f8185349c584fb41cd8765a400cf982f447adada590cf008a9f3b85"
 dependencies = [
  "aws-smithy-async",
+ "aws-smithy-protocol-test",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
+ "bytes",
  "h2",
- "http",
+ "http 1.5.0",
+ "http-body",
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "indexmap 2.14.2",
  "pin-project-lite",
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-rustls",
  "tower",
@@ -1950,12 +2004,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-smithy-mocks"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d9a9490933f8faa0aeb1eb9fbb8bf4f1c214b3149c61b3a4074b68030b21bd5"
+dependencies = [
+ "aws-smithy-http-client",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "http 1.5.0",
+]
+
+[[package]]
 name = "aws-smithy-observability"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e86338c869539a581bf161247762a6e87f92c5c075060057b5ed6d06632ed0c"
 dependencies = [
  "aws-smithy-runtime-api",
+]
+
+[[package]]
+name = "aws-smithy-protocol-test"
+version = "0.64.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f76511a0e223ce78deb6a78b8afebda99cb737cfbc8a58d96dcb190f012dd40a"
+dependencies = [
+ "assert-json-diff",
+ "aws-smithy-runtime-api",
+ "base64-simd",
+ "cbor-diag",
+ "ciborium",
+ "http 0.2.12",
+ "pretty_assertions",
+ "regex-lite",
+ "roxmltree 0.14.1",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1986,7 +2071,7 @@ dependencies = [
  "aws-smithy-types",
  "bytes",
  "fastrand",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "pin-project-lite",
@@ -2004,7 +2089,7 @@ dependencies = [
  "aws-smithy-runtime-api-macros",
  "aws-smithy-types",
  "bytes",
- "http",
+ "http 1.5.0",
  "pin-project-lite",
  "tokio",
  "tracing",
@@ -2030,7 +2115,7 @@ checksum = "9543fc722ed4865ab29fb66bd7ed0bef7b029d265ba8c587144511e30006d431"
 dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
- "http",
+ "http 1.5.0",
 ]
 
 [[package]]
@@ -2042,7 +2127,8 @@ dependencies = [
  "base64-simd",
  "bytes",
  "bytes-utils",
- "http",
+ "futures-core",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "itoa 1.0.18",
@@ -2051,6 +2137,8 @@ dependencies = [
  "ryu",
  "serde",
  "time",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -2092,7 +2180,7 @@ dependencies = [
  "bytes",
  "form_urlencoded",
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "hyper",
@@ -2125,7 +2213,7 @@ checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
 dependencies = [
  "bytes",
  "futures-core",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "mime",
@@ -2157,7 +2245,7 @@ dependencies = [
  "bytes",
  "either",
  "fs-err",
- "http",
+ "http 1.5.0",
  "http-body",
  "hyper",
  "hyper-util",
@@ -2443,6 +2531,530 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitwarden-api-api"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-base",
+ "reqwest 0.13.5",
+ "reqwest-middleware",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "bitwarden-api-base"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "http 1.5.0",
+ "reqwest 0.13.5",
+ "reqwest-middleware",
+ "rustls",
+ "rustls-platform-verifier 0.7.1",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "bitwarden-api-identity"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-base",
+ "reqwest 0.13.5",
+ "reqwest-middleware",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "bitwarden-api-key-connector"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-base",
+ "mockall",
+ "reqwest 0.13.5",
+ "reqwest-middleware",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "bitwarden-auth"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-api",
+ "bitwarden-api-identity",
+ "bitwarden-api-key-connector",
+ "bitwarden-core",
+ "bitwarden-crypto",
+ "bitwarden-encoding",
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "bitwarden-policies",
+ "bitwarden-state",
+ "chrono",
+ "ciborium",
+ "http 1.5.0",
+ "reqwest 0.13.5",
+ "reqwest-middleware",
+ "serde",
+ "serde_bytes",
+ "serde_repr",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "bitwarden-collections"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-api-api",
+ "bitwarden-core",
+ "bitwarden-crypto",
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "bitwarden-uuid",
+ "serde",
+ "serde_repr",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "bitwarden-core"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-api",
+ "bitwarden-api-base",
+ "bitwarden-api-identity",
+ "bitwarden-api-key-connector",
+ "bitwarden-core-macro",
+ "bitwarden-crypto",
+ "bitwarden-encoding",
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "bitwarden-logging",
+ "bitwarden-managed-settings-types",
+ "bitwarden-random",
+ "bitwarden-state",
+ "bitwarden-state-bridge-macro",
+ "bitwarden-threading",
+ "bitwarden-uuid",
+ "chrono",
+ "http 1.5.0",
+ "rand 0.10.3",
+ "reqwest 0.13.5",
+ "reqwest-middleware",
+ "schemars 1.2.3",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "serde_qs",
+ "serde_repr",
+ "thiserror 1.0.69",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
+ "zxcvbn",
+]
+
+[[package]]
+name = "bitwarden-core-macro"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "bitwarden-crypto"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "aes 0.9.4",
+ "aes-gcm 0.11.1",
+ "argon2 0.6.0-rc.8",
+ "bitwarden-api-key-connector",
+ "bitwarden-encoding",
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "bitwarden-logging",
+ "bitwarden-random",
+ "bitwarden-sensitive-value",
+ "cbc 0.2.1",
+ "chacha20poly1305 0.11.0",
+ "ciborium",
+ "coset",
+ "ed25519-dalek",
+ "hex",
+ "hkdf 0.13.0",
+ "hmac 0.13.0",
+ "hybrid-array",
+ "ml-dsa",
+ "num-bigint 0.4.8",
+ "num-traits",
+ "pbkdf2 0.13.0",
+ "rand 0.10.3",
+ "rayon",
+ "rsa",
+ "schemars 1.2.3",
+ "serde",
+ "serde_bytes",
+ "serde_repr",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
+ "subtle",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "typenum",
+ "uuid",
+ "xaes-256-gcm",
+ "zeroize",
+ "zeroizing-alloc",
+]
+
+[[package]]
+name = "bitwarden-encoding"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-ffi",
+ "data-encoding",
+ "data-encoding-macro",
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "bitwarden-error"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-error-macro",
+]
+
+[[package]]
+name = "bitwarden-error-macro"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "darling 0.24.1",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "bitwarden-ffi"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-ffi-macro",
+]
+
+[[package]]
+name = "bitwarden-ffi-macro"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "bitwarden-logging"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-ffi",
+ "bitwarden-logging-macro",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "bitwarden-logging-macro"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "bitwarden-managed-settings-types"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "bitwarden-organizations"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-core",
+ "bitwarden-crypto",
+ "bitwarden-ffi",
+ "bitwarden-state",
+ "bitwarden-uuid",
+ "chrono",
+ "serde",
+ "serde_repr",
+ "uuid",
+]
+
+[[package]]
+name = "bitwarden-policies"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-api",
+ "bitwarden-core",
+ "bitwarden-ffi",
+ "bitwarden-organizations",
+ "bitwarden-state",
+ "bitwarden-sync",
+ "bitwarden-uuid",
+ "chrono",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "bitwarden-random"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "rand 0.10.3",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "bitwarden-send"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-api",
+ "bitwarden-api-base",
+ "bitwarden-auth",
+ "bitwarden-core",
+ "bitwarden-crypto",
+ "bitwarden-encoding",
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "bitwarden-state",
+ "bitwarden-sync",
+ "bitwarden-uuid",
+ "bitwarden-vault",
+ "chrono",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "serde_repr",
+ "sha2 0.11.1",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "bitwarden-sensitive-value"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-ffi",
+ "serde",
+]
+
+[[package]]
+name = "bitwarden-ssh"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "bitwarden-random",
+ "block-padding 0.4.2",
+ "ed25519",
+ "ed25519-dalek",
+ "p256",
+ "p384",
+ "p521",
+ "pem-rfc7468",
+ "pkcs8",
+ "rand 0.10.3",
+ "rsa",
+ "serde",
+ "ssh-cipher",
+ "ssh-key",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "bitwarden-state"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "bitwarden-threading",
+ "indexed-db",
+ "js-sys",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tsify",
+]
+
+[[package]]
+name = "bitwarden-state-bridge-macro"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "bitwarden-sync"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-api",
+ "bitwarden-core",
+ "bitwarden-state",
+ "chrono",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bitwarden-threading"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "bitwarden-uuid"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "bitwarden-uuid-macro",
+]
+
+[[package]]
+name = "bitwarden-uuid-macro"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "bitwarden-vault"
+version = "4.0.0"
+source = "git+https://github.com/bitwarden/sdk-internal?rev=2b06afa3b3579af116cd60f83d65b9e411fd2a56#2b06afa3b3579af116cd60f83d65b9e411fd2a56"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-api",
+ "bitwarden-api-base",
+ "bitwarden-collections",
+ "bitwarden-core",
+ "bitwarden-crypto",
+ "bitwarden-encoding",
+ "bitwarden-error",
+ "bitwarden-ffi",
+ "bitwarden-logging",
+ "bitwarden-ssh",
+ "bitwarden-state",
+ "bitwarden-sync",
+ "bitwarden-uuid",
+ "chrono",
+ "data-encoding",
+ "futures",
+ "hmac 0.13.0",
+ "percent-encoding",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "serde_with",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
+ "subtle",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "zxcvbn",
+]
+
+[[package]]
 name = "blake2"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2561,7 +3173,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "hex",
- "http",
+ "http 1.5.0",
  "http-body-util",
  "hyper",
  "hyper-named-pipe",
@@ -3298,6 +3910,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cbor-diag"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc245b6ecd09b23901a4fbad1ad975701fd5061ceaef6afa93a2d70605a64429"
+dependencies = [
+ "bs58",
+ "chrono",
+ "data-encoding",
+ "half",
+ "nom 7.1.3",
+ "num-bigint 0.4.8",
+ "num-rational",
+ "num-traits",
+ "separator",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "cc"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3464,6 +4095,7 @@ dependencies = [
  "chacha20 0.10.2",
  "cipher 0.5.2",
  "poly1305 0.9.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -4181,6 +4813,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "coset"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1eb98d5e9155e2cf7cd942c8b3033097d4563b6fb0a00b9caecb74669555c058"
+dependencies = [
+ "ciborium",
+ "ciborium-io",
+]
+
+[[package]]
 name = "cosmic-text"
 version = "0.14.2"
 source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22b#dd8f335b5bae0d95acfdb3e313d2aecbb85a05c4"
@@ -4599,7 +5241,7 @@ dependencies = [
  "futures",
  "genai",
  "h2",
- "http",
+ "http 1.5.0",
  "prost",
  "prost-build",
  "prost-types",
@@ -5233,6 +5875,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab03c107fafeb3ee9f5925686dbb7a73bc76e3932abb0d2b365cb64b169cf04c"
 
 [[package]]
+name = "diff"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5253,6 +5901,7 @@ dependencies = [
  "const-oid",
  "crypto-common 0.2.2",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]
@@ -5543,6 +6192,12 @@ dependencies = [
  "voice",
  "wire",
 ]
+
+[[package]]
+name = "downcast"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1435fa1053d8b2fbbe9be7e97eca7f33d37b28409959813daefc1446a14247f1"
 
 [[package]]
 name = "downcast-rs"
@@ -6216,6 +6871,17 @@ dependencies = [
 
 [[package]]
 name = "fancy-regex"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1e1dacd0d2082dfcf1351c4bdd566bbe89a2b263235a2b50058f1e130a47277"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata 0.4.18",
+ "regex-syntax 0.8.11",
+]
+
+[[package]]
+name = "fancy-regex"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d301f5bf187b3c295fce6468d3875037a0bccc5f6b151c63cac2f85babf21912"
@@ -6727,6 +7393,15 @@ checksum = "e246562084dde8ebbcc943b261c406ce4f68e5032ec28029a251a47d6a295500"
 dependencies = [
  "num",
  "num-bigint 0.4.8",
+]
+
+[[package]]
+name = "fragile"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8878864ba14bb86e818a412bfd6f18f9eabd4ec0f008a28e8f7eb61db532fcf9"
+dependencies = [
+ "futures-core",
 ]
 
 [[package]]
@@ -8586,7 +9261,7 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http",
+ "http 1.5.0",
  "indexmap 2.14.2",
  "slab",
  "tokio",
@@ -9206,6 +9881,17 @@ dependencies = [
 
 [[package]]
 name = "http"
+version = "0.2.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "601cbb57e577e2f5ef5be8e7b83f0f63994f25aa94d673e54a92d5c516d101f1"
+dependencies = [
+ "bytes",
+ "fnv",
+ "itoa 1.0.18",
+]
+
+[[package]]
+name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
@@ -9230,7 +9916,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
 dependencies = [
  "bytes",
- "http",
+ "http 1.5.0",
 ]
 
 [[package]]
@@ -9241,7 +9927,7 @@ checksum = "23169fe34a5fbcdd3f3862e78fb9b6fccd5f02a6dc6f732547005d45631ce71c"
 dependencies = [
  "bytes",
  "futures-core",
- "http",
+ "http 1.5.0",
  "http-body",
  "pin-project-lite",
 ]
@@ -9269,7 +9955,7 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http",
+ "http 1.5.0",
  "indexmap 2.14.2",
  "slab",
  "smallvec",
@@ -9302,6 +9988,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
 dependencies = [
  "ctutils",
+ "serde",
  "subtle",
  "typenum",
  "zeroize",
@@ -9318,7 +10005,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "h2",
- "http",
+ "http 1.5.0",
  "http-body",
  "httparse",
  "httpdate",
@@ -9349,7 +10036,7 @@ version = "0.27.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa8e654703247911e29c23fbeaa261834bd9bb74efba2f9acddc37bfb127f53"
 dependencies = [
- "http",
+ "http 1.5.0",
  "hyper",
  "hyper-util",
  "log",
@@ -9385,7 +10072,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body",
  "httparse",
  "hyper",
@@ -9791,6 +10478,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "964de6e86d545b246d84badc0fef527924ace5134f30641c203ef52ba83f58d5"
 
 [[package]]
+name = "indexed-db"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78f4ecbb6cd50773303683617a93fc2782267d2c94546e9545ec4190eb69aa1a"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "pin-project-lite",
+ "scoped-tls",
+ "thiserror 2.0.21",
+ "web-sys",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9920,7 +10621,7 @@ dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
  "bytes",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "httpdate",
@@ -10072,7 +10773,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
- "http",
+ "http 1.5.0",
  "ipnet",
  "iroh-base",
  "iroh-dns",
@@ -10233,7 +10934,7 @@ dependencies = [
  "data-encoding",
  "derive_more 2.1.1",
  "getrandom 0.4.3",
- "http",
+ "http 1.5.0",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -10714,7 +11415,7 @@ checksum = "844daecf918f7dfb45ae84aa4ac1f07b514e9369bdfe0352d5369809e2c0827a"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
- "http",
+ "http 1.5.0",
  "jsonrpsee-core",
  "pin-project",
  "rustls",
@@ -10739,7 +11440,7 @@ dependencies = [
  "bytes",
  "futures-timer",
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "jsonrpsee-types",
@@ -10776,7 +11477,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c01a2a627365144221ad5883ce2ea3953e152e29d102f2eeca8cbfc1be4bb286"
 dependencies = [
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "hyper",
@@ -10802,7 +11503,7 @@ version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e6de48c2fb8ba2773f4429c28349576f98d73a3b1d647d963f96df53210312"
 dependencies = [
- "http",
+ "http 1.5.0",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -10814,7 +11515,7 @@ version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06cd5b8daf2d7c0730731a97f96c0d1d0dd38def07001ff80df1cf6063442235"
 dependencies = [
- "http",
+ "http 1.5.0",
  "jsonrpsee-client-transport",
  "jsonrpsee-core",
  "jsonrpsee-types",
@@ -10936,6 +11637,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "kdf"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb9652713a34bd7a2f539adcab233163943bed9c685970db62eb3cb264d625a1"
 
 [[package]]
 name = "keccak"
@@ -11174,7 +11881,7 @@ dependencies = [
  "bytes",
  "either",
  "futures",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "hyper",
@@ -11209,7 +11916,7 @@ checksum = "ca27486a6fbf5e74ec7b411faf1d5bab8a3e489b93f958391c698f27d693014f"
 dependencies = [
  "derive_more 2.1.1",
  "form_urlencoded",
- "http",
+ "http 1.5.0",
  "jiff",
  "k8s-openapi",
  "serde",
@@ -11655,7 +12362,7 @@ dependencies = [
  "hex",
  "hkdf 0.13.0",
  "hmac 0.13.0",
- "http",
+ "http 1.5.0",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -11715,7 +12422,7 @@ dependencies = [
  "displaydoc",
  "either",
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -12422,7 +13129,7 @@ dependencies = [
  "bytes",
  "chrono",
  "document",
- "http",
+ "http 1.5.0",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -13083,6 +13790,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ml-dsa"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f6d49c3f3f0e10e18ca975ffda66f8da0ec36521c1d911adcbc521bf0743f5c"
+dependencies = [
+ "const-oid",
+ "crypto-common 0.2.2",
+ "ctutils",
+ "hybrid-array",
+ "module-lattice",
+ "pkcs8",
+ "shake",
+ "signature",
+ "zeroize",
+]
+
+[[package]]
 name = "ml-kem"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13158,6 +13882,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "mockall"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a6ceddfe3ce334925e96bf420fdb2dcee5bed6c632a168ece622676dadeaf8a"
+dependencies = [
+ "cfg-if",
+ "downcast",
+ "fragile",
+ "mockall_derive",
+ "predicates",
+ "predicates-tree",
+]
+
+[[package]]
+name = "mockall_derive"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfe16fbe8a314aeec0b861ac24e60b1e123e97634bab045475b9d6a18416fd8"
+dependencies = [
+ "cfg-if",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "models"
 version = "2.22.2"
 dependencies = [
@@ -13180,6 +13930,7 @@ dependencies = [
  "ctutils",
  "hybrid-array",
  "num-traits",
+ "zeroize",
 ]
 
 [[package]]
@@ -13304,7 +14055,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "h2",
- "http",
+ "http 1.5.0",
  "httpdate",
  "hyper",
  "monty-fs",
@@ -14460,7 +15211,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "getrandom 0.2.17",
- "http",
+ "http 1.5.0",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -15090,7 +15841,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "hex",
- "http",
+ "http 1.5.0",
  "http-auth",
  "oci-spec",
  "olpc-cjson",
@@ -16744,6 +17495,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
+name = "predicates"
+version = "3.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ada8f2932f28a27ee7b70dd6c1c39ea0675c55a36879ab92f3a715eaa1e63cfe"
+dependencies = [
+ "anstyle",
+ "predicates-core",
+]
+
+[[package]]
+name = "predicates-core"
+version = "1.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cad38746f3166b4031b1a0d39ad9f954dd291e7854fcc0eed52ee41a0b50d144"
+
+[[package]]
+name = "predicates-tree"
+version = "1.0.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0de1b847b39c8131db0467e9df1ff60e6d0562ab8e9a16e568ad0fdb372e2f2"
+dependencies = [
+ "predicates-core",
+ "termtree",
+]
+
+[[package]]
 name = "prefix-trie"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16797,6 +17574,16 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "pretty_assertions"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
+dependencies = [
+ "diff",
+ "yansi",
 ]
 
 [[package]]
@@ -17988,7 +18775,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures-core",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "hyper",
@@ -18029,7 +18816,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "h2",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "hyper",
@@ -18060,6 +18847,21 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+]
+
+[[package]]
+name = "reqwest-middleware"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07bc3f1384cffa4f274dad2d4ddd73aed32fed8f786d96c6be8aa4e5fd3c3b58"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "http 1.5.0",
+ "reqwest 0.13.5",
+ "serde",
+ "thiserror 2.0.21",
+ "tower-service",
 ]
 
 [[package]]
@@ -18205,7 +19007,7 @@ dependencies = [
  "bytes",
  "chrono",
  "futures",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "indexmap 2.14.2",
@@ -18301,6 +19103,15 @@ dependencies = [
  "web",
  "wiremock",
  "zeroize",
+]
+
+[[package]]
+name = "roxmltree"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "921904a62e410e37e215c40381b7117f830d9d89ba60ab5236170541dd25646b"
+dependencies = [
+ "xmlparser",
 ]
 
 [[package]]
@@ -19870,6 +20681,7 @@ dependencies = [
  "chrono",
  "data-encoding",
  "figment",
+ "futures",
  "jsonrpsee",
  "kameo",
  "keyring",
@@ -19895,6 +20707,47 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "wire",
+ "zeroize",
+]
+
+[[package]]
+name = "secrets-aws"
+version = "2.30.4"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "aws-profiles",
+ "aws-sdk-secretsmanager",
+ "aws-smithy-mocks",
+ "secrets",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "secrets-bitwarden"
+version = "2.30.4"
+dependencies = [
+ "async-trait",
+ "bitwarden-api-api",
+ "bitwarden-auth",
+ "bitwarden-collections",
+ "bitwarden-core",
+ "bitwarden-crypto",
+ "bitwarden-send",
+ "bitwarden-sync",
+ "bitwarden-vault",
+ "chrono",
+ "reqwest 0.13.5",
+ "secrets",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
  "zeroize",
 ]
 
@@ -20057,6 +20910,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
 
 [[package]]
+name = "separator"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f97841a747eef040fcd2e7b3b9a220a7205926e60488e673d9e4926d27772ce5"
+
+[[package]]
 name = "seq-macro"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20109,6 +20968,17 @@ checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
 dependencies = [
  "ordered-float 2.10.1",
  "serde",
+]
+
+[[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -20205,6 +21075,18 @@ version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce1fc6db65a611022b23a0dec6975d63fb80a302cb3388835ff02c097258d50"
 dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde_qs"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "475b9310e272827d34113bf8679b6dfb7fa0023ee049764ba003f8f984e8b5d1"
+dependencies = [
+ "itoa 1.0.18",
+ "percent-encoding",
+ "ryu",
  "serde",
 ]
 
@@ -20502,14 +21384,14 @@ version = "2.25.5"
 dependencies = [
  "anyhow",
  "arc-swap",
- "argon2 0.6.0",
+ "argon2 0.6.0-rc.8",
  "async-trait",
  "axum",
  "bytes",
  "cookie",
  "data-encoding",
  "futures",
- "http",
+ "http 1.5.0",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -20961,7 +21843,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac 0.13.0",
- "http",
+ "http 1.5.0",
  "http-body-util",
  "hyper",
  "hyper-rustls",
@@ -21096,7 +21978,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures",
- "http",
+ "http 1.5.0",
  "httparse",
  "log",
  "rand 0.8.8",
@@ -21232,6 +22114,9 @@ name = "sponge-cursor"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
+dependencies = [
+ "zeroize",
+]
 
 [[package]]
 name = "spqr"
@@ -21517,7 +22402,7 @@ version = "0.7.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9a32fae177b74a22aa9c5b01bf7e68b33545be32d9e381e248058d2adc15ce3"
 dependencies = [
- "argon2 0.6.0",
+ "argon2 0.6.0-rc.8",
  "bcrypt-pbkdf",
  "ctutils",
  "ed25519-dalek",
@@ -22366,7 +23251,7 @@ dependencies = [
  "glob",
  "gtk",
  "heck 0.5.0",
- "http",
+ "http 1.5.0",
  "http-range",
  "image",
  "jni 0.21.1",
@@ -22695,7 +23580,7 @@ dependencies = [
  "dirs 7.0.0",
  "flate2",
  "futures-util",
- "http",
+ "http 1.5.0",
  "infer 0.22.0",
  "libc",
  "log",
@@ -22743,7 +23628,7 @@ dependencies = [
  "cookie",
  "dpi",
  "gtk",
- "http",
+ "http 1.5.0",
  "jni 0.21.1",
  "objc2",
  "objc2-ui-kit",
@@ -22766,7 +23651,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1aa9d8b7a120f879f44fdc1053f7b7dbf416bf0bbc6a72b714dec46b782b52f"
 dependencies = [
  "gtk",
- "http",
+ "http 1.5.0",
  "jni 0.21.1",
  "log",
  "objc2",
@@ -22797,7 +23682,7 @@ dependencies = [
  "dom_query",
  "dunce",
  "glob",
- "http",
+ "http 1.5.0",
  "infer 0.22.0",
  "json-patch",
  "log",
@@ -23000,6 +23885,12 @@ dependencies = [
  "phf 0.11.3",
  "phf_codegen 0.11.3",
 ]
+
+[[package]]
+name = "termtree"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "texting_robots"
@@ -23462,7 +24353,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "getrandom 0.4.3",
- "http",
+ "http 1.5.0",
  "httparse",
  "rand 0.10.3",
  "rustls-pki-types",
@@ -23580,7 +24471,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "h2",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "hyper",
@@ -23691,6 +24582,7 @@ dependencies = [
  "uuid",
  "vt100",
  "wire",
+ "zeroize",
 ]
 
 [[package]]
@@ -23723,7 +24615,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "pin-project-lite",
@@ -23746,7 +24638,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "http-range-header",
@@ -24012,6 +24904,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tsify"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea3af6b48c5c5624f7eb3c2f578d1335fadac433321980cae0063e8eb0acaa44"
+dependencies = [
+ "serde",
+ "serde-wasm-bindgen",
+ "tsify-macros",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "tsify-macros"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1e2e93369379d0a527c7d6632b58c55d52db7a106d8afbde3b354f3a57a9f1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals 0.29.1",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "ttf-parser"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -24094,7 +25010,7 @@ checksum = "8628dcc84e5a09eb3d8423d6cb682965dea9133204e8fb3efee74c2a0c259442"
 dependencies = [
  "bytes",
  "data-encoding",
- "http",
+ "http 1.5.0",
  "httparse",
  "log",
  "rand 0.9.5",
@@ -24111,7 +25027,7 @@ checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
 dependencies = [
  "bytes",
  "data-encoding",
- "http",
+ "http 1.5.0",
  "httparse",
  "log",
  "rand 0.9.5",
@@ -24127,7 +25043,7 @@ checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
 dependencies = [
  "bytes",
  "data-encoding",
- "http",
+ "http 1.5.0",
  "httparse",
  "log",
  "rand 0.10.3",
@@ -25123,7 +26039,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841583fc36089d7d59419568ae157f43a5a03a2e5a81ba87c77d1596ef46e922"
 dependencies = [
  "base64 0.23.1",
- "http",
+ "http 1.5.0",
  "httparse",
  "log",
 ]
@@ -26928,7 +27844,7 @@ dependencies = [
  "base64 0.22.1",
  "deadpool",
  "futures",
- "http",
+ "http 1.5.0",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -26984,7 +27900,7 @@ dependencies = [
  "btls-sys",
  "bytes",
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body",
  "http-body-util",
  "http2",
@@ -27017,7 +27933,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
- "http",
+ "http 1.5.0",
  "http-body",
  "http2",
  "httparse",
@@ -27092,7 +28008,7 @@ dependencies = [
  "dunce",
  "gdkx11",
  "gtk",
- "http",
+ "http 1.5.0",
  "javascriptcore-rs",
  "jni 0.21.1",
  "libc",
@@ -27240,6 +28156,19 @@ dependencies = [
  "rusticata-macros",
  "thiserror 2.0.21",
  "time",
+]
+
+[[package]]
+name = "xaes-256-gcm"
+version = "0.1.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0efddf28e82b0708d683ea8383665f65d5de10b758cefedc238a4f9a89a33ae9"
+dependencies = [
+ "aead 0.6.1",
+ "aead-stream",
+ "aes 0.9.4",
+ "aes-gcm 0.11.1",
+ "cipher 0.5.2",
 ]
 
 [[package]]
@@ -27710,6 +28639,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeroizing-alloc"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b5564c80013ee0edbfc4e4d7d66d1a5a44b8adaffbf0103069f51ce0efc5031"
+
+[[package]]
 name = "zerotrie"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -28017,4 +28952,21 @@ dependencies = [
  "serde",
  "syn 3.0.9",
  "winnow 1.0.4",
+]
+
+[[package]]
+name = "zxcvbn"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9eaee90f4a795d1eb4ba6c51e1c1721d4784d550e8efa7b2600f29c867365e0"
+dependencies = [
+ "chrono",
+ "derive_builder",
+ "fancy-regex 0.18.0",
+ "itertools 0.14.0",
+ "lazy_static",
+ "regex",
+ "time",
+ "wasm-bindgen",
+ "web-sys",
 ]
