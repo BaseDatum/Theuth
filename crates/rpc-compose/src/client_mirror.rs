@@ -155,6 +155,8 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         dreaming::DreamNightFinished,
         dreaming::DreamUndone,
         autoresearch::StudyEvent,
+        plugins::PluginUi,
+        plugins::PluginEvent,
     );
     tracing::debug!(
         tag = v["type"].as_str().unwrap_or("?"),

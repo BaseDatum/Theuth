@@ -5,6 +5,7 @@ mod bench_models;
 mod link_cli;
 mod logs;
 mod mcp;
+mod plugin_cli;
 mod secret_cli;
 mod service;
 mod worker;
@@ -198,6 +199,11 @@ enum Cmd {
     Dreaming {
         #[command(subcommand)]
         cmd: DreamingCmd,
+    },
+    /// External plugins (design doc 216): list, scaffold, install, approve, logs.
+    Plugin {
+        #[command(subcommand)]
+        cmd: plugin_cli::PluginCmd,
     },
 }
 
@@ -598,6 +604,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
         Cmd::Mcp { .. } => unreachable!("t mcp is served by mcp::run"),
         Cmd::Double { .. } => unreachable!("t double runs without an engine"),
         Cmd::Dreaming { .. } => unreachable!("t dreaming runs without an engine"),
+        Cmd::Plugin { .. } => unreachable!("t plugin is served by plugin_cli::run"),
     };
     match r {
         Ok(v) => {
@@ -1078,6 +1085,15 @@ agent:
 #   max_concurrent_bringups: 2
 #   snapshots_keep: 5        # oldest auto-snapshots pruned; named ones kept
 #   handoff_timeout_secs: 1800   # desktop_handoff waits this long for Done
+
+# plugins:                  # external plugins (design 216): folders under plugins/, any language
+#   enabled: true           # false: nothing runs; folders and grants.yaml untouched
+#   watch: true             # hot-load plugin.yaml changes
+#   dev: false              # author mode: no code hash in grants, restart on any file change
+#   remote_sessions: false  # also deliver events of sessions owned by another engine of the mesh
+#   query_per_s: 10
+#   input_per_min: 6
+#   request_timeout_ms: 10000
 
 # roster:                    # agents as files in <data_dir>/agents/*.md, one desk each on the hub (design doc 67 §6)
 #   decision_wait_secs: 120  # `escalate` waits this long for a live answer before parking the task
@@ -1638,6 +1654,7 @@ async fn run() -> anyhow::Result<()> {
             .await?;
             std::process::exit(code);
         }
+        Some(Cmd::Plugin { cmd }) => return plugin_cli::run(&data_dir, &config, cmd).await,
         Some(cmd) => return cmd_67(&data_dir, &config, cmd).await,
         None => {}
     }
@@ -2050,6 +2067,7 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
         schedule::rpc_module(server.clone()),
         secrets::rpc_module(server.clone()),
         webprofile::rpc_module(server.clone()),
+        plugins::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
         dreaming::rpc_module(server.clone()),
         autoresearch::rpc_module(server.clone()),
@@ -2208,6 +2226,8 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(sandbox::SandboxPlugin),
         // 210: public web sharing; after mesh (identity, endpoint, vault) and replica (shares table).
         Box::new(share::SharePlugin::engine()),
+        // 216: external plugins; after roster (attention Source), before update.
+        Box::new(plugins::PluginsPlugin),
         // Always registers its actor (183 W-26: contacts need it; `a2a.enabled`
         // gates the HTTP listener) and finishes in the background once `agent`
         // and `secrets` answer, so its place in this list carries no ordering

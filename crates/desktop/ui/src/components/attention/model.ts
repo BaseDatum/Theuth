@@ -29,7 +29,7 @@ export type ListFilter = { kinds: ReadonlySet<string>; project: ProjectFilter; q
 export const EMPTY_FILTER: ListFilter = { kinds: new Set(), project: { type: 'all' }, query: '', subtree: null }
 
 /** Chip order: stop-asks, mesh, yours, receipts; kinds outside it sort after, by name. */
-export const KIND_ORDER: readonly AttentionKind[] = ['approval', 'ask', 'decision', 'secret', 'handoff', 'resume', 'contact_first', 'node', 'home', 'review', 'hire', 'blocked', 'budget', 'show', 'web_view', 'finished', 'double']
+export const KIND_ORDER: readonly AttentionKind[] = ['approval', 'ask', 'decision', 'secret', 'handoff', 'resume', 'contact_first', 'node', 'home', 'review', 'hire', 'blocked', 'budget', 'show', 'web_view', 'finished', 'double', 'plugin']
 
 // An engine before 207 (or a fixture built through `receiveComponent` without the new fields) leaves them undefined:
 // every reader below goes through these, so such an item still lists, searches and sorts.

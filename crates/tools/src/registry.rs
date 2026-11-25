@@ -1151,6 +1151,7 @@ impl ToolRegistry {
                         self.tools.get(name).and_then(|t| match t.source() {
                             ToolSource::Mcp { server, .. } => Some(mcp_server_key(&server)),
                             ToolSource::Native { .. } => None,
+                            ToolSource::Plugin { .. } => None,
                         })
                     });
                     if key.as_ref().is_some_and(|k| h.contains(k)) {

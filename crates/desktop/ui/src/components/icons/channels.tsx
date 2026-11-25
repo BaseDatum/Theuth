@@ -2,6 +2,7 @@
 // `telegram` from 16.36.0, `slack` from 15.22.0 (removed in 16.0.0 at the brand owner's request; the path is CC0 as
 // published). Brand colours, not `currentColor`: the colour is what makes a 14 px mark readable
 // (docs/design/172-channel-origin-ui.md). Slack's single path is split into its four two-piece lobes, each in its colour.
+import { Puzzle } from 'lucide-react'
 import type { SVGProps } from 'react'
 import type { ChannelVia } from "@/rpc/bindings/method.agent.output"
 
@@ -54,7 +55,10 @@ export const TelegramIcon = (props: Props) => (
   </svg>
 )
 
-const ICONS = { slack: SlackIcon, signal: SignalIcon, telegram: TelegramIcon } satisfies Record<ChannelVia, unknown>
+/** 216 §10.3: a plugin's `input` request carries `via: plugin`; no brand mark, the generic plugin glyph. */
+export const PluginChannelIcon = (props: Props) => <Puzzle aria-hidden focusable={false} {...props} />
+
+const ICONS = { slack: SlackIcon, signal: SignalIcon, telegram: TelegramIcon, plugin: PluginChannelIcon } satisfies Record<ChannelVia, unknown>
 
 export const ChannelIcon = ({ via, ...props }: Props & { via: ChannelVia }) => {
   const Icon = ICONS[via]

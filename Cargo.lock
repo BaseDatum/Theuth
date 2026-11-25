@@ -16492,6 +16492,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugins"
+version = "2.22.2"
+dependencies = [
+ "agent",
+ "anyhow",
+ "app",
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
+ "futures",
+ "globset",
+ "hex",
+ "hmac 0.13.0",
+ "jsonrpsee",
+ "kameo",
+ "libc",
+ "meeting",
+ "notify",
+ "platform",
+ "rand 0.10.3",
+ "roster",
+ "rpc-core",
+ "rpc-core-macros",
+ "runtime",
+ "schemars 1.2.3",
+ "secrets",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.11.1",
+ "shlex 2.0.1",
+ "surface",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tools",
+ "tracing",
+ "ts-rs",
+ "uuid",
+ "wire",
+ "zeroize",
+]
+
+[[package]]
 name = "pluralizer"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18344,6 +18388,7 @@ dependencies = [
  "nodes",
  "parking_lot",
  "platform",
+ "plugins",
  "replica",
  "roster",
  "rpc",
@@ -23021,6 +23066,7 @@ dependencies = [
  "monty-types",
  "nodes",
  "platform",
+ "plugins",
  "replica",
  "rmcp",
  "roster",

@@ -231,6 +231,13 @@ pub enum ToolSource {
         /// The entry, scrubbed ([`McpEntry`]).
         entry: McpEntry,
     },
+    /// 216 §8: declared in an external plugin's manifest.
+    Plugin {
+        /// Plugin name (its folder).
+        name: String,
+        /// The manifest's `version:`.
+        version: String,
+    },
 }
 
 impl ToolSource {

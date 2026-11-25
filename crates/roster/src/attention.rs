@@ -91,6 +91,9 @@ pub enum AttentionKind {
     /// `web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same
     /// origin in the same chat is one item; it leaves when the tile closes.
     WebView,
+    /// 216 §10.2: an external plugin waits for a human press — install, widened manifest, or changed
+    /// code. Id `plugin:<name>:<m8>:<c8>:<seq>`. No timeout; Dismiss leaves it awaiting approval.
+    Plugin,
 }
 
 /// One inbox item. `id` is stable across derivations (dismiss / snooze key).
@@ -99,7 +102,7 @@ pub enum AttentionKind {
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AttentionItem {
-    /// `approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.
+    /// `approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…` · `plugin:<name>:<m8>:<c8>:<seq>`.
     pub id: String,
     /// What.
     pub kind: AttentionKind,

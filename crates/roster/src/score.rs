@@ -89,6 +89,9 @@ pub fn base_class(item: &AttentionItem) -> BaseClass {
             _ => Stopped,
         },
         K::Double => Double,
+        // 216 §10.2: an approval card is yours to press; a `plugin-notify:` item is a notice.
+        K::Plugin if id.starts_with("plugin:") => Yours,
+        K::Plugin => Notice,
     }
 }
 
@@ -151,6 +154,8 @@ pub fn base_text(item: &AttentionItem) -> &'static str {
         K::WebView => "web page",
         K::Double => "answered by your double",
         K::Finished => "finished",
+        K::Plugin if id.starts_with("plugin:") => "plugin approval",
+        K::Plugin => "plugin notice",
     }
 }
 

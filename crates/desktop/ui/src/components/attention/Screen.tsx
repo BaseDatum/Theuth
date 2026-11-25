@@ -15,7 +15,7 @@ import { ItemError } from './ItemError'
 import { Why } from './Why'
 import { WebViewScreen } from './WebViewScreen'
 
-const TITLE: Partial<Record<AttentionItem['kind'], string>> = { decision: 'Decision', review: 'Review', ask: 'Question', show: 'Shown to you', web_view: 'Web page', approval: 'Approval', double: 'Double', contact_first: 'First contact', finished: 'Session stopped' }
+const TITLE: Partial<Record<AttentionItem['kind'], string>> = { decision: 'Decision', review: 'Review', ask: 'Question', show: 'Shown to you', web_view: 'Web page', approval: 'Approval', double: 'Double', contact_first: 'First contact', finished: 'Session stopped', plugin: 'Plugin' }
 
 /** 101 D7 / 104 A6: one screen per kind. */
 const SCREEN: Record<AttentionItem['kind'], ComponentType<{ item: AttentionItem }>> = {
@@ -36,6 +36,7 @@ const SCREEN: Record<AttentionItem['kind'], ComponentType<{ item: AttentionItem 
   finished: FinishedScreen,
   contact_first: ContactFirstScreen,
   web_view: WebViewScreen,
+  plugin: HomeScreen, // 216 B0 placeholder; B3 adds PluginInstallScreen
 }
 
 /** The selected item's screen (101 D7, 104 A6): every kind has one, under 207's "Why here". Under `md` a 52 px header with the back chevron. */

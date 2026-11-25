@@ -57,6 +57,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         autoresearch::rpc_module(server.clone()),
         cells::rpc_module(server.clone()),
         share::rpc_module(server.clone()),
+        plugins::rpc_module(server.clone()),
         sandbox::rpc_module(server),
     ]).expect("test RPC descriptors").module
 }

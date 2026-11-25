@@ -33,6 +33,7 @@ sessionsync = { workspace = true }
 replica = { workspace = true }
 roster = { workspace = true }
 webprofile = { workspace = true }
+plugins = { workspace = true }
 tasks = { workspace = true }
 sandbox = { workspace = true }
 artifact = { workspace = true }

@@ -71,6 +71,9 @@ pub fn class_of(item: &AttentionItem) -> Option<AlertClass> {
                     .is_some_and(|d| d.starts_with("paused"))
         }
         K::Finished => return own("finished:").then_some(AlertClass::Finished),
+        // 216 §10.2: an install / widen / code-changed card waits for a human press; a
+        // `plugin-notify:` item is a notice.
+        K::Plugin => own("plugin:"),
         K::Node | K::Show | K::WebView | K::Double => false,
     };
     needs_you.then_some(AlertClass::NeedsYou)
@@ -129,6 +132,8 @@ pub fn why_of(item: &AttentionItem) -> String {
                 },
             }
         }
+        K::Plugin if item.id.starts_with("plugin:") => "a plugin waits for your approval".into(),
+        K::Plugin => String::new(),
         K::Node | K::Show | K::WebView | K::Double => String::new(),
     }
 }

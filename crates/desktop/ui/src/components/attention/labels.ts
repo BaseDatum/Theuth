@@ -20,6 +20,7 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   finished: 'stopped',
   contact_first: 'contact',
   web_view: 'web page',
+  plugin: 'plugin',
 }
 
 /** The chip of one item: a `misplaced:<task>` item (182: the task's agent lives on another machine) is kind `home` but nothing is offline. */

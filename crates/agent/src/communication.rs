@@ -813,7 +813,7 @@ pub struct PeerOrigin {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ChannelOrigin {
-    /// slack | signal | telegram
+    /// slack | signal | telegram | plugin
     pub via: ChannelVia,
     /// dm | group — a Slack channel and a Telegram group, supergroup or forum topic are `group`; Signal is DM-only today.
     pub chat: ChannelChat,
@@ -838,6 +838,8 @@ pub enum ChannelVia {
     Signal,
     /// Telegram (private chat, group, supergroup or forum topic).
     Telegram,
+    /// 216 §10.3: a plugin's `input` request; `ChannelOrigin.from` is the plugin name, `chat` is `dm`.
+    Plugin,
 }
 
 /// 172: a direct conversation or a shared one.
