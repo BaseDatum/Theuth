@@ -16,6 +16,7 @@ import { extFor, putAttachment } from '@/lib/files'
 import { noteText } from '@/lib/voice-note'
 import { usePointerCoarse } from '@/lib/mobile'
 import { notify } from '@/lib/notify'
+import { base64Blob, wbCapture } from '@/lib/wb-capture'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useDark } from '@/lib/theme'
 import type { EngineProvider } from '@/lib/doc/provider'
@@ -42,6 +43,7 @@ import { createWhiteboardStore } from './canvas/store'
 import { useBoard } from './canvas/useBoard'
 import { clusterTimer } from './cluster-timer'
 import { createHost } from './host'
+import { briefMarkdown } from './export'
 import { type EdgeMark, FOLLOW_PAUSE_MS, edgeMarks } from './edges'
 import { type NativeConnection, connectNativeInk } from './native-ink'
 import { sendWhiteboard, withoutImage } from './send/send'
@@ -544,6 +546,36 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
     if (store.getState().clusterOpen) timer.activity()
   }
 
+  // ── Export (P5, cheap parts): a note brief, and the current view as a PNG on the clipboard.
+  const exportBrief = async () => {
+    try {
+      const n = await api.doc_create(`${title || 'Whiteboard'} — brief`, briefMarkdown(board, title, doc), null)
+      notify.success('Brief saved as a note', { action: { label: 'Open', onClick: () => void navigate({ to: '/notes/$id', params: { id: n.id } }) } })
+    } catch (e) {
+      notify.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+  /** The ClipboardItem is built inside the click (Safari/WKWebView keep the gesture for a promised blob). */
+  const copyViewPng = () => {
+    const h = handle.current
+    if (!h) return
+    timer.hide()
+    const png = (async () => {
+      // Two frames: the cluster and its menu are gone from the capture.
+      for (let i = 0; i < 2; i++) await new Promise<void>((r) => requestAnimationFrame(() => r()))
+      const r = h.frameRect()
+      const shot = await wbCapture({ x: r.left, y: r.top, width: r.width, height: r.height })
+      if (!shot) throw new Error('Copying the view as a picture needs the desktop or iPad app')
+      return base64Blob(shot.png)
+    })()
+    const write = typeof ClipboardItem === 'function' && navigator.clipboard?.write ? navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]) : Promise.reject(new Error('This window cannot copy pictures'))
+    write.then(
+      () => notify.success('View copied as a picture'),
+      (e: unknown) => notify.error(e instanceof Error ? e.message : String(e)),
+    )
+    png.catch(() => {})
+  }
+
   const more = (
     <MoreMenu
       title={title}
@@ -554,6 +586,8 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
       archived={Object.values(board.cards).filter((c) => c.state === 'archived').map((c) => ({ id: c.id, title: c.title }))}
       onRestore={(id) => ops.restore(provider.doc, [id])}
       onCopy={() => void navigator.clipboard?.writeText(outlineText(board, title)).then(() => notify.success('Outline copied'), () => notify.error('Could not copy'))}
+      onBrief={() => void exportBrief()}
+      onPng={copyViewPng}
       onClose={onClose}
     />
   )
@@ -776,6 +810,8 @@ function MoreMenu(p: {
   archived: { id: Id; title: string }[]
   onRestore(id: Id): void
   onCopy(): void
+  onBrief(): void
+  onPng(): void
   onClose?: () => void
 }) {
   const [name, setName] = useState(p.title)
@@ -817,6 +853,12 @@ function MoreMenu(p: {
       {toggle('Native Pencil ink', v.inkEngine === 'auto', () => v.set({ inkEngine: v.inkEngine === 'auto' ? 'pointer' : 'auto' }))}
       <button type="button" onClick={p.onCopy} className="wb-press flex min-h-11 w-full items-center rounded-xl px-3 pl-9 text-left text-sm">
         Copy outline
+      </button>
+      <button type="button" onClick={p.onBrief} className="wb-press flex min-h-11 w-full items-center rounded-xl px-3 pl-9 text-left text-sm">
+        Export as a note
+      </button>
+      <button type="button" onClick={p.onPng} className="wb-press flex min-h-11 w-full items-center rounded-xl px-3 pl-9 text-left text-sm">
+        Copy view as a picture
       </button>
       {p.archived.length > 0 && (
         <>
