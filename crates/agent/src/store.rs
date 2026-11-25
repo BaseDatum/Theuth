@@ -732,9 +732,9 @@ const ROOT_HOPS: usize = 32;
 /// [`crate::context::Mask::decode`] exists to prevent; so it must not take or
 /// apply these rows. **69 (201 PC):** `0069_endless_tail` adds the
 /// per-session tail override columns to `sessions`. **70 (201 P1):**
-/// `0070_endless_quality` adds `endless_nodes.quality`. **77 (219):**
-/// `0077_session_always_ask` adds `sessions.always_ask`.
-pub const SESSIONS_WIRE_SCHEMA: u32 = 77;
+/// `0070_endless_quality` adds `endless_nodes.quality`. **78 (219):**
+/// `0078_session_always_ask` adds `sessions.always_ask`.
+pub const SESSIONS_WIRE_SCHEMA: u32 = 78;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -4671,7 +4671,7 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            77,
+            78,
             "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity,endless_tail_mode,endless_tail_low,endless_tail_high,always_ask
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved,peer
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded

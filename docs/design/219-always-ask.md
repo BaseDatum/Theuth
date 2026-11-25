@@ -73,9 +73,9 @@ Consequences:
 ### 3.2 Per chat
 - Registry field: `always_ask_session: HashMap<SessionId, HashSet<String>>`.
 - Journal: `async fn always_ask(&self, _session: SessionId, _names: Vec<String>) {}`, a default no-op on `tools::Journal`. The agent's impl calls `Store::set_session_always_ask(id, &names)`.
-- Migration `crates/agent/migrations/0077_session_always_ask.sql`:
+- Migration `crates/agent/migrations/0078_session_always_ask.sql`:
   - `ALTER TABLE sessions ADD COLUMN always_ask TEXT NULL;`, a JSON array. An empty list is stored as NULL, mirroring `hidden_tools`.
-  - Bump `SESSIONS_WIRE_SCHEMA` 70 → 77 and fix every test that pins it.
+  - Bump `SESSIONS_WIRE_SCHEMA` 70 → 78 and fix every test that pins it.
 - `Store::session_always_ask(id) -> Vec<String>` is the reader.
 - Restore: `Supervisor::inherit_approvals` sends `RestoreAlwaysAsk { session, names }` next to `RestoreHidden`.
 
@@ -163,7 +163,7 @@ async fn set_always_ask(&self, session: Option<SessionId>, tool: String, on: boo
   - (h) loop-local names rejected;
   - (i) write_file to `<data_dir>/config.yaml` raises an always_ask card.
 - `cargo test -p double` covers that the double skips always_ask cards.
-- `cargo test -p agent` covers the store round-trip, the migration and the schema pin at 77, and restore at spawn.
+- `cargo test -p agent` covers the store round-trip, the migration and the schema pin at 78, and restore at spawn.
 - `cargo test -p theuth --test wire_schema_snapshot` and `cargo test -p rpc-compose`.
 - `cargo test -p tui`, plus the slack/telegram/signal crates compile.
 - Desktop: `bun run check` and `bunx vitest run` for the touched files.
@@ -191,3 +191,4 @@ async fn set_always_ask(&self, session: Option<SessionId>, tool: String, on: boo
 - **Unreadable row.** A `sessions.always_ask` row (or parent chain) that cannot be read is logged at error level and marks the session `AlwaysAskUnreadable`: every `Mutating`-or-above call in it and its subagents is always ask until a restore reads the row, and its own list cannot be written meanwhile. Only this path sets the mark.
 - **Replay.** `HonourAnswer` carries `answered_by`; a stored answer for a call that is always ask now is replayed only when a human gave it (§2.3's "unchanged" did not hold for rows answered before the mark was added).
 - **Forwarded removal.** When a removal is forwarded to the owner engine and its card there is refused or times out, the error is `always_ask: removing <name> needs approval on <owner engine id, 8 chars>`.
+- **Migration number.** Design 218 took `0077` (`0077_session_whiteboards.sql`, node-local, schema stays 70) first, so 219's migration is `0078_session_always_ask.sql` and `SESSIONS_WIRE_SCHEMA` is 78, not 77.
