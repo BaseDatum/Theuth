@@ -14,6 +14,9 @@ import { canPopout, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import { parseNote } from '@/lib/voice-note'
 import { useSessionField } from '@/store/sessions'
+import { InsideTileCtx, InsideTileProvider, useInsideTile } from './tile-context'
+
+export { InsideTileCtx, InsideTileProvider, useInsideTile }
 
 /** A chat's title as its header shows it: a voice note's or spoken message's text, a channel message's preview. */
 export const chatTitle = (raw: string): string => parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
@@ -112,7 +115,9 @@ export function TileFrame({
           </Button>
         )}
       </header>
-      <div className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t', className)}>{children}</div>
+      <div className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t', className)}>
+        <InsideTileProvider>{children}</InsideTileProvider>
+      </div>
     </div>
   )
 }

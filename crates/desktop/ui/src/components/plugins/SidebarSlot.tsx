@@ -5,6 +5,7 @@
 // The context menu hides a placement (`plugin_set_hidden`).
 import { Ellipsis, EyeOff } from 'lucide-react'
 import { Fragment, type MouseEvent, type ReactNode, useState } from 'react'
+import { useTileDrag } from '@/components/chat/Panes'
 import { ICON_COUNT, ICON_MARK, ICON_MARK_BOTTOM, RAIL_ITEM } from '@/components/sidebar/Rail'
 import { openPluginTile } from '@/components/tiles/open'
 import {
@@ -120,6 +121,8 @@ function Item({ entry, variant, open, onOpenChange }: { entry: PlacementEntry; v
   const api = useConnection((s) => s.api)
   const [menu, setMenu] = useState(false)
   const { plugin, placement } = entry
+  const surface = surfaceOf(entry)
+  const drag = useTileDrag('plugin', { plugin: plugin.name, placement: surface.id }, placement.label, `${plugin.name}/${surface.id}`)
   const tip = entryTip(entry)
   const click = (ev: MouseEvent) => {
     // Ours, not the popover trigger's toggle: a tile may open instead, and a phone has no trigger (a sheet).
@@ -141,7 +144,7 @@ function Item({ entry, variant, open, onOpenChange }: { entry: PlacementEntry; v
       <Tip variant={variant} label={tip}>
         <PlacementHost plugin={plugin.name} placement={surfaceOf(entry)} open={open} onOpenChange={onOpenChange}>
           <TooltipTrigger asChild>
-            <button type="button" className={variant === 'rail' ? RAIL_ITEM : ROW_ITEM} aria-label={placement.label} data-plugin={plugin.name} onClick={click}>
+            <button type="button" className={variant === 'rail' ? RAIL_ITEM : ROW_ITEM} aria-label={placement.label} data-plugin={plugin.name} {...drag} onClick={click}>
               <span className="relative inline-flex">
                 <PluginIcon icon={placement.icon} />
                 <Marks dot={entryDot(entry)} badge={badgeText(entry.status?.badge)} />

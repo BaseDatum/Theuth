@@ -28,9 +28,23 @@ import { isIsland, isOverlay } from '@/lib/tauri'
 import { PhoneStatusLine } from '@/components/status/PhoneStatusLine'
 import { StatusBar } from '@/components/status/StatusBar'
 import { OnboardingHost } from '@/components/onboarding/OnboardingHost'
+import { useInsideTile } from '@/components/tiles/tile-context'
 
-/** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route; the trail overlay (96 §5.3) likewise. A popout gets the routed column alone. */
-export const Route = createRootRoute({ component: isIsland() || isOverlay() ? Outlet : isPopout() ? Popped : Root })
+/** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route; the trail overlay (96 §5.3) likewise. A popout gets the routed column alone. Inside a view tile, render only the routed page without duplicating the shell chrome. */
+export const Route = createRootRoute({ component: isIsland() || isOverlay() ? Outlet : RootSwitch })
+
+function RootSwitch() {
+  if (useInsideTile()) {
+    return (
+      <ResidentCtx value={false}>
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <Outlet />
+        </div>
+      </ResidentCtx>
+    )
+  }
+  return isPopout() ? <Popped /> : <Root />
+}
 
 /** One chat, one artifact or one sidebar page (`page`) in its own window: the column without sidebar, search, drag
  * targets or the meeting bar. `SidebarProvider` stays because the headers read it, `open` because there is no rail to

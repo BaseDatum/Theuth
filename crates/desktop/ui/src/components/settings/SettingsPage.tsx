@@ -2,6 +2,7 @@ import './small-screens.css'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { SidebarLead, TabBand } from '@/components/nav/SectionBand'
+import { useInsideTile } from '@/components/tiles/tile-context'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { RestartBanner } from '@/components/settings/page/RestartBanner'
 import { placeOf, shownCategories, shownTab, shownTabs } from '@/components/settings/registry'
@@ -72,12 +73,17 @@ function Categories({ current }: { current: SettingsCategory }) {
   const discovery = useConnection(s => s.discovery)
   const sidebar = useSidebar()
   const mac = isMacDesktop()
+  const insideTile = useInsideTile()
   return (
     <nav aria-label="Settings categories" className="flex w-[208px] shrink-0 flex-col border-r border-border-subtle">
       {/* With the rail closed this column meets the window's left edge, so it clears the traffic lights, not the band. */}
       <div
-        data-tauri-drag-region={mac || undefined}
-        className={cn('flex h-[52px] shrink-0 items-center border-b border-border-subtle px-5 text-sm font-semibold', mac && cornerPad(sidebar))}
+        data-tauri-drag-region={(!insideTile && mac) || undefined}
+        className={cn(
+          'flex shrink-0 items-center border-b border-border-subtle px-5 text-sm font-semibold',
+          insideTile ? 'h-10' : 'h-[52px]',
+          !insideTile && mac && cornerPad(sidebar),
+        )}
       >
         Settings
       </div>
@@ -106,10 +112,11 @@ function Categories({ current }: { current: SettingsCategory }) {
 /** 188 S3: `/settings` on a phone: one row per category, opening its first shown tab. */
 export function SettingsHome() {
   const discovery = useConnection(s => s.discovery)
+  const insideTile = useInsideTile()
   return (
     <article data-settings-page="" className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3">
-        <SidebarLead />
+      <header className={cn('flex shrink-0 items-center gap-1 border-b border-border-subtle px-3', insideTile ? 'h-10' : 'h-[52px]')}>
+        {!insideTile && <SidebarLead />}
         <h2 className="px-1 text-sm font-semibold">Settings</h2>
       </header>
       <nav aria-label="Settings categories" className="min-h-0 flex-1 overflow-y-auto p-2">

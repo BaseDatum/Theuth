@@ -1,0 +1,196 @@
+[
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "op": {
+        "op": "list"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LayoutCommandRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "op": {
+            "op": "list"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "op": {
+        "op": "open_view",
+        "path": "/tasks"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LayoutCommandRequested",
+          "id": "00000000-0000-0000-0000-000000000002",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "op": {
+            "op": "open_view",
+            "path": "/tasks"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000003",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "op": {
+        "op": "open_view",
+        "path": "/settings/appearance",
+        "title": "Appearance",
+        "placement": "right",
+        "target": "tile:view::%2Ftasks",
+        "focus": true
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LayoutCommandRequested",
+          "id": "00000000-0000-0000-0000-000000000003",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "op": {
+            "op": "open_view",
+            "path": "/settings/appearance",
+            "title": "Appearance",
+            "placement": "right",
+            "target": "tile:view::%2Ftasks",
+            "focus": true
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000004",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "op": {
+        "op": "close",
+        "pane": "tile:view::%2Ftasks"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LayoutCommandRequested",
+          "id": "00000000-0000-0000-0000-000000000004",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "op": {
+            "op": "close",
+            "pane": "tile:view::%2Ftasks"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000005",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "op": {
+        "op": "focus",
+        "pane": "tile:view::%2Ftasks"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LayoutCommandRequested",
+          "id": "00000000-0000-0000-0000-000000000005",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "op": {
+            "op": "focus",
+            "pane": "tile:view::%2Ftasks"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000006",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "op": {
+        "op": "move",
+        "pane": "tile:view::%2Ftasks",
+        "target": "tile:view::%2Fnotes",
+        "edge": "bottom"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LayoutCommandRequested",
+          "id": "00000000-0000-0000-0000-000000000006",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "op": {
+            "op": "move",
+            "pane": "tile:view::%2Ftasks",
+            "target": "tile:view::%2Fnotes",
+            "edge": "bottom"
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000007",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "op": {
+        "op": "resize",
+        "pane": "tile:view::%2Ftasks",
+        "share": 0.4
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "LayoutCommandRequested",
+          "id": "00000000-0000-0000-0000-000000000007",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "op": {
+            "op": "resize",
+            "pane": "tile:view::%2Ftasks",
+            "share": 0.4
+          }
+        }
+      }
+    }
+  }
+]

@@ -31,6 +31,7 @@ pub mod codeview;
 pub mod export;
 pub mod inline;
 pub mod kind;
+pub mod layout;
 pub mod mesh;
 pub mod pdf;
 pub mod preview;
@@ -67,6 +68,10 @@ pub use codeview::{
 pub use tileview::{
     NoteViewOpened, PtyViewOpened, ShowNoteArgs, ShowNoteTool, ShowPtyArgs, ShowPtyTool,
     ShowWhiteboardArgs, ShowWhiteboardTool, WhiteboardViewOpened,
+};
+pub use layout::{
+    LayoutCallId, LayoutCommandAnswer, LayoutCommandRequested, LayoutCommandResolved, LayoutOp,
+    PaneEdge, PanePlacement,
 };
 pub use webview::{
     ShowWebArgs, ShowWebTool, WebViewCallAnswer, WebViewCallId, WebViewCallRequested,
@@ -805,6 +810,8 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<snapshot::FenceSnapshotResolved>().await?;
     rt.register_wire_event::<webview::WebViewCallRequested>().await?;
     rt.register_wire_event::<webview::WebViewCallResolved>().await?;
+    rt.register_wire_event::<layout::LayoutCommandRequested>().await?;
+    rt.register_wire_event::<layout::LayoutCommandResolved>().await?;
     Ok(())
 }
 
@@ -928,6 +935,21 @@ impl runtime::Plugin for ArtifactPlugin {
                     .ask(::tools::RegisterTool(Arc::new(preview::PagePreviewTool {
                         rt: rt.clone(),
                         stores,
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(layout::ShowViewTool {
+                        rt: rt.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(layout::PaneManageTool {
+                        rt: rt.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(layout::PaneListTool {
+                        rt: rt.clone(),
                     })))
                     .await;
                 let _ = reg

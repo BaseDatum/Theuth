@@ -4,6 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { Contact, Monitor } from 'lucide-react'
 import { expect, test, vi } from 'vitest'
+import { InsideTileProvider } from '@/components/tiles/tile-context'
 import { SectionBand, TabBand } from './SectionBand'
 
 type State = { location: { pathname: string } }
@@ -136,4 +137,21 @@ test('narrow bands wrap every tab with a 40px minimum instead of clipping later 
   expect(html).toContain('max-lg:group-data-[orientation=horizontal]/tabs:h-auto')
   expect(html.match(/max-lg:min-w-10/g)).toHaveLength(6)
   expect(html.match(/max-lg:h-\[52px\]/g)).toHaveLength(6)
+})
+
+test('inside a tile, SectionBand suppresses SidebarLead, cornerPad, and data-tauri-drag-region while keeping compact draggable tabs', () => {
+  env.pathname = '/tasks'
+  env.mac = true
+  env.open = false
+  env.rail = false
+  const html = renderToStaticMarkup(createElement(InsideTileProvider, null, createElement(SectionBand, { group: 'agents' })))
+  expect(tabs(html)).toBe(4)
+  expect(active(html)).toEqual(['Tasks'])
+  expect(html).not.toContain('data-tauri-drag-region')
+  expect(html).not.toContain('pl-20')
+  expect(html).not.toContain('Show sidebar')
+  expect(html).toContain('h-10')
+  expect(html).toContain('data-drag-row="true"')
+  env.mac = false
+  env.open = true
 })

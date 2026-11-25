@@ -31,7 +31,7 @@ import { openBroadcastDialog } from '@/components/chat/broadcast'
 import { NewChatOnMenu, machineRows, openNewChat } from '@/components/chat/NewChatPane'
 import { useMesh } from '@/components/tasks/queries'
 import { createNote } from '@/components/notes/create'
-import { useSessionDrag } from '@/components/chat/Panes'
+import { useSessionDrag, useViewDrag } from '@/components/chat/Panes'
 import { AttentionBadge } from '@/components/hud/AttentionBadge'
 import { useCanRecord } from '@/components/meeting/MeetingList'
 import { settings } from '@/components/chat/slash'
@@ -124,6 +124,12 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // Dragged onto a pane, New chat opens as a draft pane in the split (25 §12.3); a click opens the draft in the
   // focused pane when the view is split, else goes to `/new`.
   const dragNew = useSessionDrag(null, 'New chat')
+  const dragInbox = useViewDrag('/attention', 'Inbox')
+  const dragAgents = useViewDrag(agentsTab?.to ?? '/agents', 'Agents')
+  const dragLibrary = useViewDrag(libraryTab?.to ?? '/artifacts', 'Library')
+  const dragCosts = useViewDrag('/costs', 'Costs')
+  const dragMeeting = useViewDrag('/meetings/new', 'Meeting')
+  const dragSettings = useViewDrag('/settings/appearance', 'Settings')
   // The Chat row's ▸ ("New chat on", only with peers) sits at the right edge; the popout button moves left of it.
   const peers = machineRows(useMesh().data).length > 0
   // Every destination row's "Open in new window" (`SidebarPopoutButton`): the row's own click, in its own window. The
@@ -191,7 +197,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </RailTip>
             <Capability required={attentionRequirements} hide>
               <RailTip label="Inbox">
-                <Link to="/attention" aria-label="Inbox" className={RAIL_ITEM} data-active={section === 'attention' || undefined} data-tour="nav-inbox">
+                <Link to="/attention" aria-label="Inbox" className={RAIL_ITEM} data-active={section === 'attention' || undefined} data-tour="nav-inbox" {...dragInbox}>
                   <span className="relative inline-flex">
                     <Inbox />
                     <AttentionBadge className={ICON_COUNT} />
@@ -230,7 +236,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </Capability>
             {canRecord && (
               <RailTip label="Meeting">
-                <Link to="/meetings/new" aria-label="Meeting" className={RAIL_ITEM} data-active={section === 'meeting' || undefined}>
+                <Link to="/meetings/new" aria-label="Meeting" className={RAIL_ITEM} data-active={section === 'meeting' || undefined} {...dragMeeting}>
                   <span className="relative inline-flex">
                     <Users className="size-[18px]" />
                     <span className={cn(ICON_MARK, 'bg-danger')} aria-hidden />
@@ -240,21 +246,21 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             )}
             {agentsTab && (
               <RailTip label="Agents">
-                <Link to={agentsTab.to} aria-label="Agents" className={RAIL_ITEM} data-active={section === 'agents' || undefined} data-tour="nav-agents">
+                <Link to={agentsTab.to} aria-label="Agents" className={RAIL_ITEM} data-active={section === 'agents' || undefined} data-tour="nav-agents" {...dragAgents}>
                   <Bot />
                 </Link>
               </RailTip>
             )}
             {libraryTab && (
               <RailTip label="Library">
-                <Link to={libraryTab.to} aria-label="Library" className={RAIL_ITEM} data-active={section === 'library' || undefined} data-tour="nav-library">
+                <Link to={libraryTab.to} aria-label="Library" className={RAIL_ITEM} data-active={section === 'library' || undefined} data-tour="nav-library" {...dragLibrary}>
                   <Library />
                 </Link>
               </RailTip>
             )}
             <Capability required={costsRequirements} hide>
               <RailTip label="Costs">
-                <Link to="/costs" preload="intent" aria-label="Costs" className={RAIL_ITEM} data-active={section === 'costs' || undefined} data-tour="nav-costs">
+                <Link to="/costs" preload="intent" aria-label="Costs" className={RAIL_ITEM} data-active={section === 'costs' || undefined} data-tour="nav-costs" {...dragCosts}>
                   <ChartColumn />
                 </Link>
               </RailTip>
@@ -271,6 +277,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 className={RAIL_ITEM}
                 data-active={section === 'settings' || undefined}
                 data-tour="nav-settings"
+                {...dragSettings}
                 onClick={() => void settings(navigate, 'appearance')}
               >
                 <Settings />
@@ -336,7 +343,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           </SidebarMenuItem>
           <Capability required={attentionRequirements} hide><SidebarMenuItem className="group/popout-row" data-tour="nav-inbox">
             <SidebarMenuButton asChild isActive={section === 'attention'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
-              <Link to="/attention">
+              <Link to="/attention" {...dragInbox}>
                 <Inbox /> Inbox
                 <AttentionBadge />
               </Link>
@@ -379,7 +386,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           {canRecord && (
             <SidebarMenuItem className="group/popout-row">
               <SidebarMenuButton asChild isActive={section === 'meeting'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
-                <Link to="/meetings/new">
+                <Link to="/meetings/new" {...dragMeeting}>
                   {/* The label is a span so the menu button's `[&>span:last-child]:truncate` (overflow hidden) hits it, not the icon wrapper whose dot overhangs. */}
                   <span className="relative inline-flex">
                     <Users className="size-4" />
@@ -394,7 +401,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           )}
           {agentsTab && (<SidebarMenuItem className="group/popout-row" data-tour="nav-agents">
             <SidebarMenuButton asChild isActive={section === 'agents'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
-              <Link to={agentsTab.to}>
+              <Link to={agentsTab.to} {...dragAgents}>
                 <Bot /> Agents
               </Link>
             </SidebarMenuButton>
@@ -403,7 +410,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           {/* Artifacts first (Sky, 2026-09-27): the most-opened Library entry; `/library` redirects there too. */}
           {libraryTab && (<SidebarMenuItem className="group/popout-row" data-tour="nav-library">
             <SidebarMenuButton asChild isActive={section === 'library'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
-              <Link to={libraryTab.to}>
+              <Link to={libraryTab.to} {...dragLibrary}>
                 <Library /> Library
               </Link>
             </SidebarMenuButton>
@@ -412,7 +419,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           {/* Sky, 2026-11-02: the costs dashboard (160) gets its own row; the HUD SPEND button stays too. */}
           <Capability required={costsRequirements} hide><SidebarMenuItem className="group/popout-row" data-tour="nav-costs">
             <SidebarMenuButton asChild isActive={section === 'costs'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
-              <Link to="/costs" preload="intent">
+              <Link to="/costs" preload="intent" {...dragCosts}>
                 <ChartColumn /> Costs
               </Link>
             </SidebarMenuButton>
@@ -435,6 +442,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <SidebarMenuButton
               isActive={section === 'settings'}
               className={cn('h-9 rounded-[10px] px-2.5', pad)}
+              {...dragSettings}
               onClick={() => void (isMobile ? navigate({ to: '/settings' }) : settings(navigate, 'appearance'))}
             >
               <Settings /> Settings

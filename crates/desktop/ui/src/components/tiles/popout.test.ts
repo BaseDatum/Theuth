@@ -72,7 +72,16 @@ vi.mock('@/components/chat/JobsSheet', () => ({ JobFilters: Stub, JobList: Stub,
 vi.mock('@/components/notes/NotePage', () => ({ NoteView: Stub }))
 vi.mock('@/components/notes/requirements', () => ({ panelRequirements: {} }))
 vi.mock('@/components/chat/Attachments', () => ({ Original: Stub }))
-vi.mock('@/components/chat/MessageAssistant', () => ({ RemoveButton: Stub }))
+vi.mock('@/components/chat/MessageAssistant', () => ({ RemoveButton: Stub, rehypePlugins: [] }))
+vi.mock('@/components/plugins/PluginSurface', () => ({ PluginSurface: Stub }))
+vi.mock('@/routeTree.gen', () => ({ routeTree: {} }))
+vi.mock('@tanstack/react-router', async (original) => ({
+  ...(await original<object>()),
+  RouterProvider: Stub,
+  createRouter: () => ({ subscribe: () => () => {}, state: { location: { href: '/tasks' } }, navigate: async () => {} }),
+  createMemoryHistory: () => ({ push: () => {}, replace: () => {} }),
+  useNavigate: () => async () => {},
+}))
 vi.mock('@/components/chat/SessionMenu', () => ({ PROMPT_NOTE: '', PromptBody: Stub }))
 vi.mock('@/components/library/Skills', () => ({ SkillBody: Stub }))
 vi.mock('@/components/tasks/graph/TaskGraph', () => ({ TaskGraph: Stub }))
@@ -103,10 +112,12 @@ const SAMPLES: Record<string, unknown> = {
   media: { item: { key: 'o0', name: 'chart.png', path: '/tmp/chart.png', image: true, pdf: false }, session: 's1', active: true },
   memory: {},
   note: { doc: 'd1', title: 'Plan' },
+  plugin: { plugin: 'demo', placement: 'panel' },
   prompt: {},
   skill: { name: 'pdf' },
   'tasks-graph': { project: 'theuth' },
   terminals: {},
+  view: { path: '/tasks', title: 'Tasks' },
   vm: { name: 'box' },
   whiteboard: { doc: 'w1', title: 'Sketch' },
 }
@@ -121,6 +132,7 @@ const WINDOW: Record<string, string> = {
   'tasks-graph': 'page',
   note: 'note',
   terminals: 'pty',
+  view: 'page',
   vm: 'vm',
 }
 

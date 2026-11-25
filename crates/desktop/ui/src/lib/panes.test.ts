@@ -1,6 +1,19 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { tiling, TYPES, untile } from './panes.testing'
-import { draftProject, isDraft, newDraft, prepareStored, shown, STORAGE_KEY, tileLeaf, usePanes, VERSION } from './panes'
+import {
+  draftProject,
+  hasPendingDrop,
+  INSET_TARGET,
+  isDraft,
+  newDraft,
+  placePayload,
+  prepareStored,
+  shown,
+  STORAGE_KEY,
+  tileLeaf,
+  usePanes,
+  VERSION,
+} from './panes'
 import { openTile, tileId } from './tiles'
 import { useWebViews, webLeaf } from './web-views'
 import { useEngines } from '@/link/engines'
@@ -199,4 +212,80 @@ test('a pane framed by zoom navigation is the one at the window corner (`first`)
   expect(usePanes.getState().first).toBe('b')
   ws.navigation.toggle('b')
   expect(usePanes.getState().first).toBe('a')
+})
+
+test('startPayloadDrag + endDrag places standalone view tiles as splits and tabs without a chat owner', () => {
+  const ws = tiling(['a'])
+  const paneEl = document.createElement('div')
+  paneEl.dataset.pane = 'a'
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 400, right: 400, bottom: 400, x: 0, y: 0, toJSON() {} })
+  document.body.appendChild(paneEl)
+  const prevFromPoint = document.elementFromPoint
+  document.elementFromPoint = () => paneEl
+  try {
+    // Drop on right edge band (x = 380 -> fx = 0.95 -> 'right')
+    usePanes.getState().startPayloadDrag({ kind: 'view', path: '/tasks', title: 'Tasks' }, 'Tasks', 0, 0)
+    usePanes.getState().moveDrag(380, 200)
+    expect(usePanes.getState().drag?.target?.edge).toBe('right')
+    const tasksLeaf = usePanes.getState().endDrag(true)
+    expect(tasksLeaf).toBe(tileLeaf(tileId('view', '', '/tasks')))
+    expect(leaves()).toEqual(['a', tasksLeaf!])
+    expect(ws.view('a')!.panelId).not.toBe(ws.view(tasksLeaf!)!.panelId)
+    // Focused stays on the chat leaf; standalone view has empty session owner.
+    expect(usePanes.getState().focused).toBe('a')
+    expect(usePanes.getState().views[tasksLeaf!]?.params).toMatchObject({ session: '', props: { path: '/tasks', title: 'Tasks' } })
+
+    // Drop a second view onto the center of 'a' (x = 200, y = 200 -> 'tab')
+    usePanes.getState().startPayloadDrag({ kind: 'view', path: '/costs', title: 'Costs' }, 'Costs', 0, 0)
+    usePanes.getState().moveDrag(200, 200)
+    expect(usePanes.getState().drag?.target?.edge).toBe('tab')
+    const costsLeaf = usePanes.getState().endDrag(true)
+    expect(costsLeaf).toBe(tileLeaf(tileId('view', '', '/costs')))
+    expect(ws.view(costsLeaf!)!.panelId).toBe(ws.view('a')!.panelId)
+  } finally {
+    document.elementFromPoint = prevFromPoint
+    paneEl.remove()
+  }
+})
+
+test('dragging a view while ws is null targets the inset, queues pendingDrop, and flushes on attachWorkspace', () => {
+  untile()
+  const inset = document.createElement('main')
+  inset.setAttribute('data-slot', 'sidebar-inset')
+  inset.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600, right: 800, bottom: 600, x: 0, y: 0, toJSON() {} })
+  document.body.appendChild(inset)
+  const prevFromPoint = document.elementFromPoint
+  document.elementFromPoint = () => inset
+  try {
+    usePanes.getState().startPayloadDrag({ kind: 'view', path: '/notebooks', title: 'Notebooks' }, 'Notebooks', 0, 0)
+    usePanes.getState().moveDrag(760, 300)
+    expect(usePanes.getState().drag?.target).toMatchObject({ session: INSET_TARGET, edge: 'right' })
+    const dropped = usePanes.getState().endDrag(true)
+    expect(dropped).toBe(tileLeaf(tileId('view', '', '/notebooks')))
+    expect(hasPendingDrop()).toBe(true)
+
+    // Mounting the workspace flushes pendingDrop beside the chat.
+    const ws = tiling(['a'])
+    expect(hasPendingDrop()).toBe(false)
+    expect(leaves()).toEqual(['a', dropped!])
+    expect(ws.view(dropped!)!.panelId).not.toBe(ws.view('a')!.panelId)
+  } finally {
+    document.elementFromPoint = prevFromPoint
+    inset.remove()
+  }
+})
+
+test('prepareStored preserves standalone tile:view panes across reloads while pruning dead session panes', () => {
+  tiling(['a'])
+  usePanes.getState().place('a', 'dead', 'right')
+  openTile({ kind: 'jobs', host: 'dead', props: {} })
+  placePayload('a', { kind: 'view', path: '/tasks', title: 'Tasks' }, 'right')
+  const viewLeaf = tileLeaf(tileId('view', '', '/tasks'))
+  untile()
+
+  const engine = useEngines.getState().active
+  prepareStored({ engine, sessions: new Set(['a']), types: new Set(TYPES) })
+  tiling([], { persisted: true })
+  expect(leaves()).toEqual(['a', viewLeaf])
+  expect(usePanes.getState().views[viewLeaf]?.params).toMatchObject({ session: '', props: { path: '/tasks', title: 'Tasks' } })
 })

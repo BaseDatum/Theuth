@@ -12,6 +12,7 @@ import {
   MousePointer2,
   Network,
   NotebookText,
+  PanelsTopLeft,
   Presentation,
   Puzzle,
   ScrollText,
@@ -40,6 +41,7 @@ import { promptTile } from './kinds/prompt'
 import { skillTile } from './kinds/skill'
 import { tasksGraphTile } from './kinds/tasksGraph'
 import { jobTerminalTile, terminalsTile } from './kinds/terminals'
+import { viewTile } from './kinds/view'
 import { vmTile } from './kinds/vm'
 import { whiteboardTile } from './kinds/whiteboard'
 
@@ -62,6 +64,7 @@ export const TILE_KINDS: Record<string, TileKind> = {
   skill: skillTile,
   'tasks-graph': tasksGraphTile,
   terminals: terminalsTile,
+  view: viewTile,
   vm: vmTile,
   whiteboard: whiteboardTile,
 }
@@ -85,6 +88,7 @@ export const TILE_ICONS: Record<string, LucideIcon> = {
   skill: BookOpen,
   'tasks-graph': Network,
   terminals: SquareTerminal,
+  view: PanelsTopLeft,
   vm: Monitor,
   whiteboard: Presentation,
 }

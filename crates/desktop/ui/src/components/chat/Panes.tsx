@@ -4,19 +4,24 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSidebar } from '@/components/ui/sidebar'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { usePressDrag } from '@/hooks/use-press-drag'
+import { active } from '@/store/engine-scope'
 import { TileHost } from '@/components/tiles/host'
 import { useEngines } from '@/link/engines'
 import {
   attachWorkspace,
   CHAT,
+  chatLeaves,
   DRAFT_TYPE,
+  hasPendingDrop,
   isDraft,
   isFrame,
   newDraft,
   picked,
   prepareStored,
   shown,
+  storedChatLeaves,
   PERSIST,
   STORAGE_KEY,
   tileType,
@@ -25,6 +30,7 @@ import {
   WEB,
   zone,
 } from '@/lib/panes'
+import type { SessionSummary } from '@/rpc/bindings/method.agent.output'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { closeAllTiles } from '@/lib/tiles'
@@ -42,16 +48,72 @@ import { PhoneWebView } from '@/components/chat/PhoneWebView'
  * is the New chat rail item: each drag carries a fresh draft id, and a drop opens a draft pane (`NewChatPane`)
  * without moving the URL. In the phone Sheet fingers never drag: phones do not tile.
  */
+function openWorkspaceForDrop(
+  navigate: ReturnType<typeof useNavigate>,
+  fallbackPath?: string,
+): void {
+  const { leaves, focused } = usePanes.getState()
+  const sessions = active().qc.getQueryData<SessionSummary[]>(queryKeys.sessions) ?? []
+  const listed = new Set(sessions.map((s) => s.id))
+  const ok = (s: string): boolean => !isDraft(s) && (listed.size === 0 || listed.has(s))
+  const laid = chatLeaves(leaves).filter(ok)
+  const target =
+    (focused !== null && laid.includes(focused) ? focused : null) ??
+    laid[0] ??
+    storedChatLeaves().find(ok) ??
+    sessions.find((s) => s.parent === null && s.desk == null && !s.archived)?.id ??
+    sessions[0]?.id ??
+    null
+  if (target) void navigate({ to: '/c/$session', params: { session: target } })
+  else if (fallbackPath) void navigate({ href: fallbackPath })
+  else void navigate({ to: '/new' })
+}
+
 export function useSessionDrag(id: string | null, title: string) {
   const navigate = useNavigate()
-  const { isMobile } = useSidebar()
+  const isMobile = useIsMobile()
   return usePressDrag({
     disabledForFinger: isMobile,
     onStart: (x, y) => usePanes.getState().startDrag(id ?? newDraft(), title, x, y),
     onMove: (x, y) => usePanes.getState().moveDrag(x, y),
     onEnd(drop) {
       const dropped = usePanes.getState().endDrag(drop)
-      if (dropped && !isDraft(dropped)) void navigate({ to: '/c/$session', params: { session: dropped } })
+      if (!dropped) return
+      if (!isDraft(dropped) && !isFrame(dropped)) {
+        void navigate({ to: '/c/$session', params: { session: dropped } })
+      } else if (hasPendingDrop()) {
+        openWorkspaceForDrop(navigate)
+      }
+    },
+  }).props
+}
+
+/** Drag any app view (`/tasks`, `/notebooks`, `/costs`, `/settings/appearance`, …) from the sidebar or a section band into a pane. */
+export function useViewDrag(path: string, title: string) {
+  const navigate = useNavigate()
+  const isMobile = useIsMobile()
+  return usePressDrag({
+    disabledForFinger: isMobile,
+    onStart: (x, y) => usePanes.getState().startPayloadDrag({ kind: 'view', path, title }, title, x, y),
+    onMove: (x, y) => usePanes.getState().moveDrag(x, y),
+    onEnd(drop) {
+      const dropped = usePanes.getState().endDrag(drop)
+      if (dropped && hasPendingDrop()) openWorkspaceForDrop(navigate, path)
+    },
+  }).props
+}
+
+/** Drag a generic tile (`plugin`, etc.) from the sidebar into a pane. */
+export function useTileDrag(tileKind: string, props: unknown, title: string, key?: string) {
+  const navigate = useNavigate()
+  const isMobile = useIsMobile()
+  return usePressDrag({
+    disabledForFinger: isMobile,
+    onStart: (x, y) => usePanes.getState().startPayloadDrag({ kind: 'tile', tileKind, props, key, title }, title, x, y),
+    onMove: (x, y) => usePanes.getState().moveDrag(x, y),
+    onEnd(drop) {
+      const dropped = usePanes.getState().endDrag(drop)
+      if (dropped && hasPendingDrop()) openWorkspaceForDrop(navigate)
     },
   }).props
 }
