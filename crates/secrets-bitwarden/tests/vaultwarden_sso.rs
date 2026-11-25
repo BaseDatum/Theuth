@@ -46,7 +46,10 @@ fn kc() -> String {
 }
 
 fn email() -> String {
-    format!("sso-{}@example.org", &uuid::Uuid::new_v4().simple().to_string()[..8])
+    format!(
+        "sso-{}@example.org",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    )
 }
 
 #[derive(Default)]
@@ -84,7 +87,10 @@ fn backend(email: &str, store: Arc<MemStore>) -> Arc<BwBackend> {
 async fn idp_user(email: &str) {
     let http = reqwest::Client::new();
     let tok: serde_json::Value = http
-        .post(format!("{}/realms/master/protocol/openid-connect/token", kc()))
+        .post(format!(
+            "{}/realms/master/protocol/openid-connect/token",
+            kc()
+        ))
         .form(&[
             ("grant_type", "password"),
             ("client_id", "admin-cli"),
@@ -126,8 +132,13 @@ async fn vw_account(email: &str) -> (String, String) {
         .unwrap();
     let hash = keys.master_password_hash.to_string();
     let token = http
-        .post(format!("{}/identity/accounts/register/send-verification-email", vw()))
-        .json(&serde_json::json!({ "email": email, "name": "sso", "receiveMarketingEmails": false }))
+        .post(format!(
+            "{}/identity/accounts/register/send-verification-email",
+            vw()
+        ))
+        .json(
+            &serde_json::json!({ "email": email, "name": "sso", "receiveMarketingEmails": false }),
+        )
         .send()
         .await
         .unwrap()
@@ -149,7 +160,11 @@ async fn vw_account(email: &str) -> (String, String) {
         .send()
         .await
         .unwrap();
-    assert!(r.status().is_success(), "register: {}", r.text().await.unwrap());
+    assert!(
+        r.status().is_success(),
+        "register: {}",
+        r.text().await.unwrap()
+    );
     let tok: serde_json::Value = http
         .post(format!("{}/identity/connect/token", vw()))
         .form(&[
@@ -168,7 +183,13 @@ async fn vw_account(email: &str) -> (String, String) {
         .json()
         .await
         .unwrap();
-    (tok["access_token"].as_str().expect("access token").to_owned(), hash)
+    (
+        tok["access_token"]
+            .as_str()
+            .expect("access token")
+            .to_owned(),
+        hash,
+    )
 }
 
 /// Turn on authenticator 2FA; returns the seed.
@@ -185,7 +206,9 @@ async fn enable_totp(access: &str, hash: &str) -> String {
         .await
         .unwrap();
     let seed = get["authenticator"]["key"].as_str().unwrap().to_owned();
-    let code = bitwarden_vault::generate_totp(seed.clone(), None).unwrap().code;
+    let code = bitwarden_vault::generate_totp(seed.clone(), None)
+        .unwrap()
+        .code;
     let r = http
         .post(format!("{}/api/two-factor/authenticator", vw()))
         .bearer_auth(access)
@@ -196,7 +219,11 @@ async fn enable_totp(access: &str, hash: &str) -> String {
         .send()
         .await
         .unwrap();
-    assert!(r.status().is_success(), "enable totp: {}", r.text().await.unwrap());
+    assert!(
+        r.status().is_success(),
+        "enable totp: {}",
+        r.text().await.unwrap()
+    );
     seed
 }
 
@@ -234,7 +261,11 @@ async fn browse(authorize_url: &str, user: &str) -> String {
         let status = r.status();
         if status.is_redirection() {
             let loc = r.headers()["location"].to_str().unwrap().to_owned();
-            url = reqwest::Url::parse(&url).unwrap().join(&loc).unwrap().to_string();
+            url = reqwest::Url::parse(&url)
+                .unwrap()
+                .join(&loc)
+                .unwrap()
+                .to_string();
             continue;
         }
         let body = r.text().await.unwrap();
@@ -284,7 +315,10 @@ async fn sso_login_with_2fa_then_master_password_unlock() {
         .sso_complete(
             &begun.state,
             &landed,
-            Some((TwoFactorKind::Authenticator, Zeroizing::new("000000".into()))),
+            Some((
+                TwoFactorKind::Authenticator,
+                Zeroizing::new("000000".into()),
+            )),
         )
         .await;
     assert!(matches!(wrong, Err(ExtError::Denied(_))), "{wrong:?}");
