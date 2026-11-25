@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error as StdError;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -114,12 +115,15 @@ type ListKey = (Option<String>, Option<String>, bool);
 
 /// One AWS Secrets Manager connection.
 pub struct AwsBackend {
+    /// Fixed at build; the D20 delete settings below change live.
     cfg: AwsConnConfig,
     /// A client given from outside (tests, a custom endpoint): `lock` keeps it.
     fixed: bool,
     client: tokio::sync::RwLock<Option<Client>>,
     status: Mutex<ConnStatus>,
     lists: Mutex<HashMap<ListKey, (Instant, ListPage)>>,
+    allow_permanent_delete: AtomicBool,
+    delete_recovery_days: AtomicU8,
 }
 
 impl AwsBackend {
@@ -136,6 +140,8 @@ impl AwsBackend {
 
     fn build(cfg: AwsConnConfig, client: Option<Client>) -> Self {
         Self {
+            allow_permanent_delete: AtomicBool::new(cfg.allow_permanent_delete),
+            delete_recovery_days: AtomicU8::new(cfg.delete_recovery_days),
             cfg,
             fixed: client.is_some(),
             client: tokio::sync::RwLock::new(client),
@@ -144,9 +150,20 @@ impl AwsBackend {
         }
     }
 
-    /// This connection's settings.
+    /// This connection's settings as built (the delete settings may have changed since).
     pub fn config(&self) -> &AwsConnConfig {
         &self.cfg
+    }
+
+    /// D20 `allow_permanent_delete` / `delete_recovery_days` changed. A window outside 7..=30 is
+    /// ignored (the settings layer validates it).
+    pub fn set_delete_policy(&self, allow_permanent: bool, recovery_days: u8) {
+        self.allow_permanent_delete
+            .store(allow_permanent, Ordering::Relaxed);
+        if (7..=30).contains(&recovery_days) {
+            self.delete_recovery_days
+                .store(recovery_days, Ordering::Relaxed);
+        }
     }
 
     async fn client(&self) -> Client {
@@ -593,7 +610,7 @@ impl ExternalBackend for AwsBackend {
     ) -> Result<DeleteOutcome, ExtError> {
         let days = match mode {
             DeleteMode::Recoverable { days } => {
-                let d = days.unwrap_or(self.cfg.delete_recovery_days);
+                let d = days.unwrap_or(self.delete_recovery_days.load(Ordering::Relaxed));
                 if !(7..=30).contains(&d) {
                     return Err(ExtError::Unsupported(format!(
                         "a recovery window of {d} days; AWS allows 7 to 30"
@@ -601,7 +618,7 @@ impl ExternalBackend for AwsBackend {
                 }
                 Some(d)
             }
-            DeleteMode::Permanent if !self.cfg.allow_permanent_delete => {
+            DeleteMode::Permanent if !self.allow_permanent_delete.load(Ordering::Relaxed) => {
                 return Err(ExtError::Denied(format!(
                     "permanent delete is off for {BACKEND}/{c}; Settings › Secrets › {c} › allow_permanent_delete",
                     c = self.cfg.conn
@@ -650,6 +667,13 @@ impl ExternalBackend for AwsBackend {
             *self.client.write().await = None;
         }
         self.forget_lists();
+    }
+
+    fn apply_settings(&self, settings: &secrets::settings::ConnSettings) {
+        self.set_delete_policy(
+            settings.allow_permanent_delete,
+            settings.delete_recovery_days,
+        );
     }
 }
 

@@ -2,6 +2,7 @@
 //! Also the Python runtime worker: `t subprocess` (design doc 08 §9, [`worker`]).
 
 mod bench_models;
+mod external_backends;
 mod link_cli;
 mod logs;
 mod mcp;
@@ -1910,6 +1911,7 @@ async fn run() -> anyhow::Result<()> {
         vec![
             Box::new(tools::ToolsPlugin),
             Box::new(secrets::SecretsPlugin),
+            Box::new(external_backends::ExternalBackendsPlugin), // 221
             Box::new(document::DocumentPlugin),
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
@@ -2186,6 +2188,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
     let mut plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(tools::ToolsPlugin),
         Box::new(secrets::SecretsPlugin),
+        Box::new(external_backends::ExternalBackendsPlugin), // 221
         Box::new(document::DocumentPlugin),
         Box::new(knowledge::KnowledgePlugin),
         Box::new(web::WebPlugin),

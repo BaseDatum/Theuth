@@ -308,9 +308,11 @@ async fn delete_is_recoverable_for_30_days_and_permanent_only_when_allowed() {
     );
     assert_eq!(permanent.num_calls(), 0);
 
-    let mut c = cfg();
-    c.allow_permanent_delete = true;
-    let b = backend(c, &[&recoverable, &permanent]);
+    // The setting turns on live, on the same connection (D20 settings reach it via apply_settings).
+    b.apply_settings(&secrets::settings::ConnSettings {
+        allow_permanent_delete: true,
+        ..Default::default()
+    });
     let out = b
         .delete(&at("app/db", None, 0), DeleteMode::Permanent, None)
         .await
@@ -560,9 +562,10 @@ async fn localstack_round_trip() {
         b.delete(&r, DeleteMode::Permanent, None).await.unwrap_err(),
         ExtError::Denied(_)
     ));
-    let mut c = AwsConnConfig::new("prod", "us-east-1");
-    c.allow_permanent_delete = true;
-    let b = AwsBackend::new(c);
+    b.apply_settings(&secrets::settings::ConnSettings {
+        allow_permanent_delete: true,
+        ..Default::default()
+    });
     let out = b.delete(&r, DeleteMode::Permanent, None).await.unwrap();
     assert_eq!(out.recoverable_until, None);
 }
