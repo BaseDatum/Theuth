@@ -345,10 +345,10 @@ fn called_names(source: &str) -> Vec<(String, BindingKind)> {
         ("Query", BindingKind::Query),
     ] {
         for (open, _) in calls(&toks, word) {
-            if let Some(Tok::Str(name)) = toks.get(open + 1) {
-                if !out.iter().any(|(n, _)| n == name) {
-                    out.push((name.clone(), kind));
-                }
+            if let Some(Tok::Str(name)) = toks.get(open + 1)
+                && !out.iter().any(|(n, _)| n == name)
+            {
+                out.push((name.clone(), kind));
             }
         }
     }

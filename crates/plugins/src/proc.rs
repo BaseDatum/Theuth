@@ -16,6 +16,7 @@ use tokio::io::{
 };
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::PluginsConfig;
 use crate::manifest::RestartPolicy;
@@ -32,6 +33,11 @@ const RESET_AFTER: Duration = Duration::from_secs(60);
 const ID_PREFIX: usize = 4096;
 /// Poll interval of [`stop_tree`].
 const POLL: Duration = Duration::from_millis(50);
+/// Control-lane ceiling in lines: the lane holds what the host itself waits on, so a plugin that
+/// keeps asking without reading stdin overflows it and is treated as crashed (design §6.2).
+const CONTROL_MAX_LINES: usize = 4096;
+/// Control-lane ceiling in bytes.
+const CONTROL_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------------------------
 // Spawn
@@ -103,7 +109,8 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> io::Result<Spawned> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Outbox (D15): shutdown ahead of both lanes, control lane lossless, event lane bounded drop-oldest.
+// Outbox (D15): shutdown ahead of both lanes, `hello` ahead of everything else, control lane
+// lossless up to a ceiling, event lane bounded drop-oldest.
 
 /// Host → plugin outbox (D15). Clones share the same queues.
 #[derive(Clone)]
@@ -112,11 +119,17 @@ pub(crate) struct Outbox(Arc<OutboxInner>);
 struct OutboxInner {
     lanes: Mutex<Lanes>,
     wake: Notify,
+    /// Cancelled when the control lane went over its ceiling.
+    overflow: CancellationToken,
 }
 
 struct Lanes {
     cap: usize,
-    control: VecDeque<Value>,
+    /// `hello`: written before anything else (a pending `lagged` included).
+    first: Option<Vec<u8>>,
+    /// Encoded lines, newline included.
+    control: VecDeque<Vec<u8>>,
+    control_bytes: usize,
     events: VecDeque<Value>,
     /// Events lost since the last `lagged` was written; > 0 = one `lagged` pending.
     dropped: u64,
@@ -140,10 +153,18 @@ impl Lanes {
 
     fn end(&mut self) {
         self.ended = true;
+        self.first = None;
         self.control.clear();
+        self.control_bytes = 0;
         self.events.clear();
         self.dropped = 0;
     }
+}
+
+fn encode(v: &Value) -> Option<Vec<u8>> {
+    let mut line = serde_json::to_vec(v).ok()?;
+    line.push(b'\n');
+    Some(line)
 }
 
 fn now_ms() -> u64 {
@@ -158,7 +179,9 @@ impl Outbox {
         Self(Arc::new(OutboxInner {
             lanes: Mutex::new(Lanes {
                 cap: queue_frames,
+                first: None,
                 control: VecDeque::new(),
+                control_bytes: 0,
                 events: VecDeque::new(),
                 dropped: 0,
                 since_ms: 0,
@@ -166,6 +189,7 @@ impl Outbox {
                 ended: false,
             }),
             wake: Notify::new(),
+            overflow: CancellationToken::new(),
         }))
     }
 
@@ -173,16 +197,48 @@ impl Outbox {
         self.0.lanes.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Queue on the control lane: never dropped, written before events.
-    pub(crate) fn control(&self, msg: Value) {
+    /// The line written before every other one (`hello`, design §6.2); queue it before the
+    /// outbox is shared.
+    pub(crate) fn first(&self, msg: Value) {
+        let Some(line) = encode(&msg) else { return };
         {
             let mut l = self.lanes();
             if l.ended {
                 return;
             }
-            l.control.push_back(msg);
+            l.first = Some(line);
         }
         self.0.wake.notify_one();
+    }
+
+    /// Queue on the control lane: written before events, never dropped. Over
+    /// [`CONTROL_MAX_LINES`] / [`CONTROL_MAX_BYTES`] the outbox ends and [`Outbox::overflowed`]
+    /// fires: the supervisor treats that as a crash.
+    pub(crate) fn control(&self, msg: Value) {
+        let Some(line) = encode(&msg) else { return };
+        {
+            let mut l = self.lanes();
+            if l.ended {
+                return;
+            }
+            if l.control.len() >= CONTROL_MAX_LINES
+                || l.control_bytes + line.len() > CONTROL_MAX_BYTES
+            {
+                l.end();
+                drop(l);
+                self.0.overflow.cancel();
+                self.0.wake.notify_one();
+                return;
+            }
+            l.control_bytes += line.len();
+            l.control.push_back(line);
+        }
+        self.0.wake.notify_one();
+    }
+
+    /// Cancelled once the control lane went over its ceiling.
+    pub(crate) fn overflowed(&self) -> CancellationToken {
+        self.0.overflow.clone()
     }
 
     /// Queue on the event lane; when full the oldest event is dropped and counted.
@@ -240,6 +296,7 @@ impl Outbox {
 
 enum Take {
     Line(Value),
+    Raw(Vec<u8>),
     End(Option<Value>),
     Wait,
 }
@@ -253,6 +310,9 @@ impl Outbox {
         if l.ended {
             return Take::End(None);
         }
+        if let Some(line) = l.first.take() {
+            return Take::Raw(line);
+        }
         if l.dropped > 0 {
             let msg = serde_json::json!({
                 "jsonrpc": "2.0",
@@ -262,8 +322,9 @@ impl Outbox {
             l.dropped = 0;
             return Take::Line(msg);
         }
-        if let Some(m) = l.control.pop_front() {
-            return Take::Line(m);
+        if let Some(line) = l.control.pop_front() {
+            l.control_bytes -= line.len();
+            return Take::Raw(line);
         }
         match l.events.pop_front() {
             Some(m) => Take::Line(m),
@@ -272,9 +333,9 @@ impl Outbox {
     }
 }
 
-/// Write one JSON line per message: a pending `lagged` first, then control, then events; `shutdown`
-/// ahead of all. Ends after `shutdown`/`close` (flushing and shutting `w` down) or on a write error;
-/// either way the outbox accepts nothing more.
+/// Write one JSON line per message: `hello` first, then a pending `lagged`, then control, then
+/// events; `shutdown` ahead of all. Ends after `shutdown`/`close` (flushing and shutting `w`
+/// down) or on a write error; either way the outbox accepts nothing more.
 pub(crate) async fn write_loop<W: AsyncWrite + Unpin>(outbox: Outbox, w: W) -> io::Result<()> {
     let res = pump(&outbox, BufWriter::new(w)).await;
     outbox.lanes().end();
@@ -286,6 +347,7 @@ async fn pump<W: AsyncWrite + Unpin>(outbox: &Outbox, mut w: BufWriter<W>) -> io
     loop {
         match outbox.take() {
             Take::Line(v) => write_line(&mut w, &mut line, &v).await?,
+            Take::Raw(bytes) => w.write_all(&bytes).await?,
             Take::End(last) => {
                 if let Some(v) = last {
                     write_line(&mut w, &mut line, &v).await?;
@@ -590,25 +652,30 @@ impl Backoff {
 // ---------------------------------------------------------------------------------------------
 // .pgids and the orphan reaper (§5 Orphans)
 
-/// `<plugins_dir>/.pgids`: one line `<pgid> <argv joined by space>` per live plugin group.
+/// One lock for every [`Pgids`] handle: supervisors of different plugins share the file.
+static PGIDS_LOCK: Mutex<()> = Mutex::new(());
+
+/// `<plugins_dir>/.pgids`: one line `<pgid>\t<leader start time>\t<argv joined by space>` per
+/// live plugin group. The start time (`ps -o lstart`) keeps a recycled pid from matching.
 pub(crate) struct Pgids {
     path: PathBuf,
-    lock: Mutex<()>,
+}
+
+fn pgids_lock() -> MutexGuard<'static, ()> {
+    PGIDS_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Pgids {
     /// The record at `path` (created on first `add`).
     pub(crate) fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            lock: Mutex::new(()),
-        }
+        Self { path }
     }
 
-    /// Record a spawned group.
-    pub(crate) fn add(&self, pgid: u32, argv: &[String]) {
-        let _g = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let line = format!("{pgid} {}\n", argv.join(" ").replace(['\n', '\r'], " "));
+    /// Record a spawned group whose leader started at `start` ([`leader_start`]).
+    pub(crate) fn add(&self, pgid: u32, start: &str, argv: &[String]) {
+        let _g = pgids_lock();
+        let clean = |s: &str| s.replace(['\n', '\r', '\t'], " ");
+        let line = format!("{pgid}\t{}\t{}\n", clean(start), clean(&argv.join(" ")));
         let res = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -621,7 +688,7 @@ impl Pgids {
 
     /// Drop a group whose tree is gone.
     pub(crate) fn remove(&self, pgid: u32) {
-        let _g = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let _g = pgids_lock();
         let text = match std::fs::read_to_string(&self.path) {
             Ok(t) => t,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return,
@@ -634,7 +701,7 @@ impl Pgids {
         let mut kept = String::with_capacity(text.len());
         for l in text
             .lines()
-            .filter(|l| l.split_whitespace().next() != Some(key.as_str()))
+            .filter(|l| l.split(['\t', ' ']).next() != Some(key.as_str()))
         {
             kept.push_str(l);
             kept.push('\n');
@@ -646,7 +713,7 @@ impl Pgids {
 
     /// Empty the record (engine shutdown, after every tree was killed).
     pub(crate) fn clear(&self) {
-        let _g = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let _g = pgids_lock();
         truncate(&self.path);
     }
 }
@@ -665,8 +732,8 @@ fn truncate(path: &Path) {
     }
 }
 
-/// At start: for each recorded group still alive whose leader's command line still matches the
-/// recorded `run`, SIGTERM, wait `grace`, SIGKILL; then truncate the file.
+/// At start: for each recorded group still alive whose leader has the recorded start time and
+/// still runs the recorded argv, SIGTERM, wait `grace`, SIGKILL; then truncate the file.
 pub(crate) async fn reap_orphans(path: &Path, grace: Duration) {
     let text = match tokio::fs::read_to_string(path).await {
         Ok(t) => t,
@@ -680,14 +747,16 @@ pub(crate) async fn reap_orphans(path: &Path, grace: Duration) {
     {
         let mut stops = tokio::task::JoinSet::new();
         for line in text.lines() {
-            let Some((pgid, run)) = line.split_once(' ') else {
+            let mut parts = line.splitn(3, '\t');
+            let (Some(pgid), Some(start), Some(run)) = (parts.next(), parts.next(), parts.next())
+            else {
                 continue;
             };
             let Ok(pgid) = pgid.parse::<u32>() else {
                 continue;
             };
             // 0 is our own group, 1 is init's: never signal either.
-            if pgid <= 1 {
+            if pgid <= 1 || start.trim().is_empty() {
                 continue;
             }
             let Ok(tree) = ProcessTree::adopt(pgid) else {
@@ -696,10 +765,10 @@ pub(crate) async fn reap_orphans(path: &Path, grace: Duration) {
             if !tree.alive() {
                 continue;
             }
-            let Some(cmd) = leader_command(pgid).await else {
+            let Some((started, cmd)) = leader(pgid).await else {
                 continue;
             };
-            if !command_matches(&cmd, run) {
+            if started != start.trim() || !command_matches(&cmd, run) {
                 continue;
             }
             tracing::info!(pgid, run, "plugins: reaping orphan plugin group");
@@ -712,11 +781,26 @@ pub(crate) async fn reap_orphans(path: &Path, grace: Duration) {
     truncate(path);
 }
 
-/// The leader's command line (`ps -o command= -p <pid>`).
+/// The leader's start time as `ps -o lstart` prints it (stable across `exec`); `None` off unix or
+/// when the process is gone.
+pub(crate) async fn leader_start(pid: u32) -> Option<String> {
+    #[cfg(unix)]
+    {
+        leader(pid).await.map(|(start, _)| start)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The leader's start time and full command line (`ps -ww -o lstart= -o command=`, C locale).
 #[cfg(unix)]
-async fn leader_command(pid: u32) -> Option<String> {
+async fn leader(pid: u32) -> Option<(String, String)> {
     let out = Command::new("ps")
-        .args(["-o", "command=", "-p", &pid.to_string()])
+        .args(["-ww", "-o", "lstart=", "-o", "command=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -725,20 +809,42 @@ async fn leader_command(pid: u32) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let cmd = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    (!cmd.is_empty()).then_some(cmd)
+    split_lstart(String::from_utf8_lossy(&out.stdout).trim())
 }
 
-/// The whole recorded `run`, or else its last word (an interpreter may have exec'd past the shim).
+/// `Wed Nov 25 10:00:00 2026 <command>` → (the five lstart words, the command).
+#[cfg(unix)]
+fn split_lstart(s: &str) -> Option<(String, String)> {
+    let mut rest = s;
+    let mut words = Vec::with_capacity(5);
+    for _ in 0..5 {
+        rest = rest.trim_start();
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        if end == 0 {
+            return None;
+        }
+        words.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    let cmd = rest.trim();
+    (!cmd.is_empty()).then(|| (words.join(" "), cmd.to_owned()))
+}
+
+/// The recorded argv exactly, or (an interpreter shim exec'd into the real binary) the same
+/// arguments after a different program.
 #[cfg(unix)]
 fn command_matches(cmd: &str, run: &str) -> bool {
     let run = run.trim();
-    !run.is_empty()
-        && (cmd.contains(run)
-            || run
-                .split_whitespace()
-                .last()
-                .is_some_and(|last| cmd.contains(last)))
+    if run.is_empty() {
+        return false;
+    }
+    if cmd == run {
+        return true;
+    }
+    match run.split_once(' ') {
+        Some((_, args)) if !args.trim().is_empty() => cmd.ends_with(&format!(" {}", args.trim())),
+        _ => false,
+    }
 }
 
 /// SIGTERM the tree, poll every 50 ms up to `grace`, then SIGKILL.

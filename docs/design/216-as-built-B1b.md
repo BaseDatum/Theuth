@@ -53,7 +53,18 @@ spirit below).
 ## Hand-offs
 
 - Z: OS notification for `notify` at warn/error (deviation 4).
+- Z / roster owner: `cargo check -p plugins --features ts` fails in `crates/roster/src/attention.rs` L374/L388/L392
+  (`#[ts(optional)]` on `Vec` fields, from commit 2ad29fa6d, before 216), so the plugins `ts` derives are unverified.
+- Route `SEED_WAIT` (10 s): frames are held, not dropped, until the meeting set is seeded; with `meeting.enabled`
+  on and no meeting actor (tests), the first frames wait 10 s.
 
 ## Gates
 
-GATES
+All under `/tmp/theuth-build.lock`, crate-scoped:
+
+- `cargo test -p plugins --no-fail-fast` — lib 73/73, `tests/examples.rs` 1/1 (turns + ping, 10 s), `tests/scaffold.rs`
+  (B2) 8/8.
+- `cargo clippy -p plugins --no-deps -- -D warnings` — green.
+- `cargo check -p plugins --features ts` — blocked by roster (hand-off above).
+- `cargo test -p tui tui_commands_are_reserved_plugin_names` — green (TUI component slash specs added to
+  `RESERVED_NAMES`).

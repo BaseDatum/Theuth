@@ -19,14 +19,19 @@ use crate::types::{
 /// The manifest's file name inside a plugin folder.
 pub(crate) const FILE: &str = "plugin.yaml";
 
-/// Built-in slash command names a plugin may not take (without the `/`). B2's TUI test asserts
-/// every `crates/tui` COMMANDS name is in this list.
+/// Built-in slash command names a plugin may not take (without the `/`): the TUI's `COMMANDS`
+/// and its component slash specs (`crates/tui` `components::builtin().slash_specs()`), the
+/// desktop's `slash.ts`, and `plugins`. B2's TUI test `tui_commands_are_reserved_plugin_names`
+/// fails when a TUI command is missing here.
 pub const RESERVED_NAMES: &[&str] = &[
     "a2a",
     "acp",
+    "advisor",
     "agents",
     "approvals",
+    "artifacts",
     "ask",
+    "attach",
     "autoresearch",
     "aws",
     "broadcast",
@@ -35,21 +40,28 @@ pub const RESERVED_NAMES: &[&str] = &[
     "clear",
     "communication",
     "compact",
+    "computer",
     "cost",
+    "dictate",
+    "double",
     "edit",
     "effort",
     "endless",
     "escalate",
     "exit",
+    "files",
     "fork",
     "fractal",
     "jobs",
     "knowledge",
+    "link",
     "login",
     "logout",
     "mcp",
+    "mesh",
     "model",
     "new",
+    "nodes",
     "onboarding",
     "parent",
     "peers",
@@ -61,19 +73,27 @@ pub const RESERVED_NAMES: &[&str] = &[
     "redo",
     "regen",
     "resume",
+    "roster",
+    "sandbox",
+    "schedules",
     "search",
+    "secrets",
     "sessions",
     "shake",
+    "share",
     "skill",
     "skills",
     "subagent",
     "take",
+    "talk",
+    "tasks",
     "terminals",
     "title",
     "todos",
     "tools",
     "undo",
     "vision",
+    "voice",
 ];
 
 /// Keys of `grants.yaml` beside the plugin entries: a plugin may not be named after them.
@@ -504,7 +524,7 @@ pub(crate) fn code_hash(files: &BTreeMap<String, String>) -> String {
         h.update(path.as_bytes());
         h.update([0]);
         h.update(sha.as_bytes());
-        h.update([b'\n']);
+        h.update(b"\n");
     }
     hex::encode(h.finalize())
 }
