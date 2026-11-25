@@ -21,7 +21,7 @@ test('the popover caps at POPOVER_CAP, offers New whiteboard and All whiteboards
   expect(html).not.toContain(`/whiteboards/w${POPOVER_CAP}"`)
   expect(html).toContain('New whiteboard')
   expect(html).toContain('href="/whiteboards"')
-  expect(html).toContain(`All whiteboards (${POPOVER_CAP + 3})`)
+  expect(html.replace(/<!-- -->/g, "")).toContain(`All whiteboards (${POPOVER_CAP + 3})`)
 })
 
 test('an empty list still offers New whiteboard and All whiteboards', () => {
