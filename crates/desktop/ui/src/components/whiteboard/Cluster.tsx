@@ -32,7 +32,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useDark } from '@/lib/theme'
 import type { InkColour, InkTool } from './canvas/model'
 import type { Mode, WbStore } from './canvas/store'
-import { PALETTE, resolveColour } from './native-ink'
+import { INK_COLOURS, inkCss } from './ink/colour'
 
 export type AddKind = 'sticky' | 'note' | 'artifact' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'clipboard'
 
@@ -119,7 +119,7 @@ function InkTools({ store, onActivity }: { store: WbStore; onActivity(): void })
             </ClusterButton>
           </div>
           <div className="flex gap-1 px-1" role="radiogroup" aria-label="Colour">
-            {(Object.keys(PALETTE) as (keyof typeof PALETTE)[]).map((c) => (
+            {(Object.keys(INK_COLOURS) as (keyof typeof INK_COLOURS)[]).map((c) => (
               <button
                 key={c}
                 type="button"
@@ -129,7 +129,7 @@ function InkTools({ store, onActivity }: { store: WbStore; onActivity(): void })
                 onClick={() => pick({ colour: c })}
                 className="grid size-9 place-items-center rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               >
-                <span className="size-6 rounded-full" style={{ background: resolveColour(c, dark), boxShadow: colour === c ? `0 0 0 2px var(--accent, #1f6feb)` : '0 0 0 1px color-mix(in oklab, currentColor 25%, transparent)' }} />
+                <span className="size-6 rounded-full" style={{ background: inkCss(c, dark), boxShadow: colour === c ? `0 0 0 2px var(--accent, #1f6feb)` : '0 0 0 1px color-mix(in oklab, currentColor 25%, transparent)' }} />
               </button>
             ))}
           </div>

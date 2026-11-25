@@ -5,52 +5,9 @@
 
 import { type InkEvent, type NativeInk, type NativeStroke, type StrokeBatch, attachNativeInk } from '@/lib/ink-native'
 import type { CapturedStroke, View, WhiteboardCanvasHandle } from './canvas/api'
-import type { Id, InkColour } from './canvas/model'
+import type { Id } from './canvas/model'
 import type { WbStore } from './canvas/store'
-
-/** §8.6 named ink colours, light / dark. */
-export const PALETTE: Record<Exclude<InkColour, `#${string}`>, [light: string, dark: string]> = {
-  ink: ['#1a1612', '#e8dcc8'],
-  red: ['#d9480f', '#ff7a45'],
-  blue: ['#1f6feb', '#6ea8ff'],
-  green: ['#2f9e44', '#5fd27a'],
-  amber: ['#b7791f', '#f2c14e'],
-  violet: ['#7048e8', '#a78bfa'],
-}
-/** RGB distance under which a picked colour is taken as the named token (so it flips with the theme). */
-const NEAR = 60
-
-const rgb = (hex: string): [number, number, number] | null => {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
-  if (!m?.[1]) return null
-  const n = Number.parseInt(m[1], 16)
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
-}
-
-/** A picked `#rrggbb` → the nearest named token (either theme's shade), else the hex itself. */
-export function nearestColour(hex: string): InkColour {
-  const c = rgb(hex)
-  if (!c) return 'ink'
-  let best: InkColour | null = null
-  let dist = Number.POSITIVE_INFINITY
-  for (const [name, shades] of Object.entries(PALETTE) as [keyof typeof PALETTE, [string, string]][]) {
-    for (const s of shades) {
-      const p = rgb(s) as [number, number, number]
-      const d = Math.hypot(c[0] - p[0], c[1] - p[1], c[2] - p[2])
-      if (d < dist) {
-        dist = d
-        best = name
-      }
-    }
-  }
-  return best && dist <= NEAR ? best : (`#${hex.replace(/^#/, '').toLowerCase()}` as InkColour)
-}
-
-/** A token (or hex) → the `#rrggbb` the native picker shows in this theme. */
-export function resolveColour(colour: InkColour, dark: boolean): string {
-  const named = PALETTE[colour as keyof typeof PALETTE]
-  return named ? named[dark ? 1 : 0] : colour
-}
+import { inkCss, nearestInk } from './ink/colour'
 
 /** One native stroke → world coordinates with the viewport it was drawn under (`world = (pt − t) / zoom`). */
 export function toCaptured(s: NativeStroke): CapturedStroke {
@@ -67,7 +24,7 @@ export function toCaptured(s: NativeStroke): CapturedStroke {
   return {
     pts,
     tool: s.tool,
-    colour: nearestColour(s.colour),
+    colour: nearestInk(s.colour),
     width: s.width / z,
     hasPressure: pts.some((p) => p[2] > 0),
     at: s.t0,
@@ -149,7 +106,7 @@ export async function connectNativeInk(o: {
     } else if (e.kind === 'tool') {
       previous = { tool: st.tool, erase: st.mode === 'erase' }
       if (e.tool === 'eraser') st.set({ mode: 'erase' })
-      else st.set({ tool: e.tool, colour: nearestColour(e.colour), width: e.width, mode: st.mode === 'erase' ? 'idle' : st.mode })
+      else st.set({ tool: e.tool, colour: nearestInk(e.colour), width: e.width, mode: st.mode === 'erase' ? 'idle' : st.mode })
     } else if (e.kind === 'pencil') {
       if (e.action === 'switchEraser') st.set({ mode: st.mode === 'erase' ? 'idle' : 'erase' })
       else if (e.action === 'switchPrevious') {
@@ -166,7 +123,7 @@ export async function connectNativeInk(o: {
   const push = () => {
     const s = o.store.getState()
     const enabled = shown && s.inkEngine === 'auto' && s.mode !== 'link' && s.mode !== 'erase' && !s.composerOpen
-    ink.setTool({ tool: s.mode === 'erase' ? 'eraser' : s.tool, colour: resolveColour(s.colour, o.dark()), width: s.width })
+    ink.setTool({ tool: s.mode === 'erase' ? 'eraser' : s.tool, colour: inkCss(s.colour, o.dark()), width: s.width })
     ink.setEnabled(enabled)
     ink.setPickerVisible(shown && !s.composerOpen && s.inkEngine === 'auto')
     if (s.nativeInk !== enabled) s.set({ nativeInk: enabled })

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { NativeStroke, StrokeBatch } from '@/lib/ink-native'
 import type { CapturedStroke } from './canvas/api'
-import { createNativeBridge, nearestColour, resolveColour, toCaptured } from './native-ink'
+import { createNativeBridge, toCaptured } from './native-ink'
 
 const stroke = (seq: number, over: Partial<NativeStroke> = {}): NativeStroke => ({
   seq,
@@ -81,19 +81,5 @@ describe('native ink bridge', () => {
     const ok = createNativeBridge({ commit: async (s) => s.map(() => 'x'), ack: (s) => acks.push(s) })
     await ok.onBatch(batch(1, [stroke(1)]))
     expect(acks).toEqual([[1]])
-  })
-})
-
-describe('colours', () => {
-  it('a picked colour near a token becomes the token (so it flips with the theme)', () => {
-    expect(nearestColour('#1a1612')).toBe('ink')
-    expect(nearestColour('#E8DCC8')).toBe('ink')
-    expect(nearestColour('#6ea8ff')).toBe('blue')
-    expect(nearestColour('#00ffcc')).toBe('#00ffcc')
-  })
-  it('a token resolves per theme', () => {
-    expect(resolveColour('ink', false)).toBe('#1a1612')
-    expect(resolveColour('ink', true)).toBe('#e8dcc8')
-    expect(resolveColour('#123456', true)).toBe('#123456')
   })
 })
