@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Shield, ShieldCheck, ShieldOff } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useMesh } from '@/components/tasks/queries'
@@ -78,38 +78,32 @@ export function useComposerMeta(session: string | null | undefined): MetaData | 
 }
 
 /**
- * The thin row inside the top of the composer box, above the text: `[model · effort ⌄] … 13%  ~$44`. The model picker
- * (`model`, `ComposerModel`) sits left and truncates first; the numbers sit right, subdued, borderless, both always
- * shown. The percent's tooltip carries the tokens and the cache hit rate; the cost's the exact total, and a click opens
- * the breakdown (`CostDialog`, `/cost`). Either side may be absent (the new-chat draft has no numbers). `hidden` (a
- * voice note recording): the row keeps its height, empty, so the box does not jump.
+ * The thin row inside the top of the composer box, above the text: `13%  ~$44`, right-aligned, subdued, borderless,
+ * both always shown (the model picker is on the bar, left of talk/mic/send). The percent's tooltip carries the tokens
+ * and the cache hit rate; the cost's the exact total, and a click opens the breakdown (`CostDialog`, `/cost`).
+ * `hidden` (a voice note recording): the row keeps its height, empty, so the box does not jump.
  */
-export function ComposerMeta({ session, meta, model, hidden = false }: { session: string | null; meta: MetaData | null; model?: ReactNode; hidden?: boolean }) {
+export function ComposerMeta({ session, meta, hidden = false }: { session: string; meta: MetaData; hidden?: boolean }) {
   return (
-    <div data-composer-meta="" aria-hidden={hidden || undefined} className={cn('relative z-10 flex h-4 items-center justify-end gap-2 px-1 text-[11px] leading-4 text-fg-tertiary tabular-nums', hidden && 'invisible')}>
-      {model}
-      {meta && session && (
-        <div data-meta-numbers="" className="flex shrink-0 items-center gap-2">
-          {meta.pct !== null && (
-            <span data-meta="context" className={cn('cursor-default', PCT_TONE[band(meta.pct)])} title={meta.ctxTitle}>
-              {meta.estimated && '≈'}
-              {meta.pct}%
-            </span>
-          )}
-          {meta.cost && (
-            <button
-              type="button"
-              data-meta="cost"
-              tabIndex={hidden ? -1 : undefined}
-              className="rounded-sm outline-none hover:text-fg-secondary focus-visible:ring-2 focus-visible:ring-ring/50"
-              title={meta.cost.title}
-              aria-label={`Cost ${meta.cost.exact}`}
-              onClick={() => window.dispatchEvent(new CustomEvent('theuth:open-cost', { detail: { session } }))}
-            >
-              {meta.cost.short}
-            </button>
-          )}
-        </div>
+    <div data-composer-meta="" aria-hidden={hidden || undefined} className={cn('flex h-4 items-center justify-end gap-2 px-1 text-[11px] leading-4 text-fg-tertiary tabular-nums', hidden && 'invisible')}>
+      {meta.pct !== null && (
+        <span data-meta="context" className={cn('cursor-default', PCT_TONE[band(meta.pct)])} title={meta.ctxTitle}>
+          {meta.estimated && '≈'}
+          {meta.pct}%
+        </span>
+      )}
+      {meta.cost && (
+        <button
+          type="button"
+          data-meta="cost"
+          tabIndex={hidden ? -1 : undefined}
+          className="rounded-sm outline-none hover:text-fg-secondary focus-visible:ring-2 focus-visible:ring-ring/50"
+          title={meta.cost.title}
+          aria-label={`Cost ${meta.cost.exact}`}
+          onClick={() => window.dispatchEvent(new CustomEvent('theuth:open-cost', { detail: { session } }))}
+        >
+          {meta.cost.short}
+        </button>
       )}
     </div>
   )

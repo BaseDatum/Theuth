@@ -1,12 +1,13 @@
 import { Capability, useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Brain, ChevronLeft, ChevronRight, Eye, RotateCcw } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { Brain, ChevronLeft, ChevronRight, Eye, RotateCcw, Sparkles } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { routed } from '@/lib/owner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { usePanes } from '@/lib/panes'
 import { touch } from '@/lib/platform'
@@ -19,6 +20,7 @@ import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useAdvisor, useSetAdvisor } from './advisor'
 import { useKnowledgeHarvester, useKnowledgeHarvesterDefault, useSetKnowledgeHarvester } from './knowledge-harvester'
 import { ModelPicker, QuietModelTrigger, stubModel } from './ModelPicker'
+import { LABEL_CHROME, modelLabels, modelStep, textWidth } from './model-label'
 import { modelRequirements } from './requirements'
 import { surfaceOf } from './slash'
 
@@ -95,6 +97,8 @@ type Props = {
   own?: boolean
   /** `false`: `/model` never opens this one (a second picker of a draft another picker already answers for). */
   slash?: boolean
+  /** The px the composer bar leaves the label (its slot, measured); the label shortens in steps to fit. Unset: full. */
+  room?: number
 }
 
 /** The picker's state shared by the composer's label, its popover and its touch dialog. */
@@ -467,14 +471,12 @@ function PickerDialogContent({ m, session, advisor }: { m: Model; session: strin
 }
 
 /** 215 C1: the label's box, shared by the plain-text states so the toolbar never jumps when the harness comes and goes. */
-/** The composer's top row (`ComposerMeta`): a 16 px label in the numbers' small type, one step brighter so it reads as
- * clickable. `-my-2 py-2` gives a finger a 32 px target without making the row taller; `-mx-1 px-1` lines the text up
- * with the box's text. It truncates (`min-w-0`) before the numbers on the right give way. */
-const QUIET = '-mx-1 -my-2 h-auto min-w-0 max-w-full px-1 py-2 text-[11px] leading-4 has-[>svg]:px-1 [&_svg]:size-3'
+const QUIET = 'h-8 max-w-full min-w-0'
 
 /**
- * 215 C1: the chat model picker — a quiet "Model · effort ⌄" label at the left of the composer's top row (every
- * `<Composer>` host, the new-chat draft too), opening the cmdk picker upward (desktop popover above the input; on touch 127 §6's top-of-band dialog, 194 D1).
+ * 215 C1: the chat model picker — a quiet "Model · effort ⌄" label on the composer's bar, left of talk/mic/send (every
+ * `<Composer>` host, the new-chat draft too). As the bar narrows the label shortens in steps (`modelLabels`,
+ * `modelStep`: `Opus 5.5`, `Opus`, then a sparkle icon with the full label in its tooltip), opening the cmdk picker upward (desktop popover above the input; on touch 127 §6's top-of-band dialog, 194 D1).
  * The model name with a cmdk-filtered list from `list_models`, the selected model's effort levels as chips under its
  * row, the Advisor and Knowledge harvester rows under the list. A fresh chat keeps its model and effort pick in the UI
  * until submit creates the session (148 R1: never the default). An ACP child (75 §8) gets the same picker over its
@@ -490,6 +492,19 @@ export function ComposerModel(props: Props) {
   )
 }
 
+/** The local tag beside the full label (`LocalTag`: 10 px text, padding and border, the gap). */
+const LOCAL_TAG = 36
+
+/** The step for `room` px: the label widths measured in the app's own font (once per label change), then `modelStep`. */
+function useLabelStep(room: number | undefined, labels: { full: string; short: string; family: string }, local: boolean) {
+  const widths = useMemo((): [number, number, number] => {
+    const family = typeof document === 'undefined' ? 'system-ui' : getComputedStyle(document.body).fontFamily || 'system-ui'
+    const w = (t: string) => textWidth(t, `13px ${family}`) + LABEL_CHROME
+    return [w(labels.full) + (local ? LOCAL_TAG : 0), w(labels.short), w(labels.family)]
+  }, [labels.full, labels.short, labels.family, local])
+  return room === undefined ? 0 : modelStep(room, widths)
+}
+
 function ComposerModelBody(props: Props) {
   const [open, setOpen] = useState(false)
   // 125 §8.2: opened from the pill → the Advisor level first; a normal open starts on the models level.
@@ -498,42 +513,72 @@ function ComposerModelBody(props: Props) {
   useOpenOnSlash(props, () => setOpen(true))
   useOpenAdvisor(props.session, () => (setAdvisor(true), setOpen(true)))
   const resume = m.resume && (
-    <Button variant="ghost" size="sm" className="-my-2 h-auto shrink-0 gap-1 px-1 py-2 text-[11px] leading-4 text-fg-tertiary has-[>svg]:px-1 [&_svg]:size-3" title="restart the harness process in this session's stored context (session/load)" onClick={() => void m.resume?.()}>
+    <Button variant="ghost" size="sm" className="h-7 shrink-0 gap-1 px-2 text-xs text-fg-tertiary" title="restart the harness process in this session's stored context (session/load)" onClick={() => void m.resume?.()}>
       <RotateCcw className="size-3.5" /> Resume
     </Button>
   )
+  const { effort: harnessEffort } = harnessGroups(m.harness ?? [])
+  const effortLabel = m.agent ? harnessCurrent(harnessEffort, harnessEffort && m.pending[harnessEffort.id]) : m.effort
+  // Every hook before the plain-text returns below.
+  const local = !m.agent && !!m.current?.local
+  const labels = modelLabels(m.agent ? harnessLabel(m) : m.name, effortLabel)
+  const step = useLabelStep(props.room, labels, local)
   if (m.watching) {
     return (
-      <span className={cn(QUIET, 'flex items-center text-fg-secondary')} title="the harness runs this subagent; its model is not yours to pick" aria-disabled>
+      <span className={cn(QUIET, 'flex items-center px-2 text-[13px] text-fg-tertiary')} title="the harness runs this subagent; its model is not yours to pick" aria-disabled>
         <span className="min-w-0 truncate">{m.harnessModel ?? '—'}</span>
       </span>
     )
   }
   if (m.agent && !m.harness) {
     return (
-      <span className={cn(QUIET, 'flex items-center gap-1 text-fg-secondary')} title={m.harness === null ? 'harness process not running' : 'External harness'}>
+      <span className={cn(QUIET, 'flex items-center gap-1 px-2 text-[13px] text-fg-tertiary')} title={m.harness === null ? 'harness process not running' : 'External harness'}>
         <span className="min-w-0 truncate">{harnessLabel(m)}</span>
         {resume}
       </span>
     )
   }
-  const { effort: harnessEffort } = harnessGroups(m.harness ?? [])
-  const effortLabel = m.agent ? harnessCurrent(harnessEffort, harnessEffort && m.pending[harnessEffort.id]) : m.effort
   const onOpenChange = (o: boolean) => (setOpen(o), !o && setAdvisor(false))
-  const trigger = <QuietModelTrigger data-tour="chat-model" size="sm" className={cn(QUIET, 'text-fg-secondary')} name={m.agent ? harnessLabel(m) : m.name} effort={effortLabel} local={!m.agent && m.current?.local} />
+  const trigger =
+    step === 3 ? (
+      <Button variant="ghost" data-tour="chat-model" data-step={step} aria-label={labels.full} className="size-9 shrink-0 rounded-full text-fg-tertiary hover:text-fg-secondary data-[state=open]:bg-layer-2">
+        <Sparkles className="size-4" />
+      </Button>
+    ) : (
+      <QuietModelTrigger
+        data-tour="chat-model"
+        data-step={step}
+        size="sm"
+        className={QUIET}
+        name={step === 0 ? m.agent ? harnessLabel(m) : m.name : step === 1 ? labels.short : labels.family}
+        effort={step === 0 ? effortLabel : null}
+        local={step === 0 && local}
+        title={step === 0 ? undefined : labels.full}
+      />
+    )
+  // The icon step's name is only in its tooltip (and its aria-label).
+  const shown =
+    step === 3 ? (
+      <Tooltip>
+        <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+        <TooltipContent>{labels.full}</TooltipContent>
+      </Tooltip>
+    ) : (
+      trigger
+    )
   // Above the input the list is capped by the visible band (a short window, the keyboard), as in `ModelCombobox`.
   const list = 'max-h-[min(24rem,calc(var(--visible-band)-6rem))]'
   return (
     <>
       {touch() ? (
         <Dialog open={open} onOpenChange={onOpenChange}>
-          <DialogTrigger asChild>{trigger}</DialogTrigger>
+          <DialogTrigger asChild>{shown}</DialogTrigger>
           <PickerDialogContent m={m} session={props.session} advisor={advisor} />
         </Dialog>
       ) : (
         <Popover open={open} onOpenChange={onOpenChange}>
-          <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-          <PopoverContent side="top" align="start" sideOffset={8} className="w-80 p-0">
+          <PopoverTrigger asChild>{shown}</PopoverTrigger>
+          <PopoverContent side="top" align="end" sideOffset={8} className="w-80 p-0">
             {m.agent ? <HarnessPicker m={m} listClassName={list} /> : <ModelCommand m={m} session={props.session} advisor={advisor} listClassName={list} />}
           </PopoverContent>
         </Popover>
