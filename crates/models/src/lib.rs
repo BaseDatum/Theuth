@@ -416,6 +416,12 @@ impl Catalog {
         cat
     }
 
+    /// `provider` ships in the bundled models.dev catalog (a `models.json`
+    /// block for any other id belongs to a custom provider, live or removed).
+    pub fn is_bundled(provider: &str) -> bool {
+        BUNDLED.contains_key(provider)
+    }
+
     /// genai adapter namespace for a models.dev provider id; unknown ids pass through unchanged,
     /// which is what makes `ollama/llama3` → `ollama::llama3` work with no entry.
     pub fn adapter(provider: &str) -> &str {

@@ -131,8 +131,8 @@ function LoginButton({ l, logins }: { l: LoginInfo | undefined; logins: Logins }
 const SUB = 'mt-6 text-[13px] font-semibold'
 
 /**
- * One list of model providers (162 D2/D9): the built-in key providers (85 §0.9: OpenCode Zen, OpenCode Go, OpenRouter,
- * keyed by the `opencode` / `opencode-go` / `openrouter` secret through the masked `set_secret` entry; the value is never read back) and the OAuth
+ * One list of model providers (162 D2/D9): the built-in key providers (85 §0.9: Google, OpenCode Zen, OpenCode Go, OpenRouter,
+ * keyed by the `google` / `opencode` / `opencode-go` / `openrouter` secret through the masked `set_secret` entry; the value is never read back) and the OAuth
  * providers, then the local model servers (177 U1), then the other custom OpenAI-compatible providers (key sent once
  * with `add_provider`, never echoed). A custom or local row expands to its models' limits (177 U2). A provider with a
  * login carries it on its row (188 A6); a login with no provider row gets a row of its own after the built-ins.

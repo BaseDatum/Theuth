@@ -326,7 +326,7 @@ impl Component for ProvidersLogin {
         Declaration { id: "providers-login", interests: &[Interest { topic: "agent.login", version: 1, variants: &["LoginFinished"] }], slash: &[
             ("/login", "[name]", "log in to a provider or MCP server (picker without name)"),
             ("/logout", "<name>", "forget a login"),
-            ("/provider", "[add [name [url [key]]] | refresh <name> | rm <name> | limits <provider> <model> <context> [output] | find]", "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for a custom provider's name, url, key (no key for a local server); refresh lists a provider's models again; limits sets a model's context/output (0 = unknown); find probes local model servers"),
+            ("/provider", "[add [name [url [key]]] | refresh <name> | rm <name> | limits <provider> <model> <context> [output] | find]", "providers: built-in google / opencode (Zen) / opencode-go / openrouter keyed via /secrets add; add prompts for a custom provider's name, url, key (no key for a local server); refresh lists a provider's models again; limits sets a model's context/output (0 = unknown); find probes local model servers"),
         ], bindings: &[] }
     }
     fn decode(&self, event: &TopicEvent, _: &CoreView<'_>) -> Option<Msg> {

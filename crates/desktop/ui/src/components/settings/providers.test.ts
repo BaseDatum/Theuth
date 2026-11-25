@@ -98,6 +98,14 @@ test('built-in labels and key notes', () => {
   expect(builtinKeyNote('zen')).toBe('zen key (Settings > Models > Providers)')
 })
 
+test('Google: a built-in row keyed by the `google` secret, labelled, first in engine order', () => {
+  const t = text(render([row('google', true, false), row('opencode', true, true, true), row('openrouter', true, false)]))
+  expect(t).toContain('Google')
+  expect(t).toContain('no key (secret `google`)')
+  expect(t.indexOf('Google')).toBeLessThan(t.indexOf('OpenCode Zen'))
+  expect(builtinKeyNote('google')).toBe('Google key (Settings > Models > Providers)')
+})
+
 test('OpenCode Go: a built-in row between Zen and OpenRouter, keyed by the `opencode-go` secret, refreshable without a key', () => {
   const t = text(render([row('opencode', true, true, true), row('opencode-go', true, false, true), row('openrouter', true, false, false)]))
   expect(t.indexOf('OpenCode Zen')).toBeLessThan(t.indexOf('OpenCode Go'))

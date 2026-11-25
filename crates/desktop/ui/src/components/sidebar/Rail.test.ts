@@ -182,6 +182,17 @@ test('clicking a chat in the popover closes it; the rail stays collapsed', async
   expect(sidebar.open).toBe(false)
 })
 
+test('a pinned chat\'s popover row shows the muted pin leftmost, before its title; an unpinned row shows none', async () => {
+  await mount()
+  await click(icon('h:pinned'))
+  const row = popover()!.querySelector<HTMLAnchorElement>('a[href="/c/pin"]')!
+  const pin = row.querySelector('[role="img"][aria-label="Pinned"]')!
+  expect(pin.querySelector('.lucide-pin')).not.toBeNull()
+  expect(row.firstElementChild).toBe(pin)
+  await click(icon('p:verified-listings'))
+  expect(popover()!.querySelector('a[href="/c/v1"] [aria-label="Pinned"]')).toBeNull()
+})
+
 test('Show all expands the sidebar and asks it to reveal that section', async () => {
   await mount()
   await click(icon('p:theuth'))

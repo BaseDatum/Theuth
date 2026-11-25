@@ -10629,13 +10629,9 @@ impl Message<ListModels> for Agents {
         _: ListModels,
         _: &mut Context<Self, Self::Reply>,
     ) -> Vec<ModelInfo> {
-        let hide_google =
-            google_shadowed(&self.auth.gateways.read().unwrap_or_else(|e| e.into_inner()));
         let mut out: Vec<ModelInfo> = self
-            .catalog
-            .providers()
-            .filter(|p| (self.configured)(Catalog::adapter(&p.id)))
-            .filter(|p| !(hide_google && p.id == "google"))
+            .listed_providers()
+            .into_iter()
             .flat_map(|p| {
                 let local = self.provider_local(&p.id);
                 p.models
@@ -11356,8 +11352,32 @@ impl Message<Logout> for Agents {
 
 /// genai's OpenRouter base URL, shown on its Connections row and listed by Refresh.
 const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/";
+/// genai's Gemini API base URL (on [`crate::backend::GEMINI_API_HOST`]), shown
+/// on the built-in `google` row and listed by Refresh.
+const GOOGLE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/";
+/// 85 §0.9: the built-in key providers, keyed by a secret rather than a
+/// providers.yaml row, in Settings › Models › Providers order.
+const BUILTIN_KEY_PROVIDERS: [&str; 4] = ["google", "opencode", "opencode-go", "openrouter"];
 
 impl Agents {
+    /// The catalog providers the picker lists: configured, not shadowed by a
+    /// gateway on the Gemini API host (`google_shadowed`), and either bundled
+    /// or a live custom provider — a `models.json` block left behind by a
+    /// removed providers.yaml row (e.g. an old `gemini` gateway) is not listed.
+    fn listed_providers(&self) -> Vec<&models::Provider> {
+        // `configured` reads the gateways too: take what is needed and release the lock.
+        let (hide_google, custom): (bool, HashSet<String>) = {
+            let gateways = self.auth.gateways.read().unwrap_or_else(|e| e.into_inner());
+            (google_shadowed(&gateways), gateways.keys().cloned().collect())
+        };
+        self.catalog
+            .providers()
+            .filter(|p| Catalog::is_bundled(&p.id) || custom.contains(&p.id))
+            .filter(|p| (self.configured)(Catalog::adapter(&p.id)))
+            .filter(|p| !(hide_google && p.id == "google"))
+            .collect()
+    }
+
     /// The Connections row of built-in or custom provider `name` (85 §0.9, 162 D6);
     /// `None` for a name that is neither.
     fn provider_info(&self, name: &str) -> Option<ProviderInfo> {
@@ -11380,6 +11400,12 @@ impl Agents {
             "openrouter" => {
                 let k = self.auth.openrouter_key().is_some();
                 (OPENROUTER_ENDPOINT.to_owned(), true, k, k, None)
+            }
+            // A hand-written providers.yaml `google` row predates the built-in
+            // row and keeps its own (custom) row.
+            "google" if self.auth.gateway(name).is_none() => {
+                let k = self.auth.google_key().is_some();
+                (GOOGLE_ENDPOINT.to_owned(), true, k, k, None)
             }
             _ => {
                 let g = self.auth.gateway(name)?;
@@ -11514,6 +11540,13 @@ impl Agents {
                 OPENROUTER_ENDPOINT.to_owned(),
                 self.auth.openrouter_key(),
             ),
+            // genai's Gemini listing already drops the `models/` prefix, so
+            // the ids stay `google/<id>` like the bundled block's.
+            "google" if self.auth.gateway(name).is_none() => (
+                AdapterKind::Gemini,
+                GOOGLE_ENDPOINT.to_owned(),
+                self.auth.google_key(),
+            ),
             _ => {
                 let (added, removed) = match self.auth.gateway(name) {
                     Some(g) if g.key.is_empty() && !g.local() => {
@@ -11579,6 +11612,27 @@ impl Agents {
             removed,
         })
     }
+
+    /// Settings › Models › Providers: the built-ins first, then the custom
+    /// providers by name (a legacy `google` row stands in for the built-in).
+    fn list_providers(&self) -> Vec<ProviderInfo> {
+        let mut custom: Vec<String> = self
+            .auth
+            .gateways
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .filter(|n| !BUILTIN_KEY_PROVIDERS.contains(&n.as_str()))
+            .cloned()
+            .collect();
+        custom.sort();
+        BUILTIN_KEY_PROVIDERS
+            .map(str::to_owned)
+            .into_iter()
+            .chain(custom)
+            .filter_map(|name| self.provider_info(&name))
+            .collect()
+    }
 }
 
 impl Message<ListProviders> for Agents {
@@ -11589,22 +11643,7 @@ impl Message<ListProviders> for Agents {
         _: ListProviders,
         _: &mut Context<Self, Self::Reply>,
     ) -> Vec<ProviderInfo> {
-        let mut custom: Vec<String> = self
-            .auth
-            .gateways
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .keys()
-            .cloned()
-            .collect();
-        custom.sort();
-        // 85 §0.9: the built-ins first, keyed by a secret rather than a providers.yaml row.
-        ["opencode", "opencode-go", "openrouter"]
-            .map(str::to_owned)
-            .into_iter()
-            .chain(custom)
-            .filter_map(|name| self.provider_info(&name))
-            .collect()
+        self.list_providers()
     }
 }
 
@@ -12337,6 +12376,17 @@ impl Auth {
             .or_else(|| env_key("OPEN_ROUTER_API_KEY"))
     }
 
+    /// The Gemini API key of the built-in `google` provider — vault `google`
+    /// (its Settings row), else genai's `gemini` (stored before), else
+    /// `GEMINI_API_KEY`, `GOOGLE_API_KEY` or `GOOGLE_GENERATIVE_AI_API_KEY`.
+    pub(crate) fn google_key(&self) -> Option<String> {
+        self.key("google")
+            .or_else(|| self.key("gemini"))
+            .or_else(|| env_key("GEMINI_API_KEY"))
+            .or_else(|| env_key("GOOGLE_API_KEY"))
+            .or_else(|| env_key("GOOGLE_GENERATIVE_AI_API_KEY"))
+    }
+
     /// A login is in force for genai namespace `ns`: no key in the vault and
     /// tokens on disk.
     pub(crate) fn login(&self, ns: &str) -> bool {
@@ -12427,6 +12477,10 @@ pub(crate) fn client(auth: Auth) -> anyhow::Result<Client> {
             // 85 §0.6: OpenRouter accepts the `openrouter` name and env too.
             if m.adapter_kind == AdapterKind::OpenRouter {
                 return Ok(keys.openrouter_key().map(AuthData::Key));
+            }
+            // The `google` row's key, or the older `gemini` one.
+            if m.adapter_kind == AdapterKind::Gemini {
+                return Ok(keys.google_key().map(AuthData::Key));
             }
             // No vault key: `None` hands genai the adapter's own default
             // (its env var, or anonymous for local servers such as omlx and
@@ -12533,7 +12587,8 @@ fn load_catalog(data_dir: &Path, auth: &Auth) -> Catalog {
 /// adapter needing no key (`ollama`). `cursor` is not a genai adapter: only
 /// a login configures it. Bedrock has no key env, so SigV4 counts as
 /// configured only when [`bedrock_configured`] finds credentials to use.
-/// `opencode` (Zen), `opencode_go` (Go) and `open_router` are keyed by name or env (85 §2).
+/// `opencode` (Zen), `opencode_go` (Go), `open_router` and `gemini` (`google`)
+/// are keyed by name or env (85 §2).
 pub(crate) fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
     Arc::new(move |ns: &str| {
         match ns {
@@ -12541,6 +12596,8 @@ pub(crate) fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> 
             "opencode" => return auth.opencode_key().is_some(),
             "opencode_go" => return auth.opencode_go_key().is_some(),
             "open_router" => return auth.openrouter_key().is_some(),
+            // A custom provider named `gemini` still counts below.
+            "gemini" if auth.google_key().is_some() => return true,
             _ => {}
         }
         auth.key(ns).is_some()
@@ -14347,6 +14404,200 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(target.model.adapter_kind, AdapterKind::OpenRouter);
         assert_eq!(target.auth.single_key_value().unwrap(), "ork");
+    }
+
+    /// Whether a Google key env var is set (process-global, not exercised).
+    fn google_env() -> bool {
+        ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"]
+            .iter()
+            .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+    }
+
+    /// The built-in `google` row stores its key under `google`; the older
+    /// `gemini` secret still counts. `configured("gemini")` (the bundled
+    /// `google` block's namespace) and genai's Gemini resolver read both.
+    #[tokio::test]
+    async fn google_key_reads_the_google_secret_then_the_legacy_gemini_one() {
+        let scratch = crate::test_dir("google-key");
+        let dir = scratch.path().to_path_buf();
+        let vault = Arc::new(
+            secrets::Vault::open(&dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let auth = Auth {
+            vault: Some(vault.clone()),
+            ..Auth::stub(&dir)
+        };
+        let is = configured(auth.clone());
+        assert_eq!(is("gemini"), google_env());
+
+        vault.set("gemini", "legacy", None, "test").await.unwrap();
+        assert!(is("gemini") && auth.google_key().as_deref() == Some("legacy"));
+        vault.set("google", "gk", None, "test").await.unwrap();
+        assert_eq!(auth.google_key().as_deref(), Some("gk"));
+
+        let catalog = Catalog::load(&dir);
+        let model = catalog
+            .resolve("google/gemini-2.5-flash", &|_| true)
+            .unwrap();
+        let target = client(auth)
+            .unwrap()
+            .resolve_service_target(model.genai.as_str())
+            .await
+            .unwrap();
+        assert_eq!(target.model.adapter_kind, AdapterKind::Gemini);
+        assert_eq!(target.auth.single_key_value().unwrap(), "gk");
+    }
+
+    /// Settings › Models › Providers lists `google` as a built-in key provider
+    /// on genai's Gemini base URL, configured by its secret; a hand-written
+    /// providers.yaml `google` row takes its place once, as a custom row.
+    #[tokio::test]
+    async fn list_providers_has_a_builtin_google_row() {
+        let (_scratch, mut a) = agents().await;
+        let vault = Arc::new(
+            secrets::Vault::open(&a.rt.data_dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        a.auth.vault = Some(vault.clone());
+        let names = |a: &Agents| {
+            a.list_providers()
+                .into_iter()
+                .map(|p| p.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&a), ["google", "opencode", "opencode-go", "openrouter"]);
+        let row = a.provider_info("google").unwrap();
+        assert_eq!(row.base_url, GOOGLE_ENDPOINT);
+        assert!(row.builtin && row.models > 0);
+        assert_eq!((row.configured, row.has_key), (google_env(), google_env()));
+        if !google_env() {
+            assert_eq!(
+                a.refresh_provider_models("google").await.unwrap_err(),
+                "google has no key; set it first"
+            );
+        }
+
+        vault.set("google", "gk", None, "test").await.unwrap();
+        let row = a.provider_info("google").unwrap();
+        assert!(row.configured && row.has_key && row.refreshable);
+
+        a.auth.gateways.write().unwrap().insert(
+            "google".into(),
+            crate::providers::Gateway {
+                base_url: "https://gw.example/v1/".into(),
+                key: "k".into(),
+                runtime: None,
+                protocol: None,
+            },
+        );
+        assert_eq!(names(&a), ["google", "opencode", "opencode-go", "openrouter"]);
+        let row = a.provider_info("google").unwrap();
+        assert!(!row.builtin && row.base_url == "https://gw.example/v1/");
+    }
+
+    /// Refresh on `google` keeps the bundled ids: genai's Gemini listing
+    /// drops the API's `models/` prefix, so the merged block holds
+    /// `google/gemini-2.5-flash`, never `google/models/gemini-2.5-flash`.
+    #[tokio::test]
+    async fn google_listing_ids_merge_as_bundled_ids() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let (_scratch, mut a) = agents().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models"))
+            .and(header("x-goog-api-key", "gk"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    { "name": "models/gemini-2.5-flash" },
+                    { "name": "models/gemini-9-test" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let ids = a
+            .client
+            .all_model_names(
+                AdapterKind::Gemini,
+                (
+                    Endpoint::from_owned(format!("{}/v1beta/", server.uri())),
+                    AuthData::Key("gk".into()),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids, ["gemini-2.5-flash", "gemini-9-test"]);
+        let catalog = a.catalog.clone();
+        let (added, removed) = crate::providers::write_models(
+            &a.rt.data_dir,
+            "google",
+            &ids,
+            crate::providers::Listing::Builtin(&catalog),
+        )
+        .unwrap();
+        assert_eq!((added, removed), (vec!["gemini-9-test".to_owned()], vec![]));
+        a.reload_catalog().await;
+        assert!(a.catalog.get("google/gemini-2.5-flash").is_some());
+        assert!(a.catalog.get("google/gemini-9-test").is_some());
+        assert!(
+            !a.catalog
+                .providers()
+                .flat_map(|p| p.models.keys())
+                .any(|id| id.starts_with("models/"))
+        );
+    }
+
+    /// A `models.json` block left by a removed custom provider (an old
+    /// `gemini` gateway whose secret is still in the vault) is not listed;
+    /// the same block with a live providers.yaml row is.
+    #[tokio::test]
+    async fn list_models_skips_an_orphaned_models_json_block() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        let vault = Arc::new(
+            secrets::Vault::open(&dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        vault.set("gemini", "legacy", None, "test").await.unwrap();
+        a.auth.vault = Some(vault);
+        a.configured = configured(a.auth.clone());
+        let user = serde_json::json!({
+            "gemini": {
+                "id": "gemini", "name": "gemini",
+                "models": { "gemini-2.5-flash": {
+                    "id": "gemini-2.5-flash", "name": "gemini-2.5-flash",
+                    "limit": { "context": 100_000, "output": 4_096 }
+                } }
+            }
+        });
+        std::fs::write(dir.join("models.json"), user.to_string()).unwrap();
+        a.reload_catalog().await;
+        assert!(!Catalog::is_bundled("gemini") && Catalog::is_bundled("google"));
+        assert!(a.catalog.providers().any(|p| p.id == "gemini"));
+        let ids = |a: &Agents| {
+            a.listed_providers()
+                .iter()
+                .map(|p| p.id.clone())
+                .collect::<Vec<_>>()
+        };
+        let listed = ids(&a);
+        assert!(listed.contains(&"google".to_owned()), "{listed:?}");
+        assert!(!listed.contains(&"gemini".to_owned()), "{listed:?}");
+
+        a.auth.gateways.write().unwrap().insert(
+            "gemini".into(),
+            crate::providers::Gateway {
+                base_url: "https://gw.example/v1/".into(),
+                key: "legacy".into(),
+                runtime: None,
+                protocol: None,
+            },
+        );
+        assert!(ids(&a).contains(&"gemini".to_owned()));
     }
 
     /// A keyless local provider (`omlx/...`) with no vault key and no env var

@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Archive, Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Timer, Trash2, Wrench } from 'lucide-react'
+import { Archive, Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Pin, Shrink, Timer, Trash2, Wrench } from 'lucide-react'
 import { type ComponentType, memo, type ReactNode, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import {
@@ -388,6 +388,15 @@ export function SessionMenu({
   )
 }
 
+/** A pinned chat's muted pin, leftmost in its list row (the sidebar's, the rail popover's). */
+export function PinnedGlyph() {
+  return (
+    <span role="img" aria-label="Pinned" title="Pinned" className="flex shrink-0 text-fg-tertiary/70">
+      <Pin className="size-3.5" />
+    </span>
+  )
+}
+
 /**
  * One chat in the list: title (live from `TitleChanged`; the tooltip adds its tags), project pill (51 §3), active
  * highlight, hover `…` menu (`SessionMenu`) with pin, archive, inline rename, move to project (existing or new) and
@@ -494,6 +503,7 @@ export const SessionItem = memo(function SessionItem({
                   {selected && <Check className="size-3 stroke-[3]" />}
                 </span>
               )}
+              {pinned && <PinnedGlyph />}
               <SessionActivity id={id} here={here} running={running} />
               <SessionPending id={id} />
               <SessionSubagents subagents={subagents} />
