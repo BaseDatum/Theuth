@@ -26,7 +26,7 @@ import { Ctx, type CanvasCtx } from './context'
 import { FrameNode } from './FrameNode'
 import { contains, intersects, pad, scaleOf, shownCards, strokeWorldBox, union } from './geom'
 import { FreeInk, indexInk } from './InkLayer'
-import { MultiTap, PALM_MS, pointerKind, routePointer, type PointerKind } from './input'
+import { MultiTap, PALM_MS, pointerKind, routePointer, StrokeSamples, type PointerKind } from './input'
 import { LinkEdge } from './LinkEdge'
 import { assignLod, emptyLodState, type Lod } from './lod'
 import { beside } from './beside'
@@ -61,7 +61,7 @@ const portOf = (h: string | null | undefined): Port | undefined => {
   return p === 'top' || p === 'right' || p === 'bottom' || p === 'left' ? p : undefined
 }
 
-type Wet = { id: number; kind: PointerKind; erase: boolean; pts: Pt[]; t0: number; hasPressure: boolean }
+type Wet = { id: number; kind: PointerKind; erase: boolean; pts: Pt[]; t0: number; hasPressure: boolean; samples: StrokeSamples }
 type Rubber = { id: number; x0: number; y0: number; x1: number; y1: number }
 
 /** B4's anchored nodes (the reply bubble, 262 px wide): beside a card in screen space, on the first side that stays
@@ -464,7 +464,9 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       const [x, y, p, t] = pts[0]!
       const erase = store.getState().mode === 'erase'
       const hasPressure = p > 0 && p !== 0.5
-      wet.current = { id: PAGE_PEN, kind: 'pen', erase, pts: [[x, y, hasPressure ? p : 0.5, 0]], t0: t, hasPressure }
+      const samples = new StrokeSamples()
+      samples.take(x, y, t)
+      wet.current = { id: PAGE_PEN, kind: 'pen', erase, pts: [[x, y, hasPressure ? p : 0.5, 0]], t0: t, hasPressure, samples }
       store.getState().set({ penDown: true })
       onPenActivity?.(true)
       if (erase) {
@@ -477,6 +479,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     const w = wet.current
     if (!w || w.id !== PAGE_PEN) return
     for (const [x, y, p, t] of m.phase === 'move' ? pts : pts.slice(-1)) {
+      if (m.phase === 'move' && !w.samples.take(x, y, t)) continue
       if (w.erase) eraseAt(x, y)
       else if (m.phase === 'move') w.pts.push([x, y, w.hasPressure ? p : 0.5, Math.max(0, t - w.t0)])
     }
@@ -589,7 +592,9 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       el.setPointerCapture(e.pointerId)
       const p = toWorld(e.clientX, e.clientY)
       const hasPressure = kind === 'pen' && e.pressure > 0 && e.pressure !== 0.5
-      wet.current = { id: e.pointerId, kind, erase: route === 'erase', pts: [[p.x, p.y, hasPressure ? e.pressure : 0.5, 0]], t0: e.timeStamp, hasPressure }
+      const samples = new StrokeSamples()
+      samples.take(e.clientX, e.clientY, e.timeStamp)
+      wet.current = { id: e.pointerId, kind, erase: route === 'erase', pts: [[p.x, p.y, hasPressure ? e.pressure : 0.5, 0]], t0: e.timeStamp, hasPressure, samples }
       if (kind === 'pen') {
         store.getState().set({ penDown: true })
         propsRef.current.onPenActivity?.(true)
@@ -633,6 +638,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       e.stopPropagation()
       const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : []
       for (const ev of events.length ? events : [e]) {
+        if (!w.samples.take(ev.clientX, ev.clientY, ev.timeStamp)) continue
         const p = toWorld(ev.clientX, ev.clientY)
         if (w.erase) eraseAt(p.x, p.y)
         else w.pts.push([p.x, p.y, w.hasPressure ? ev.pressure : 0.5, Math.max(0, ev.timeStamp - w.t0)])
