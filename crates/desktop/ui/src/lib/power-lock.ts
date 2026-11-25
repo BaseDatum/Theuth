@@ -1,11 +1,11 @@
 // 221 D20 `lock_on_sleep` (macOS only): the desktop shell reports sleep, display sleep and screen lock
 // (`crates/desktop/src/power.rs`) as `power-lock { kind }`; this window forwards each to the engine it is connected to,
-// which locks every external-secrets connection with `lock_on_sleep` on. Off Tauri, and on an engine without the method,
-// it does nothing.
+// which locks every external-secrets connection with `lock_on_sleep` on. Off Tauri, before the connection opens
+// (`Shell` mounts this ahead of the router), and on an engine without the method, it does nothing.
 
 import { listen } from '@tauri-apps/api/event'
 import { useEffect } from 'react'
-import { useApi } from './rpc'
+import { useConnection } from '@/store/connection'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { isTauri } from './tauri'
 
@@ -21,10 +21,10 @@ export function powerKind(payload: unknown): PowerEvent | null {
 
 /** Forward the shell's `power-lock` events to `secrets_power_event` while mounted. */
 export function usePowerLock(): void {
-  const api = useApi()
+  const api = useConnection((s) => s.api)
   const can = useQuerySupport(['secrets_power_event'])
   useEffect(() => {
-    if (!can || !isTauri()) return
+    if (!api || !can || !isTauri()) return
     let gone = false
     let off: (() => void) | undefined
     void listen<unknown>('power-lock', (e) => {
