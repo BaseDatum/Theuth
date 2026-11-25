@@ -449,7 +449,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
               onOpen: setOpenCard,
               onShow: (id) => {
                 setOutline(false)
-                requestAnimationFrame(() => handle.current?.focus(id, { animate: true }))
+                requestAnimationFrame(() => handle.current?.focus(id, { animate: !matchMedia('(prefers-reduced-motion: reduce)').matches }))
               },
               onDim: readOnly ? undefined : (id) => ops.dim(provider.doc, [id], 'set aside'),
               onUndim: readOnly ? undefined : (id) => ops.patchCard(provider.doc, id, { state: 'live', tag: undefined }),
