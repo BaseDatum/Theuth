@@ -1,6 +1,6 @@
 # 221 — External secret backends: AWS Secrets Manager and Bitwarden
 
-Status: design · 2026-11-25 · owner rulings folded in (D1–D7, D13, D16, D17, D20, D22–D25) · not built. Extends `37-secrets.md` (the vault, placeholders, scrub,
+Status: design · 2026-11-25 · owner rulings folded in (D1–D7, D13, D16, D17, D20, D22–D26) · not built. Extends `37-secrets.md` (the vault, placeholders, scrub,
 `secret_*` tools; its §11 "Extension: backends" is the seam this doc fills and, where the two
 disagree, this doc wins for external backends) and `219-always-ask.md` (the override every external
 read and write goes through). Reads `216-external-plugins.md` only to reject it as the vehicle (D4).
@@ -318,10 +318,16 @@ published desktop app and the `t` releases build with `--features bitwarden`. Li
 `sdk-internal` crates under their GPL-3.0 option makes those binaries GPL-3.0 works.
 - Release packaging (milestone B10) ships the GPL-3.0 text, a NOTICE and third-party notices for the
   `sdk-internal` crates and their dependency tree.
-- theuth's own source licence must be GPL-3.0-compatible. The repo has no `LICENSE` file and no
-  `license` field in `Cargo.toml` today. B10 adds them, and §14 Q1 asks which licence theuth's
-  own source carries.
+- theuth's own source licence is GPL-3.0-or-later (D26). The repo has no `LICENSE` file and no
+  `license` field in `Cargo.toml` today; B10 adds them.
 - Builds without the feature stay as they are.
+
+**D26 — theuth's own source is licensed GPL-3.0-or-later (owner, 2026-11-25).**
+- `LICENSE` carries the GPL-3.0 text.
+- `license = "GPL-3.0-or-later"` goes in `[workspace.package]` and in every crate.
+- The release binaries are GPL-3.0 works (D22). The "or later" applies to theuth's own code. The
+  linked `sdk-internal` crates stay `GPL-3.0-only OR LicenseRef-Bitwarden-SDK`, used under GPL-3.0
+  only, which is compatible.
 
 **D23 — A Send link is a stand-in, not a secret value (owner, 2026-11-25).** The link is the thing the
 user approved giving away, so D21's "no secret value reaches the model" does not cover it.
@@ -1920,8 +1926,9 @@ runs none.
   README crate list and features. *Check:* `cargo clippy -D warnings` on touched crates; `cargo test
   --workspace`.
 - **B10 — Release packaging (D22).** The release jobs build with `--features bitwarden`. They add:
-  - a top-level `LICENSE` with the GPL-3.0 text;
-  - `license` in `[workspace.package]` and in each crate, with theuth's own source licence (§14 Q1);
+  - a top-level `LICENSE` with the GPL-3.0 text (D26);
+  - `license = "GPL-3.0-or-later"` in `[workspace.package]`, and `license.workspace = true` (or the
+    same string) in every crate;
   - a `NOTICE` that says the binaries are GPL-3.0 works because they link
     `bitwarden/sdk-internal@2b06afa` under its GPL-3.0 option, with a pointer to the source and the
     exact pin;
@@ -1930,8 +1937,10 @@ runs none.
 
   The desktop bundle carries `LICENSE`, `NOTICE` and `THIRD-PARTY-NOTICES` in its resources and shows
   them under About. The `t` archives carry them beside the binary. `cargo deny check licenses`
-  allows `GPL-3.0-only OR LicenseRef-Bitwarden-SDK` for the `bitwarden-*` crates only, and fails on
-  any crate under the SDK licence alone. The GPL's source offer is met by the public repo at the
+  allows any GPL-3.0-compatible licence: GPL-3.0(-or-later), LGPL, MIT, Apache-2.0, BSD,
+  ISC, Zlib, MPL-2.0, Unicode, CC0 and the like, plus `GPL-3.0-only OR LicenseRef-Bitwarden-SDK`
+  taken under its GPL-3.0 option. It fails on anything incompatible, including a crate under the
+  Bitwarden SDK licence alone. The GPL's source offer is met by the public repo at the
   release tag plus the pinned SDK commit.
 
   *Check:* a release dry run produces bundles that contain the three files; `cargo deny check
@@ -1940,11 +1949,4 @@ runs none.
 
 ## 14. Open questions for the owner
 
-The four questions of the previous revision are decided: GPL release builds (D22), the Send link as
-a stand-in (D23), local `secret_delete` (D24) and Reveal (D25). One new question came up while
-writing B10:
-
-1. **theuth's own source licence.** The repo has no `LICENSE` file and no `license` field today.
-   The release binaries will be GPL-3.0 works either way (D22). Which licence does theuth's own
-   source carry? GPL-3.0-or-later, or a GPL-compatible permissive licence such as MIT or Apache-2.0?
-   B10 writes it into `LICENSE`, `NOTICE` and every crate's `license` field.
+None open. The last one, theuth's own source licence, is decided as GPL-3.0-or-later (D26).
