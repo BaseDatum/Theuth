@@ -3,9 +3,10 @@ import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { Empty, Row, Section } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
-import { secretKeys, useSecretsApi, useSecretsSupport } from './api'
+import { queryKeys, useApi } from '@/lib/rpc'
+import { useQuerySupport } from '@/rpc/capabilities'
 import { AskSwitches, ConnSettingsPanel, ExternalSettingsPanel } from './ConnSettings'
-import { BACKEND_LABEL, statusLabel } from './labels'
+import { backendLabel, statusLabel } from './labels'
 
 /**
  * 221 §8 Settings › Agent › Secrets: the harness-wide D20 keys (Send file size, Copy link needs a press), and each
@@ -13,9 +14,9 @@ import { BACKEND_LABEL, statusLabel } from './labels'
  * connections.
  */
 export function SecretsSettingsTab() {
-  const api = useSecretsApi()
-  const can = useSecretsSupport(['list_secret_connections', 'set_connection_setting'])
-  const conns = useQuery({ enabled: can, queryKey: secretKeys.connections, queryFn: () => api.list_secret_connections() })
+  const api = useApi()
+  const can = useQuerySupport(['list_secret_connections', 'set_connection_setting'])
+  const conns = useQuery({ enabled: can, queryKey: queryKeys.secretConnections, queryFn: () => api.list_secret_connections() })
   const [open, setOpen] = useState<string | null>(null)
   return (
     <>
@@ -38,7 +39,7 @@ export function SecretsSettingsTab() {
                 wide
                 label={
                   <>
-                    <span className="font-mono">{c.conn}</span> <span className="text-fg-tertiary">· {BACKEND_LABEL[c.backend]} · {statusLabel(c.status)}</span>
+                    <span className="font-mono">{c.conn}</span> <span className="text-fg-tertiary">· {backendLabel(c.backend)} · {statusLabel(c.status)}</span>
                   </>
                 }
                 description={c.summary}

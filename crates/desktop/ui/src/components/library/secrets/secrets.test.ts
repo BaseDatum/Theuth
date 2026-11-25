@@ -6,26 +6,27 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { Name } from '@/components/library/Tools'
 import { useConnection } from '@/store/connection'
-import type * as Api from './api'
+import type * as Rpc from '@/lib/rpc'
+import type { ConnInfo, ListPage } from '@/rpc/bindings/method.secrets.output'
 import { Browse } from './Browse'
 import { REVEAL_MS } from './Reveal'
 import { SendDialog } from './SendDialog'
-import { CONN_DEFAULTS, type ConnInfo, type ListPage } from './types'
+import { CONN_DEFAULTS } from './types'
 
 vi.hoisted(() => vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined }))
 const SECRET = 'hunter2-the-revealed-value'
 const fake = {
   list_external_secrets: vi.fn(
     async (): Promise<ListPage> => ({
-      entries: [{ ref: 'bw/personal/2f1c', name: 'GitHub', kind: 'login', keys: ['password', 'username'], location: 'Personal / Dev', versions: [{ id: '2026-10-30T00:00:00Z', stages: [], changed: '2026-10-30T00:00:00Z' }] }],
+      entries: [{ ref: 'bw/personal/2f1c', name: 'GitHub', kind: 'login', keys: ['password', 'username'], location: 'Personal / Dev', recoverable_until: null, versions: [{ id: '2026-10-30T00:00:00Z', stages: [], changed: '2026-10-30T00:00:00Z' }] }],
       next: null,
     }),
   ),
   reveal_external_secret: vi.fn(async () => SECRET),
   list_secret_connections: vi.fn(async (): Promise<ConnInfo[]> => [info()]),
-  get_external_settings: vi.fn(async () => ({ send_max_file_mb: 100, copy_link_needs_press: true })),
+  get_external_settings: vi.fn(async () => ({ send_max_file_mb: 100, copy_link_needs_press: true, timeout_secs: 20 })),
 }
-vi.mock('./api', async (original) => ({ ...(await original<typeof Api>()), useSecretsApi: () => fake }))
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => fake }))
 vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }) }))
 notifyManager.setScheduler(queueMicrotask)
 

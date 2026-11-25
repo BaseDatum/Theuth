@@ -2,9 +2,11 @@ import { useQuery } from '@tanstack/react-query'
 import { Row, useAction } from '@/components/settings/shared'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { secretKeys, useSecretsApi, useSecretsSupport } from './api'
+import { queryKeys, useApi } from '@/lib/rpc'
+import { useQuerySupport } from '@/rpc/capabilities'
+import type { ConnInfo, ConnSettings, ExternalSettings } from '@/rpc/bindings/method.secrets.output'
 import { type Direction, alwaysAskKey } from './labels'
-import { type ConnInfo, type ConnSettings, EXTERNAL_DEFAULTS, type ExternalSettings } from './types'
+import { EXTERNAL_DEFAULTS } from './types'
 
 type Flag = { [K in keyof ConnSettings]: ConnSettings[K] extends boolean ? K : never }[keyof ConnSettings]
 type Count = { [K in keyof ConnSettings]: ConnSettings[K] extends number ? K : never }[keyof ConnSettings]
@@ -33,9 +35,9 @@ const COUNTS: { key: Count; label: string; cost: string; min: number; max: numbe
 
 /** §8: "Ask before every …" — a second view of the connection's `secret:` entries in `tools.always_ask`. */
 export function AskSwitches({ info }: { info: ConnInfo }) {
-  const api = useSecretsApi()
+  const api = useApi()
   const set = useAction((v: { dir: Direction; on: boolean }) => api.set_always_ask(null, alwaysAskKey(info.backend, info.conn, v.dir), v.on), {
-    keys: [secretKeys.connections, ['always-ask']],
+    keys: [queryKeys.secretConnections, ['always-ask']],
   })
   const dirs: Direction[] = ['read', 'write', 'delete', ...(info.backend === 'bw' ? (['send'] as const) : [])]
   return (
@@ -59,9 +61,9 @@ export function AskSwitches({ info }: { info: ConnInfo }) {
 
 /** §8's Settings disclosure on a connection row: every per-connection D20 key, written by `set_connection_setting`. */
 export function ConnSettingsPanel({ info }: { info: ConnInfo }) {
-  const api = useSecretsApi()
+  const api = useApi()
   const set = useAction((v: Write<ConnSettings>) => api.set_connection_setting(info.conn, v.key, v.value), {
-    keys: [secretKeys.connections],
+    keys: [queryKeys.secretConnections],
   })
   const s = info.settings
   return (
@@ -101,11 +103,11 @@ export function ConnSettingsPanel({ info }: { info: ConnInfo }) {
 
 /** The harness-wide D20 keys (Settings › Secrets). */
 export function ExternalSettingsPanel() {
-  const api = useSecretsApi()
-  const can = useSecretsSupport(['get_external_settings', 'set_external_setting'])
-  const q = useQuery({ enabled: can, queryKey: secretKeys.settings, queryFn: () => api.get_external_settings() })
+  const api = useApi()
+  const can = useQuerySupport(['get_external_settings', 'set_external_setting'])
+  const q = useQuery({ enabled: can, queryKey: queryKeys.secretExternalSettings, queryFn: () => api.get_external_settings() })
   const set = useAction((v: Write<ExternalSettings>) => api.set_external_setting(v.key, v.value), {
-    keys: [secretKeys.settings],
+    keys: [queryKeys.secretExternalSettings],
   })
   const s = q.data ?? EXTERNAL_DEFAULTS
   return (

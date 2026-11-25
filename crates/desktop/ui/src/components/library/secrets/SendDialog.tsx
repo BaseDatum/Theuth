@@ -9,9 +9,11 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { notify } from '@/lib/notify'
 import { isTauri } from '@/lib/tauri'
-import { secretKeys, useSecretsApi, useSecretsSupport } from './api'
+import { queryKeys, useApi } from '@/lib/rpc'
+import { useQuerySupport } from '@/rpc/capabilities'
+import type { SendRecord } from '@/rpc/bindings/method.secrets.output'
 import { bytesLabel, fileFits, premiumRefusal } from './labels'
-import { EXTERNAL_DEFAULTS, type SendArgs, type SendPassword, type SendRecord } from './types'
+import { EXTERNAL_DEFAULTS, type SendArgs, type SendPassword } from './types'
 
 /**
  * What the dialog sends. `text`: a local vault NAME or a `bw/…#field` / `aws/…[#key]` ref (never a value). `file`: an
@@ -29,10 +31,10 @@ type PasswordMode = 'none' | 'from' | 'ask'
  * Copy link once; the link goes to the clipboard and is never rendered.
  */
 export function SendDialog({ initial, open, onOpenChange }: { initial: SendSource; open: boolean; onOpenChange: (open: boolean) => void }) {
-  const api = useSecretsApi()
-  const can = useSecretsSupport(['list_secret_connections', 'create_send'])
-  const conns = useQuery({ enabled: can && open, queryKey: secretKeys.connections, queryFn: () => api.list_secret_connections() })
-  const limits = useQuery({ enabled: can && open, queryKey: secretKeys.settings, queryFn: () => api.get_external_settings(), retry: false })
+  const api = useApi()
+  const can = useQuerySupport(['list_secret_connections', 'create_send'])
+  const conns = useQuery({ enabled: can && open, queryKey: queryKeys.secretConnections, queryFn: () => api.list_secret_connections() })
+  const limits = useQuery({ enabled: can && open, queryKey: queryKeys.secretExternalSettings, queryFn: () => api.get_external_settings(), retry: false })
   const bw = (conns.data ?? []).filter((c) => c.backend === 'bw')
   const maxMb = limits.data?.send_max_file_mb ?? EXTERNAL_DEFAULTS.send_max_file_mb
   const [conn, setConn] = useState<string | null>(null)
@@ -70,7 +72,6 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
     password: password(),
     hide_email: hideEmail,
     notes: notes.trim() || null,
-    link_name: null,
   })
   const ready =
     target !== null &&

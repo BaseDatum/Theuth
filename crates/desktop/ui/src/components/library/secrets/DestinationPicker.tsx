@@ -3,8 +3,8 @@ import { useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { secretKeys, useSecretsApi } from './api'
-import type { DestinationView } from './types'
+import { queryKeys, useApi } from '@/lib/rpc'
+import type { DestinationView } from '@/rpc/bindings/method.secrets.output'
 
 const SELECT = 'h-7 rounded-md border border-border-subtle bg-transparent px-1.5 text-xs'
 const BW_FIELDS = ['password', 'username', 'totp', 'notes', 'uri'] as const
@@ -15,12 +15,12 @@ const BW_FIELDS = ['password', 'username', 'totp', 'notes', 'uri'] as const
  * replace an existing one (search over the connection's items). Keep a local copy applies to both.
  */
 export function DestinationPicker({ value, fields, onChange, disabled }: { value: DestinationView; fields: readonly { name: string; label: string }[]; onChange: (d: DestinationView) => void; disabled: boolean }) {
-  const api = useSecretsApi()
+  const api = useApi()
   const [search, setSearch] = useState('')
   const replacing = value.replace !== null
   const items = useQuery({
     enabled: replacing && value.status.state === 'ready',
-    queryKey: secretKeys.external(value.connection, search, false),
+    queryKey: queryKeys.secretExternalList(value.connection, search, false),
     queryFn: () => api.list_external_secrets(value.connection, { query: search || null, cursor: null, deleted: false }),
   })
   const set = (patch: Partial<DestinationView>) => onChange({ ...value, ...patch })

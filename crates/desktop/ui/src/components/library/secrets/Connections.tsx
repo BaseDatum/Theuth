@@ -5,13 +5,17 @@ import { Dot, Empty, Section, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { notify } from '@/lib/notify'
 import { AddConnection } from './AddConnection'
-import { CONNECTION_METHODS, secretKeys, useSecretsApi, useSecretsSupport } from './api'
+import { queryKeys, useApi } from '@/lib/rpc'
+import { useQuerySupport } from '@/rpc/capabilities'
 import { Browse } from './Browse'
 import { AskSwitches, ConnSettingsPanel } from './ConnSettings'
-import { BACKEND_LABEL, statusDetail, statusLabel } from './labels'
+import { backendLabel, statusDetail, statusLabel } from './labels'
 import { Sends } from './Sends'
 import { LoginCard, UnlockCard } from './UnlockCard'
-import type { ConnInfo } from './types'
+import type { ConnInfo } from '@/rpc/bindings/method.secrets.output'
+
+/** Methods the Connections section needs before it renders. */
+const CONNECTION_METHODS = ['list_secret_connections', 'add_secret_connection', 'remove_secret_connection', 'connection_unlock', 'connection_lock', 'list_external_secrets', 'set_connection_setting'] as const
 
 type Panel = 'browse' | 'sends' | 'settings' | 'unlock' | 'login'
 
@@ -20,27 +24,27 @@ const accountOf = (info: ConnInfo) => info.summary.split(' · ')[0] ?? info.conn
 
 /** One connection: glyph, name, summary, status dot, Lock / Unlock / Log in, the four ask switches, Browse, Sends (Bitwarden), Settings, Remove. */
 function ConnectionRow({ info }: { info: ConnInfo }) {
-  const api = useSecretsApi()
+  const api = useApi()
   const qc = useQueryClient()
   const [panel, setPanel] = useState<Panel | null>(null)
   const toggle = (p: Panel) => setPanel(panel === p ? null : p)
-  const lock = useAction(() => api.connection_lock(info.conn), { keys: [secretKeys.connections] })
+  const lock = useAction(() => api.connection_lock(info.conn), { keys: [queryKeys.secretConnections] })
   const remove = useAction(() => api.remove_secret_connection(info.conn), {
-    keys: [secretKeys.connections, ['always-ask']],
+    keys: [queryKeys.secretConnections, ['always-ask']],
     onSuccess: () => notify.success(`Removed ${info.conn}`),
   })
   const state = info.status.state
   const detail = statusDetail(info.status)
   const Glyph = info.backend === 'aws' ? Cloud : KeyRound
-  const refresh = () => void qc.invalidateQueries({ queryKey: secretKeys.connections })
+  const refresh = () => void qc.invalidateQueries({ queryKey: queryKeys.secretConnections })
   return (
     <div className="border-b border-border-subtle py-3 last:border-0">
       <div className="flex items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-2">
-          <Glyph className="size-4 shrink-0 text-fg-secondary" aria-label={BACKEND_LABEL[info.backend]} />
+          <Glyph className="size-4 shrink-0 text-fg-secondary" aria-label={backendLabel(info.backend)} />
           <div className="min-w-0">
             <div className="text-sm">
-              <span className="font-mono">{info.conn}</span> <span className="text-fg-tertiary">· {BACKEND_LABEL[info.backend]}</span>
+              <span className="font-mono">{info.conn}</span> <span className="text-fg-tertiary">· {backendLabel(info.backend)}</span>
             </div>
             <div className="truncate text-[13px] text-fg-secondary">{info.summary}</div>
           </div>
@@ -83,7 +87,7 @@ function ConnectionRow({ info }: { info: ConnInfo }) {
             size="icon-sm"
             aria-label={`Remove ${info.conn}`}
             disabled={remove.isPending}
-            onClick={() => confirm(`Remove ${info.conn}? Its stored credentials, its config and its always-ask entries go; the secrets in ${BACKEND_LABEL[info.backend]} stay.`) && remove.mutate(undefined)}
+            onClick={() => confirm(`Remove ${info.conn}? Its stored credentials, its config and its always-ask entries go; the secrets in ${backendLabel(info.backend)} stay.`) && remove.mutate(undefined)}
           >
             <Trash2 />
           </Button>
@@ -125,9 +129,9 @@ function ConnectionRow({ info }: { info: ConnInfo }) {
 
 /** §9.1 Connections, above the local list: one row per external manager, and Add connection. */
 export function Connections() {
-  const api = useSecretsApi()
-  const can = useSecretsSupport(CONNECTION_METHODS)
-  const list = useQuery({ enabled: can, queryKey: secretKeys.connections, queryFn: () => api.list_secret_connections() })
+  const api = useApi()
+  const can = useQuerySupport(CONNECTION_METHODS)
+  const list = useQuery({ enabled: can, queryKey: queryKeys.secretConnections, queryFn: () => api.list_secret_connections() })
   const [adding, setAdding] = useState(false)
   if (!can) return null
   return (

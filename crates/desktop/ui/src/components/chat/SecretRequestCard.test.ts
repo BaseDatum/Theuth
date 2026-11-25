@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeAll, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { SecretRequestCard, answerDestination, answerPayload, eventFields } from './SecretRequestCard'
-import type { DestinationView } from '@/components/library/secrets/types'
+import type { DestinationView } from '@/rpc/bindings/method.secrets.output'
 import { choiceFromSuggestion, describeExpiry, formatExpiry, localInputToMs, msToLocalInput, resolveExpiry } from './secret-expiry'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))

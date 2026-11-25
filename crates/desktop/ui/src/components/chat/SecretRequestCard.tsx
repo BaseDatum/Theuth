@@ -6,10 +6,10 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useApi } from '@/lib/rpc'
 import type { SecretRequestField } from "@/rpc/bindings/method.secrets.output"
 import { useSecretRequests } from '@/store/approvals'
-import { useSecretsApi } from '@/components/library/secrets/api'
 import { DestinationPicker } from '@/components/library/secrets/DestinationPicker'
 import { destinationLine } from '@/components/library/secrets/labels'
-import type { Destination, DestinationView } from '@/components/library/secrets/types'
+import type { DestinationView } from '@/rpc/bindings/method.secrets.output'
+import type { Destination } from '@/rpc/bindings/method.secrets.input'
 import { choiceFromSuggestion, type ExpiryChoice, type ExpiryUnit, formatExpiry, msToLocalInput, resolveExpiry } from './secret-expiry'
 
 /** The `Destination` an answer carries: the view without its engine-resolved display fields. */
@@ -141,7 +141,7 @@ export const SecretRequestCard = memo(function SecretRequestCard({
   onError?: (error: string) => void
 }) {
   const api = useApi()
-  const secrets = useSecretsApi()
+  const secrets = useApi()
   const [dest, setDest] = useState<DestinationView | null>(destination ?? null)
   const [picking, setPicking] = useState(false)
   const [master, setMaster] = useState('')

@@ -5,10 +5,11 @@ import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { notify } from '@/lib/notify'
 import { isTauri } from '@/lib/tauri'
-import { secretKeys, useSecretsApi, useSecretsSupport } from './api'
+import { queryKeys, useApi } from '@/lib/rpc'
+import { useQuerySupport } from '@/rpc/capabilities'
 import { bytesLabel } from './labels'
 import { SendDialog, type SendSource } from './SendDialog'
-import type { ConnInfo } from './types'
+import type { ConnInfo } from '@/rpc/bindings/method.secrets.output'
 
 const when = (ms: number) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
@@ -18,11 +19,11 @@ const when = (ms: number) => new Date(ms).toLocaleString(undefined, { dateStyle:
  * opens the native picker, which yields an absolute path, then the Send dialog.
  */
 export function Sends({ info }: { info: ConnInfo }) {
-  const api = useSecretsApi()
-  const can = useSecretsSupport(['list_sends', 'revoke_send', 'copy_send_link'])
-  const list = useQuery({ enabled: can, queryKey: secretKeys.sends(info.conn), queryFn: () => api.list_sends(info.conn) })
+  const api = useApi()
+  const can = useQuerySupport(['list_sends', 'revoke_send', 'copy_send_link'])
+  const list = useQuery({ enabled: can, queryKey: queryKeys.secretSends(info.conn), queryFn: () => api.list_sends(info.conn) })
   const [sending, setSending] = useState<SendSource | null>(null)
-  const revoke = useAction((id: string) => api.revoke_send(id), { keys: [secretKeys.sends(info.conn)] })
+  const revoke = useAction((id: string) => api.revoke_send(id), { keys: [queryKeys.secretSends(info.conn)] })
   const copy = async (id: string) => {
     try {
       await navigator.clipboard.writeText(await api.copy_send_link(id))

@@ -1,14 +1,18 @@
 // 221: pure helpers the Secrets page, Settings › Approvals and the request card share. No React, no RPC.
 
-import type { Backend, ConnInfo, ConnStatus, DestinationView, ExtEntry } from './types'
+import type { ConnInfo, ConnStatus, DestinationView, ExtEntry } from '@/rpc/bindings/method.secrets.output'
+import type { Backend } from './types'
 
 /** The four ask directions (D6); `send` is Bitwarden only. */
 export type Direction = 'read' | 'write' | 'delete' | 'send'
 
-export const BACKEND_LABEL: Record<Backend, string> = { aws: 'AWS', bw: 'Bitwarden' }
+const BACKEND_LABEL: Record<Backend, string> = { aws: 'AWS', bw: 'Bitwarden' }
+
+/** `AWS` / `Bitwarden`; a backend this build does not know shows its id. */
+export const backendLabel = (backend: string): string => BACKEND_LABEL[backend as Backend] ?? backend
 
 /** `secret:<backend>/<conn>:<direction>`, the 219 entry D6 seeds. */
-export const alwaysAskKey = (backend: Backend, conn: string, dir: Direction): string => `secret:${backend}/${conn}:${dir}`
+export const alwaysAskKey = (backend: string, conn: string, dir: Direction): string => `secret:${backend}/${conn}:${dir}`
 
 const KEY = /^secret:(aws|bw)\/([a-z0-9-]{1,32}):(read|write|delete|send)$/
 
@@ -56,7 +60,7 @@ export function statusDetail(s: ConnStatus): string | null {
 export const placeholderOf = (ref: string, key?: string | null): string => `{{secret:${ref}${key ? `#${key}` : ''}}}`
 
 /** The refs of an entry that carry a value (§9.1 Reveal): AWS the whole secret plus each known JSON key; Bitwarden each field. */
-export function valueRefs(entry: Pick<ExtEntry, 'ref' | 'kind' | 'keys'>, backend: Backend): { label: string; ref: string }[] {
+export function valueRefs(entry: Pick<ExtEntry, 'ref' | 'kind' | 'keys'>, backend: string): { label: string; ref: string }[] {
   if (backend === 'aws') {
     if (entry.kind === 'binary') return []
     return [{ label: 'value', ref: entry.ref }, ...entry.keys.map((k) => ({ label: k, ref: `${entry.ref}#${k}` }))]

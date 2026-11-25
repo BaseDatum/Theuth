@@ -15,6 +15,7 @@ import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
 import { companionAlive, onCompanionAlive, useCompanionAlive } from '@/lib/companion'
 import { usePowerLock } from '@/lib/power-lock'
+import { UnlockHost } from '@/components/library/secrets/UnlockHost'
 import { EngineSwitch } from '@/lib/engine-switch'
 import { FocusTracker, Throttle, deriveFocus } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
@@ -707,7 +708,10 @@ function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(): void }) {
   useEventFocus(scope(engine))
   useForegroundReseed(scope(engine))
   return ready ? (
-    <RouterProvider router={router} />
+    <>
+      <RouterProvider router={router} />
+      <UnlockHost />
+    </>
   ) : (
     <StartupScreen onRelaunch={onRelaunch} onQuit={() => void quit()} />
   )

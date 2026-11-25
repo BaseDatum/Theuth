@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
 import { Column, Page } from '@/components/library/Page'
-import { secretKeys, useSecretsApi, useSecretsSupport } from '@/components/library/secrets/api'
 import { Connections } from '@/components/library/secrets/Connections'
 import { LocalList } from '@/components/library/secrets/LocalList'
 import { Section } from '@/components/settings/shared'
@@ -13,12 +12,12 @@ import { useQuerySupport } from '@/rpc/capabilities'
  */
 export function Secrets() {
   const api = useApi()
-  const secrets = useSecretsApi()
+  const secrets = useApi()
   const canLocal = useQuerySupport(['list_secrets'])
-  const canConns = useSecretsSupport(['list_secret_connections'])
-  const canSend = useSecretsSupport(['create_send'])
+  const canConns = useQuerySupport(['list_secret_connections'])
+  const canSend = useQuerySupport(['create_send'])
   const list = useQuery({ enabled: canLocal, queryKey: queryKeys.secrets, queryFn: () => api.list_secrets() })
-  const conns = useQuery({ enabled: canConns, queryKey: secretKeys.connections, queryFn: () => secrets.list_secret_connections() })
+  const conns = useQuery({ enabled: canConns, queryKey: queryKeys.secretConnections, queryFn: () => secrets.list_secret_connections() })
   return (
     <Page actions={list.data && <span className="px-2 text-[13px] text-fg-tertiary">key: {list.data.key_store}</span>}>
       <Column>

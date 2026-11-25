@@ -2,7 +2,8 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { secretKeys, useSecretsApi, useSecretsSupport } from "@/components/library/secrets/api";
+import { useQuerySupport } from "@/rpc/capabilities";
+import { queryKeys } from "@/lib/rpc";
 import { SendDialog } from "@/components/library/secrets/SendDialog";
 import {
   AppWindow,
@@ -212,9 +213,9 @@ export function ArtifactMenu({
   const [boarding, setBoarding] = useState(false);
   // 221 §12.5: Send with Bitwarden… when a Bitwarden connection exists; the dialog sends `artifact:<id>`.
   const [sending, setSending] = useState(false);
-  const secrets = useSecretsApi();
-  const canSend = useSecretsSupport(["list_secret_connections", "create_send"]);
-  const conns = useQuery({ enabled: canSend, queryKey: secretKeys.connections, queryFn: () => secrets.list_secret_connections() });
+  const secrets = useApi();
+  const canSend = useQuerySupport(["list_secret_connections", "create_send"]);
+  const conns = useQuery({ enabled: canSend, queryKey: queryKeys.secretConnections, queryFn: () => secrets.list_secret_connections() });
   const bitwarden = (conns.data ?? []).some((c) => c.backend === "bw");
   const boardable = a.kind === "html" || a.kind === "image" || a.kind === "svg" || a.kind === "markdown" || a.kind === "text" || a.kind === "csv" || a.kind === "mermaid";
   return (

@@ -3,8 +3,10 @@ import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { useSecretsApi } from './api'
-import type { LoginForm, LoginStep, UnlockRequested } from './types'
+import { useApi } from '@/lib/rpc'
+import type { LoginForm } from '@/rpc/bindings/method.secrets.input'
+import type { LoginStep } from '@/rpc/bindings/method.secrets.output'
+import type { UnlockRequested } from '@/store/unlock-requests'
 
 const CARD = 'flex flex-col gap-2 rounded-xl border border-info-border bg-info-bg px-4 py-3 text-sm'
 
@@ -72,7 +74,7 @@ export function UnlockCard({
 
 /** §9.4: an agent's call needs a locked connection; answered with `answer_unlock(id, password | null)`. */
 export function UnlockRequestCard({ request, onDone }: { request: UnlockRequested; onDone?: () => void }) {
-  const api = useSecretsApi()
+  const api = useApi()
   return (
     <UnlockCard
       conn={request.conn}
@@ -95,7 +97,7 @@ type Method = LoginForm['method']
  * this component's state and is cleared once the login is done.
  */
 export function LoginCard({ conn, email: initialEmail, method: initialMethod, onDone }: { conn: string; email: string; method: Method; onDone: () => void }) {
-  const api = useSecretsApi()
+  const api = useApi()
   const [method, setMethod] = useState<Method>(initialMethod)
   const [f, setF] = useState({ client_id: '', client_secret: '', email: initialEmail, password: '', provider: '', code: '', otp: '' })
   const [step, setStep] = useState<LoginStep | null>(null)

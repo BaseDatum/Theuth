@@ -9,7 +9,6 @@ import { Switch } from '@/components/ui/switch'
 import { serverKey, setAlwaysAsk, useAlwaysAsk } from '@/lib/always-ask'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
-import { secretKeys, useSecretsApi, useSecretsSupport } from '@/components/library/secrets/api'
 import { askKeysOf } from '@/components/library/secrets/labels'
 import { useConnection } from '@/store/connection'
 
@@ -43,9 +42,9 @@ function AlwaysAsk() {
   const builtins = useQuery({ enabled: canBuiltins, queryKey: queryKeys.builtins(null), queryFn: () => api.list_builtins(null) })
   const mcp = useQuery({ enabled: canMcp, queryKey: queryKeys.mcp(null), queryFn: () => api.list_mcp(null) })
   // 221 §8: each connection's `secret:<backend>/<conn>:<direction>` keys, so a removed one can be put back.
-  const secrets = useSecretsApi()
-  const canConns = useSecretsSupport(['list_secret_connections'])
-  const conns = useQuery({ enabled: canConns, queryKey: secretKeys.connections, queryFn: () => secrets.list_secret_connections() })
+  const secrets = useApi()
+  const canConns = useQuerySupport(['list_secret_connections'])
+  const conns = useQuery({ enabled: canConns, queryKey: queryKeys.secretConnections, queryFn: () => secrets.list_secret_connections() })
   const suggestions = [
     ...new Set([
       ...(builtins.data ?? []).flatMap((c) => c.tools.map((t) => t.name)),
@@ -53,7 +52,7 @@ function AlwaysAsk() {
       ...askKeysOf(conns.data ?? []),
     ]),
   ].filter((n) => !state?.global.includes(n))
-  const set = useAction((v: { tool: string; on: boolean }) => setAlwaysAsk(api, null, v.tool, v.on), { keys: [['always-ask'], secretKeys.connections] })
+  const set = useAction((v: { tool: string; on: boolean }) => setAlwaysAsk(api, null, v.tool, v.on), { keys: [['always-ask'], queryKeys.secretConnections] })
   const add = () => {
     const tool = name.trim()
     if (tool) set.mutate({ tool, on: true }, { onSuccess: () => setName('') })

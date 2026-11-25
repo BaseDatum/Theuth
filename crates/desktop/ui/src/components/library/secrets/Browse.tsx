@@ -7,11 +7,11 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { notify } from '@/lib/notify'
 import { queryKeys } from '@/lib/rpc'
-import { secretKeys, useSecretsApi } from './api'
+import { useApi } from '@/lib/rpc'
 import { placeholderOf, valueRefs } from './labels'
 import { Reveal } from './Reveal'
 import { SendDialog, type SendSource } from './SendDialog'
-import type { ConnInfo, ExtEntry } from './types'
+import type { ConnInfo, ExtEntry } from '@/rpc/bindings/method.secrets.output'
 
 /** `2026-09-16T10:02:11Z` → the user's locale, day precision. */
 function day(iso: string | null | undefined): string {
@@ -40,20 +40,20 @@ function defaultKey(e: ExtEntry, backend: ConnInfo['backend']): string | null {
  * value-bearing ref (D25, when `allow_reveal`); deleted rows: Restore. The user is the actor, so no approval card.
  */
 export function Browse({ info }: { info: ConnInfo }) {
-  const api = useSecretsApi()
+  const api = useApi()
   const [query, setQuery] = useState('')
   const [applied, setApplied] = useState('')
   const [deleted, setDeleted] = useState(false)
   const [open, setOpen] = useState<string | null>(null)
   const [sending, setSending] = useState<SendSource | null>(null)
   const list = useInfiniteQuery({
-    queryKey: secretKeys.external(info.conn, applied, deleted),
+    queryKey: queryKeys.secretExternalList(info.conn, applied, deleted),
     queryFn: ({ pageParam }) => api.list_external_secrets(info.conn, { query: applied || null, cursor: pageParam, deleted }),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.next,
   })
   const remove = useAction((v: { ref: string; permanent: boolean }) => api.delete_external_secret(info.conn, v.ref, v.permanent ? 'permanent' : { recoverable: { days: null } }), {
-    keys: [secretKeys.externalAll],
+    keys: [queryKeys.secretExternal],
     onSuccess: (out, v) => notify.success(out.recoverable_until ? `Deleted ${v.ref}; restorable until ${day(out.recoverable_until)}` : `Deleted ${v.ref} permanently`),
   })
   const [importName, setImportName] = useState('')
@@ -65,7 +65,7 @@ export function Browse({ info }: { info: ConnInfo }) {
     },
   })
   const restore = useAction((ref: string) => api.restore_external_secret(info.conn, ref), {
-    keys: [secretKeys.externalAll],
+    keys: [queryKeys.secretExternal],
     onSuccess: (_, ref) => notify.success(`Restored ${ref}`),
   })
   const entries = list.data?.pages.flatMap((p) => p.entries) ?? []

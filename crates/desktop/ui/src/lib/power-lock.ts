@@ -4,13 +4,17 @@
 
 import { listen } from '@tauri-apps/api/event'
 import { useEffect } from 'react'
-import { type PowerEvent, useSecretsApi, useSecretsSupport } from '@/components/library/secrets/api'
+import { useApi } from './rpc'
+import { useQuerySupport } from '@/rpc/capabilities'
 import { isTauri } from './tauri'
+
+/** What the desktop shell reports (`crates/desktop/src/power.rs`). */
+type PowerEvent = 'sleep' | 'screen_lock'
 
 /** Forward the shell's `power-lock` events to `secrets_power_event` while mounted. */
 export function usePowerLock(): void {
-  const api = useSecretsApi()
-  const can = useSecretsSupport(['secrets_power_event'])
+  const api = useApi()
+  const can = useQuerySupport(['secrets_power_event'])
   useEffect(() => {
     if (!can || !isTauri()) return
     let gone = false

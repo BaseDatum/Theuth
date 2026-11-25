@@ -4,7 +4,7 @@ import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { notify } from '@/lib/notify'
-import { useSecretsApi } from './api'
+import { useApi } from '@/lib/rpc'
 
 /** D25: a revealed value is dropped this long after it arrives. */
 export const REVEAL_MS = 30_000
@@ -19,7 +19,7 @@ export const CLIPBOARD_MS = 60_000
  * `CLIPBOARD_MS`.
  */
 export function Reveal({ conn, refText, label, allowed }: { conn: string; refText: string; label: string; allowed: boolean }) {
-  const api = useSecretsApi()
+  const api = useApi()
   const [value, setValue] = useState<string | null>(null)
   const [shown, setShown] = useState(false)
   const [busy, setBusy] = useState(false)

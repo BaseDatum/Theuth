@@ -6,10 +6,12 @@ import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
-import { secretKeys, useSecretsApi } from './api'
+import { queryKeys } from '@/lib/rpc'
 import { statusDetail, statusLabel } from './labels'
 import { LoginCard, UnlockCard } from './UnlockCard'
-import type { Backend, BwServer, ConnConfig, ConnInfo, ConnStatus } from './types'
+import type { BwServer, ConnConfig } from '@/rpc/bindings/method.secrets.input'
+import type { ConnInfo, ConnStatus } from '@/rpc/bindings/method.secrets.output'
+import type { Backend } from './types'
 
 /** Secrets Manager regions offered by the region select (§9.1). */
 export const AWS_REGIONS = [
@@ -35,7 +37,7 @@ type Stage = 'form' | 'login' | 'unlock'
  * `connection_login` needs it; Save seeds its always-ask entries first (§6.3).
  */
 export function AddConnection({ existing, onDone }: { existing: readonly string[]; onDone: () => void }) {
-  const api = useSecretsApi()
+  const api = useApi()
   const core = useApi()
   const qc = useQueryClient()
   const canProfiles = useQuerySupport(['list_aws_profiles'])
@@ -82,7 +84,7 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
   const save = () =>
     void run(async () => {
       const info = await api.add_secret_connection(name, cfg())
-      void qc.invalidateQueries({ queryKey: secretKeys.connections })
+      void qc.invalidateQueries({ queryKey: queryKeys.secretConnections })
       setSaved(info)
       if (info.backend === 'aws') onDone()
       else setStage(info.status.state === 'logged_out' ? 'login' : 'unlock')
@@ -96,7 +98,7 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
         account={bw.email.trim()}
         onUnlock={async (pw) => {
           await api.connection_unlock(saved.conn, pw)
-          void qc.invalidateQueries({ queryKey: secretKeys.connections })
+          void qc.invalidateQueries({ queryKey: queryKeys.secretConnections })
           onDone()
         }}
         onCancel={onDone}
