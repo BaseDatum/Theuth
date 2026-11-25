@@ -290,8 +290,13 @@ impl BwBackend {
         };
         // The builder applies the settings right after it spawns this load.
         let mut seen = self.settings_seen.subscribe();
-        let applied = tokio::time::timeout(Duration::from_secs(10), seen.wait_for(|s| *s)).await;
-        if !matches!(applied, Ok(Ok(_))) || !self.config().remember_unlock {
+        // A bool, not the `watch::Ref`: the guard must not live across the awaits below.
+        let applied = matches!(
+            tokio::time::timeout(Duration::from_secs(10), seen.wait_for(|s| *s)).await,
+            Ok(Ok(_))
+        );
+        drop(seen);
+        if !applied || !self.config().remember_unlock {
             self.save(KEY_USER_KEY, None).await;
             return;
         }
