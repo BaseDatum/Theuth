@@ -74,7 +74,11 @@ about theuth cites `file:line` as of this tree.
    `secret_set { name, value }` — a value in the args is already in the
    context and in `messages.body`; the fix is to not put it there, and the
    prompt block says so. `secret_delete` — the user deletes, and deletion
-   is the one operation versions cannot undo.
+   is the one operation versions cannot undo. *Amended by 221 D24: the
+   agent may delete through `secret_delete` (risk `Destructive`, always
+   ask by default through a `secret_delete` entry in `tools.always_ask`,
+   seeded once); the name and every version go, with no trash.
+   `secret_set` stays rejected.*
 6. **Encrypted vault, key in the OS keychain, file fallback.**
    `<data_dir>/secrets.vault` is one XChaCha20-Poly1305 blob
    (`chacha20poly1305`, already in the lock via `snow`); the 32-byte key
@@ -198,7 +202,7 @@ every frontend — and the harness's own keys sit in plaintext next to them.
 ```
 {{secret:NAME}}            current version                      NAME = [A-Za-z0-9_.-]{1,64}
 {{secret:NAME:-N}}         N versions before the current, N ∈ 1..=4
-{{secret:BACKEND/NAME}}    reserved for §11; v0 returns "unknown secret"
+{{secret:aws/CONN/NAME…}}  external backends, 221 §3.1 (also bw/CONN/ITEM…); an unknown connection or backend fails the call
 ```
 
 Expansion walks every `serde_json::Value::String` leaf of the args (keys
@@ -277,7 +281,8 @@ its own `Risk` plus rule §0.4 if *its* args carry placeholders. This
 includes the harness's own keys: a model that replaces `anthropic` breaks
 the next model call until `secret_restore` — recoverable, visible on the
 tool card, and no different from it editing `credentials.yaml` with `edit`
-today. Deletion is the user's.
+today. Deletion is the user's. *Amended by 221 D24: also the agent's,
+through `secret_delete` behind an always-ask card by default (§0.5).*
 
 `secret_capture` calls `ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
 .ask(Invoke(ToolCall { id: format!("{call_id}.capture"), name, args,
@@ -321,7 +326,7 @@ pub struct List;
 pub struct Set { pub name: String, pub value: String, pub note: Option<String>, pub source: String }
 /// `ask` → `Result<SecretInfo, String>`. Copies version `-back` to the top as a new version.
 pub struct Restore { pub name: String, pub back: u8 }
-/// `ask` → `Result<(), String>`. The name and every version. User surfaces only.
+/// `ask` → `Result<(), String>`. The name and every version. User surfaces and, since 221 D24, `secret_delete`.
 pub struct Delete { pub name: String }
 /// `ask` → `Result<Outcome, String>`; leaves the mailbox, publishes `Requested`, waits `request_timeout_secs`.
 pub struct Request { pub session: SessionId, pub name: String, pub note: String }
@@ -740,7 +745,12 @@ Rejected: a row per secret in a sqlite file with per-row encryption — a
 schema and a migration for a map of tens of entries; the whole-blob rewrite
 is one `rename`.
 
-## 11. Extension: backends (v1 contract, not v0 code)
+## 11. Extension: backends (v1 contract, not v0 code) — superseded by 221
+
+*Superseded by `221-external-secrets.md` §3–§4: external backends are an
+`ExternalBackend` trait registered per connection (`aws/`, `bw/`), resolved
+by an async step before expansion, and the local vault does **not** become
+a backend. Kept below as the original v0 reservation.*
 
 What v1 adds, so v0 reserves the names and nothing else:
 
@@ -787,7 +797,7 @@ pub struct UnregisterBackend(pub &'static str);
   `credentials.yaml` was; a subagent sees what its parent sees. A
   `hidden`-style per-session set (`registry.rs:29-50`) is the shape if a
   user wants a secret only some sessions may use.
-- **`secret_set` / `secret_delete` tools.** §0.5.
+- **`secret_set` tool.** §0.5. (`secret_delete` was built by 221 D24.)
 - **`oauth/` into the vault.** Tokens are rewritten by refresh on a
   timer (05), not entered by anyone; `oauth::Store` is a library below
   `tools`. Moving them means the library takes a `Vault` — a small change
