@@ -22,8 +22,10 @@ import { useDark } from '@/lib/theme'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useConnection } from '@/store/connection'
+import { useApprovals } from '@/store/approvals'
 import { useNotices } from '@/store/notices'
 import { statusLine, useSessionField, useSessions } from '@/store/sessions'
+import { ApprovalCard } from '@/components/chat/ApprovalCard'
 import { useTerminals } from '@/components/chat/TerminalViewer'
 import { MicButton } from '@/components/chat/MicButton'
 import { useNoteRecorder } from '@/components/chat/use-note-recorder'
@@ -172,7 +174,10 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
     return () => clearTimeout(t)
   }, [notice, embedded])
   const working = running ? (statusLine(activity ?? 'thinking', statusText) ?? (activity === 'tool' ? 'working…' : activity === 'idle' || !activity ? 'thinking…' : `${activity}…`)) : null
-  const status = noticeShown ?? working
+  // A tool call of the target session waiting on Allow / Deny (a wb_* write in the default approval mode): full-window,
+  // the transcript is covered, so the card shows here and the pill says so instead of "working…".
+  const waiting = useApprovals((s) => s.pending.find((p) => p.session === session))
+  const status = noticeShown ?? (waiting ? `waiting for you: ${waiting.tool}` : working)
 
   // ── Cluster: timer (B4) mirrored into the store (B3 reads it for the attribution panel).
   const timer = useMemo(() => clusterTimer({ onChange: (open) => store.getState().set({ clusterOpen: open }) }), [store])
@@ -431,8 +436,11 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
     const d = provider.doc
     try {
       switch (kind) {
-        case 'sticky':
-          return select(place(d, spot, 'sticky', 'Sticky', { t: 'sticky', text: '' }))
+        case 'sticky': {
+          // An empty sticky opens for typing at once (entered = its textarea), as a new note would.
+          const id = place(d, spot, 'sticky', 'Sticky', { t: 'sticky', text: '' })
+          return store.getState().set({ selection: [id], entered: id })
+        }
         case 'note': {
           const n = await api.doc_create('Whiteboard note', null, null)
           return select(place(d, spot, 'note', n.title || 'Note', { t: 'note', doc: n.id }))
@@ -543,7 +551,9 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
     const r = e.currentTarget.getBoundingClientRect()
     const inQuad = e.clientX > r.left + r.width / 2 && e.clientY > r.top + r.height / 2
     if (rest.current) clearTimeout(rest.current)
-    rest.current = inQuad && !store.getState().clusterOpen ? setTimeout(() => timer.show(), 600) : null
+    // Not while the sheet is up: the pill sits in that quadrant, and the cluster (with the attribution, R3) is hidden under it.
+    const idle = () => !store.getState().clusterOpen && !store.getState().composerOpen
+    rest.current = inQuad && idle() ? setTimeout(() => idle() && timer.show(), 600) : null
     if (store.getState().clusterOpen) timer.activity()
   }
 
@@ -644,7 +654,8 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
         </div>
       ) : null}
       {/* The canvas stays mounted under the outline (its handle feeds the composer and the native bridge). */}
-      <div className={outline ? 'invisible absolute inset-0' : 'absolute inset-0'} aria-hidden={outline} onPointerDownCapture={pauseFollow}>
+      {/* opacity-0 as well: React Flow sets `visibility: visible` inline on measured nodes, so `invisible` alone leaves cards over the outline. */}
+      <div className={outline ? 'pointer-events-none invisible absolute inset-0 opacity-0' : 'absolute inset-0'} aria-hidden={outline} onPointerDownCapture={pauseFollow}>
         <Suspense fallback={<div className="size-full bg-background" />}>
           <Canvas
             ref={handle}
@@ -709,6 +720,14 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
         </button>
       )}
       {bubble && (!anchor || outline) && bubbleNode}
+      {waiting && !composerOpen && (
+        <div
+          className={`wb-rise absolute z-20 bottom-[calc(80px+var(--safe-bottom,0px))] w-[min(360px,calc(100vw-48px))] rounded-xl shadow-lg [&>*]:my-0 ${clusterOpen && !outline ? 'right-[calc(94px+var(--safe-right,0px))]' : 'right-[calc(24px+var(--safe-right,0px))]'}`}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <ApprovalCard approval={waiting} />
+        </div>
+      )}
       {composerOpen ? (
         <Sheet
           pick={pick}

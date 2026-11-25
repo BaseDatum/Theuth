@@ -164,7 +164,8 @@ export function Cluster(p: ClusterProps) {
             <Plus className="size-5" />
           </ClusterButton>
         </PopoverTrigger>
-        <PopoverContent side="left" align="start" className="wb-glass w-60 rounded-2xl border-0 p-1.5" onPointerDown={p.onActivity}>
+        {/* No focus return to the trigger on close: the chosen kind may focus what it made (a new sticky's text). */}
+        <PopoverContent side="left" align="start" className="wb-glass w-60 rounded-2xl border-0 p-1.5" onPointerDown={p.onActivity} onCloseAutoFocus={(e) => e.preventDefault()}>
           <ul className="flex flex-col" aria-label="Add to the whiteboard">
             {ADD.map((a) => (
               <li key={a.kind}>
