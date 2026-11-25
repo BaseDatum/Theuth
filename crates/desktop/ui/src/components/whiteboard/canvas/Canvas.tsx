@@ -19,7 +19,8 @@ import { lookOf } from '../ink/life'
 import type { CapturedStroke, View, WhiteboardCanvasHandle, WhiteboardCanvasProps } from './api'
 import { dragEnd, edgesOf, nodesOf } from './binding'
 import { CardNode } from './CardNode'
-import { pagePoint } from './cards/PageCard'
+import { pagePoint, pageViewport } from './cards/PageCard'
+import type { PenMessage } from './penRelay'
 import { composeImage } from './compose'
 import { Ctx, type CanvasCtx } from './context'
 import { FrameNode } from './FrameNode'
@@ -43,6 +44,8 @@ const SNAP_MAX = 1024
 const LOD_TICK_MS = 5000
 const STICKY = { w: 220, h: 150 }
 const LONG_PRESS_MS = 550
+/** The pointer id of a stroke relayed from an entered page (real pointer ids are ≥ 0). */
+const PAGE_PEN = -1
 /** Controls that a Pencil may tap without inking (toolbars, scrubbers, fields). */
 const CONTROL = '.wb-tools, .wb-scrub, .wb-menu, button, input, textarea, select, a, [contenteditable="true"]'
 
@@ -323,9 +326,21 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     store.getState().set({ entered: id, ...(id ? { selection: [id] } : {}) })
   }, [store])
   const inkByCard = useMemo(() => indexInk(board.ink), [board.ink])
+  // A pen on an entered live page inks or erases exactly when it would anywhere else on the pointer path (§8.4).
+  const pagePen = useZustand(store, (s) => {
+    const r = routePointer('pen', { mode: s.mode, fingerInk: s.fingerInk, nativeInk: s.nativeInk && s.inkEngine === 'auto', readOnly, penDown: false, palmUntil: 0, now: 0 })
+    return r === 'ink' || r === 'erase'
+  })
+  const pagePenRef = useRef(pagePen)
+  pagePenRef.current = pagePen
+  const penRef = useRef<(card: Id, m: PenMessage) => void>(() => {})
+  const penFromPage = useCallback((card: Id, m: PenMessage) => penRef.current(card, m), [])
   const ctx: CanvasCtx = useMemo(
-    () => ({ doc, store, host, board, lod, dark, readOnly, frames, enter, open: (id) => onCardOpen?.(id), stopCapturing: () => undo.stopCapturing(), spot, inkByCard }),
-    [doc, store, host, board, lod, dark, readOnly, frames, enter, onCardOpen, undo, spot, inkByCard],
+    () => ({
+      doc, store, host, board, lod, dark, readOnly, frames, enter, open: (id) => onCardOpen?.(id), stopCapturing: () => undo.stopCapturing(), spot, inkByCard,
+      pagePen, penFromPage,
+    }),
+    [doc, store, host, board, lod, dark, readOnly, frames, enter, onCardOpen, undo, spot, inkByCard, pagePen, penFromPage],
   )
 
   const focus = useCallback((id: Id, opts?: { spotlight?: boolean; animate?: boolean }) => {
@@ -428,6 +443,55 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     for (const s of strokes) askCaption(s)
     return strokes.map((s) => s.id)
   }, [askCaption, doc, undo])
+
+  // ---- Pencil over an entered live page (pointer path): the page relays pen events (canvas/penRelay.ts) ----
+  penRef.current = (cardId, m) => {
+    const b = boardRef.current
+    const c = b.cards[cardId]
+    if (!c || (m.phase === 'down' && !pagePenRef.current)) return
+    const vp = pageViewport(c, c.frame ? b.frames[c.frame]?.preset : undefined)
+    const scale = Math.min(c.w / vp.w, (c.h - CARD_HEADER) / vp.h)
+    const pts = m.pts.map(([x, y, p, t]) => [c.x + x * scale, c.y + CARD_HEADER + y * scale, p, t] as Pt)
+    if (m.phase === 'down') {
+      if (wet.current) return
+      const [x, y, p, t] = pts[0]!
+      const erase = store.getState().mode === 'erase'
+      const hasPressure = p > 0 && p !== 0.5
+      wet.current = { id: PAGE_PEN, kind: 'pen', erase, pts: [[x, y, hasPressure ? p : 0.5, 0]], t0: t, hasPressure }
+      store.getState().set({ penDown: true })
+      onPenActivity?.(true)
+      if (erase) eraseAt(x, y)
+      else requestAnimationFrame(drawWet)
+      return
+    }
+    const w = wet.current
+    if (!w || w.id !== PAGE_PEN) return
+    for (const [x, y, p, t] of m.phase === 'move' ? pts : pts.slice(-1)) {
+      if (w.erase) eraseAt(x, y)
+      else if (m.phase === 'move') w.pts.push([x, y, w.hasPressure ? p : 0.5, Math.max(0, t - w.t0)])
+    }
+    if (m.phase === 'move') {
+      if (!w.erase) requestAnimationFrame(drawWet)
+      return
+    }
+    wet.current = null
+    palmUntil.current = performance.now() + PALM_MS
+    store.getState().set({ penDown: false })
+    onPenActivity?.(false)
+    if (w.erase) {
+      undo.stopCapturing()
+      return
+    }
+    if (m.phase === 'cancel' && w.pts.length < 2) {
+      drawWet()
+      return
+    }
+    const s = store.getState()
+    commit({ pts: w.pts.map((p) => [...p] as [number, number, number, number]), tool: s.tool, colour: s.colour, width: s.width, hasPressure: w.hasPressure, at: Date.now() })
+    void nextFrame().then(() => {
+      if (!wet.current) drawWet()
+    })
+  }
 
   useEffect(() => {
     const el = wrap.current

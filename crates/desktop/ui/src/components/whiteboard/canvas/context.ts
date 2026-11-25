@@ -4,6 +4,7 @@ import type * as Y from 'yjs'
 import type { CanvasHost } from './api'
 import type { Lod } from './lod'
 import type { Board, Id, Stroke } from './model'
+import type { PenMessage } from './penRelay'
 import type { WbStore } from './store'
 
 export type CanvasCtx = {
@@ -25,6 +26,10 @@ export type CanvasCtx = {
   spot: Id | null
   /** Strokes by anchor card ('' = free), oldest first; rebuilt only when the ink map changes. */
   inkByCard: ReadonlyMap<Id, Stroke[]>
+  /** True while a pen on an entered live page should ink/erase (pointer path): the page relays its pen events. */
+  pagePen: boolean
+  /** A relayed pen message from `card`'s page, in the frame's CSS px. */
+  penFromPage(card: Id, m: PenMessage): void
 }
 
 export const Ctx = createContext<CanvasCtx | null>(null)

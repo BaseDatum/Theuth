@@ -3,6 +3,7 @@
 // viewport is fixed (design §3.6). The frame registers itself for describe-point captions (§8.7).
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
+import { useStore as useZustand } from 'zustand'
 import { useText } from '@/components/chat/ArtifactCard'
 import { hostContextMessage, injectBootstrap, themeFragment } from '@/lib/page-bootstrap'
 import { useHtmlPageTheme } from '@/lib/page-theme'
@@ -14,6 +15,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useSessions } from '@/store/sessions'
 import { useCanvas } from '../context'
 import { PRESETS, type Card } from '../model'
+import { PEN_CAPTURE, readPen, withPenRelay } from '../penRelay'
 import { CARD_HEADER } from '../send'
 
 /** The page's layout size: the card's viewport, else its frame's preset, else the card body at zoom 1 (`auto`). */
@@ -53,7 +55,8 @@ function useArtifactText(session: string, callId: string): { text: string | null
 }
 
 export function PageCard({ card, callId, session, live }: { card: Card; callId: string; session: string; live: boolean }) {
-  const { frames, board } = useCanvas()
+  const { frames, board, store, pagePen, penFromPage } = useCanvas()
+  const capture = useZustand(store, (s) => s.entered === card.id) && pagePen
   const theme = useHtmlPageTheme()
   const id = useId()
   const frame = useRef<HTMLIFrameElement>(null)
@@ -69,7 +72,7 @@ export function PageCard({ card, callId, session, live }: { card: Card; callId: 
     setSrc(null)
     setLoaded(false)
     if (!live || !text) return
-    const doc = injectBootstrap(text, latest.current)
+    const doc = withPenRelay(injectBootstrap(text, latest.current))
     if (!isTauri()) {
       setSrc({ doc })
       return
@@ -98,6 +101,33 @@ export function PageCard({ card, callId, session, live }: { card: Card; callId: 
       if (frames.get(card.id) === el) frames.delete(card.id)
     }
   }, [frames, card.id, loaded])
+
+  // Pencil over this page while it is entered: the relay (penRelay.ts) hands pen events to the canvas ink layer.
+  const vpRef = useRef(vp)
+  vpRef.current = vp
+  useEffect(() => {
+    const w = frame.current?.contentWindow
+    if (!loaded || !w) return
+    const set = (on: boolean) => {
+      try {
+        w.postMessage({ jsonrpc: '2.0', method: PEN_CAPTURE, params: { on } }, '*')
+      } catch {
+        // the frame went away
+      }
+    }
+    set(capture)
+    if (!capture) return
+    const onMessage = (ev: MessageEvent) => {
+      if (ev.source !== w) return
+      const m = readPen(ev.data, vpRef.current)
+      if (m) penFromPage(card.id, m)
+    }
+    window.addEventListener('message', onMessage)
+    return () => {
+      window.removeEventListener('message', onMessage)
+      set(false)
+    }
+  }, [loaded, capture, card.id, penFromPage])
 
   if (gone) return <div className="wb-chip text-xs">source gone</div>
   if (!live) return null
