@@ -26,7 +26,7 @@ import {
   StickyNote,
   Undo2,
 } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { type ComponentProps, type ReactNode, useState } from 'react'
 import { useStore } from 'zustand'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useDark } from '@/lib/theme'
@@ -71,15 +71,16 @@ const ADD: { kind: AddKind; label: string; icon: ReactNode }[] = [
   { kind: 'clipboard', label: 'From clipboard', icon: <Clipboard className="size-4" /> },
 ]
 
-export function ClusterButton({ label, on, onClick, children, disabled }: { label: string; on?: boolean; onClick?(): void; children: ReactNode; disabled?: boolean }) {
+/** Spreads the rest (ref, aria-expanded, data-state, handlers) so it can be a Radix `PopoverTrigger asChild`: without
+ *  the ref the popover has no anchor and is placed off screen. */
+export function ClusterButton({ label, on, children, ...rest }: { label: string; on?: boolean; children: ReactNode } & Omit<ComponentProps<'button'>, 'children'>) {
   return (
     <button
       type="button"
       aria-label={label}
       title={label}
       aria-pressed={on === undefined ? undefined : on}
-      disabled={disabled}
-      onClick={onClick}
+      {...rest}
       className="wb-press grid size-11 place-items-center rounded-[14px] disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
     >
       {children}
