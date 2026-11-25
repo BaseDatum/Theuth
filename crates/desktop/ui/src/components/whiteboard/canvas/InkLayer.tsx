@@ -40,6 +40,25 @@ function Paths({ strokes, board }: { strokes: Stroke[]; board: Board }) {
   )
 }
 
+/** "pinned" labels over pinned marks (the annotation style, §8.6); `card` null = free marks, in world space. */
+function PinnedLabels({ board, card }: { board: Board; card: Card | null }) {
+  const labels = Object.values(board.marks).filter((m) => m.state === 'pinned' && (m.card ?? null) === (card?.id ?? null))
+  return (
+    <>
+      {labels.map((m) => {
+        const first = board.ink[m.strokes[0] ?? '']
+        if (!first) return null
+        const [sx, sy] = card ? scaleOf(first, card) : [1, 1]
+        return (
+          <text key={m.id} x={m.bb[0] * sx} y={m.bb[1] * sy - 4} className="wb-pin-label">
+            pinned
+          </text>
+        )
+      })}
+    </>
+  )
+}
+
 /** Free strokes, world coordinates; mounted in a ViewportPortal. */
 export function FreeInk() {
   const { board } = useCanvas()
@@ -48,6 +67,7 @@ export function FreeInk() {
   return (
     <svg className="wb-ink" width={1} height={1} style={{ zIndex: 1_000_000 }} aria-hidden>
       <Paths strokes={strokes} board={board} />
+      <PinnedLabels board={board} card={null} />
     </svg>
   )
 }
@@ -67,6 +87,7 @@ export function CardInk({ card }: { card: Card }) {
           </g>
         )
       })}
+      <PinnedLabels board={board} card={card} />
     </svg>
   )
 }

@@ -29,7 +29,9 @@ import { MultiTap, PALM_MS, pointerKind, routePointer, type PointerKind } from '
 import { LinkEdge } from './LinkEdge'
 import { assignLod, emptyLodState, type Lod } from './lod'
 import { WB_SCHEMA, type Board, type Box, type Id, type Port, type Stroke } from './model'
-import { addCard, addFrame, addLink, addStrokes, eraseStrokes, moveItems, raise, setSnap, archive, removeLink, removeFrame } from './ops'
+import { addCard, addFrame, addLink, addStrokes, eraseStrokes, moveItems, pinMark, raise, setSnap, archive, removeLink, removeFrame, dim } from './ops'
+import { lassoSelect } from './lasso'
+import { InkSelection, LassoPath, Offscreen, SelectionBar } from './Overlays'
 import { CARD_HEADER, commitSend as writeSend, planSend as plan, type Caption } from './send'
 import { createUndo } from './undo'
 import { sourceOf } from './useBoard'
@@ -40,6 +42,7 @@ const SNAP_SETTLE_MS = 500
 const SNAP_MAX = 1024
 const LOD_TICK_MS = 5000
 const STICKY = { w: 220, h: 150 }
+const LONG_PRESS_MS = 550
 /** Controls that a Pencil may tap without inking (toolbars, scrubbers, fields). */
 const CONTROL = '.wb-tools, .wb-scrub, .wb-menu, button, input, textarea, select, a, [contenteditable="true"]'
 
@@ -140,7 +143,32 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const [size, setSize] = useState({ w: 0, h: 0 })
   const [rubber, setRubber] = useState<Rubber | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; world: { x: number; y: number }; from: Id; port?: Port } | null>(null)
+  const menuOpen = useRef(false)
+  menuOpen.current = menu !== null
   const linkFrom = useRef<Id | null>(null)
+  /** Strokes taken by the lasso (ink has no React Flow node; the store's selection holds their marks). */
+  const [inkSel, setInkSel] = useState<Id[]>([])
+  const inkSelRef = useRef(inkSel)
+  inkSelRef.current = inkSel
+  const [lasso, setLasso] = useState<{ id: number; pts: [number, number][] } | null>(null)
+  const lassoRef = useRef(lasso)
+  const [markMenu, setMarkMenu] = useState<{ x: number; y: number; mark: Id } | null>(null)
+
+  /** Delete = archive cards, remove links and frames (their cards stay), erase lassoed ink. One undo step. */
+  const deleteSelection = useCallback(() => {
+    const s = store.getState()
+    const b = boardRef.current
+    const cards = s.selection.filter((id) => b.cards[id])
+    if (cards.length) archive(doc, cards)
+    for (const id of s.selection) {
+      if (b.links[id]) removeLink(doc, id)
+      if (b.frames[id]) removeFrame(doc, id)
+    }
+    if (inkSelRef.current.length) eraseStrokes(doc, inkSelRef.current)
+    undo.stopCapturing()
+    s.set({ selection: [] })
+    setInkSel([])
+  }, [doc, store, undo])
 
   // ---- geometry ----
   const worldView = useCallback((): Box => {
@@ -183,57 +211,86 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     return null
   }, [])
 
+  // ---- snapshots (§8.5): 500 ms after a live card settles fully on screen, again when the theme changed (A1), and
+  // once more just before a demotion ----
+  const theme: 'light' | 'dark' = dark ? 'dark' : 'light'
+  const themeRef = useRef(theme)
+  themeRef.current = theme
+  const snapping = useRef(new Set<string>())
+  const noCapture = useRef(false)
+  const stale = (c: Board['cards'][string]) =>
+    c.placeholder === undefined && c.versions.length > 0 && !(c.snap && c.snap.v === c.versions.length && c.snap.theme === themeRef.current)
+  /** Captures a live card's body if its snapshot is stale and it is fully on screen. Never throws. */
+  const captureCard = useCallback(async (id: Id): Promise<void> => {
+    const c = boardRef.current.cards[id]
+    if (!c || noCapture.current || !stale(c) || store.getState().scrub[id] !== undefined) return
+    const v = c.versions.length
+    const th = themeRef.current
+    const key = `snap/${c.id}/${v}`
+    if (snapping.current.has(key + th)) return
+    const rect = windowRect([c.x, c.y + CARD_HEADER, c.w, c.h - CARD_HEADER])
+    if (!rect || rect.width < 8 || rect.height < 8) return
+    snapping.current.add(key + th)
+    try {
+      const blob = await host.capture({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }, SNAP_MAX)
+      if (!blob) {
+        noCapture.current = true // no native capture on this client (web, relay): cards stay chips when not live
+        return
+      }
+      await host.blobPut(key, blob)
+      setSnap(doc, c.id, { v, at: Date.now(), theme: th })
+    } catch {
+      snapping.current.delete(key + th)
+    }
+  }, [doc, host, store, windowRect])
+
   // ---- LOD (re-assigned on view end, board change, enter, and a slow tick for the 30 s demotion) ----
+  const lodRef = useRef(lod)
+  lodRef.current = lod
+  const holding = useRef(new Set<Id>())
   const recomputeLod = useCallback(() => {
     const v = viewRef.current
-    const r = assignLod(shownCards(boardRef.current), {
+    const b = boardRef.current
+    const r = assignLod(shownCards(b), {
       zoom: v.zoom, view: worldView(), budget: host.liveBudget, entered: store.getState().entered, now: Date.now(), state: lodState.current,
     })
     lodState.current = r.state
+    const next = { ...r.lod }
+    // A card about to be demoted with a stale snapshot stays live for one capture first.
+    for (const [id, was] of Object.entries(lodRef.current)) {
+      const c = b.cards[id]
+      if (was !== 'live' || next[id] === 'live' || !c || !stale(c) || noCapture.current || holding.current.has(id)) continue
+      holding.current.add(id)
+      next[id] = 'live'
+      void captureCard(id).finally(() => {
+        setTimeout(() => {
+          recomputeLod()
+          holding.current.delete(id)
+        }, 0)
+      })
+    }
     setLod((prev) => {
-      const keys = Object.keys(r.lod)
-      return keys.length === Object.keys(prev).length && keys.every((k) => prev[k] === r.lod[k]) ? prev : r.lod
+      const keys = Object.keys(next)
+      return keys.length === Object.keys(prev).length && keys.every((k) => prev[k] === next[k]) ? prev : next
     })
-  }, [host.liveBudget, store, worldView])
+  }, [captureCard, host.liveBudget, store, worldView])
   useEffect(recomputeLod, [board, entered, size, recomputeLod])
   useEffect(() => {
     const t = setInterval(recomputeLod, LOD_TICK_MS)
     return () => clearInterval(t)
   }, [recomputeLod])
 
-  // ---- snapshots (§8.5): 500 ms after a live card settles fully on screen; again when the theme changed ----
   const snapTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const snapping = useRef(new Set<string>())
-  const theme: 'light' | 'dark' = dark ? 'dark' : 'light'
   const scheduleSnapshots = useCallback(() => {
     clearTimeout(snapTimer.current)
     snapTimer.current = setTimeout(async () => {
-      const b = boardRef.current
-      const scrub = store.getState().scrub
-      for (const c of shownCards(b)) {
-        if (lod[c.id] !== 'live' || c.placeholder !== undefined || c.versions.length === 0 || scrub[c.id] !== undefined) continue
-        const v = c.versions.length
-        if (c.snap && c.snap.v === v && c.snap.theme === theme) continue
-        const key = `snap/${c.id}/${v}`
-        if (snapping.current.has(key + theme)) continue
-        const rect = windowRect([c.x, c.y + CARD_HEADER, c.w, c.h - CARD_HEADER])
-        if (!rect || rect.width < 8 || rect.height < 8) continue
-        snapping.current.add(key + theme)
-        try {
-          const blob = await host.capture({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }, SNAP_MAX)
-          if (!blob) break // no native capture on this client: nothing to do for any card
-          await host.blobPut(key, blob)
-          setSnap(doc, c.id, { v, at: Date.now(), theme })
-        } catch {
-          snapping.current.delete(key + theme)
-        }
-      }
+      for (const [id, l] of Object.entries(lodRef.current)) if (l === 'live') await captureCard(id)
     }, SNAP_SETTLE_MS)
-  }, [doc, host, lod, store, theme, windowRect])
+  }, [captureCard])
   useEffect(() => {
     scheduleSnapshots()
     return () => clearTimeout(snapTimer.current)
-  }, [scheduleSnapshots])
+  }, [scheduleSnapshots, lod, theme])
 
   // ---- nodes and edges: derived from the board; React Flow keeps measurements and in-flight drag positions ----
   const derived = useMemo(() => nodesOf(board, { selection, readOnly, entered }) as unknown as Node[], [board, selection, readOnly, entered])
@@ -293,6 +350,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const palmUntil = useRef(0)
   const lastKind = useRef<PointerKind>('mouse')
   const suppressClick = useRef(false)
+  const press = useRef<{ id: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null>(null)
   const taps = useRef(new MultiTap()).current
   const rubberRef = useRef<Rubber | null>(null)
   const propsRef = useRef({ onPenActivity, onCanvasTap, readOnly })
@@ -332,6 +390,19 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     }
     if (hit.length) eraseStrokes(doc, hit)
   }, [doc, store])
+
+  /** The mark whose visible ink passes under a world point, if any. */
+  const markAt = useCallback((x: number, y: number): Id | null => {
+    const b = boardRef.current
+    const st = store.getState()
+    const tol = 10 / viewRef.current.zoom
+    for (const s of Object.values(b.ink)) {
+      const m = b.markOf[s.id]
+      if (!m || lookOf(b, s, st).opacity === 0) continue
+      if (touches(s, b, x, y, tol)) return m
+    }
+    return null
+  }, [store])
 
   const askCaption = useCallback((s: Stroke) => {
     const b = boardRef.current
@@ -389,7 +460,34 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         setRubber(rubberRef.current)
         return
       }
-      if (route === 'pass') return
+      if (s.mode === 'select' && kind !== 'pen' && route === 'pass' && onPane(e.target) && !isControl(e.target)) {
+        e.preventDefault()
+        e.stopPropagation()
+        el.setPointerCapture(e.pointerId)
+        const p = toWorld(e.clientX, e.clientY)
+        lassoRef.current = { id: e.pointerId, pts: [[p.x, p.y]] }
+        setLasso(lassoRef.current)
+        return
+      }
+      if (route === 'pass') {
+        // Long-press on a mark's ink (finger or mouse) → Pin / Unpin.
+        clearTimeout(press.current?.timer)
+        const cx = e.clientX
+        const cy = e.clientY
+        press.current = {
+          id: e.pointerId, x: cx, y: cy,
+          timer: setTimeout(() => {
+            press.current = null
+            const p = toWorld(cx, cy)
+            const mark = markAt(p.x, p.y)
+            if (!mark || propsRef.current.readOnly) return
+            suppressClick.current = true
+            const r = el.getBoundingClientRect()
+            setMarkMenu({ x: cx - r.left, y: cy - r.top, mark })
+          }, LONG_PRESS_MS),
+        }
+        return
+      }
       e.preventDefault()
       e.stopPropagation()
       if (route === 'ignore' || route === 'swallow') {
@@ -415,6 +513,22 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
 
     const move = (e: PointerEvent) => {
       if (e.pointerType === 'touch') taps.move(e.pointerId, e.clientX, e.clientY)
+      const pr = press.current
+      if (pr && pr.id === e.pointerId && Math.hypot(e.clientX - pr.x, e.clientY - pr.y) > 8) {
+        clearTimeout(pr.timer)
+        press.current = null
+      }
+      const ls = lassoRef.current
+      if (ls && ls.id === e.pointerId) {
+        e.stopPropagation()
+        const p = toWorld(e.clientX, e.clientY)
+        const last = ls.pts[ls.pts.length - 1]!
+        if (Math.hypot(p.x - last[0], p.y - last[1]) * viewRef.current.zoom >= 3) {
+          lassoRef.current = { ...ls, pts: [...ls.pts, [p.x, p.y]] }
+          setLasso(lassoRef.current)
+        }
+        return
+      }
       const rb = rubberRef.current
       if (rb && rb.id === e.pointerId) {
         e.stopPropagation()
@@ -453,6 +567,23 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         const n = taps.up(e.pointerId, e.timeStamp)
         if (n === 2 && !propsRef.current.readOnly) undo.undo()
         if (n === 3 && !propsRef.current.readOnly) undo.redo()
+      }
+      if (press.current?.id === e.pointerId) {
+        clearTimeout(press.current.timer)
+        press.current = null
+      }
+      const ls = lassoRef.current
+      if (ls && ls.id === e.pointerId) {
+        e.stopPropagation()
+        suppressClick.current = true
+        lassoRef.current = null
+        setLasso(null)
+        if (e.type !== 'pointerup' || ls.pts.length < 3) return
+        const st = store.getState()
+        const hit = lassoSelect(boardRef.current, ls.pts, st)
+        st.set({ selection: [...hit.frames, ...hit.cards, ...hit.links, ...hit.marks], entered: null })
+        setInkSel(hit.strokes)
+        return
       }
       const rb = rubberRef.current
       if (rb && rb.id === e.pointerId) {
@@ -506,13 +637,13 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       const pencilInk = stylus && s.mode !== 'link'
       const palm = !stylus && (s.penDown || s.now < s.palmUntil)
       const fingerInking = wet.current !== null && wet.current.kind === 'touch'
-      if (pencilInk || palm || fingerInking || rubberRef.current) {
+      if (pencilInk || palm || fingerInking || rubberRef.current || lassoRef.current) {
         e.stopPropagation()
         if (e.cancelable && !isControl(e.target)) e.preventDefault()
       }
     }
     const mouse = (e: MouseEvent) => {
-      if (wet.current || rubberRef.current) e.stopPropagation()
+      if (wet.current || rubberRef.current || lassoRef.current) e.stopPropagation()
     }
 
     el.addEventListener('pointerdown', down, { capture: true })
@@ -533,7 +664,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       el.removeEventListener('touchmove', touch, { capture: true })
       el.removeEventListener('mousedown', mouse, { capture: true })
     }
-  }, [commit, doc, drawWet, eraseAt, store, taps, toWorld, undo])
+  }, [commit, doc, drawWet, eraseAt, markAt, store, taps, toWorld, undo])
 
   // Wrapper size (for LOD and the wet canvas).
   useEffect(() => {
@@ -544,7 +675,9 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     return () => ro.disconnect()
   }, [])
 
-  // ---- keyboard (full window only) ----
+  // ---- keyboard (full window only). The shell owns V P E L F N O, ⌘0, ⌘↵ and Esc for cards/composer/cluster;
+  // the canvas owns undo/redo, Enter (enter the selected card), Delete (archive / remove / erase) and Esc for its
+  // own modes and selection. ----
   useEffect(() => {
     if (embedded) return
     const onKey = (e: KeyboardEvent) => {
@@ -553,12 +686,14 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       const s = store.getState()
       const mod = e.metaKey || e.ctrlKey
       if (e.key === 'Escape') {
-        if (s.entered) enter(null)
-        else if (s.mode !== 'idle') s.set({ mode: 'idle' })
-        else if (s.selection.length) s.set({ selection: [] })
-        else return
+        if (s.entered) return // the shell leaves the card
+        if (menuOpen.current) setMenu(null)
+        if (s.mode === 'link' || s.mode === 'select' || s.mode === 'frame') s.set({ mode: 'idle' })
+        else if (s.selection.length || inkSelRef.current.length) {
+          s.set({ selection: [] })
+          setInkSel([])
+        }
         linkFrom.current = null
-        e.preventDefault()
         return
       }
       if (mod && e.key.toLowerCase() === 'z') {
@@ -568,9 +703,9 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         else undo.undo()
         return
       }
-      if (mod && e.key === '0') {
+      if (mod && e.key.toLowerCase() === 'y') {
         e.preventDefault()
-        void rf.fitView({ padding: 0.1, duration: reducedMotion() ? 0 : 300 })
+        if (!readOnly) undo.redo()
         return
       }
       if (mod || e.altKey) return
@@ -579,42 +714,14 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         enter(s.selection[0]!)
         return
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && s.selection.length && !readOnly) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && (s.selection.length || inkSelRef.current.length) && !readOnly) {
         e.preventDefault()
-        const b = boardRef.current
-        const cards = s.selection.filter((id) => b.cards[id])
-        if (cards.length) archive(doc, cards)
-        for (const id of s.selection) {
-          if (b.links[id]) removeLink(doc, id)
-          if (b.frames[id]) removeFrame(doc, id)
-        }
-        undo.stopCapturing()
-        s.set({ selection: [] })
-        return
-      }
-      if (readOnly) return
-      const modes: Record<string, () => void> = {
-        v: () => s.set({ mode: s.mode === 'select' ? 'idle' : 'select' }),
-        p: () => s.set({ mode: 'draw' }),
-        e: () => s.set({ mode: s.mode === 'erase' ? 'idle' : 'erase' }),
-        l: () => s.set({ mode: s.mode === 'link' ? 'idle' : 'link' }),
-        f: () => s.set({ mode: s.mode === 'frame' ? 'idle' : 'frame' }),
-        n: () => {
-          const at = freeSpotRef.current(STICKY.w, STICKY.h)
-          const id = addCard(doc, { kind: 'sticky', title: 'Sticky', ...at, ...STICKY, source: { t: 'sticky', text: '' } })
-          undo.stopCapturing()
-          s.set({ selection: [id], entered: id })
-        },
-      }
-      const fn = modes[e.key.toLowerCase()]
-      if (fn) {
-        e.preventDefault()
-        fn()
+        deleteSelection()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [doc, embedded, enter, readOnly, rf, store, undo])
+  }, [deleteSelection, embedded, enter, readOnly, store, undo])
 
   // ---- the handle (§8.2) ----
   const freeSpot = useCallback((w: number, h: number) => {
@@ -770,10 +877,14 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     setMenu(null)
     linkFrom.current = null
     s.set({ entered: null, selection: [], ...(s.mode === 'link' ? { mode: 'idle' } : {}) })
+    setInkSel([])
+    setMarkMenu(null)
     propsRef.current.onCanvasTap?.({ pointerType: kind === 'touch' ? 'touch' : 'mouse' })
   }, [store])
   const onSelectionChange = useCallback(({ nodes: ns, edges: es }: { nodes: Node[]; edges: Edge[] }) => {
-    const next = [...ns.map((n) => n.id), ...es.map((e) => e.id)]
+    // Marks ride in the selection beside nodes and edges (the lasso puts them there); React Flow does not know them.
+    const marks = store.getState().selection.filter((id) => boardRef.current.marks[id])
+    const next = [...ns.map((n) => n.id), ...es.map((e) => e.id), ...marks]
     const s = store.getState()
     if (next.length === s.selection.length && next.every((id, i) => s.selection[i] === id)) return
     s.set({ selection: next, ...(s.entered && !next.includes(s.entered) ? { entered: null } : {}) })
@@ -835,6 +946,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
           {bg === 'grid' && <Background variant={BackgroundVariant.Lines} gap={44} color="color-mix(in oklab, var(--fg-tertiary) 18%, transparent)" />}
           <ViewportPortal>
             <FreeInk />
+            {inkSel.length > 0 && <InkSelection board={board} ids={inkSel} />}
           </ViewportPortal>
           {clusterOpen && (
             <Panel position="top-left" className="wb-attribution">
@@ -847,6 +959,35 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         </ReactFlow>
         <canvas ref={wetCanvas} className="wb-wet" aria-hidden />
         {rubber && <RubberBand r={rubber} />}
+        {lasso && <LassoPath pts={lasso.pts} />}
+        <Offscreen board={board} width={size.w} height={size.h} onGo={(id) => focus(id, { animate: true })} />
+        {markMenu && board.marks[markMenu.mark] && (
+          <Menu x={markMenu.x} y={markMenu.y}>
+            {board.marks[markMenu.mark]!.state === 'pinned' ? (
+              <button type="button" onClick={() => { pinMark(doc, markMenu.mark, false); undo.stopCapturing(); setMarkMenu(null) }}>
+                Unpin mark
+              </button>
+            ) : (
+              <button type="button" onClick={() => { pinMark(doc, markMenu.mark, true); undo.stopCapturing(); setMarkMenu(null) }}>
+                Pin mark as an annotation
+              </button>
+            )}
+            <button type="button" onClick={() => setMarkMenu(null)}>
+              Cancel
+            </button>
+          </Menu>
+        )}
+        {!readOnly && (inkSel.length > 0 || selection.length > 1) && (
+          <SelectionBar
+            board={board}
+            selection={selection}
+            ink={inkSel}
+            onDim={(tag) => { dim(doc, selection.filter((id) => board.cards[id]), tag); undo.stopCapturing() }}
+            onPin={(pinned) => { for (const id of selection) if (board.marks[id]) pinMark(doc, id, pinned); undo.stopCapturing() }}
+            onDelete={deleteSelection}
+            onClear={() => { store.getState().set({ selection: [] }); setInkSel([]) }}
+          />
+        )}
         {menu && (
           <Menu x={menu.x} y={menu.y}>
             <button
