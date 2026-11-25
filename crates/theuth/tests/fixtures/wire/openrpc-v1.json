@@ -12989,6 +12989,90 @@
         ],
         "type": "object"
       },
+      "event.artifact_2ewhiteboard_2dview_2dopened.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2ewhiteboard_2dview_2dopened.output.WhiteboardViewOpened": {
+        "description": "Event: a `show_whiteboard` call opened a whiteboard (218 §4.3).\nWire shape `{ \"type\": \"WhiteboardViewOpened\", \"session\", \"call_id\", \"doc\", \"title\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "doc": {
+            "description": "The whiteboard's document id.",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2ewhiteboard_2dview_2dopened.output.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "title": {
+            "description": "Tile title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "WhiteboardViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "doc",
+          "title",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2ewhiteboard_2dview_2dopened.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2ewhiteboard_2dview_2dopened.receiver.WhiteboardViewOpened": {
+        "description": "Event: a `show_whiteboard` call opened a whiteboard (218 §4.3).\nWire shape `{ \"type\": \"WhiteboardViewOpened\", \"session\", \"call_id\", \"doc\", \"title\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "doc": {
+            "description": "The whiteboard's document id.",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2ewhiteboard_2dview_2dopened.receiver.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "title": {
+            "description": "Tile title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "WhiteboardViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "doc",
+          "title",
+          "type"
+        ],
+        "type": "object"
+      },
       "event.autoresearch_2eevents.output.PauseReason": {
         "description": "Why a study paused (140 §4.2, §8.4).",
         "oneOf": [
@@ -16836,6 +16920,11 @@
             "const": "source",
             "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
             "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
           }
         ]
       },
@@ -16936,6 +17025,11 @@
           {
             "const": "source",
             "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
             "type": "string"
           }
         ]
@@ -39266,6 +39360,74 @@
         ],
         "type": "object"
       },
+      "method.agent.input.WbSendContext": {
+        "description": "What the owner's send carried (218 §4.2): rendered into the next `<whiteboard_changes>` note.",
+        "properties": {
+          "images": {
+            "default": [],
+            "description": "In the order of the message's image parts.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.input.WbSentImage"
+            },
+            "type": "array"
+          },
+          "in_view": {
+            "default": [],
+            "description": "ULIDs: frames fully in view, then loose cards in view (≤ 12).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "omitted": {
+            "default": 0,
+            "description": "Images left out.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "omitted_why": {
+            "default": null,
+            "description": "`\"no vision\"` | `\"budget\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "selected": {
+            "default": [],
+            "description": "ULIDs of the selected items.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "method.agent.input.WbSentImage": {
+        "description": "One image part of a whiteboard send: the card it shows (`None` = a free mark, \"canvas\") and its marks.",
+        "properties": {
+          "card": {
+            "description": "Card ULID, or `None` for a free mark.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "marks": {
+            "description": "Mark ULIDs.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "marks"
+        ],
+        "type": "object"
+      },
       "method.agent.output.AdvisorConsultCounts": {
         "description": "`consult` calls answered for one link (125 R1 D-R1.7).",
         "properties": {
@@ -40363,6 +40525,11 @@
               "source"
             ],
             "type": "object"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -43028,6 +43195,11 @@
           {
             "const": "source",
             "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
             "type": "string"
           }
         ]
@@ -50195,6 +50367,34 @@
           }
         ]
       },
+      "method.agent.output.WhiteboardSession": {
+        "description": "One session bound to a whiteboard (218 §4.2).",
+        "properties": {
+          "bound_ms": {
+            "description": "When it was (last) bound, ms since the epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.SessionId"
+              }
+            ],
+            "description": "The root session."
+          },
+          "title": {
+            "description": "Its title (empty when it has none yet).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "title",
+          "bound_ms"
+        ],
+        "type": "object"
+      },
       "method.agent.output.YoutubeRoute": {
         "description": "How a YouTube source was (or is to be) extracted (144 §4.1.1).",
         "oneOf": [
@@ -51279,6 +51479,11 @@
               "source"
             ],
             "type": "object"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -53913,6 +54118,11 @@
           {
             "const": "source",
             "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
             "type": "string"
           }
         ]
@@ -60831,6 +61041,34 @@
             "type": "string"
           }
         ]
+      },
+      "method.agent.receiver.WhiteboardSession": {
+        "description": "One session bound to a whiteboard (218 §4.2).",
+        "properties": {
+          "bound_ms": {
+            "description": "When it was (last) bound, ms since the epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.SessionId"
+              }
+            ],
+            "description": "The root session."
+          },
+          "title": {
+            "description": "Its title (empty when it has none yet).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "title",
+          "bound_ms"
+        ],
+        "type": "object"
       },
       "method.agent.receiver.YoutubeRoute": {
         "description": "How a YouTube source was (or is to be) extracted (144 §4.1.1).",
@@ -85297,6 +85535,11 @@
             "const": "source",
             "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
             "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
           }
         ]
       },
@@ -85473,6 +85716,11 @@
               "source"
             ],
             "type": "object"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -85838,6 +86086,11 @@
           {
             "const": "source",
             "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
             "type": "string"
           }
         ]
@@ -87026,6 +87279,183 @@
         ],
         "type": "object"
       },
+      "method.document.output.WbBlob": {
+        "description": "`wb_blob_put`'s answer.",
+        "properties": {
+          "bytes": {
+            "description": "Decoded size.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "key": {
+            "description": "The stored key.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "bytes"
+        ],
+        "type": "object"
+      },
+      "method.document.output.WbBlobData": {
+        "description": "`wb_blob_get`'s answer.",
+        "properties": {
+          "data": {
+            "description": "Base64.",
+            "type": "string"
+          },
+          "key": {
+            "description": "The key.",
+            "type": "string"
+          },
+          "mime": {
+            "description": "`image/png` | `image/jpeg` | `image/webp`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "mime",
+          "data"
+        ],
+        "type": "object"
+      },
+      "method.document.output.WbSkipped": {
+        "description": "An item *Undo this turn* left alone.",
+        "properties": {
+          "alias": {
+            "description": "Its alias, when it has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "ULID.",
+            "type": "string"
+          },
+          "why": {
+            "description": "Why, e.g. \"moved by you since\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "alias",
+          "why"
+        ],
+        "type": "object"
+      },
+      "method.document.output.WbTurnInfo": {
+        "description": "One turn of a session on a whiteboard (for the reply bubble).",
+        "properties": {
+          "cards": {
+            "description": "Card ULIDs the turn created or changed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ended": {
+            "description": "The turn finished.",
+            "type": "boolean"
+          },
+          "frames": {
+            "description": "Frame ULIDs the turn created or changed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "links": {
+            "description": "Link ULIDs the turn created or changed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "turn": {
+            "description": "1-based per (whiteboard, session).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "undone": {
+            "description": "*Undo this turn* ran.",
+            "type": "boolean"
+          },
+          "writes": {
+            "description": "`wb_*` writes in the turn.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "cards",
+          "links",
+          "frames",
+          "writes",
+          "undone",
+          "ended"
+        ],
+        "type": "object"
+      },
+      "method.document.output.WbUndoResult": {
+        "description": "`whiteboard_undo_turn`'s answer.",
+        "properties": {
+          "skipped": {
+            "description": "Items left alone because the owner changed them since.",
+            "items": {
+              "$ref": "#/components/schemas/method.document.output.WbSkipped"
+            },
+            "type": "array"
+          },
+          "turn": {
+            "description": "The turn undone.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "undone": {
+            "description": "Writes reverted.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "undone",
+          "skipped"
+        ],
+        "type": "object"
+      },
+      "method.document.output.WhiteboardCreated": {
+        "description": "`whiteboard_create`'s answer.",
+        "properties": {
+          "doc": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.document.output.DocId"
+              }
+            ],
+            "description": "The new whiteboard."
+          },
+          "title": {
+            "description": "Its title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc",
+          "title"
+        ],
+        "type": "object"
+      },
       "method.document.output.Who": {
         "description": "Who authored an update, as clients see it (§6.1).",
         "oneOf": [
@@ -87230,6 +87660,11 @@
               "source"
             ],
             "type": "object"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -87593,6 +88028,11 @@
           {
             "const": "source",
             "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
             "type": "string"
           }
         ]
@@ -88750,6 +89190,182 @@
           "field",
           "snippet",
           "ranges"
+        ],
+        "type": "object"
+      },
+      "method.document.receiver.WbBlob": {
+        "description": "`wb_blob_put`'s answer.",
+        "properties": {
+          "bytes": {
+            "description": "Decoded size.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "key": {
+            "description": "The stored key.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "bytes"
+        ],
+        "type": "object"
+      },
+      "method.document.receiver.WbBlobData": {
+        "description": "`wb_blob_get`'s answer.",
+        "properties": {
+          "data": {
+            "description": "Base64.",
+            "type": "string"
+          },
+          "key": {
+            "description": "The key.",
+            "type": "string"
+          },
+          "mime": {
+            "description": "`image/png` | `image/jpeg` | `image/webp`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "mime",
+          "data"
+        ],
+        "type": "object"
+      },
+      "method.document.receiver.WbSkipped": {
+        "description": "An item *Undo this turn* left alone.",
+        "properties": {
+          "alias": {
+            "description": "Its alias, when it has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "ULID.",
+            "type": "string"
+          },
+          "why": {
+            "description": "Why, e.g. \"moved by you since\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "why"
+        ],
+        "type": "object"
+      },
+      "method.document.receiver.WbTurnInfo": {
+        "description": "One turn of a session on a whiteboard (for the reply bubble).",
+        "properties": {
+          "cards": {
+            "description": "Card ULIDs the turn created or changed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ended": {
+            "description": "The turn finished.",
+            "type": "boolean"
+          },
+          "frames": {
+            "description": "Frame ULIDs the turn created or changed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "links": {
+            "description": "Link ULIDs the turn created or changed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "turn": {
+            "description": "1-based per (whiteboard, session).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "undone": {
+            "description": "*Undo this turn* ran.",
+            "type": "boolean"
+          },
+          "writes": {
+            "description": "`wb_*` writes in the turn.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "cards",
+          "links",
+          "frames",
+          "writes",
+          "undone",
+          "ended"
+        ],
+        "type": "object"
+      },
+      "method.document.receiver.WbUndoResult": {
+        "description": "`whiteboard_undo_turn`'s answer.",
+        "properties": {
+          "skipped": {
+            "description": "Items left alone because the owner changed them since.",
+            "items": {
+              "$ref": "#/components/schemas/method.document.receiver.WbSkipped"
+            },
+            "type": "array"
+          },
+          "turn": {
+            "description": "The turn undone.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "undone": {
+            "description": "Writes reverted.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "undone",
+          "skipped"
+        ],
+        "type": "object"
+      },
+      "method.document.receiver.WhiteboardCreated": {
+        "description": "`whiteboard_create`'s answer.",
+        "properties": {
+          "doc": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.document.receiver.DocId"
+              }
+            ],
+            "description": "The new whiteboard."
+          },
+          "title": {
+            "description": "Its title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc",
+          "title"
         ],
         "type": "object"
       },
@@ -104857,6 +105473,11 @@
               "source"
             ],
             "type": "object"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -105010,6 +105631,11 @@
           {
             "const": "source",
             "description": "A source (`DocId`, 144 §13.1).",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (`DocId`, 218 §5).",
             "type": "string"
           }
         ]
@@ -107070,6 +107696,11 @@
           {
             "const": "source",
             "description": "A source (`DocId`, 144 §13.1).",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (`DocId`, 218 §5).",
             "type": "string"
           }
         ]
@@ -109498,6 +110129,11 @@
             "const": "source",
             "description": "A source (`DocId`, 144 §13.1).",
             "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (`DocId`, 218 §5).",
+            "type": "string"
           }
         ]
       },
@@ -110627,6 +111263,11 @@
               "source"
             ],
             "type": "object"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -111102,6 +111743,11 @@
               "source"
             ],
             "type": "object"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -111506,6 +112152,11 @@
           {
             "const": "source",
             "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
             "type": "string"
           }
         ]
@@ -113743,6 +114394,11 @@
               "source"
             ],
             "type": "object"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -114143,6 +114799,11 @@
           {
             "const": "source",
             "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
             "type": "string"
           }
         ]
@@ -127197,6 +127858,11 @@
             "const": "source",
             "description": "A source (`DocId`, 144 §13.1).",
             "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (`DocId`, 218 §5).",
+            "type": "string"
           }
         ]
       },
@@ -127691,6 +128357,11 @@
           {
             "const": "source",
             "description": "A source (`DocId`, 144 §13.1).",
+            "type": "string"
+          },
+          {
+            "const": "whiteboard",
+            "description": "A whiteboard (`DocId`, 218 §5).",
             "type": "string"
           }
         ]
@@ -146427,6 +147098,38 @@
       "x-theuth-owner": "sessionsync"
     },
     {
+      "name": "session_whiteboards",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.DocId"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.DocId"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "sessions_status",
       "paramStructure": "by-position",
       "params": [],
@@ -151912,6 +152615,104 @@
       "x-theuth-owner": "talk"
     },
     {
+      "name": "wb_blob_get",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "doc",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.document.input.DocId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.document.output.WbBlobData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.document.receiver.WbBlobData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "document"
+    },
+    {
+      "name": "wb_blob_put",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "doc",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.document.input.DocId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "mime",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "data",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.document.output.WbBlob"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.document.receiver.WbBlob"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "document"
+    },
+    {
       "name": "web_profile_clear",
       "paramStructure": "by-position",
       "params": [],
@@ -152181,6 +152982,279 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "artifact"
+    },
+    {
+      "name": "whiteboard_bind",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "whiteboard",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.DocId"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "whiteboard_create",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "title",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.document.output.WhiteboardCreated"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.document.receiver.WhiteboardCreated"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "document"
+    },
+    {
+      "name": "whiteboard_send_context",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "whiteboard",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.DocId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "send",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.WbSendContext"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "whiteboard_sessions",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "whiteboard",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.DocId"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.WhiteboardSession"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.WhiteboardSession"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "whiteboard_turn",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "doc",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.document.input.DocId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.document.output.WbTurnInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.document.receiver.WbTurnInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "document"
+    },
+    {
+      "name": "whiteboard_unbind",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "whiteboard",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.DocId"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "whiteboard_undo_turn",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "doc",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.document.input.DocId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "turn",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.document.output.WbUndoResult"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.document.receiver.WbUndoResult"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "document"
     },
     {
       "name": "withdraw",
@@ -152492,6 +153566,16 @@
           "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.output.WebViewOpened"
         },
         "topic": "artifact.web-view-opened",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2ewhiteboard_2dview_2dopened.receiver.WhiteboardViewOpened"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2ewhiteboard_2dview_2dopened.output.WhiteboardViewOpened"
+        },
+        "topic": "artifact.whiteboard-view-opened",
         "version": 1
       },
       {
