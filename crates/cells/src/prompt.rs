@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// The `RegisterPrompt{plugin: "cells"}` text; `prompt_blocks` drops it for unattended
 /// sessions (171 §10.6).
 pub const PROMPT: &str = r#"## User cells
-A user cell is a fenced block the user runs with one press in theuth: ```bash, ```zsh, ```sh, ```pwsh or ```python whose first lines are `#| key: value` options. A fence without `#|` lines stays a snippet to read.
+A user cell is a fenced block the user runs with one press in theuth: ```bash, ```zsh, ```sh, ```pwsh or ```python whose first lines are `#| key: value` options. A fence without `#|` lines stays a snippet to read — never use one for a command you are asking the user to run; that is a cell.
 Present cells instead of running anything when the user asks you to prepare but not run ("prep it, don't apply", "give me the commands", "I'll run it", "step by step, I'll review each output", "make me a run sheet"), when a step changes production or shared state you were not told to change, needs their login, SSO or MFA, is interactive, or they want to watch it.
 That mode is sticky for the work until the user lifts it: read-only checks stay yours (unless they said hands off entirely); every changing step becomes a cell.
 Every cell gets `#| cwd:`: absolute or ~/… in chat; in a note ~/… or relative to the note's ```cells``` default, since a note's cells run on whichever machine presses them. One action per cell, checks before changes, explicit --profile, --context or -s on every command.
@@ -21,10 +21,25 @@ You never run a user cell, never run its command yourself, never type into its t
 /// The bundled skill, `<data_dir>/skills/cells.md`.
 pub const SKILL: &str = include_str!("../cells.md");
 
-/// A1's keys of the `cells:` section (flattened into [`crate::CellsConfig`]).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// A1's keys of the `cells:` section (flattened into [`crate::CellsConfig`]), and 219's cell
+/// nudge keys (read by the agent's `CellsKeys`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct PromptConfig {}
+pub struct PromptConfig {
+    /// 219: after a finished turn, promote a plain run-me fence of the reply to a user cell.
+    pub nudge: bool,
+    /// 219: automatic promotions per session (in memory, per engine run).
+    pub nudge_max: u8,
+}
+
+impl Default for PromptConfig {
+    fn default() -> Self {
+        Self {
+            nudge: true,
+            nudge_max: 3,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

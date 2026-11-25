@@ -7,7 +7,7 @@ use crate::rpc_support::{owner_root, session_draining, RpcServerExt};
 use crate::todo::TodoSnapshot;
 use crate::{
     AgentInfo, Agents, Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
-    BroadcastTargets, Cancel, CancelScope, Compact, CompactStyle, ContextBreakdown,
+    BroadcastTargets, Cancel, CancelScope, CellPromote, Compact, CompactStyle, ContextBreakdown,
     ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, Delivery, EditTurn,
     ForkSession, GetTodos, ListActivity, ListQueued, MemoryMode, PeerDeliver, PeerEnvelope,
     PeerReceipt, QueuedInput, Redo, Regenerate, RemoveContext, SendInput, SessionContextBreakdown,
@@ -21,6 +21,36 @@ use kameo::error::SendError;
 use rpc_core::{Server, ASK_FAILED, UNAUTHORIZED, ask, lookup, peer, send};
 use runtime::{InputId, SessionId};
 use tools::Retention;
+
+/// What `cell_promote` (design doc 219) did with the fence.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub struct CellPromotion {
+    /// The outcome.
+    pub outcome: PromoteOutcome,
+    /// Why, for `rejected`/`not_found`/`stale` when known (a validation code, a provider error).
+    pub detail: Option<String>,
+}
+
+/// [`CellPromotion::outcome`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum PromoteOutcome {
+    /// The fence is a user cell now; a `ContextChanged { reason: "cell_nudge" }` went out.
+    Converted,
+    /// The model answered `OK`: it stays a snippet.
+    Declined,
+    /// The model's cell failed a check (or the call failed).
+    Rejected,
+    /// A turn is running: nothing was replaced.
+    Stale,
+    /// No such reply or fence, or the reply changed meanwhile.
+    NotFound,
+}
 
 #[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
@@ -197,6 +227,20 @@ pub trait TurnsApi {
     /// (design doc 29 §3). Refused while a turn is running.
     #[method(name = "regenerate", with_extensions)]
     async fn regenerate(&self, session: SessionId, turn: i64) -> RpcResult<()>;
+    /// Rewrite a plain fence of the assistant row `entry` (its stored message seq, the
+    /// `HistoryEntry` context target) as a user cell via the cell-nudge side call, in place
+    /// (design doc 219). `fence` is the 0-based ordinal among the reply's plain runnable fences;
+    /// `body` the fence body the client saw: the fence whose body matches wins, the ordinal
+    /// only breaks ties between identical bodies. Refused (`stale`) while a turn runs; a
+    /// `ContextChanged { reason: "cell_nudge" }` follows a conversion.
+    #[method(name = "cell_promote", with_extensions)]
+    async fn cell_promote(
+        &self,
+        session: SessionId,
+        entry: i64,
+        fence: u32,
+        body: String,
+    ) -> RpcResult<CellPromotion>;
     /// Replace the turn opened at `turn` with `text` (+ `files`): drop it and
     /// everything after, start a turn with the new input (design doc 29 §3).
     /// Refused while a turn is running.
@@ -732,6 +776,32 @@ impl TurnsApiServer for Server {
             return Ok(r);
         }
         ask::<Agents, _>(agent::AGENT_ACTOR, Regenerate { session, turn }).await
+    }
+
+    async fn cell_promote(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        entry: i64,
+        fence: u32,
+        body: String,
+    ) -> RpcResult<CellPromotion> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) =
+            forward::route(ext, session, "cell_promote", (session, entry, fence, &body)).await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            CellPromote {
+                session,
+                seq: entry,
+                fence,
+                body,
+            },
+        )
+        .await
     }
 
     async fn edit_turn(

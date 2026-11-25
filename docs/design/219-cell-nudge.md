@@ -175,3 +175,33 @@ Slack/Signal/Telegram renderers (they keep plain fences), JS/TS auto-promotion, 
   CAS; a loop test that the gate is off for `channel_opened` and `talking`.
 - UI: `bun run check` clean (except known-red), tests for `copyText`/`copyLine`, the Make runnable
   button rendering only on plain runnable fences, and the reducer case.
+
+## Build notes (backend)
+
+- **Ordinal drift guard (amendment 01:21).** The RPC carries the fence body:
+  `cell_promote(session: SessionId, entry: i64, fence: u32, body: String) -> RpcResult<CellPromotion>`
+  (the second parameter is named `entry`, not `seq`: jsonrpsee's generated server binds its positional
+  param iterator to `seq`, so a parameter of that name does not compile; params are positional, the TS
+  call is unchanged);
+  TS `api.cell_promote(session: string, seq: number, fence: number, body: string)`. Resolution
+  (`cell_nudge::pick`): among the reply's plain fences, the one at ordinal `fence` if its body equals
+  `body` (trailing whitespace per line and trailing newlines ignored), else the first plain fence whose
+  body matches, else `not_found`. The ordinal only breaks ties between identical bodies. The session
+  message is `PromoteFence { seq, ordinal, body: Option<String>, auto, reason }`; the auto path sends
+  `body: None` (its fence comes from the detector) and `seq: Some(final row)`.
+- **`seq` mapping.** The UI's `CellOrdinals.entry` is `context.target.seq` of a `message` target
+  (`MessageAssistant.tsx`), i.e. `messages.seq` of the stored assistant row — exactly what the RPC takes.
+  No mapping needed.
+- **Detector windows.** The prose windows (300 before / 200 after, 200 for suppressors) stop at the
+  neighbouring fences, so a "for example" block earlier in the reply does not suppress a later run-me fence.
+- **Acceptance** additionally rejects a cell whose code still has a leading `$ ` prompt (it would not run).
+- **Auto trigger plumbing.** The turn task has no actor ref, so hook B (after `TurnFinished`, beside
+  `maybe_suggest`) runs the gate + `detect`, counts the attempt and records the fence digest, and leaves a
+  `NudgePlan` on `SessionState`; the `TurnDone` handback sends `PromoteFence{auto:true}` to the actor,
+  which runs the side call detached and replaces through `ApplyPromotion` (idle check at replace time).
+- **Config.** `cells.nudge` / `cells.nudge_max` live in `cells::prompt::PromptConfig` (the A1 struct
+  flattened into `CellsConfig`, so `config.rs` stays frozen) and are read by the agent's `CellsKeys`.
+- **Store.** `replace_assistant_text` keeps a single text part in place (exclusion-mask coordinates stay
+  valid); several text parts collapse into the first, refused when the mask addresses parts.
+- **Prompt.** Only `crates/cells/src/prompt.rs` carried the sentence; the skill (`cells.md`) words it
+  differently and is unchanged. `docs/design/171-cells.md` still quotes the old block verbatim.
