@@ -97,8 +97,15 @@ final class CanvasSurface: NSObject, CaptureSurface, PKCanvasViewDelegate {
     ready.removeAll()
   }
 
+  /// Only the recogniser is switched: the canvas itself stays drawing-enabled (an off recogniser already leaves every
+  /// Pencil touch to the page), so capture going off and on never cycles PencilKit's own state. Should PencilKit have
+  /// taken its recogniser back onto the canvas (which never takes a touch), it goes back onto the web view.
   func setEnabled(_ enabled: Bool) {
-    canvas.isDrawingEnabled = enabled
+    if let recognizer = recognizer, let host = host, recognizer.view !== host {
+      recognizer.view?.removeGestureRecognizer(recognizer)
+      host.addGestureRecognizer(recognizer)
+      recognizer.allowedTouchTypes = pencilOnly
+    }
     recognizer?.isEnabled = enabled
   }
 

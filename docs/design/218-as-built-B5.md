@@ -62,7 +62,8 @@ It does not affect the app (its page is `tauri://`).
 - At pen-idle (120 ms after the last pen-up) every not-yet-sent stroke goes in one `StrokeBatch`, in `seq` order (`seq` monotonic per attach, from 1).
 - A 300 ms repeating timer resends every stroke still unacked 300 ms after its last send: same `seq`, `retry + 1`, a new `batch` number, for as long as attached.
 - `ack(seqs)` removes the strokes from the overlay. Route A defers the removal to pen-up, because replacing `PKCanvasView.drawing` mid-stroke would cancel the stroke in progress.
-- With the eraser selected (picker or `set_tool`), or with `set_enabled(false)`, the surface stops drawing (`isDrawingEnabled = false` and the recogniser disabled), so pen events reach the page.
+- With the eraser selected (picker or `set_tool`), or with `set_enabled(false)`, the surface stops drawing (the recogniser disabled; the canvas itself stays `isDrawingEnabled`, so capture going off and on never cycles PencilKit's state), so pen events reach the page. A recogniser PencilKit put back on the canvas is moved onto the web view again. `set_tool` with the tool already held does nothing; a picker notification naming what it already showed is no change (no `tool` event).
+- JS turns capture on only while no pen is down (a pointer stroke drawn while the cluster was up gets it at its pen-up) and sends each command only when its value changed.
 - A second `attach` replaces the channels, renumbers still-unacked strokes from 1, and hands them over again. `detach` removes the overlay, the recogniser, the picker and the pencil interaction, and drops the queue.
 
 ### `crates/desktop`

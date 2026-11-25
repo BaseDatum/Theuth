@@ -41,6 +41,30 @@ export function pickInkTool(picked: InkTool): { tool: InkTool; mode: Mode } {
 
 export const palmActive = (s: Pick<RouteState, 'penDown' | 'palmUntil' | 'now'>) => s.penDown || s.now < s.palmUntil
 
+/**
+ * The samples of one stroke in time order, each once. They can arrive again or late: iPadOS WebKit fires `pointermove`
+ * twice per Pencil sample (again when the touch's estimated force and tilt arrive), each with its `getCoalescedEvents()`,
+ * which can repeat samples already taken; a page relay can resend. Taken as they come, the stroke steps back in time and
+ * place, and the renderer (perfect-freehand) draws each step back as a sharp corner — a flat end and a round cap
+ * mid-line. So a sample older than the last one taken, or one already taken at the same time and place, is dropped.
+ */
+export class StrokeSamples {
+  #t = -Infinity
+  #at = new Set<string>()
+
+  /** True when the sample at (x, y), time `t` (ms, the event clock) is new. */
+  take(x: number, y: number, t: number): boolean {
+    if (t < this.#t) return false
+    const k = `${x},${y}`
+    if (t > this.#t) {
+      this.#t = t
+      this.#at.clear()
+    } else if (this.#at.has(k)) return false
+    this.#at.add(k)
+    return true
+  }
+}
+
 export function routePointer(kind: PointerKind, s: RouteState): Route {
   switch (kind) {
     case 'pen':
