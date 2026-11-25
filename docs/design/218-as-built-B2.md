@@ -46,7 +46,7 @@ All under the build lock with the §0.4 caps.
 
 Queued behind the shared build lock when this note was committed (results, if they land in time, are appended below): `cargo test -p agent --lib attach`, `cargo test -p agent --lib store`, `cargo check -p tasks -p tui -p roster -p app -p sessionsync -p tools`, `cargo test -p sessionsync --lib relay`, `cargo test -p rpc-compose --test wire_golden --test wire_parity_inc5`, `cargo clippy -p agent -p artifact --all-targets --no-deps -- -D warnings`.
 
-The fixture `crates/agent/tests/fixtures/whiteboard_outline.txt` was cut from the contract (lines 349–361); when B1's copy exists, `diff` it against `crates/document/tests/fixtures/whiteboard/outline.txt` (gate step 1). B1's file did not exist yet when B2 wrote its copy.
+The fixture `crates/agent/tests/fixtures/whiteboard_outline.txt` was cut from the contract (lines 349–361). `diff crates/document/tests/fixtures/whiteboard/outline.txt crates/agent/tests/fixtures/whiteboard_outline.txt` → exit 0 (identical to B1's copy).
 
 ## For other builders / the orchestrator
 
