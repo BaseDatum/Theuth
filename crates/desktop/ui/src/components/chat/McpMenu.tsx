@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Plug, Settings2 } from 'lucide-react'
+import { Loader2, Settings2, Wrench } from 'lucide-react'
 import { useState } from 'react'
 import { errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
@@ -52,7 +52,7 @@ export function McpMenu({ session, className }: { session: string; className?: s
           className={cn('size-9 shrink-0 rounded-full text-fg-secondary', className)}
           aria-label={toolCategories || builtins ? 'Tools and MCP servers' : 'MCP servers'}
         >
-          <Plug className="size-5" />
+          <Wrench className="size-5" />
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className={cn('p-1', toolCategories || builtins ? 'w-72' : 'w-64')}>
