@@ -430,7 +430,7 @@ mod tests {
         // RFC 7636 appendix B.
         assert_eq!(
             challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
-            "E9Melhoa2OwvFrEMTJguCHaoeK1t5URWbuGJSstw-cM"
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
         let t = random_token();
         assert_eq!(t.len(), 64);
