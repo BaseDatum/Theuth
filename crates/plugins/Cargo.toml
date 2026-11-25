@@ -3,6 +3,7 @@ name = "plugins"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "External plugins (design doc 216): child processes in any language, JSON-RPC over stdin/stdout, grants, placements"
 
 [dependencies]

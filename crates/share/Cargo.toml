@@ -3,6 +3,7 @@ name = "share"
 version = "2.25.5"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Public web sharing client plugin: tunnel to a share edge, TLS termination, proxy, consent (design doc 210)"
 
 [dependencies]
@@ -52,7 +53,8 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 arc-swap = "1.9.3"
 listeners = "0.6.1"
-argon2 = "0.6.0"
+# 221 B5: held at the rc bitwarden-crypto pins (`=0.6.0-rc.8`, sdk-internal@2b06afa); one semver slot.
+argon2 = "=0.6.0-rc.8"
 cookie = { version = "0.18.2", features = ["signed"] }
 ts-rs = { workspace = true, optional = true }
 

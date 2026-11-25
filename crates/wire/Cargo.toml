@@ -3,6 +3,7 @@ name = "wire"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Plugin-owned wire contracts and ordered runtime event fanout"
 
 [dependencies]

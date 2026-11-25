@@ -3,6 +3,7 @@ name = "desktop"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Tauri shell: macOS menubar app that launches the `theuth` sidecar on a pty, and the iOS link client; both host the RPC webview"
 
 # 31 §8.3: the Tauri iOS bridge links the app as a static library, so the
@@ -41,7 +42,8 @@ dirs = { workspace = true }
 # 39 §3.3: background check + verify, install at quit; tokio for `sleep`, `rand` (above) for the
 # jitter, `platform::files::writable` to skip a bundle we cannot rename without a password prompt.
 tauri-plugin-updater = { workspace = true }
-tokio = { workspace = true }
+# `net`: 221 §9.6's SSO loopback listener (`src/sso.rs`).
+tokio = { workspace = true, features = ["net"] }
 platform = { workspace = true }
 # Speech model files from the release bucket at start (crates/desktop/src/models.rs).
 reqwest = { workspace = true }
@@ -74,8 +76,9 @@ tauri-nspanel = { workspace = true }
 objc2 = "0.6"
 block2 = "0.6"
 # 130 D10 (`companion/macos.rs`): `NSWorkspace` launch and `NSRunningApplication` queries on top of the
-# workspace feature set; `libc` for `kill(pid, 0)` in the quit handshake.
-objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc", "NSImage", "NSImageRep", "NSGraphicsContext", "NSResponder", "NSView", "objc2-core-graphics"] }
+# workspace feature set; `libc` for `kill(pid, 0)` in the quit handshake. `NSPasteboard`: 221's secret
+# Copy clears the pasteboard only while it is unchanged (`commands::pasteboard_clear_if`).
+objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc", "NSImage", "NSImageRep", "NSGraphicsContext", "NSResponder", "NSView", "objc2-core-graphics", "NSPasteboard"] }
 objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSError", "NSUUID", "NSDictionary", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSProcessInfo", "NSSet"] }
 # 209 §4.5 (`apple_cookies.rs`): the web view tiles' cookie store and page storage through WebKit directly,
 # at the version wry resolves; `WKWebView` (with `objc2-app-kit`) for the typed `callAsyncJavaScript…`,

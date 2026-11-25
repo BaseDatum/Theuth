@@ -1,0 +1,27 @@
+[package]
+name = "secrets-aws"
+version = "2.30.4"  # frozen: only the binaries carry the product version (platform::version)
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "AWS Secrets Manager external secret backend (221 §4, §6.1)"
+
+[dependencies]
+secrets = { workspace = true }
+aws-profiles = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-secretsmanager = { workspace = true }
+# `CredentialsError`: an expired SSO session or a missing chain arrives as one inside the SDK error.
+aws-credential-types = "1"
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+aws-sdk-secretsmanager = { workspace = true, features = ["test-util"] }
+aws-smithy-mocks = { workspace = true }
+
+[lints]
+workspace = true

@@ -3,6 +3,7 @@ name = "acp"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Agent Client Protocol client half: agents.yaml, the registry, one external harness process per connection, pure renderers"
 
 [dependencies]

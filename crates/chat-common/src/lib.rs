@@ -31,6 +31,23 @@ pub fn secret_notice(name: &str, note: &str) -> String {
     )
 }
 
+/// The 221 §9.4 line for a `secret_request` that stores into an external manager (`to` =
+/// `bw/personal`). Answerable only on the app's masked card, never in chat.
+#[must_use]
+pub fn external_secret_notice(name: &str, note: &str, to: &str) -> String {
+    format!(
+        "theuth asks for secret `{name}` — {note}, to store in `{to}`. Answer it in the desktop app or the TUI (/secrets); it will not be read from this chat."
+    )
+}
+
+/// The 221 §9.4 line for an unlock card (`target` = `bw/personal`). Never answerable in chat.
+#[must_use]
+pub fn unlock_notice(target: &str, account: &str) -> String {
+    format!(
+        "theuth needs `{target}` ({account}) unlocked. Unlock it in the desktop app or the TUI; the master password will not be read from this chat."
+    )
+}
+
 /// `s` cut to its first `max` chars with `…` appended when it was longer.
 #[must_use]
 pub fn truncate(s: &str, max: usize) -> String {

@@ -1,0 +1,29 @@
+theuth
+Copyright (C) the theuth contributors
+
+theuth's own source code is licensed under the GNU General Public License, version 3 or (at your
+option) any later version (GPL-3.0-or-later). The full text is in LICENSE.
+
+The released binaries (the `t` command-line engine and the desktop app that bundles it) are built
+with the `bitwarden` cargo feature, which links the Bitwarden SDK:
+
+  bitwarden/sdk-internal
+  https://github.com/bitwarden/sdk-internal
+  pinned at commit 2b06afa3b3579af116cd60f83d65b9e411fd2a56
+  https://github.com/bitwarden/sdk-internal/tree/2b06afa3b3579af116cd60f83d65b9e411fd2a56
+
+Its crates (bitwarden-core, bitwarden-vault, bitwarden-send and the others listed in
+THIRD-PARTY-NOTICES) are dual-licensed "GPL-3.0-only OR LicenseRef-Bitwarden-SDK". theuth uses
+them under their GPL-3.0 option only, never under the Bitwarden SDK License. Because they are
+linked into them, the released binaries are works covered by the GNU General Public License,
+version 3, as a whole.
+
+Corresponding source:
+  - theuth: https://github.com/basedatum/theuth at the release's tag (Cargo.lock pins every
+    dependency, including the Bitwarden SDK commit above).
+  - Bitwarden SDK: the repository and commit above.
+
+Binaries built with `--no-default-features` do not link the Bitwarden SDK.
+
+Other third-party components and their licences are listed in THIRD-PARTY-NOTICES, generated from
+Cargo.lock by scripts/third-party-notices.sh.

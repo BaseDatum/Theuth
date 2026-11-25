@@ -36,12 +36,16 @@ mod models;
 mod pages;
 #[cfg(desktop)]
 mod point;
+#[cfg(target_os = "macos")]
+mod power;
 #[cfg(desktop)]
 mod quit;
 #[cfg(desktop)]
 mod update;
 #[cfg(desktop)]
 mod share;
+#[cfg(desktop)]
+mod sso;
 #[cfg(any(desktop, target_os = "ios"))]
 mod web_rules;
 #[cfg(desktop)]
@@ -86,6 +90,9 @@ pub fn run() {
             // 209 §4.5: the tile store's cookie observer goes before WebKit does.
             #[cfg(target_os = "macos")]
             apple_cookies::unwatch(app);
+            // 221 D20: the sleep / screen-lock observers too.
+            #[cfg(target_os = "macos")]
+            power::shutdown();
             quit::on_exit(app)
         }
         // 166 D2: a Dock click.
@@ -284,7 +291,7 @@ mod desktop {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
 
-    use crate::{commands, companion, island, launch, models, point, quit, update};
+    use crate::{commands, companion, island, launch, models, point, quit, sso, update};
 
     /// 166 R1: argv of the login item's launch (all desktops write it; only macOS reads it, `dock::launch`).
     pub(crate) const AUTOSTART_ARG: &str = "--autostart";
@@ -364,6 +371,7 @@ mod desktop {
             .manage(update::Pending::default())
             .manage(quit::Quit::default())
             .manage(Flags::default())
+            .manage(sso::Sso::default())
             .manage(crate::webview::Views::default())
             // 205 §5: Tauri's `asset` handler, minus `web-*` webviews (`asset.rs`).
             .register_asynchronous_uri_scheme_protocol(crate::asset::SCHEME, crate::asset::handler);
@@ -388,6 +396,12 @@ mod desktop {
             commands::share_tray,
             commands::share_stop_all,
             commands::open_window,
+            commands::legal_text,
+            commands::pasteboard_change_count,
+            commands::pasteboard_clear_if,
+            sso::sso_listen,
+            sso::sso_wait,
+            sso::sso_cancel,
             update::check_update,
             update::install_update,
             island::set_hidden_from_capture,
@@ -457,6 +471,9 @@ mod desktop {
                 companion::init(app.handle())?;
                 #[cfg(target_os = "macos")]
                 crate::dock::init(app.handle());
+                // 221 D20 `lock_on_sleep`: sleep and screen lock → `power-lock` → the webview → the engine.
+                #[cfg(target_os = "macos")]
+                crate::power::init(app.handle());
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 deep_links(app.handle());
                 // 166 R1: last, so a user launch shows a window that is fully set up.

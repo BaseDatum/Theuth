@@ -10,6 +10,7 @@ import { useConnection } from '@/store/connection'
 import { on, onTopic } from '@/store/sessions'
 import { isPopout, openPopout } from '@/lib/popout'
 import { applySandboxEvent } from '@/store/sandboxes'
+import { useUnlockRequests } from '@/store/unlock-requests'
 import { endlessFixture } from '@/dev/endless-fixture'
 import { localFixture } from '@/dev/local-fixture'
 
@@ -135,6 +136,15 @@ export const queryKeys = {
   /** `web_profile_status()` (209 §4.4): Settings › Browser's Sharing row. */
   webProfileStatus: ['web-profile-status'] as const,
   secrets: ['secrets'] as const,
+  /** 221 §6.3: `list_secret_connections()`. */
+  secretConnections: ['secret-connections'] as const,
+  /** 221 §9.1: `list_external_secrets(conn, { query, deleted })` pages; `secretExternal` alone matches every connection. */
+  secretExternal: ['secret-external'] as const,
+  secretExternalList: (conn: string, query: string, deleted: boolean) => ['secret-external', conn, query, deleted] as const,
+  /** 221 §12.4: `list_sends(conn)`. */
+  secretSends: (conn: string) => ['secret-sends', conn] as const,
+  /** 221 D20: `get_external_settings()`. */
+  secretExternalSettings: ['secret-external-settings'] as const,
   updateStatus: ['update-status'] as const,
   voice: ['voice'] as const,
   /** `get_communication(session)`; `null` is the global switch. Prefix `['communication']` covers every session (children inherit, so any change invalidates all). */
@@ -332,6 +342,12 @@ export function useInvalidateOn(): void {
       onTopic('share.changed@1', () => void qc.invalidateQueries({ queryKey: queryKeys.sharing })),
       on("secrets.events@1", 'SecretsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
       on("secrets.events@1", 'SecretResolved', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
+      // 221 §9.4: an agent's call waits on a locked connection; `UnlockHost` shows the card until it resolves.
+      on("secrets.events@1", 'ExternalUnlockRequested', (e) => useUnlockRequests.getState().add(e)),
+      on("secrets.events@1", 'ExternalUnlockResolved', (e) => {
+        useUnlockRequests.getState().resolve(e.id)
+        if (e.unlocked) void qc.invalidateQueries({ queryKey: queryKeys.secretConnections })
+      }),
       on("agent.communication@1", 'CommunicationChanged', () => {
         void qc.invalidateQueries({ queryKey: ['communication'] })
         void qc.invalidateQueries({ queryKey: ['peers'] })

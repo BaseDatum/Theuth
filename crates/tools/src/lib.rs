@@ -447,6 +447,25 @@ pub trait Tool: Send + Sync + 'static {
     /// chat thread ([`registry::SetNonOwnerThread`]). Default `false`.
     const HUMAN_ONLY: bool = false;
 
+    /// [`Tool::HUMAN_ONLY`] as the gate reads it when it has no call: a tool may answer from a
+    /// setting (221 D17, `send_owner_only`). Must be cheap and synchronous. Default: the constant.
+    fn human_only(&self) -> bool {
+        Self::HUMAN_ONLY
+    }
+
+    /// Whether [`Tool::human_only_for`] reads the call's arguments: only then are they
+    /// deserialised at the gate. Default `false`.
+    const HUMAN_ONLY_PER_CALL: bool = false;
+
+    /// [`Tool::human_only`] for one call: a tool may decide from its arguments (221 D17:
+    /// `secret_send_create` reads the named connection's `send_owner_only`). Asked only when
+    /// [`Tool::HUMAN_ONLY_PER_CALL`] is set. Must be cheap and synchronous. Default:
+    /// [`Tool::human_only`].
+    fn human_only_for(&self, args: &Self::Args) -> bool {
+        let _ = args;
+        self.human_only()
+    }
+
     /// Whether [`Tool::approval_preview`] has anything to add: only then are a call's arguments
     /// deserialised for it, so every other tool's ask costs nothing. Default `false`.
     const APPROVAL_PREVIEW: bool = false;
@@ -511,9 +530,15 @@ pub trait ErasedTool: Send + Sync + 'static {
     fn approved_by_card(&self) -> bool {
         false
     }
-    /// [`Tool::HUMAN_ONLY`]. MCP tools keep the default `false`.
+    /// [`Tool::human_only`]. MCP tools keep the default `false`.
     fn human_only(&self) -> bool {
         false
+    }
+    /// [`Tool::human_only_for`] on raw args; args that do not parse fall back to
+    /// [`Self::human_only`] (the call fails on them anyway). Default: [`Self::human_only`].
+    fn human_only_for(&self, args: &serde_json::Value) -> bool {
+        let _ = args;
+        self.human_only()
     }
     /// [`Tool::approval_preview`] on raw args; args that do not parse have none (the call fails
     /// on them anyway). MCP tools keep the default: none.
@@ -564,7 +589,17 @@ impl<T: Tool> ErasedTool for T {
     }
 
     fn human_only(&self) -> bool {
-        T::HUMAN_ONLY
+        Tool::human_only(self)
+    }
+
+    fn human_only_for(&self, args: &serde_json::Value) -> bool {
+        if !T::HUMAN_ONLY_PER_CALL {
+            return Tool::human_only(self);
+        }
+        match <T::Args as serde::Deserialize>::deserialize(args) {
+            Ok(a) => Tool::human_only_for(self, &a),
+            Err(_) => Tool::human_only(self),
+        }
     }
 
     fn approval_preview(

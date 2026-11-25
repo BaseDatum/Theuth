@@ -313,7 +313,7 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
     ) : prompt.type === 'AskRequested' ? (
       <AskCard ask={prompt} />
     ) : (
-      <SecretRequestCard id={prompt.id} title={prompt.title} note={prompt.title ? undefined : prompt.note} fields={eventFields(prompt)} expires={prompt.expires} />
+      <SecretRequestCard id={prompt.id} title={prompt.title} note={prompt.title ? undefined : prompt.note} fields={eventFields(prompt)} expires={prompt.expires} destination={prompt.destination} />
     )
   const card = by ? (
     <>

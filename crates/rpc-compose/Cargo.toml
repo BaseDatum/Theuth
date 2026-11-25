@@ -3,6 +3,7 @@ name = "rpc-compose"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Cross-plugin RPC composition and application adapters"
 
 [dependencies]

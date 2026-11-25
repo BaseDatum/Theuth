@@ -3,6 +3,7 @@ name = "document"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Documents: the Yjs authority (yrs) behind every BlockNote editor, the store, the derived-markdown export/import loop and the headless helper client (design doc 59)"
 
 [dependencies]

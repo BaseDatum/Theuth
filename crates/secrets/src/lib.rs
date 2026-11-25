@@ -16,20 +16,27 @@
 //! - commands on the [`SECRETS_ACTOR`] actor ([`SecretsActor`]): [`List`],
 //!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`Waive`], [`PendingRequests`],
 //!   [`ListRequests`], [`SetEngine`], [`Handle`]; 183: [`GetRotation`] (the mesh reaches the
-//!   keyring through [`Handle`] and the [`Vault`] methods directly)
+//!   keyring through [`Handle`] and the [`Vault`] methods directly); 221: [`RegisterExternal`],
+//!   [`UnregisterExternal`]
+//! - [`external::ExternalBackend`]: the trait external backend crates implement
 //! - events: [`SecretsEvent`]
 //! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
-/// Provider-owned helpers used by RPC method owners.
-pub mod rpc_support;
 /// Credentials RPC methods and typed client.
 pub mod rpc;
+/// Provider-owned helpers used by RPC method owners.
+pub mod rpc_support;
 pub use rpc::{CredentialsApiClient, rpc_module};
-mod key;
+pub mod connections;
 pub mod expiry;
+pub mod external;
+mod key;
 pub mod requests;
+pub mod settings;
 pub mod store;
 pub mod tools;
+pub mod tools_external;
+pub mod tools_send;
 pub mod vault;
 
 use std::collections::HashMap;
@@ -44,6 +51,8 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
+pub use connections::{BackendFactory, ConnStore, RegisterBackendFactory};
+pub use external::{ExternalBackend, RegisterExternal, UnregisterExternal};
 pub use vault::{
     KEEP, KeyInfo, KeyStore, MESH_PREFIX, OAUTH_PREFIX, PLUGINS_GRANTS_KEY, PLUGINS_PREFIX,
     RetireHold, RotationPeer, RotationPhase, RotationState, SHARE_PREFIX, SecretInfo, SecretsList,
@@ -68,6 +77,10 @@ pub struct SecretsConfig {
     pub tools: bool,
     /// How long `secret_request` waits for the user.
     pub request_timeout_secs: u64,
+    /// 221 D20: the harness-wide external-secret settings (`secrets.external`).
+    pub external: settings::ExternalSettings,
+    /// 221 §6: the external connections (`secrets.connections.<conn>`).
+    pub connections: std::collections::BTreeMap<String, settings::ConnectionConfig>,
 }
 
 impl Default for SecretsConfig {
@@ -76,6 +89,8 @@ impl Default for SecretsConfig {
             key_store: KeyStore::Auto,
             tools: true,
             request_timeout_secs: 1800,
+            external: settings::ExternalSettings::default(),
+            connections: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -133,6 +148,9 @@ pub struct SecretRequest {
     /// (counted from when the user stores) or an RFC 3339 instant. `None` = Never.
     #[serde(default)]
     pub expires: Option<String>,
+    /// 221 §7.3: the request stores into an external manager; names and status, never a value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<connections::DestinationView>,
 }
 
 /// `ask` → [`SecretsList`]: names, notes, versions, key store. Never values.
@@ -164,11 +182,22 @@ pub struct Restore {
 }
 
 /// `ask` → `Result<(), String>`: the name and every version. User surfaces
-/// only; the model has no delete. `Err` = unknown name.
+/// (the model's delete is [`DeleteConfirmed`], 221 D24). `Err` = unknown name.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Delete {
     /// The secret.
     pub name: String,
+}
+
+/// `ask` → `Result<u64, String>` (how many versions went): [`Delete`] for `secret_delete` (221
+/// D24), only while `confirm` is the current version, checked inside the delete's transaction.
+/// `Err` = unknown name, or `<name> is at vN, not vM; …`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeleteConfirmed {
+    /// The secret.
+    pub name: String,
+    /// The version the caller saw as current.
+    pub confirm: u32,
 }
 
 /// `ask` → `Result<Outcome, String>`: ask the user to type one or several
@@ -209,6 +238,27 @@ pub struct Outcome {
     pub waived: bool,
     /// When the stored values expire (absolute Unix ms), as the user set it on the card.
     pub expires_ms: Option<u64>,
+    /// 221 §7.3: a request with a destination: `Ok(receipt)` (where it went, the reference to
+    /// use) or `Err(why the write failed)`; `None` otherwise.
+    pub external: Option<Result<String, String>>,
+}
+
+/// `ask` → `Result<Outcome, String>`: [`Request`] that stores into an external manager
+/// (221 §7.3); `destination` is resolved on this engine and goes on the row and the card.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequestTo {
+    /// The request.
+    pub request: Request,
+    /// Where the answer goes.
+    pub destination: Option<connections::DestinationView>,
+}
+
+impl Message<RequestTo> for SecretsActor {
+    type Reply = DelegatedReply<Result<Outcome, String>>;
+
+    async fn handle(&mut self, m: RequestTo, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.request(m.request, m.destination, ctx).await
+    }
 }
 
 /// 207: outcome of a request the user left to the agent (beside `stored` | `declined` | `timeout`).
@@ -297,6 +347,10 @@ pub enum SecretsEvent {
         /// absent on the wire when `None`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires: Option<String>,
+        /// 221 §7.3: where the answer is stored when not (only) the local vault. Boxed: the
+        /// view is large and most requests have none (`large_enum_variant`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<Box<connections::DestinationView>>,
     },
     /// The request was answered, declined or timed out; frontends drop the field.
     #[serde(rename = "SecretResolved")]
@@ -311,12 +365,35 @@ pub enum SecretsEvent {
     /// 183 §10.4 (D7): a rotation minted, swept, reached a peer, finished or failed.
     #[serde(rename = "SecretsRotation")]
     Rotation(RotationState),
+    /// 221 §9.4: a call needs a locked connection; frontends show the unlock card and answer
+    /// with `answer_unlock(id, password)`.
+    #[serde(rename = "ExternalUnlockRequested")]
+    UnlockRequested {
+        /// Answer with this id.
+        id: RequestId,
+        /// The connection.
+        conn: String,
+        /// `aws` | `bw`.
+        backend: String,
+        /// What the card names: `me@… · vault.bitwarden.eu`.
+        account: String,
+        /// Why: `a tool call uses bw/personal/2f1c…#password`.
+        reason: String,
+    },
+    /// The unlock card was answered, declined or timed out; frontends drop it.
+    #[serde(rename = "ExternalUnlockResolved")]
+    UnlockResolved {
+        /// The card.
+        id: RequestId,
+        /// The connection is unlocked now.
+        unlocked: bool,
+    },
 }
 
 impl wire::WireEvent for SecretsEvent {
     const TOPIC: &'static str = "secrets.events";
-    /// 216 §7.3 (a): the live masked-entry moment and wording a plugin could imitate.
-    const DROP: &'static [&'static str] = &["SecretRequested"];
+    /// 216 §7.3 (a): the live masked-entry moments and wording a plugin could imitate.
+    const DROP: &'static [&'static str] = &["SecretRequested", "ExternalUnlockRequested"];
     /// 216 §7.3, reviewed: `key` is a `KeyInfo` (key id hash, epoch, members, mint time; no
     /// material) and `has_key` a per-peer acknowledgement flag.
     const REVIEWED_PUBLIC: &'static [&'static str] =
@@ -342,18 +419,43 @@ pub struct SecretsActor {
     /// This engine's mesh id once the mesh told us ([`SetEngine`]).
     engine: Option<String>,
     pending: HashMap<RequestId, Waiter>,
+    /// 221 §4: the external connections, shared with the `tools::secrets` hook.
+    externals: Arc<external::Externals>,
+    /// 221 §6: configured connections, factories, `secrets.external`.
+    connections: connections::Connections,
+    /// 221 §7.3: the external write's receipt per answered request, until its tool takes it.
+    receipts: HashMap<RequestId, Result<String, String>>,
 }
 
 impl SecretsActor {
-    /// Build over an open vault; `timeout` is the human wait for [`Request`].
+    /// Build over an open vault; `timeout` is the human wait for [`Request`] and the unlock card.
     pub fn new(vault: Arc<Vault>, rt: Runtime, timeout: Duration) -> Self {
         Self {
             vault,
+            externals: Arc::new(external::Externals::new(rt.clone(), timeout)),
             rt,
             timeout,
             engine: None,
             pending: HashMap::new(),
+            connections: connections::Connections::default(),
+            receipts: HashMap::new(),
         }
+    }
+
+    /// 221 §6: the configured connections and `secrets.external` from `cfg`; `config_path` is
+    /// where changes persist.
+    pub fn with_config(
+        mut self,
+        cfg: &SecretsConfig,
+        config_path: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.connections = connections::Connections::from_config(cfg, config_path);
+        self
+    }
+
+    /// The external connections this actor registers into ([`RegisterExternal`]).
+    pub fn externals(&self) -> Arc<external::Externals> {
+        self.externals.clone()
     }
 }
 
@@ -401,6 +503,20 @@ impl Message<Delete> for SecretsActor {
     }
 }
 
+impl Message<DeleteConfirmed> for SecretsActor {
+    type Reply = Result<u64, String>;
+
+    async fn handle(
+        &mut self,
+        m: DeleteConfirmed,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let n = self.vault.delete_confirmed(&m.name, m.confirm).await?;
+        self.rt.publish(SecretsEvent::Changed).await;
+        Ok(n)
+    }
+}
+
 impl SecretsActor {
     /// The engine id stamped on rows: the mesh id once known, else the hostname.
     fn engine(&self) -> String {
@@ -414,6 +530,17 @@ impl Message<Request> for SecretsActor {
     type Reply = DelegatedReply<Result<Outcome, String>>;
 
     async fn handle(&mut self, m: Request, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.request(m, None, ctx).await
+    }
+}
+
+impl SecretsActor {
+    async fn request(
+        &mut self,
+        m: Request,
+        destination: Option<connections::DestinationView>,
+        ctx: &mut Context<Self, DelegatedReply<Result<Outcome, String>>>,
+    ) -> DelegatedReply<Result<Outcome, String>> {
         let (reply, tx) = ctx.reply_sender();
         let fail = |tx: Option<kameo::reply::ReplySender<Result<Outcome, String>>>, e: String| {
             if let Some(tx) = tx {
@@ -443,6 +570,7 @@ impl Message<Request> for SecretsActor {
         let id = m.id.unwrap_or_else(|| RequestId(uuid::Uuid::now_v7()));
         let mut title = m.title;
         let mut expires = m.expires;
+        let mut destination = destination;
         let mut timeout = self.timeout;
         match requests::get(self.vault.pool(), id).await {
             Ok(Some(row)) => {
@@ -450,6 +578,7 @@ impl Message<Request> for SecretsActor {
                 fields = row.fields;
                 title = row.title;
                 expires = row.expires;
+                destination = row.destination;
                 let deadline = row.created_ms.saturating_add(timeout.as_millis() as u64);
                 timeout = Duration::from_millis(deadline.saturating_sub(now_ms()));
             }
@@ -465,6 +594,7 @@ impl Message<Request> for SecretsActor {
                     outcome: None,
                     hlc: None,
                     expires: expires.clone(),
+                    destination: destination.clone(),
                 };
                 if let Err(e) = requests::insert(self.vault.pool(), &row).await {
                     fail(tx, format!("secret_requests: {e:#}"));
@@ -486,6 +616,7 @@ impl Message<Request> for SecretsActor {
             title,
             fields: fields.clone(),
             expires,
+            destination: destination.map(Box::new),
         };
         let (atx, arx) = oneshot::channel();
         self.pending.insert(id, (m.session, requested.clone(), atx));
@@ -494,7 +625,8 @@ impl Message<Request> for SecretsActor {
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
             rt.publish(requested).await;
-            let outcome = wait(&vault, id, &fields, arx, timeout).await;
+            let mut outcome = wait(&vault, id, &fields, arx, timeout).await;
+            outcome.external = me.ask(TakeReceipt(id)).await.ok().flatten();
             let _ = me.tell(Forget(id)).await;
             rt.publish(SecretsEvent::Resolved {
                 id,
@@ -591,6 +723,25 @@ async fn wait(
         timed_out,
         waived: outcome == PROCEED_WITHOUT,
         expires_ms,
+        external: None,
+    }
+}
+
+/// `ask` → `Result<bool, String>`: [`Answer`] with the card's final `destination` (221 §7.3,
+/// `answer_secret`'s fifth argument); `None` keeps the one the request named.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AnswerTo {
+    /// The answer.
+    pub answer: Answer,
+    /// The card's destination.
+    pub destination: Option<connections::Destination>,
+}
+
+impl Message<AnswerTo> for SecretsActor {
+    type Reply = Result<bool, String>;
+
+    async fn handle(&mut self, m: AnswerTo, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.answer(m.answer, m.destination).await
     }
 }
 
@@ -598,13 +749,61 @@ impl Message<Answer> for SecretsActor {
     type Reply = Result<bool, String>;
 
     async fn handle(&mut self, m: Answer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let pool = self.vault.pool();
+        self.answer(m, None).await
+    }
+}
+
+impl SecretsActor {
+    async fn answer(
+        &mut self,
+        m: Answer,
+        destination: Option<connections::Destination>,
+    ) -> Result<bool, String> {
+        let vault = self.vault.clone();
+        let pool = vault.pool();
         let Some(row) = requests::get(pool, m.id).await.map_err(|e| e.to_string())? else {
             return Ok(false);
         };
         if row.answered_ms.is_some() {
             return Ok(false);
         }
+        let dest = destination.or_else(|| row.destination.clone().map(|v| v.destination));
+        let backend = match &dest {
+            None => None,
+            Some(d) => {
+                // D15: the engine that owns the asking session writes; values are never staged in
+                // a replicated row.
+                if row.engine != self.engine() {
+                    return Err(format!(
+                        "this request stores into {} on engine {}; answer it there",
+                        d.connection, row.engine
+                    ));
+                }
+                let b = self
+                    .externals
+                    .by_conn(&d.connection)
+                    .ok_or_else(|| format!("unknown connection {} on this engine", d.connection))?;
+                // Not consumed: the user unlocks (or logs in) and answers again.
+                match b.status() {
+                    external::ConnStatus::Locked => {
+                        return Err(format!(
+                            "{}/{} is locked; unlock it, then store",
+                            b.backend(),
+                            d.connection
+                        ));
+                    }
+                    external::ConnStatus::LoggedOut => {
+                        return Err(format!(
+                            "{}/{} is logged out; log in from the Secrets page, then store",
+                            b.backend(),
+                            d.connection
+                        ));
+                    }
+                    _ => {}
+                }
+                Some(b)
+            }
+        };
         if let Some(t) = m.expires_ms
             && t <= now_ms()
         {
@@ -623,23 +822,54 @@ impl Message<Answer> for SecretsActor {
         let outcome = if values.is_empty() {
             "declined"
         } else {
-            for f in &row.fields {
-                if let Some(v) = values.get(&f.name) {
-                    self.vault
-                        .set_expiring(
-                            &f.name,
-                            v,
-                            f.note
-                                .as_deref()
-                                .or((!f.label.is_empty()).then_some(f.label.as_str())),
-                            "user",
-                            m.expires_ms,
-                        )
-                        .await?;
+            let keep_local = dest.as_ref().is_none_or(|d| d.keep_local);
+            if keep_local {
+                for f in &row.fields {
+                    if let Some(v) = values.get(&f.name) {
+                        self.vault
+                            .set_expiring(
+                                &f.name,
+                                v,
+                                f.note
+                                    .as_deref()
+                                    .or((!f.label.is_empty()).then_some(f.label.as_str())),
+                                "user",
+                                m.expires_ms,
+                            )
+                            .await?;
+                    }
                 }
+                self.rt.publish(SecretsEvent::Changed).await;
             }
-            self.rt.publish(SecretsEvent::Changed).await;
-            "stored"
+            match (&dest, backend) {
+                (Some(d), Some(b)) => {
+                    let r = match self.store_external(b, d, &row.fields, &values).await {
+                        Ok(t) => Ok(t),
+                        // R11: a transient failure leaves the request open; the card stays
+                        // and the user answers again.
+                        Err(Failure { text, retry: true }) => {
+                            let kept = if keep_local {
+                                "; the local copy was kept"
+                            } else {
+                                ""
+                            };
+                            return Err(format!(
+                                "{text}{kept}; the request is still open: try again"
+                            ));
+                        }
+                        Err(Failure { text, .. }) => Err(text),
+                    };
+                    let r = match (r, keep_local) {
+                        (Ok(t), true) => Ok(format!("{t}; a local copy is kept too")),
+                        (Err(e), true) => Err(format!("{e}; the local copy was kept")),
+                        (r, false) => r,
+                    };
+                    let failed = r.is_err();
+                    self.receipts.insert(m.id, r);
+                    if failed { "failed" } else { "stored" }
+                }
+                _ => "stored",
+            }
         };
         let fresh = requests::answer(pool, m.id, outcome, now_ms())
             .await
@@ -647,7 +877,140 @@ impl Message<Answer> for SecretsActor {
         if let Some((_, _, tx)) = self.pending.remove(&m.id) {
             let _ = tx.send(());
         }
-        Ok(fresh)
+        match self.receipts.get(&m.id) {
+            Some(Err(e)) => Err(e.clone()),
+            _ => Ok(fresh),
+        }
+    }
+
+    /// 221 §7.3: write an answer into `d` on `b` (create, or update `d.replace`). The values pass
+    /// through once and are dropped; the receipt names where they went, never what they are.
+    async fn store_external(
+        &self,
+        b: Arc<dyn ExternalBackend>,
+        d: &connections::Destination,
+        fields: &[SecretRequestField],
+        values: &HashMap<String, String>,
+    ) -> Result<String, Failure> {
+        let mapped = |f: &SecretRequestField| {
+            d.fields
+                .as_ref()
+                .and_then(|m| m.get(&f.name))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let typed: Vec<&SecretRequestField> = fields
+            .iter()
+            .filter(|f| values.contains_key(&f.name))
+            .collect();
+        // The value field: the first not mapped to `username` (Bitwarden), else the first.
+        let main = typed
+            .iter()
+            .find(|f| mapped(f) != "username")
+            .or(typed.first())
+            .ok_or_else(|| Failure::fatal("nothing to store"))?;
+        let json = matches!(d.format, Some(connections::AwsFormat::Json));
+        let pairs: Vec<(&str, &str)> = typed
+            .iter()
+            .map(|f| (f.name.as_str(), values[&f.name].as_str()))
+            .collect();
+        let value = if json && b.backend() == "aws" {
+            external::Value::Json(pairs)
+        } else {
+            external::Value::Plain(values[&main.name].as_str())
+        };
+        let timeout = Duration::from_secs(self.connections.external.timeout_secs);
+        if let Some(replace) = &d.replace {
+            let (_, r) = external::parse_bare(replace)
+                .ok_or_else(|| Failure::fatal(format!("{replace:?} is not a reference")))?;
+            let v = settle(
+                replace,
+                timeout,
+                tokio::time::timeout(timeout, b.update(&r, value, None)).await,
+            )?;
+            return Ok(format!(
+                "stored in {replace} (version {}); use {{{{secret:{replace}}}}}",
+                v.id
+            ));
+        }
+        let scope = self
+            .connections
+            .conns
+            .get(&d.connection)
+            .map(|c| c.settings.write_scope)
+            .unwrap_or_default();
+        let mut loc =
+            tools_external::location(b.backend(), d, &main.name, scope).map_err(Failure::fatal)?;
+        if let external::Location::Bw { username, .. } = &mut loc {
+            *username = typed
+                .iter()
+                .find(|f| mapped(f) == "username")
+                .map(|f| values[&f.name].clone());
+        }
+        let what = format!("{}/{}/{}", b.backend(), d.connection, d.name);
+        let (r, v) = settle(
+            &what,
+            timeout,
+            tokio::time::timeout(timeout, b.create(&loc, value)).await,
+        )?;
+        let t = tools_external::ref_text(b.backend(), &r);
+        Ok(format!(
+            "stored in {t} (version {}); use {{{{secret:{t}}}}}",
+            v.id
+        ))
+    }
+}
+
+/// Why [`SecretsActor::store_external`] did not store: the text, and whether the request stays
+/// open for another answer (network, timeout, locked, conflict).
+struct Failure {
+    text: String,
+    retry: bool,
+}
+
+impl Failure {
+    fn fatal(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            retry: false,
+        }
+    }
+}
+
+/// A bounded backend call's result as model-facing text naming `what`.
+fn settle<T>(
+    what: &str,
+    timeout: Duration,
+    r: Result<Result<T, external::ExtError>, tokio::time::error::Elapsed>,
+) -> Result<T, Failure> {
+    use external::ExtError as E;
+    match r {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(Failure {
+            retry: matches!(
+                e,
+                E::Network(_) | E::Timeout | E::Locked | E::Conflict { .. }
+            ),
+            text: format!("{what}: {e}"),
+        }),
+        Err(_) => Err(Failure {
+            text: format!(
+                "{what}: the manager did not answer in {} s",
+                timeout.as_secs()
+            ),
+            retry: true,
+        }),
+    }
+}
+
+/// `ask` → `Option<Result<String, String>>`: take the external receipt of request `id` (221 §7.3).
+struct TakeReceipt(RequestId);
+
+impl Message<TakeReceipt> for SecretsActor {
+    type Reply = Option<Result<String, String>>;
+
+    async fn handle(&mut self, m: TakeReceipt, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.receipts.remove(&m.0)
     }
 }
 
@@ -679,6 +1042,33 @@ impl Message<SetEngine> for SecretsActor {
     async fn handle(&mut self, m: SetEngine, _: &mut Context<Self, Self::Reply>) {
         self.vault.set_engine(&m.0);
         self.engine = Some(m.0);
+    }
+}
+
+/// `ask` → `Result<Option<String>, String>`: D15 — the engine an answer to request `id` must be
+/// forwarded to: `Some(engine)` when the row is unanswered, stores into an external manager (its
+/// own destination, or `destination` = the answer names one) and was asked on another engine.
+pub struct ForeignOwner {
+    /// The request.
+    pub id: RequestId,
+    /// The answer carries a destination.
+    pub destination: bool,
+}
+
+impl Message<ForeignOwner> for SecretsActor {
+    type Reply = Result<Option<String>, String>;
+
+    async fn handle(&mut self, m: ForeignOwner, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let row = requests::get(self.vault.pool(), m.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(row
+            .filter(|r| {
+                r.answered_ms.is_none()
+                    && (m.destination || r.destination.is_some())
+                    && r.engine != self.engine()
+            })
+            .map(|r| r.engine))
     }
 }
 
@@ -773,28 +1163,6 @@ pub async fn mesh_device_key_existing(
     vault.mesh_device_key_if_set()
 }
 
-impl ::tools::secrets::Secrets for Vault {
-    fn expand(&self, args: &mut serde_json::Value) -> Result<usize, String> {
-        Vault::expand(self, args)
-    }
-
-    fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
-        Vault::redact(self, text)
-    }
-
-    fn redact_value(&self, v: &mut serde_json::Value) {
-        Vault::redact_value(self, v);
-    }
-
-    fn redact_spans(&self, text: &str) -> Vec<std::ops::Range<usize>> {
-        Vault::redact_spans(self, text)
-    }
-
-    fn max_literal_len(&self) -> usize {
-        Vault::max_literal_len(self)
-    }
-}
-
 /// OAuth grants are vault rows `oauth/<ns>` (67 §5.4): the JSON is the
 /// value, written under the [`Vault::set_if_version`] precondition.
 #[async_trait::async_trait]
@@ -863,18 +1231,27 @@ impl runtime::Plugin for SecretsPlugin {
                 return Ok(());
             }
         };
-        let actor = SecretsActor::spawn(SecretsActor::new(
+        let sa = SecretsActor::new(
             vault.clone(),
             rt.clone(),
             Duration::from_secs(cfg.request_timeout_secs),
-        ));
+        )
+        .with_config(&cfg, Some(rt.data_dir.join("config.yaml")));
+        let externals = sa.externals();
+        let actor = SecretsActor::spawn(sa);
         actor.register(SECRETS_ACTOR)?;
         tokio::spawn(replicate(rt.clone(), vault.clone()));
         tokio::spawn(sweeper(rt.clone(), vault.clone()));
         if !cfg.tools {
+            // Nothing reads placeholders: the connections serve the owner's UI only.
+            let _ = actor.tell(connections::SeedConnections).await;
             return Ok(());
         }
-        ::tools::secrets::install(vault.clone());
+        ::tools::secrets::install(Arc::new(external::Hook::new(
+            vault.clone(),
+            externals,
+            Duration::from_secs(cfg.external.timeout_secs),
+        )));
         let rt = rt.clone();
         let timeout = Duration::from_secs(cfg.request_timeout_secs);
         tokio::spawn(async move {
@@ -882,6 +1259,8 @@ impl runtime::Plugin for SecretsPlugin {
                 .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
                 .await
             {
+                // 221 §6.3: the always-ask entries exist before any connection is registered.
+                let _ = actor.ask(connections::SeedConnections).await;
                 tools::register(&reg, vault, actor, timeout).await;
             }
         });
@@ -971,8 +1350,7 @@ async fn sweeper(rt: Runtime, vault: Arc<Vault>) {
         changes.mark_unchanged();
         sweep(&rt, &vault, now_ms()).await;
         let nap = vault.next_expiry().map_or(SWEEP_MAX_NAP, |t| {
-            Duration::from_millis(t.saturating_sub(now_ms()))
-                .clamp(SWEEP_MIN_NAP, SWEEP_MAX_NAP)
+            Duration::from_millis(t.saturating_sub(now_ms())).clamp(SWEEP_MIN_NAP, SWEEP_MAX_NAP)
         });
         tokio::select! {
             () = tokio::time::sleep(nap) => {}
@@ -1351,7 +1729,8 @@ mod tests {
         let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
         let mut pass = field("gh.pass", "Password");
         pass.note = Some("alice's GitHub password".into());
-        let (ask, row) = open_request(&a, Some("GitHub"), vec![field("gh.user", "Username"), pass]).await;
+        let (ask, row) =
+            open_request(&a, Some("GitHub"), vec![field("gh.user", "Username"), pass]).await;
         let at = now_ms() + 3_600_000;
         let values = HashMap::from([
             ("gh.user".to_owned(), "alice".to_owned()),
@@ -1368,14 +1747,20 @@ mod tests {
             .unwrap()
         );
         let out = ask.await.unwrap().unwrap();
-        assert_eq!(out.stored, [("gh.user".to_owned(), 1), ("gh.pass".to_owned(), 1)]);
+        assert_eq!(
+            out.stored,
+            [("gh.user".to_owned(), 1), ("gh.pass".to_owned(), 1)]
+        );
         assert_eq!(out.expires_ms, Some(at), "the receipt names the expiry");
         assert_eq!(vault.expires_ms("gh.user"), Some(at));
         assert_eq!(vault.expires_ms("gh.pass"), Some(at));
         let listed = vault.list();
         let pass = listed.iter().find(|s| s.name == "gh.pass").unwrap();
         assert_eq!(pass.expires.as_deref(), Some(expiry::rfc3339(at).as_str()));
-        assert_eq!(pass.note, "alice's GitHub password", "a field's note is the secret's note");
+        assert_eq!(
+            pass.note, "alice's GitHub password",
+            "a field's note is the secret's note"
+        );
         let user = listed.iter().find(|s| s.name == "gh.user").unwrap();
         assert_eq!(user.note, "Username", "no note: the label");
     }
@@ -1399,7 +1784,10 @@ mod tests {
         assert!(!err.contains("value-for-token"));
         assert!(vault.get("TOKEN", 0).is_none());
         let after = requests::get(vault.pool(), row.id).await.unwrap().unwrap();
-        assert!(after.answered_ms.is_none(), "the card can still be answered");
+        assert!(
+            after.answered_ms.is_none(),
+            "the card can still be answered"
+        );
     }
 
     #[tokio::test]
@@ -1418,7 +1806,12 @@ mod tests {
             .await
         });
         let row = loop {
-            let rows = a.ask(ListRequests { unanswered_only: true }).await.unwrap();
+            let rows = a
+                .ask(ListRequests {
+                    unanswered_only: true,
+                })
+                .await
+                .unwrap();
             if let Some(r) = rows.into_iter().next() {
                 break r;
             }
@@ -1446,8 +1839,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(same.current, 1, "same value, same expiry: nothing written");
-        let info = vault.set("TOKEN", "value-one-long", None, "user").await.unwrap();
-        assert_eq!(info.current, 2, "the same value without the expiry is a new version");
+        let info = vault
+            .set("TOKEN", "value-one-long", None, "user")
+            .await
+            .unwrap();
+        assert_eq!(
+            info.current, 2,
+            "the same value without the expiry is a new version"
+        );
         assert_eq!(info.expires, None);
         assert_eq!(vault.expires_ms("TOKEN"), None);
         assert_eq!(vault.next_expiry(), None);
@@ -1457,7 +1856,10 @@ mod tests {
     async fn an_expired_placeholder_fails_before_the_sweeper_runs() {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::open(dir.path(), KeyStore::File).await.unwrap();
-        vault.set("TOKEN", "older-value-long", None, "user").await.unwrap();
+        vault
+            .set("TOKEN", "older-value-long", None, "user")
+            .await
+            .unwrap();
         let at = now_ms() - 1;
         vault
             .set_expiring("TOKEN", "newer-value-long", None, "user", Some(at))
@@ -1469,7 +1871,11 @@ mod tests {
             assert_eq!(vault.expand(&mut args).unwrap_err(), want, "{p}");
         }
         let mut other = serde_json::json!({"cmd": "echo hi"});
-        assert_eq!(vault.expand(&mut other).unwrap(), 0, "no placeholder, no error");
+        assert_eq!(
+            vault.expand(&mut other).unwrap(),
+            0,
+            "no placeholder, no error"
+        );
     }
 
     #[tokio::test]
@@ -1479,7 +1885,10 @@ mod tests {
         let mut events = tap(&rt).await;
         let vault = Vault::open(dir.path(), KeyStore::File).await.unwrap();
         let now = now_ms();
-        vault.set("GONE", "gone-value-one", None, "user").await.unwrap();
+        vault
+            .set("GONE", "gone-value-one", None, "user")
+            .await
+            .unwrap();
         vault
             .set_expiring("GONE", "gone-value-two", None, "user", Some(now - 1))
             .await
@@ -1488,7 +1897,10 @@ mod tests {
             .set_expiring("LATER", "later-value-x", None, "user", Some(now + 60_000))
             .await
             .unwrap();
-        vault.set("KEPT", "kept-value-xx", None, "user").await.unwrap();
+        vault
+            .set("KEPT", "kept-value-xx", None, "user")
+            .await
+            .unwrap();
         assert_eq!(vault.next_expiry(), Some(now - 1));
 
         assert_eq!(sweep(&rt, &vault, now).await, 1);
@@ -1512,7 +1924,10 @@ mod tests {
             .set_expiring("RACE", "race-value-xx", None, "user", Some(now - 1))
             .await
             .unwrap();
-        vault.set("RACE", "race-value-new", None, "user").await.unwrap();
+        vault
+            .set("RACE", "race-value-new", None, "user")
+            .await
+            .unwrap();
         assert!(!vault.delete_expired("RACE", now).await.unwrap());
         assert!(vault.get("RACE", 0).is_some());
     }
@@ -1529,7 +1944,9 @@ mod tests {
             .unwrap();
         let task = tokio::spawn(sweeper(rt.clone(), vault.clone()));
         // On start: the already-expired one goes.
-        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv()).await.unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap();
         assert!(matches!(ev, Some(SecretsEvent::Changed)));
         assert!(vault.get("BOOT", 0).is_none());
         // Written after the sweeper went to sleep with nothing to wait for: the change re-arms it.
@@ -1537,10 +1954,15 @@ mod tests {
             .set_expiring("SOON", "soon-value-xx", None, "user", Some(now_ms() + 400))
             .await
             .unwrap();
-        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv()).await.unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap();
         assert!(matches!(ev, Some(SecretsEvent::Changed)));
         assert!(vault.get("SOON", 0).is_none());
         rt.shutdown.cancel();
-        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

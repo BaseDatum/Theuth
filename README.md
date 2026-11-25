@@ -70,7 +70,15 @@ it yourself (`i` / Ctrl-] in the TUI) —
 versioned vault the agent uses by name but never reads: `{{secret:NAME}}` in
 any tool argument is swapped for the value at run time and scrubbed from the
 output; holds the provider, web and Slack keys too —
-[`docs/design/37-secrets.md`](docs/design/37-secrets.md)), `browser` (sixteen
+[`docs/design/37-secrets.md`](docs/design/37-secrets.md)), `secrets-aws` and
+`secrets-bitwarden` (external backends: `{{secret:aws/CONN/NAME#key}}` from
+AWS Secrets Manager through your own `~/.aws` profiles, `{{secret:bw/CONN/ITEM#field}}`
+from a Bitwarden or Vaultwarden vault on the official `sdk-internal` crates;
+every read, write, delete and Send asks first by default, each switchable per
+connection; `secrets-bitwarden` is behind the `bitwarden` cargo feature, on by
+default, which makes the `t` binary a GPL-3.0 work —
+[`docs/design/221-external-secrets.md`](docs/design/221-external-secrets.md)),
+`aws-profiles` (the `~/.aws` profile list shared by Bedrock and `secrets-aws`), `browser` (sixteen
 `browser_*` tools: an embedded headless browser (obscura) with screenshots —
 `browser_open`, `_read`, `_elements`, `_click`, `_fill`, `_type`, `_press`,
 `_select`, `_scroll`, `_wait`, `_eval`, `_back`, `_screenshot`, `_tabs`,

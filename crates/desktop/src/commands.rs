@@ -9,6 +9,40 @@ use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[cfg(desktop)]
 use crate::launch::{Connection, Launch};
 
+/// 221 §9.1 Copy (`ui/src/lib/secret-clipboard.ts`): the general pasteboard's change count right after the
+/// webview wrote a secret to it; `None` off macOS (the webview then compares the text itself).
+#[cfg(desktop)]
+#[tauri::command]
+pub fn pasteboard_change_count() -> Option<i64> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(objc2_app_kit::NSPasteboard::generalPasteboard().changeCount() as i64)
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// Clear the general pasteboard when nothing was copied since [`pasteboard_change_count`] read `count`:
+/// the secret is still on it. `false` when something else was copied since (left alone) or off macOS.
+#[cfg(desktop)]
+#[tauri::command]
+pub fn pasteboard_clear_if(count: i64) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let board = objc2_app_kit::NSPasteboard::generalPasteboard();
+        if board.changeCount() as i64 != count {
+            return false;
+        }
+        board.clearContents();
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = count;
+        false
+    }
+}
+
 /// Window labels the UI opens on demand (a chat or an artifact in its own window). The label prefix is what
 /// `capabilities/default.json` grants (`popout-*`) and what `on_window_event` lets close for real.
 #[cfg(desktop)]
@@ -79,6 +113,28 @@ pub fn connection() -> Result<(), String> {
 #[tauri::command]
 pub fn launch_log(launch: State<'_, Launch>) -> String {
     launch.log()
+}
+
+/// 221 D22/B10: the files the bundle carries in its resources (`tauri.conf.json` › `bundle.resources`).
+#[cfg(desktop)]
+const LEGAL_FILES: [&str; 3] = ["LICENSE", "NOTICE", "THIRD-PARTY-NOTICES"];
+
+/// The text of one bundled legal file (`LICENSE`, `NOTICE`, `THIRD-PARTY-NOTICES`), for Settings › App ›
+/// Licences. Any other name is refused; a dev build without the files says so.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn legal_text(app: AppHandle, name: String) -> Result<String, String> {
+    if !LEGAL_FILES.contains(&name.as_str()) {
+        return Err(format!("{name} is not a bundled legal file"));
+    }
+    let path = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join(&name);
+    tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Stop the daemon we own (if any) and connect again.

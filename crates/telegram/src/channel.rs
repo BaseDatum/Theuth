@@ -14,7 +14,7 @@ use agent::{
     AgentEvent, ChannelChat, ChannelOrigin, ChannelVia, ObservedMeta, ObservedSource, ObservedState,
 };
 use artifact::ArtifactShown;
-use chat_common::{extension_for, secret_notice, sniff};
+use chat_common::{extension_for, external_secret_notice, secret_notice, sniff, unlock_notice};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -2547,8 +2547,34 @@ impl Channel {
             }
             Event::Artifact(m) => self.artifact(m).await,
             // 37 §7: the model asked the user for a secret; say where to enter
-            // it (never here). The owner's chat only.
-            Event::Secret(secrets::SecretsEvent::Requested { name, note, .. }) => {
+            // it (never here). The owner's chat only. 221 §9.4: so is an
+            // external store's request and an unlock card; the app answers both.
+            Event::Secret(event) => {
+                let md = match event {
+                    secrets::SecretsEvent::Requested {
+                        name,
+                        note,
+                        destination: None,
+                        ..
+                    } => secret_notice(&name, &note),
+                    secrets::SecretsEvent::Requested {
+                        name,
+                        note,
+                        destination: Some(d),
+                        ..
+                    } => external_secret_notice(
+                        &name,
+                        &note,
+                        &format!("{}/{}", d.backend, d.destination.connection),
+                    ),
+                    secrets::SecretsEvent::UnlockRequested {
+                        conn,
+                        backend,
+                        account,
+                        ..
+                    } => unlock_notice(&format!("{backend}/{conn}"), &account),
+                    _ => return,
+                };
                 let Some(owner) = self.owner() else {
                     return;
                 };
@@ -2556,9 +2582,8 @@ impl Channel {
                     chat: i64::try_from(owner).unwrap_or(0),
                     thread: None,
                 };
-                self.note(&to, &secret_notice(&name, &note)).await;
+                self.note(&to, &md).await;
             }
-            Event::Secret(_) => {}
         }
     }
 
@@ -4124,6 +4149,7 @@ pub(crate) mod tests {
                 title: None,
                 fields: Vec::new(),
                 expires: None,
+                destination: None,
             }))
             .await;
         assert!(
@@ -4152,6 +4178,7 @@ pub(crate) mod tests {
                 title: None,
                 fields: Vec::new(),
                 expires: None,
+                destination: None,
             }))
             .await;
         assert_eq!(
@@ -4162,6 +4189,34 @@ pub(crate) mod tests {
                     thread: None
                 },
                 md: secret_notice("OPENAI_KEY", "for the api"),
+                markup: None,
+                reply_to: None,
+                ephemeral: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn unlock_card_is_a_notice_to_the_owner_only() {
+        let f = fixture(false);
+        f.bind(&threads::key(FRIEND as i64, None), FRIEND);
+        f.chan
+            .handle_event(Event::Secret(secrets::SecretsEvent::UnlockRequested {
+                id: secrets::RequestId(uuid::Uuid::new_v4()),
+                conn: "personal".into(),
+                backend: "bw".into(),
+                account: "me@example.org · vault.bitwarden.com".into(),
+                reason: "a tool call uses bw/personal/2f1c#password".into(),
+            }))
+            .await;
+        assert_eq!(
+            f.api.calls(),
+            vec![Call::SendRich {
+                to: Target {
+                    chat: OWNER_CHAT,
+                    thread: None
+                },
+                md: unlock_notice("bw/personal", "me@example.org · vault.bitwarden.com"),
                 markup: None,
                 reply_to: None,
                 ephemeral: None,

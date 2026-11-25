@@ -3,6 +3,7 @@ name = "web"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Web search and fetch: search_web / read_url tools, SSRF-guarded fetcher, RRF aggregator, keyless engines, provider registry (design doc 16)"
 
 [dependencies]

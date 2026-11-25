@@ -88,9 +88,9 @@ export function SecretScreen({ item }: { item: AttentionItem }) {
   return (
     <Plain item={item}>
       {row ? (
-        <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} onAnswered={answered} onError={failed} />
+        <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} destination={row.destination} onAnswered={answered} onError={failed} />
       ) : local ? (
-        <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} onAnswered={answered} onError={failed} />
+        <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} destination={local.destination} onAnswered={answered} onError={failed} />
       ) : (
         <p className="text-sm text-fg-secondary">{rows.isPending ? 'Loading the request…' : `Answer it in the session${item.detail ? ` on ${item.detail}` : ''}.`}</p>
       )}

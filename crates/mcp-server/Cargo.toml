@@ -3,6 +3,7 @@ name = "mcp-server"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "theuth as an MCP server: rmcp streamable HTTP on loopback with a vault token, one catalogue shared with the `t mcp` stdio bridge, a JSONL audit (design doc 158 §12)"
 
 [dependencies]

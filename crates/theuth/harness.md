@@ -34,6 +34,7 @@ real path. Everything below is relative to it.
 | `artifacts.sqlite` | the artifact index plus one row per app invocation (view, binding, status, result). Deleting it rebuilds nothing — the blobs it named are orphaned and swept at the next start | live |
 | `artifacts.owners/` | one OS-locked file per running harness on this data dir; an invocation row belongs to the owner that dispatched it, and only rows of a provably dead owner are recovered (as `unknown`, never retried) at the next open | live |
 | `logs/theuth.log.<YYYY-MM-DD>` | the process log; `RUST_LOG=debug` for more | live |
+| `logs/secrets-external.log` | audit of external secrets (design 221 §11): reveals, writes, deletes, Sends, by connection and reference; never a value | live |
 | `token` | bearer for the JSON-RPC server | startup |
 | `signal/` | Signal linked-device state and `inbox/` for files the user texts | - |
 

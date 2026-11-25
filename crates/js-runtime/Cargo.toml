@@ -3,6 +3,7 @@ name = "js-runtime"
 version = "2.24.0"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "The in-process JS runtime: the documents helper (packages/documents) and the app bundles (packages/apps OpenUI check/merge, mermaid parse) in deno_core runtimes, one isolate and thread per bundle, with deadline, heap and panic containment (docs/design/js-runtime-unified-as-built.md)"
 
 [dependencies]

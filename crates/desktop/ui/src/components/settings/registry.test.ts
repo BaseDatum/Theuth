@@ -73,6 +73,21 @@ test('216: Plugins is one tab, at `plugins`, needing the plugins methods and the
   expect(plugins.tabs[0].required?.topics).toEqual(['plugins.ui@1'])
 })
 
+test('221 §8: Settings › Agent › Secrets sits after Approvals at `external-secrets` (`secrets` still redirects to the page) and needs the harness-wide setting methods', () => {
+  const agent = CATEGORIES.find((category) => category.id === 'agent')!
+  expect(agent.tabs.map((tab) => [tab.id, tab.label])).toEqual([
+    ['loop', 'Loop'],
+    ['memory', 'Context'],
+    ['approvals', 'Approvals'],
+    ['external-secrets', 'Secrets'],
+    ['advisor', 'Advisor'],
+    ['autoresearch', 'Autoresearch'],
+    ['harnesses', 'Harnesses'],
+  ])
+  expect(isTab('secrets')).toBe(false)
+  expect(agent.tabs.find((tab) => tab.id === 'external-secrets')?.required?.methods).toEqual(['get_external_settings', 'set_external_setting'])
+})
+
 test('S4: with every tab shown, every category is listed and every tab lands on itself', () => {
   hide()
   expect(shownCategories()).toEqual(CATEGORIES)

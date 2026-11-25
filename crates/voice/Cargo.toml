@@ -3,6 +3,7 @@ name = "voice"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Read replies aloud: Pocket TTS in-process, Opus packets streamed to the frontend (design doc 43); voice notes in, MP3 clips out (design doc 45); the daemon's mic, speaker and echo-cancelled capture (design docs 54, 76)"
 
 [dependencies]

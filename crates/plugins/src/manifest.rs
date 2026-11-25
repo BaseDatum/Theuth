@@ -28,6 +28,7 @@ pub const RESERVED_NAMES: &[&str] = &[
     "acp",
     "advisor",
     "agents",
+    "always-ask",
     "approvals",
     "artifacts",
     "ask",

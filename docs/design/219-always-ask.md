@@ -23,6 +23,7 @@ There are two scopes:
 An entry is a string:
 - a **registered tool name**, exactly as the registry knows it (`shell`, `write_file`, `browser_click`, `kubernetes__pods_delete`, or `<server>__<tool>` when names clash);
 - or **`mcp:<server>`**, which matches every tool of that MCP server. This is the existing `mcp_server_key(server)` form from `crates/tools/src/registry.rs`.
+- or **`secret:<backend>/<conn>:<direction>`** (221 D6, D10), which matches every call that touches that external connection in that direction, whatever the tool: `read` (a `{{secret:aws/prod/…}}` placeholder in a consuming tool's args), `write`, `delete`, and `send` (Bitwarden only). The registry learns a call's external accesses from the `tools::secrets` hook (`external_access`, a parse of the args) and ORs a match into `always()` next to `protected`. One entry per direction is seeded harness-wide when the connection is created; removing one follows §2.4 like any other entry.
 
 Matching rules:
 - Matching is exact. There are no globs.

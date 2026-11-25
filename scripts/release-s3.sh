@@ -13,8 +13,9 @@
 #   dist/ first          Linux/Windows artifacts are read from dist/; staging/<ver>/ in the bucket is pulled
 #                        only for what dist/ lacks (tarballs required; AppImage/deb/rpm/-setup.exe/zip optional)
 #   sign                 cargo tauri signer sign  dist/theuth_<ver>_*.tar.gz, *.AppImage, *-setup.exe, *.zip → .sig
-#   SHA256SUMS           shasum -a 256 over everything published (signed payloads + DMG + deb + rpm)
-#   upload               dist/theuth_<ver>_* + SHA256SUMS → s3://$BUCKET/$PREFIX/<ver>/
+#   SHA256SUMS           shasum -a 256 over everything published (signed payloads + DMG + deb + rpm +
+#                        LICENSE, NOTICE, THIRD-PARTY-NOTICES from the repo root, 221 B10)
+#   upload               dist/theuth_<ver>_* + the licence texts + SHA256SUMS → s3://$BUCKET/$PREFIX/<ver>/
 #   verify               re-download every signed payload + .sig via the PUBLIC url; minisign -V
 #                        against crates/update/pubkey.txt (sha256 vs SHA256SUMS when minisign
 #                        is not installed — cargo tauri signer has no verify subcommand)
@@ -414,6 +415,16 @@ else
   [[ -z "$WIN_SETUP" ]] || SIGNED+=("$WIN_SETUP")
   [[ -z "$WIN_ZIP" ]] || SIGNED+=("$WIN_ZIP")
 fi
+# 221 B10: the licence texts go up as their own objects under <ver>/ (the CLI archives hold only `t` +
+# helper: crates/update/src/lib.rs `unpack` refuses any other entry). Release only; add-arch reuses them.
+LEGAL=()
+if [[ -z "$ADD" ]]; then
+  LEGAL=(LICENSE NOTICE THIRD-PARTY-NOTICES)
+  for f in "${LEGAL[@]}"; do
+    [[ -s "$ROOT/$f" ]] || { echo "error: $f missing at the repo root (221 B10)" >&2; exit 1; }
+    cp "$ROOT/$f" "$DIST/$f"
+  done
+fi
 sha_of() { awk -v f="$1" '$2 == f {print $1}' "$DIST/SHA256SUMS"; }
 s3_cp() { # src dest — content type from the destination key; DRY_RUN prints
   local ct
@@ -443,7 +454,7 @@ if [[ "$RESUME" == "1" ]]; then
   [[ -s "$DIST/SHA256SUMS" ]] || { echo "error: $DIST/SHA256SUMS missing — cannot resume" >&2; exit 1; }
   # The object set a finished release holds. Published objects are never rewritten (the prefix stays
   # immutable); a missing one — the .dmg the timeout killed, its SHA256SUMS, every .sig after it — goes up.
-  RESUME_SET=(${SIGNED[@]+"${SIGNED[@]}"} "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} SHA256SUMS)
+  RESUME_SET=(${SIGNED[@]+"${SIGNED[@]}"} "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} ${LEGAL[@]+"${LEGAL[@]}"} SHA256SUMS)
   for f in ${SIGNED[@]+"${SIGNED[@]}"}; do RESUME_SET+=("$f.sig"); done
   MISSING=()
   for f in "${RESUME_SET[@]}"; do
@@ -478,8 +489,8 @@ else
     for f in ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"}; do skipped "$f" || UPLOADS+=("$f"); done
     UPLOADS+=(SHA256SUMS)
   else
-    (cd "$DIST" && shasum -a 256 "${SIGNED[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} >SHA256SUMS && cat SHA256SUMS)
-    UPLOADS=("${SIGNED[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} SHA256SUMS)
+    (cd "$DIST" && shasum -a 256 "${SIGNED[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} "${LEGAL[@]}" >SHA256SUMS && cat SHA256SUMS)
+    UPLOADS=("${SIGNED[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} "${LEGAL[@]}" SHA256SUMS)
   fi
   echo "==> upload → $S3_VER/"
   for f in ${SIGNED[@]+"${SIGNED[@]}"}; do UPLOADS+=("$f.sig"); done

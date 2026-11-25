@@ -3,6 +3,7 @@ name = "routes"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Learn a site's JSON routes from the browser session and replay them without one (design doc 44)"
 
 [dependencies]

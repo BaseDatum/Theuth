@@ -207,8 +207,8 @@ export function SecretInline({ item }: { item: AttentionItem }) {
     void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
     void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
   }
-  if (row) return <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} onAnswered={answered} onError={failed} />
-  if (local) return <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} onAnswered={answered} onError={failed} />
+  if (row) return <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} destination={row.destination} onAnswered={answered} onError={failed} />
+  if (local) return <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} destination={local.destination} onAnswered={answered} onError={failed} />
   return <p className="text-xs text-fg-tertiary">{rows.isPending ? 'Loading the request…' : `Answer it in the session${item.detail ? ` on ${item.detail}` : ''}.`}</p>
 }
 
