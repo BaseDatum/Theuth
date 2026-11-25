@@ -12,9 +12,9 @@ declare const __RELEASE_VERSION__: string;
 
 const GITHUB = "https://github.com/BaseDatum/Theuth";
 const APP = "https://app.theuth.io";
-const RELEASES = "https://s3.rwx.dev/theuth/releases";
-/** Release artifacts live at releases/<version>/theuth_<version>_<target>; there is no latest/ path, latest.json names the version. */
-const artifact = (v: string, target: string) => `${RELEASES}/${v}/theuth_${v}_${target}`;
+const RELEASES_API = "https://api.github.com/repos/BaseDatum/Theuth/releases/latest";
+/** Release artifacts are attached to each GitHub Release tag as v<version>/theuth_<version>_<target>. */
+const artifact = (v: string, target: string) => `${GITHUB}/releases/download/v${v}/theuth_${v}_${target}`;
 
 type Os = "macos" | "windows" | "linux";
 
@@ -59,22 +59,27 @@ const OSES: Record<Os, { label: string; cmd: string | null; note: string; files:
   windows: {
     label: "Windows",
     cmd: null,
-    note: "x86_64, Windows 11 or Windows 10 with WebView2. The installer is unsigned: SmartScreen says unknown publisher once; More info, Run anyway. It installs per user under %LOCALAPPDATA%\\theuth with t.exe beside the app. The zip is t.exe and its helpers; unzip it anywhere.",
+    note: "x64 and ARM64, Windows 11 or Windows 10 with WebView2. The installers are unsigned: SmartScreen says unknown publisher once; More info, Run anyway. They install per user under %LOCALAPPDATA%\\theuth with t.exe beside the app. The zips hold t.exe and its helpers; unzip anywhere.",
     files: [
-      ["installer", "windows-x86_64-setup.exe"],
-      ["CLI zip", "windows-x86_64.zip"],
+      ["installer x64", "windows-x86_64-setup.exe"],
+      ["installer ARM64", "windows-aarch64-setup.exe"],
+      ["CLI zip x64", "windows-x86_64.zip"],
+      ["CLI zip ARM64", "windows-aarch64.zip"],
     ],
   },
   linux: {
     label: "Linux",
     cmd: "brew update\nbrew install basedatum/tap/theuth",
-    note: "glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40 and later. The formula installs the CLI on x86_64 and arm64; the bundles are the app with t beside it, x86_64 only, published when a release builds them. AppImage: chmod +x, then run. Debian: sudo apt install ./theuth_<version>_linux-x86_64.deb.",
+    note: "x64 and ARM64, glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40 and later. The formula installs the CLI on both architectures; the desktop bundles include t beside the app. AppImage: chmod +x, then run. Debian: sudo apt install ./theuth_<version>_linux-<arch>.deb.",
     files: [
-      ["AppImage x86_64", "linux-x86_64.AppImage"],
-      ["deb x86_64", "linux-x86_64.deb"],
-      ["rpm x86_64", "linux-x86_64.rpm"],
-      ["CLI tar.gz x86_64", "linux-x86_64.tar.gz"],
-      ["CLI tar.gz arm64", "linux-aarch64.tar.gz"],
+      ["AppImage x64", "linux-x86_64.AppImage"],
+      ["AppImage ARM64", "linux-aarch64.AppImage"],
+      [".deb x64", "linux-x86_64.deb"],
+      [".deb ARM64", "linux-aarch64.deb"],
+      [".rpm x64", "linux-x86_64.rpm"],
+      [".rpm ARM64", "linux-aarch64.rpm"],
+      ["CLI x64", "linux-x86_64.tar.gz"],
+      ["CLI ARM64", "linux-aarch64.tar.gz"],
     ],
   },
 };
@@ -136,22 +141,36 @@ function Install({ os, setOs, version }: { os: Os; setOs: (os: Os) => void; vers
             </button>
           </div>
         )}
-        <ul className="flex flex-wrap items-center gap-x-5 gap-y-3 p-5 font-mono text-[13px]">
-          {active.files.map(([label, target], i) => (
-            <li key={target}>
-              <a
-                href={artifact(version, target)}
-                className={
-                  i === 0
-                    ? "btn btn-primary h-9 px-4 text-[13px]"
-                    : "text-fg-2 underline decoration-fg-3 underline-offset-4 hover:text-fg"
-                }
-              >
-                {i === 0 ? `Download ${label}` : label}
-              </a>
-            </li>
-          ))}
-        </ul>
+        <div className="p-5 font-mono text-[13px]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <a
+              href={artifact(version, active.files[0]![1])}
+              className="btn btn-primary h-9 px-4 text-[13px]"
+            >
+              Download {active.files[0]![0]}
+            </a>
+            <a
+              href={`${GITHUB}/releases`}
+              className="text-[12px] text-fg-3 underline decoration-fg-3/60 underline-offset-4 hover:text-fg"
+            >
+              v{version} on GitHub Releases →
+            </a>
+          </div>
+          {active.files.length > 1 && (
+            <ul className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2.5 border-t border-well/60 pt-4">
+              {active.files.slice(1).map(([label, target]) => (
+                <li key={target}>
+                  <a
+                    href={artifact(version, target)}
+                    className="text-fg-2 underline decoration-fg-3 underline-offset-4 hover:text-fg"
+                  >
+                    {label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         <p className="border-t border-well px-5 py-3 text-[13px] leading-relaxed text-fg-3">
           {active.note}
         </p>
@@ -449,10 +468,13 @@ export function App() {
   const [version, setVersion] = useState(__RELEASE_VERSION__);
   const [os, setOs] = useState<Os>(detectOs);
   useEffect(() => {
-    // latest.json is the only mutable object in the bucket; when it is reachable, follow it instead of the build-time version.
-    fetch(`${RELEASES}/latest.json`)
-      .then((r) => r.json() as Promise<{ version: string }>)
-      .then(({ version }) => setVersion(version))
+    // Follow newer GitHub Releases at runtime when reachable; while the repo is private (404) or rate-limited, keep __RELEASE_VERSION__.
+    fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } })
+      .then((r) => (r.ok ? (r.json() as Promise<{ tag_name?: string }>) : null))
+      .then((j) => {
+        const tag = j?.tag_name?.replace(/^v/, "");
+        if (tag) setVersion(tag);
+      })
       .catch(() => {});
   }, []);
 

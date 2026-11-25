@@ -1,19 +1,19 @@
 #Requires -Version 7
 <#
-Package theuth for Windows (x86_64): the NSIS desktop installer and the CLI zip, staged for
+Package theuth for Windows (x86_64 or aarch64): the NSIS desktop installer and the CLI zip, staged for
 release-s3.sh. Runs ON the Windows host from the repo root: `just package-windows`, or
 `pwsh -NoProfile -File scripts/package-windows.ps1`. Mirrors scripts/package-macos.sh:
 
-  1. cargo build --release -p theuth  (daemon sidecar, x86_64-pc-windows-msvc)
+  1. cargo build --release -p theuth  (daemon sidecar, host Windows MSVC triple)
      + crates/app-parser-stub: cargo build -> theuth-app-parser-<hash>.exe compatibility stub (46 S2.1; the
        parser runs in-process, docs/design/apps-inproc-as-built-P1.md; same hash / --version / stdin-EOF checks)
   2. stage both as externalBin: binaries/t-<triple>.exe, binaries/theuth-app-parser-<hash>-<triple>.exe
      (the stub must sit beside `t.exe`, so it rides the same mechanism, as package-linux.sh does;
      the documents helper is compiled into `t`)
-  3. onnxruntime.dll (Microsoft's win-x64 CPU build, pinned in scripts/ort-version.env, sha256-checked,
-     zip cached in target/) staged as a Tauri resource that lands beside t.exe in the install dir -
-     first in `models::onnx::find_ort_lib`'s search order (<exe dir>\onnxruntime.dll before
-     ~/.theuth/models/onnxruntime/). The WebGPU plugin DLLs are not bundled: the app downloads them.
+  3. onnxruntime.dll (pinned in scripts/ort-version.env, sha256-checked; fallback order: cached zip ->
+     S3 model bucket -> NuGet Microsoft.ML.OnnxRuntime nupkg) staged as a Tauri resource that lands beside
+     t.exe in the install dir - first in `models::onnx::find_ort_lib`'s search order (<exe dir>\onnxruntime.dll
+     before ~/.theuth/models/onnxruntime/). The WebGPU plugin DLLs are not bundled: the app downloads them.
   3b. 134 W5: crates/desktop/companion-windows/build.ps1 -Configuration Release (dotnet publish, self-contained
      WinUI 3) -> target/release/companion-windows/Theuth.Companion.exe; the S2 toast smoke
      (`--probe-notify 3`: Register() + one Show, exit 0) runs on that release output; the folder is staged
@@ -23,16 +23,18 @@ release-s3.sh. Runs ON the Windows host from the repo root: `just package-window
      install/uninstall and deletes HKCU\...\Run\TheuthCompanion on uninstall.
   4. cargo tauri build --config <rendered json>  (target nsis only; crates/desktop/tauri.windows.conf.json:
      currentUser install, WebView2 downloadBootstrapper)
-  5. target/release/dist/theuth_<ver>_windows-x86_64-setup.exe
-  6. target/release/dist/theuth_<ver>_windows-x86_64.zip = exactly t.exe + the app-parser stub exe
+  5. target/release/dist/theuth_<ver>_windows-<arch>-setup.exe
+  6. target/release/dist/theuth_<ver>_windows-<arch>.zip = exactly t.exe + the app-parser stub exe
 
 Unsigned: no Authenticode on the exes or the installer. The updater signature (.sig) is made by
 release-s3.sh on the Mac (cargo tauri signer sign), like the Linux tarballs. Never uploads.
 
 Host tools: rustup (rust-toolchain.toml picks the channel; MSVC target), cargo-tauri, bun.
 Env:
-  THEUTH_SKIP_BUN_INSTALL=1   skip `bun install` (desktop UI)
-  THEUTH_SKIP_COMPANION_SMOKE=1  stage the companion without running `--probe-notify` on it
+  THEUTH_SKIP_BUN_INSTALL=1      skip `bun install` (desktop UI)
+  THEUTH_SKIP_TS_BINDINGS=1      skip TypeScript bindings generation (pre-populated in crates/desktop/ui/src/rpc/bindings)
+  THEUTH_SKIP_COMPANION_SMOKE=1  stage the companion without running `--register-smoke` / `--probe-notify`
+  THEUTH_S3_PUBLIC_BASE_URL      model bucket base URL for onnxruntime.dll fallback (default: https://s3.rwx.dev/theuth/releases)
 #>
 # Progress lines go to the host on purpose.
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
@@ -78,9 +80,28 @@ Need bun 'https://bun.sh'
 cargo tauri --version *> $null
 if ($LASTEXITCODE -ne 0) { Fail 'cargo tauri required (cargo install tauri-cli)' }
 
-$Triple = 'x86_64-pc-windows-msvc'
 $HostTriple = (rustc -vV | Select-String '^host: (\S+)').Matches[0].Groups[1].Value
-if ($HostTriple -ne $Triple) { Fail "host toolchain is $HostTriple; this script builds $Triple only" }
+switch ($HostTriple) {
+    'x86_64-pc-windows-msvc' {
+        $Triple = 'x86_64-pc-windows-msvc'
+        $Arch = 'x86_64'
+        $OrtArch = 'x64'
+        $CompanionPlatform = 'x64'
+        $OrtZipShaKey = 'ORT_SHA256_WIN_X64'
+        $OrtDllShaKey = 'ORT_DLL_SHA256_WIN_X64'
+    }
+    'aarch64-pc-windows-msvc' {
+        $Triple = 'aarch64-pc-windows-msvc'
+        $Arch = 'aarch64'
+        $OrtArch = 'arm64'
+        $CompanionPlatform = 'ARM64'
+        $OrtZipShaKey = 'ORT_SHA256_WIN_ARM64'
+        $OrtDllShaKey = 'ORT_DLL_SHA256_WIN_ARM64'
+    }
+    default {
+        Fail "host toolchain is $HostTriple; this script supports x86_64-pc-windows-msvc and aarch64-pc-windows-msvc only"
+    }
+}
 
 $Version = ((cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages | Where-Object name -eq 'theuth').version
 if (-not $Version) { Fail 'cargo metadata: no package named theuth' }
@@ -100,26 +121,35 @@ $Helper = "theuth-app-parser-$HelperHash"
 # scripts/ort-version.env: the one ORT pin.
 $OrtEnv = Get-Content scripts/ort-version.env -Raw
 $OrtVersion = [regex]::Match($OrtEnv, '(?m)^ORT_VERSION="([^"]+)"').Groups[1].Value
-$OrtSha = [regex]::Match($OrtEnv, '(?m)^ORT_SHA256_WIN_X64="([0-9a-f]{64})"').Groups[1].Value
-if (-not $OrtVersion -or -not $OrtSha) { Fail 'scripts/ort-version.env lacks ORT_VERSION / ORT_SHA256_WIN_X64' }
+$OrtZipSha = [regex]::Match($OrtEnv, "(?m)^${OrtZipShaKey}=`"([0-9a-f]{64})`"").Groups[1].Value
+$OrtNupkgSha = [regex]::Match($OrtEnv, '(?m)^ORT_NUPKG_SHA256="([0-9a-f]{64})"').Groups[1].Value
+$ExpectedDllSha = [regex]::Match($OrtEnv, "(?m)^${OrtDllShaKey}=`"([0-9a-f]{64})`"").Groups[1].Value
+if (-not $OrtVersion -or -not $ExpectedDllSha) { Fail "scripts/ort-version.env lacks ORT_VERSION / $OrtDllShaKey" }
 
 $Desktop = Join-Path $Root 'crates/desktop'
 $Binaries = Join-Path $Desktop 'binaries'
 $BundleDir = Join-Path $Root 'target/release/bundle/nsis'
 $Dist = Join-Path $Root 'target/release/dist'
-$Setup = Join-Path $Dist "theuth_${Version}_windows-x86_64-setup.exe"
-$Zip = Join-Path $Dist "theuth_${Version}_windows-x86_64.zip"
+$Setup = Join-Path $Dist "theuth_${Version}_windows-${Arch}-setup.exe"
+$Zip = Join-Path $Dist "theuth_${Version}_windows-${Arch}.zip"
 
-Write-Host "==> [1/6] TypeScript bindings"
-Exec 'cargo test -p theuth export_bindings' { cargo test -p theuth --bin t --quiet wire_contract_tests::export_bindings -- --exact }
-Push-Location (Join-Path $Desktop 'ui')
-try { Exec 'bun install' { bun install }; Exec 'bun run wire:generate' { bun run wire:generate } } finally { Pop-Location }
 $uiBindings = Join-Path $Desktop 'ui/src/rpc/bindings'
-if (Test-Path $uiBindings) { Remove-Item $uiBindings -Recurse -Force }
-New-Item -ItemType Directory -Path $uiBindings | Out-Null
-Copy-Item (Join-Path $Root 'bindings/typescript/*') $uiBindings -Recurse
-Copy-Item (Join-Path $Root 'bindings/surface-catalog*') $uiBindings
-Copy-Item (Join-Path $Root 'bindings/methods.json') $uiBindings
+if ($env:THEUTH_SKIP_TS_BINDINGS -eq '1') {
+    Write-Host "==> [1/6] TypeScript bindings (skipped: THEUTH_SKIP_TS_BINDINGS=1)"
+    if (-not (Test-Path $uiBindings) -or @(Get-ChildItem $uiBindings -Recurse -File -ErrorAction SilentlyContinue).Count -eq 0) {
+        Fail "THEUTH_SKIP_TS_BINDINGS=1 but $uiBindings is missing or empty"
+    }
+} else {
+    Write-Host "==> [1/6] TypeScript bindings"
+    Exec 'cargo test -p theuth export_bindings' { cargo test -p theuth --bin t --quiet wire_contract_tests::export_bindings -- --exact }
+    Push-Location (Join-Path $Desktop 'ui')
+    try { Exec 'bun install' { bun install }; Exec 'bun run wire:generate' { bun run wire:generate } } finally { Pop-Location }
+    if (Test-Path $uiBindings) { Remove-Item $uiBindings -Recurse -Force }
+    New-Item -ItemType Directory -Path $uiBindings | Out-Null
+    Copy-Item (Join-Path $Root 'bindings/typescript/*') $uiBindings -Recurse
+    Copy-Item (Join-Path $Root 'bindings/surface-catalog*') $uiBindings
+    Copy-Item (Join-Path $Root 'bindings/methods.json') $uiBindings
+}
 
 Write-Host "==> [1/6] building theuth (release, $Triple)"
 Exec 'cargo build --release -p theuth' { cargo build --release -p theuth }
@@ -141,20 +171,89 @@ Get-ChildItem $Binaries -File | Remove-Item -Force
 Copy-Item $T (Join-Path $Binaries "t-$Triple.exe")
 Copy-Item $HelperSrc (Join-Path $Binaries "$Helper-$Triple.exe")
 
-Write-Host "==> [3/6] onnxruntime.dll $OrtVersion -> binaries/ (bundled beside t.exe)"
-$OrtZip = Join-Path $Root "target/onnxruntime-win-x64-$OrtVersion.zip"
-$OrtMember = "onnxruntime-win-x64-$OrtVersion/lib/onnxruntime.dll"
-if (-not (Test-Path $OrtZip) -or (Get-FileHash $OrtZip -Algorithm SHA256).Hash.ToLower() -ne $OrtSha) {
-    Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v$OrtVersion/onnxruntime-win-x64-$OrtVersion.zip" -OutFile $OrtZip
-    if ((Get-FileHash $OrtZip -Algorithm SHA256).Hash.ToLower() -ne $OrtSha) { Fail 'onnxruntime zip sha256 mismatch' }
-}
+Write-Host "==> [3/6] onnxruntime.dll $OrtVersion (win-$OrtArch) -> binaries/ (bundled beside t.exe)"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$archive = [System.IO.Compression.ZipFile]::OpenRead($OrtZip)
-try {
-    $entry = $archive.GetEntry($OrtMember)
-    if (-not $entry) { Fail "$OrtZip has no member $OrtMember" }
-    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $Binaries 'onnxruntime.dll'), $true)
-} finally { $archive.Dispose() }
+$OrtDst = Join-Path $Binaries 'onnxruntime.dll'
+$OrtZip = Join-Path $Root "target/onnxruntime-win-$OrtArch-$OrtVersion.zip"
+$OrtZipMember = "onnxruntime-win-$OrtArch-$OrtVersion/lib/onnxruntime.dll"
+$OrtResolved = $false
+
+# (a) Existing cached onnxruntime-win-<arch>-<ver>.zip (verify zip sha256 if pinned).
+if (Test-Path $OrtZip) {
+    $zipOk = $true
+    if ($OrtZipSha) {
+        $zipHash = (Get-FileHash $OrtZip -Algorithm SHA256).Hash.ToLower()
+        if ($zipHash -ne $OrtZipSha) {
+            Write-Host "    cached $OrtZip sha256 mismatch; ignoring cached zip"
+            $zipOk = $false
+        }
+    }
+    if ($zipOk) {
+        Write-Host "    using cached zip: $OrtZip"
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($OrtZip)
+        try {
+            $entry = $archive.GetEntry($OrtZipMember)
+            if ($entry) {
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $OrtDst, $true)
+                $OrtResolved = $true
+            } else {
+                Write-Host "    cached $OrtZip lacks $OrtZipMember; falling back"
+            }
+        } finally { $archive.Dispose() }
+    }
+}
+
+# (b) S3 model bucket mirror.
+if (-not $OrtResolved) {
+    $PublicBase = if ($env:THEUTH_S3_PUBLIC_BASE_URL) { $env:THEUTH_S3_PUBLIC_BASE_URL.TrimEnd('/') } else { 'https://s3.rwx.dev/theuth/releases' }
+    $OrtMirror = "$PublicBase/models/onnxruntime/$Triple/onnxruntime.dll"
+    Write-Host "    fetching from model bucket: $OrtMirror"
+    try {
+        Invoke-WebRequest -Uri $OrtMirror -OutFile $OrtDst
+        if ((Get-FileHash $OrtDst -Algorithm SHA256).Hash.ToLower() -eq $ExpectedDllSha) {
+            $OrtResolved = $true
+        } else {
+            Write-Host "    model bucket copy sha256 mismatch; falling back to NuGet"
+            Remove-Item $OrtDst -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Host "    model bucket unavailable ($($_.Exception.Message)); falling back to NuGet"
+        Remove-Item $OrtDst -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# (c) NuGet Microsoft.ML.OnnxRuntime nupkg (cached in target/).
+if (-not $OrtResolved) {
+    if (-not $OrtNupkgSha) { Fail 'scripts/ort-version.env lacks ORT_NUPKG_SHA256 for NuGet fallback' }
+    $OrtNupkg = Join-Path $Root "target/microsoft.ml.onnxruntime.$OrtVersion.nupkg"
+    $OrtNupkgUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/$OrtVersion/microsoft.ml.onnxruntime.$OrtVersion.nupkg"
+    $NupkgMember = "runtimes/win-$OrtArch/native/onnxruntime.dll"
+    if (-not (Test-Path $OrtNupkg) -or (Get-FileHash $OrtNupkg -Algorithm SHA256).Hash.ToLower() -ne $OrtNupkgSha) {
+        Write-Host "    fetching NuGet package: $OrtNupkgUrl"
+        $OrtNupkgPart = "$OrtNupkg.part"
+        Invoke-WebRequest -Uri $OrtNupkgUrl -OutFile $OrtNupkgPart
+        $nupkgHash = (Get-FileHash $OrtNupkgPart -Algorithm SHA256).Hash.ToLower()
+        if ($nupkgHash -ne $OrtNupkgSha) {
+            Remove-Item $OrtNupkgPart -Force -ErrorAction SilentlyContinue
+            Fail "NuGet nupkg sha256 mismatch (expected $OrtNupkgSha, got $nupkgHash)"
+        }
+        Move-Item $OrtNupkgPart $OrtNupkg -Force
+    } else {
+        Write-Host "    using cached NuGet package: $OrtNupkg"
+    }
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($OrtNupkg)
+    try {
+        $entry = $archive.GetEntry($NupkgMember)
+        if (-not $entry) { Fail "$OrtNupkg has no member $NupkgMember" }
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $OrtDst, $true)
+    } finally { $archive.Dispose() }
+}
+
+if (-not (Test-Path $OrtDst)) { Fail "onnxruntime.dll not obtained from cache, model bucket, or NuGet" }
+$ActualDllSha = (Get-FileHash $OrtDst -Algorithm SHA256).Hash.ToLower()
+if ($ActualDllSha -ne $ExpectedDllSha) {
+    Fail "onnxruntime.dll sha256 mismatch for $Triple (expected $ExpectedDllSha, got $ActualDllSha; check scripts/ort-version.env)"
+}
 
 function Invoke-CompanionSmoke {
     # Runs Theuth.Companion.exe --probe-notify N and reports whether it exited 0.
@@ -203,7 +302,9 @@ $CompanionOut = Join-Path $Root 'target/release/companion-windows'
 $CompanionExe = Join-Path $CompanionOut 'Theuth.Companion.exe'
 $Companion = $null
 if (Test-Path $CompanionBuild) {
-    Exec 'companion-windows/build.ps1' { pwsh -NoProfile -File $CompanionBuild -Configuration Release }
+    $companionArgs = @('-NoProfile', '-File', $CompanionBuild, '-Configuration', 'Release', '-Platform', $CompanionPlatform)
+    if ($env:THEUTH_SKIP_COMPANION_SMOKE -eq '1') { $companionArgs += '-NoSmoke' }
+    Exec "companion-windows/build.ps1 ($CompanionPlatform)" { pwsh @companionArgs }
     if (-not (Test-Path $CompanionExe)) { Fail "$CompanionExe not produced by build.ps1" }
         if ($env:THEUTH_SKIP_COMPANION_SMOKE -ne '1') {
         # S2 on the release publish output (§5.7): Register() must succeed from the layout NSIS will install.
@@ -243,6 +344,9 @@ try {
 } finally { Pop-Location }
 $built = @(Get-ChildItem $BundleDir -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue)
 if ($built.Count -ne 1) { Fail "expected one *-setup.exe in $BundleDir, got: $($built.Name -join ', ')" }
+if ($built[0].Name -notlike "*_${Version}_*-setup.exe") {
+    Fail "unexpected NSIS installer name '$($built[0].Name)' in $BundleDir (expected *_${Version}_*-setup.exe for $Arch)"
+}
 
 Write-Host "==> [5/6] -> $Dist"
 New-Item -ItemType Directory -Path $Dist -Force | Out-Null

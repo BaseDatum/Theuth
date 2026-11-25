@@ -1,685 +1,242 @@
-# theuth
+<div align="center">
 
-A single-process AI harness that does things for the user. Plugins are Rust
-crates talking over a typed message bus; any frontend attaches over JSON-RPC.
-Design: [`docs/design/00-architecture.md`](docs/design/00-architecture.md).
-Adding a plugin: [`docs/plugins.md`](docs/plugins.md).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/lockup-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/brand/lockup-light.svg">
+  <img src="assets/brand/lockup-light.svg" alt="theuth" width="360">
+</picture>
 
-Install without building: `brew install basedatum/tap/theuth` (the CLI, macOS
-arm64 and Linux) or `brew install --cask basedatum/tap/theuth` (the macOS app).
-Both keep themselves current ([`docs/design/39-update.md`](docs/design/39-update.md));
-`t --update` forces a check. Building from source:
+<p><strong>Your agents, your machines, your keys.</strong></p>
 
-```sh
-just setup                 # rustup toolchain; `just toolchain` prints its bin dir
-export ANTHROPIC_API_KEY=… # any genai provider works; default model in config   # or: t --secret-set anthropic
-just run                   # terminal UI; data dir is ~/.theuth (--data-dir / THEUTH_DATA_DIR relocate it)
-just run -- --headless     # JSON-RPC only, ws://127.0.0.1:7777 with <data_dir>/token
-just run -- --resume <id>  # reopen a session
-just run -- -p "prompt"    # print mode: stream the reply, exit when the turn ends
-echo "prompt" | just run -- -p   # same, prompt from stdin
-just run -- --link-signal --owner +15551234567   # pair as a Signal linked device (one-shot QR), then run --headless
-just run -- --link             # pair a phone with the running daemon (one-shot QR + key); needs `t --headless` on this box
-just run -- --install-service --relay wss://relay.example.com   # on a server: run t --headless as a launchd/systemd user service through your login shell, print the key to pair it to your main harness as a node
-just run -- --uninstall-service                                  # remove that unit; the data dir and every pairing stay
-just relay                     # local theuth-relay on 127.0.0.1:8787 for link development; `just web-build` builds the browser UI it serves
-just run -- --slack-setup      # create the Slack app from the manifest, verify tokens, write config; then run --headless
-just run -- --slack-manifest   # manual path: print the Slack app manifest for api.slack.com/apps → From a manifest
-just run -- --telegram-setup   # BotFather token → vault, command menus, pairing link/QR, writes telegram.owner/enabled; then run --headless
-just run -- --acp          # Agent Client Protocol on stdio: use theuth from Zed/editors (agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}})
-just ts                    # TypeScript bindings for the wire types → bindings/
-just helper                # theuth-app-parser compatibility stub (cargo) → target/release/theuth-app-parser-stub; shipped only for installed updaters
-just apps-bundle           # rebuild the in-process OpenUI validator bundle (bun) → crates/js-runtime/js; `just apps-bundle-check` says when it is stale
-just documents-bundle      # rebuild the in-process documents bundle (bun) → crates/js-runtime/js; `just documents-bundle-check` says when it is stale
-just install               # release `t` + the `theuth-app-parser-<hash>` stub into ~/.cargo/bin; older helpers stay for any still-running t (app parser and documents run inside `t`)
-just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
-just package-macos         # theuth.app + dmg; ad-hoc unless THEUTH_SIGN_IDENTITY / .env.signing
-just package-linux         # .deb/.rpm/.AppImage with the `t` sidecar, on a Linux host; no meetings recorder there (53: macOS only)
-just package-ios           # signed IPA for TestFlight (Apple Distribution)
-just testflight            # upload last IPA to App Store Connect
-just install-macos         # copy the packaged app to /Applications
-```
+<p>
+  A single-process, local-first Rust AI harness that orchestrates models, external coding agents, tools, and machines over a typed internal bus and an encrypted peer-to-peer mesh.<br>
+  Drive it from your terminal, native desktop and iPadOS apps, editors over ACP, MCP clients, Slack, Signal, or Telegram — with your sessions, knowledge, and blind secrets vault staying on hardware you control.
+</p>
 
-Build prerequisites: `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` for the embedded browser's
-BoringSSL (`brew install cmake llvm` / `apt install cmake clang libclang-dev`),
-network on the first build for the prebuilt V8 archive (set
-`RUSTY_V8_ARCHIVE` to a local copy to build offline). `bun`
-(`brew install oven-sh/bun/bun`) is needed only for the desktop UI and to rebuild
-the committed in-process TypeScript bundles (`just apps-bundle`, `just documents-bundle`);
-an installed `t` needs no Node or Bun at run time. The Homebrew formula and the
-self-updater install the `theuth-app-parser-<hash>` compatibility stub with `t`.
+<p>
+  <a href="https://github.com/BaseDatum/Theuth/actions/workflows/release.yml"><img src="https://github.com/BaseDatum/Theuth/actions/workflows/release.yml/badge.svg" alt="Release CI"></a>
+  <a href="https://github.com/BaseDatum/Theuth/releases/latest"><img src="https://img.shields.io/github/v/release/BaseDatum/Theuth?label=release&labelColor=1a1612&color=8f2f1f&style=flat" alt="Latest Release"></a>
+  <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-edition%202024-8f2f1f?labelColor=1a1612&style=flat" alt="Rust Edition 2024"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-8f2f1f?labelColor=1a1612&style=flat" alt="License: GPL-3.0-or-later"></a>
+  <a href="https://theuth.io/docs"><img src="https://img.shields.io/badge/docs-theuth.io-8f2f1f?labelColor=1a1612&style=flat" alt="Documentation"></a>
+</p>
 
-macOS permissions: `computer_*` needs Screen Recording and Accessibility
-granted to the app that launched theuth — your terminal (Ghostty, iTerm,
-Terminal) or theuth.app — in System Settings › Privacy & Security. Screen
-Recording takes effect only after restarting that app; Accessibility is
-immediate. `/computer` shows what is granted.
+<p>
+  <a href="#install">Install</a> ·
+  <a href="#why-theuth">Why theuth</a> ·
+  <a href="#capabilities">Capabilities</a> ·
+  <a href="#connect-from-anywhere">Surfaces</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#build-from-source">Build</a> ·
+  <a href="#documentation">Docs</a>
+</p>
 
-Crates: `runtime` (plugin trait), `models` (bundled models.dev catalog),
-`markdown` (streaming markdown: raw tail, blocks rendered once), `oauth`
-(loopback callback, PKCE, provider token store), `tools` (registry, approval
-gate, shell via brush, fs (read, write, list, grep, edit), MCP; shell commands
-run as background jobs: output within 3 s comes back inline, otherwise the
-model gets a job id and is woken with `<job_result>` when it exits —
-[`docs/design/14-jobs.md`](docs/design/14-jobs.md); `start` / `send` /
-`screen` / `wait` run a command on a pseudo-terminal (REPL, server, TUI) and
-drive it: type, read the rendered 120×40 screen, wait for a prompt or a port;
-you can open the same terminal from `/terminals` or the desktop and type into
-it yourself (`i` / Ctrl-] in the TUI) —
-[`docs/design/22-pty.md`](docs/design/22-pty.md), [`55`](docs/design/55-interactive-terminals.md)), `secrets` (an encrypted,
-versioned vault the agent uses by name but never reads: `{{secret:NAME}}` in
-any tool argument is swapped for the value at run time and scrubbed from the
-output; holds the provider, web and Slack keys too —
-[`docs/design/37-secrets.md`](docs/design/37-secrets.md)), `secrets-aws` and
-`secrets-bitwarden` (external backends: `{{secret:aws/CONN/NAME#key}}` from
-AWS Secrets Manager through your own `~/.aws` profiles, `{{secret:bw/CONN/ITEM#field}}`
-from a Bitwarden or Vaultwarden vault on the official `sdk-internal` crates;
-every read, write, delete and Send asks first by default, each switchable per
-connection; `secrets-bitwarden` is behind the `bitwarden` cargo feature, on by
-default, which makes the `t` binary a GPL-3.0 work —
-[`docs/design/221-external-secrets.md`](docs/design/221-external-secrets.md)),
-`aws-profiles` (the `~/.aws` profile list shared by Bedrock and `secrets-aws`), `browser` (sixteen
-`browser_*` tools: an embedded headless browser (obscura) with screenshots —
-`browser_open`, `_read`, `_elements`, `_click`, `_fill`, `_type`, `_press`,
-`_select`, `_scroll`, `_wait`, `_eval`, `_back`, `_screenshot`, `_tabs`,
-`_close`, `_show` (plus `browser_list_profiles` + `browser_import_cookies` when
-`import_cookies` is on: discover local browser profiles and load the user's
-real cookies so the agent acts as the signed-in user; `browser_show` opens a
-live view of the session's browser in the desktop app); one
-isolate per session, screenshots come back as images in the
-tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `scrape` (`scrape_url`, `crawl`, `map_site`: a crawler built on the vendored `firecrawl-native` crate, with `web`'s fetcher and obscura as its two engine tiers; `crawl` stays under the seed's directory, honours `robots.txt` and seeds from the site's sitemaps, `map_site` lists a site's URLs from sitemap + links without page bodies — [`docs/design/38-scrape-vendored-crawler.md`](docs/design/38-scrape-vendored-crawler.md)), `codeindex` (plugin: tree-sitter tags → sqlite symbol/reference index per repo root, workspace-aware import resolution, aider-style ranked map, `code_*` runtime tools — [`docs/design/60-codeindex.md`](docs/design/60-codeindex.md)), `computer`
-(eight `computer_*` tools: `computer_screenshot`, `_move`, `_click`, `_drag`,
-`_scroll`, `_type`, `_key`, `_open` — one composite screenshot of every
-display as an image, then native mouse and keyboard on the user's own desktop —
-[`docs/design/27-computer.md`](docs/design/27-computer.md)), `document`
-(the Yjs authority behind every BlockNote editor — `yrs` documents under
-`documents/`, derived markdown export/import, the `packages/documents` helper
-— [`docs/design/59-documents.md`](docs/design/59-documents.md)), `knowledge`
-(OKF bundle, FTS index, gix history, `knowledge_*` tools —
-[`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
-loop, sqlite sessions with compaction epochs, skills, subagents, persistent
-Python runtime over monty worker subprocesses —
-[`docs/design/08-repl.md`](docs/design/08-repl.md); with `agent.vision_model`
-set, a text-only main model still sees images: it writes a question, that
-image-capable fallback model answers it, and the answer is appended as an observation —
-[`docs/design/52-vision-fallback.md`](docs/design/52-vision-fallback.md); `message_user` sends text
-and files to the user on Slack, Signal or Telegram out of band —
-[`docs/design/24-message-user.md`](docs/design/24-message-user.md); `ask_user`
-puts one or more multiple-choice questions to the user — pick, type your own,
-skip one, or dismiss the set to end the turn — in the TUI, the desktop app, a
-Slack thread (Block Kit) or over Signal one question at a time), `web` (`search_web` and
-`read_url`: SSRF-guarded fetch, keyless google/bing/brave/qwant/wikipedia/arxiv/github
-merged by RRF with SERP features; `search_web` also reads the top hits and returns
-the passages relevant to the query in the same call — [`docs/design/16-web.md`](docs/design/16-web.md)),
-`search-providers` (optional Firecrawl, SearXNG, OpenSERP, Brave API as `brave_api`; registered with `web`
-over the bus), `acp` (external
-harnesses over the Agent Client Protocol: agents.yaml, registry, harness
-connection), `signal` (phone frontend
-over Signal messenger), `slack` (Slack frontend over Socket Mode), `telegram` (Telegram frontend over Bot API long polling), `rpc-compose` (jsonrpsee composition over the generic `rpc` transport;
-also registers the `search` tool — one fuzzy search over this harness's saved
-sessions, shown artifacts, current knowledge and knowledge history, for when
-you ask the agent to find something you did earlier —
-[`docs/design/49-search.md`](docs/design/49-search.md)),
-`link` (drive the harness from a phone or browser through a relay: Noise
-end-to-end encryption, pairing QR, device registry —
-[`docs/design/31-link.md`](docs/design/31-link.md)), `relay` (the `theuth-relay`
-binary: a stateless relay that copies encrypted frames between one harness
-and its devices), `schedule` (scheduled runs and loops: one `~/.theuth/schedules/<name>.md`
-per schedule with `cron:` / `every:` / `at:` front matter and the prompt as
-body; each fire is a turn in that schedule's own session, the reply is
-delivered to the user; add `until:` (a shell check) or `max_runs:` and it
-loops until done, `every: 0s` for back to back, `approvals: false` for
-unattended, `schedule_done` when the model decides —
-[`docs/design/34-schedule.md`](docs/design/34-schedule.md),
-[`docs/design/33-loops.md`](docs/design/33-loops.md)), `autoresearch` (measured
-experiment loops: a study names a goal, a benchmark that prints `METRIC name=value`,
-a correctness check and the files that may change; one idea per experiment in an
-engine-managed git worktree, kept only when it beats the measured noise and passes
-the check, the evaluator frozen in custody, every keep reviewed by a second model,
-finalized into independently measured changesets you land —
-[`docs/design/140-autoresearch.md`](docs/design/140-autoresearch.md)), `artifact`
-(the `show` tool: files the agent makes for you, shown as cards in the chat —
-markdown, code, CSV, images, SVG, PDFs compiled in-process from markdown or
-Typst; a content-addressed store under `~/.theuth/artifacts/` —
-[`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `a2a` (remote
-agents over A2A 1.0 on the official Rust SDK: configured peers and exports,
-off by default — Communication below,
-[`docs/design/50-agent-communication.md`](docs/design/50-agent-communication.md)),
-[`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `app` (the
-`app` tool: interactive OpenUI Lang screens the agent publishes as `.openui`
-artifacts and you use on desktop/web; a headless `theuth-app-parser-<hash>`
-helper validates source, `app_*` RPC runs an app's Query/Mutation bindings
-through the tool registry — [`docs/design/46-apps.md`](docs/design/46-apps.md)),
-`tui` (iocraft), `theuth` (binary).
+<br>
 
-Bedrock: select an `amazon-bedrock/<model-id>` through `/model` (cross-region
-inference profile ids such as `us.anthropic.…` work too). Configure AWS normally;
-the Rust SDK discovers profiles from both AWS files, including SSO/role profiles
-and custom file paths. `/aws` opens the TUI picker when multiple profiles exist;
-desktop Settings → Connections → AWS Bedrock provides the same selection.
-`/aws work` persists `agent.aws_profile: work` for every session's next Bedrock
-request; `/aws clear` restores automatic authentication. An explicit profile
-overrides ambient access keys and Bedrock bearer keys. Otherwise a `bedrock_api`
-vault secret, `BEDROCK_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK` wins over the default
-AWS chain. The SDK owns region, credentials and SSO; sign in with
-`aws sso login --profile work` when required. No AWS credentials enter theuth's UI.
+<img src="assets/theuth-hero-engraving.jpg" alt="Copperplate ibis engraving — theuth" width="520">
 
-Chat failures (including denied model/region access and expired AWS sessions) stay
-in the TUI and desktop/mobile transcript after the turn finishes, on reload, and
-when reopening the session. They are not sent to the model as conversation text.
-AWS credential failures include SSO login guidance; fix the profile/login or
-model access, then send the request again.
+</div>
 
-Config (`~/.theuth/`, created on first run; details in
-[`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
+---
 
-- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `documents`, `knowledge`, `web`, `scrape`, `codeindex`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `autoresearch`, `a2a`, `update`, `artifact`, `app`, `voice`, `slack` and `telegram` sections with their defaults:
+## Install
 
-  ```yaml
-  agent:
-    model: anthropic/claude-sonnet-4-5
-    communication: false   # model-to-model communication (design doc 50, below): off = no spawn_subagent, discover_peers or send_message; `/communication on always` writes true
-    # effort: high        # low|medium|high|… per model (/model lists them); unset = provider default
-    # vision_model: anthropic/claude-haiku-4-5  # answers the main model's questions about images it cannot see (design doc 52);
-                             # unset: no fallback. Must be an exact catalog `provider/model` that accepts images;
-                             # images then go to that provider, with extra calls. /vision or Settings → Agent loop
-    # stream_idle_secs: 120  # seconds without a stream event before a model call is abandoned (design doc 36 §2.3)
-    # max_salvages: 2        # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors; 0 = off
-    # aws_profile: work   # Bedrock inference; /aws or Settings → Connections selects it
-    compact_at: 0.8        # compact when the context is this full; 0 disables
-    compact_style: summary  # summary | cut | snap
-    compaction:            # post-compaction token budgets
-      tail_tokens: 40000   # history replayed verbatim after the head
-      image_tokens: 30000  # snap archive images in the head
-      target_tokens: 120000 # head + tail after a fold
-    knowledge:             # how the loop uses the store
-      hint_limit: 5        # lines per <knowledge> hint
-      hint_rounds: 4       # mid-turn hint cadence in tool rounds
-      harvest_every: 3     # tool-using turns per harvest; 0 disables harvest
-      harvest_max: 8       # concepts accepted per harvest
-  tools:
-    job_grace_secs: 3      # inline `shell` reply if the job exits within this; 0 = always a stub
-    job_timeout_secs: 1800 # kill the process group after this; result exit="timeout"
-    pty_ready_timeout_secs: 30   # `start` readiness wait when `ready` gives no timeout
-    ask_timeout_secs: 1800  # `ask_user` gives up (the model sees "no answer") after this
-  secrets:                       # design doc 37; `/secrets`, Settings › Secrets, `t --secret-set`
-    key_store: auto              # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
-    tools: true                  # false: no secret_* tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed; the vault, /secrets and the harness's own keys are unaffected
-    request_timeout_secs: 1800   # `secret_request` gives up (the model sees "no answer") after this
-  knowledge:
-    enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
-  documents:               # design doc 59; the BlockNote editor's Yjs documents
-    enabled: true          # false: no store, no helper, no doc_* methods; concepts open as raw text
-    export_debounce_ms: 400      # settle time before the derived .md is rewritten (hard cap 3 s)
-    max_doc_bytes: 8388608       # an update that would grow a document past this is refused (DocTooLarge); one update is capped at 48 KiB
-    snapshots_keep: 30           # automatic (daily) snapshots kept per document; labelled ones (artifact-v*, meeting-*, import-file, manual) are never pruned
-    agent_color: "#7c3aed"       # the agent's presence and typewriter reveal colour
-    max_members: 64              # members per shared document; the 65th join is refused
-    sharing: on                  # off: no new share links, members still connect; disabled: members refused too
-    idle_unload_secs: 600        # unload an unsubscribed document after this idle time (its log is compacted into snapshot.yjs)
-    max_open_docs: 256           # documents held in memory at most
-  web:
-    engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless; search_web / read_url
-  scrape:                         # design doc 38; scrape_url / crawl / map_site
-    concurrency: 5
-    max_pages: 50                 # default limit for crawl / map_site
-    max_depth: 3
-    same_domain: true
-    page_timeout_ms: 8000
-    run_timeout_ms: 60000
-    robots: true
-    delay_ms: 100                 # per-host gap between requests; a larger robots Crawl-delay wins
-  codeindex:                      # design doc 60; code_find / code_outline / code_refs / code_map / code_symbol / code_impact over a tree-sitter index in <data_dir>/codeindex/<slug>-<hash>.sqlite
-    enabled: true
-    sync_limit: 64                # changed files re-indexed before answering; more → answer stale, finish in background
-    max_file_bytes: 1048576       # larger files are listed, not parsed
-    cochange_commits: 300         # first-parent commits walked for co-change; 0 disables
-    languages: [rust, typescript, javascript, python, go]
-  search_providers:               # optional external engines registered with `web`; the built-ins above need none of these
-    firecrawl: { base_url: https://api.firecrawl.dev }   # present by default; inert until a `firecrawl` secret is in the vault
-    # searxng: { base_url: http://127.0.0.1:8080 }     # a SearXNG instance you run
-    # openserp: { base_url: http://127.0.0.1:7000 }
-    # brave: {}                    # Brave Search API (provider `brave_api`); secret `brave` in the vault
-    x: { enabled: true, model: grok-4.7, timeout_ms: 90000 }   # `search_x` tool over xAI's x_search (design doc 80); registered only while an `xai` secret or `/login xai` exists
-  browser:                        # design doc 23
-    enabled: true
-    stealth: true                 # wreq TLS fingerprint + tracker blocklist (§0.4)
-    proxy: null                   # http://user:pass@host:port | socks5://host:port
-    user_agent: null              # default: obscura's current-Chrome UA for the platform
-    timezone: null                # IANA zone; null = the host's zone (not obscura's Europe/Berlin)
-    geolocation: null             # "lat,lon"
-    allow_private_network: false  # §0.8
-    import_cookies: false         # let browser_import_cookies load the user's real cookies (§7)
-    idle_secs: 300                # isolate teardown after inactivity
-    max_chars: 4000               # default cap of browser_read / browser_open replies
-    script_deadline_ms: 30000     # OBSCURA_SCRIPT_DEADLINE_MS for heavy SPAs
-  computer:                       # design doc 27
-    enabled: true                 # the OS permission prompts are the consent; actions still ask (tools.policy)
-    max_edge: 1568                # long edge of a screenshot after logical scaling (17 §1; ~1280 for Anthropic click accuracy)
-  link:                           # design doc 31; `/link on`, Settings › Link or hand-edit
-    enabled: false                # the uplink dials out; nothing listens
-    relay: wss://relay.theuth.io   # self-host: your `theuth-relay` URL
-    name: ""                      # display name in the QR and on devices; "" → hostname
-    max_devices: 16
-    guest_handshakes_per_minute: 10  # share-link guests (design doc 59 §8) admitted per minute; 5 s to join, 3 refused calls close the conn
-  nodes:                          # design doc 32; `/nodes add <key>` pairs, the node ran `t --install-service`
-    enabled: true                 # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
-  sandbox:                        # design doc 79; sandbox VMs — isolated Linux desktops on this machine that join the mesh as engines. `t mesh add --vm`, `t sandbox ls|start|stop|rm|desktop`, `/sandbox`
-    enabled: true                 # false: no actor, no `sandbox_*` tools, no RPC; records and VMs on disk untouched (VMs keep running detached)
-    vm:
-      enabled: true               # false: docker/ssh engines only
-      image: ghcr.io/basedatum/theuth-vm   # tag = this binary's version
-      defaults: { cpus: auto, memory_mib: auto, root_disk_mib: 20480, max_cpus: auto, max_memory_mib: auto, desktop: true, geometry: 1440x900, network: public_host }
-      autostart: true             # start recorded VMs with this engine
-      max_vms: 4
-      loopback_mesh: false        # publish the VM's iroh UDP port on 127.0.0.1 and pair over it; off = relay path (79 S1 #4: a ≥ 1500 B datagram wedges the guest NIC)
-    create_timeout_secs: 900      # `sandbox_create` waits this long for `ready`; step_timeout_secs 600 per bring-up step; health_interval_secs 60
-  schedule:                       # design docs 34 + 33; `~/.theuth/schedules/*.md` files, `/schedules` lists them
-    enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
-    run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`; a file's `run_timeout:` overrides it
-  autoresearch:                   # design doc 140; studies under `~/.theuth/autoresearch/`, one `schedules/autoresearch-<slug>.md` each; Settings › Autoresearch
-    enabled: true                 # false: no tools, no actor; `autoresearch.list` is empty and settings still persist
-    defaults: { repeats: 3, bench_timeout: 600s, checks_timeout: 300s, crash_retries: 2, budget: { usd: 20, per_experiment_usd: 1.5, hours: 10, experiments: 120 } }
-    review: { model: null, on_suspicious: revert, pause_after: 3 }   # model: null = a model of another vendor than the executor; "off" disables
-    models: { executor: null, advisor: null }   # null = agent.model / the Advisor settings model
-  a2a:                            # design doc 50 §6; remote agents over A2A 1.0. `/a2a` shows status, `/a2a reload` re-reads ~/.theuth/a2a/peers.yaml
-    enabled: false                # false: no actor, no listener, no card fetch, no credential load. Also needs agent.communication: true
-    listen: 127.0.0.1:7780        # loopback only; restart to change
-    public_url: null              # the HTTPS base your reverse proxy publishes; without it the listener is plain HTTP for loopback development only
-  update:                         # design doc 39; self-update, silent: verify the signature, replace the binary on disk, live at the next start
-    enabled: true                 # false: never checks; `t --update` still works
-    url: https://s3.rwx.dev/theuth/releases/latest.json   # the release manifest; point at a scratch bucket to test
-  artifact:                       # design doc 35; the `show` tool, `/artifacts` lists a session's
-    enabled: true                 # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
-    fonts: []                     # extra directories searched for PDF fonts, besides system fonts and the embedded set
-  app:                            # design doc 46; the `app` tool, `/apps` lists a session's
-    enabled: true                 # false: no `app` tool, prompt block, helper, `get_app`/`app_*` RPC or /apps; existing apps stay readable as source (/artifacts, Ctrl+O)
-  voice:                          # design docs 43 + 45 + 54; Read-aloud, voice notes and dictation: Pocket TTS, Parakeet and Nemotron streaming STT in the harness
-    enabled: true                 # false: no actors, `speak`/`transcribe` answer "not running", the desktop shows no speaker or mic
-    voice: peter_yearsley         # a `voices/<name>.safetensors` in the checkpoint directory
-    # model_dir: ~/.theuth/models/pocket-tts-en-2026-10   # the Pocket TTS checkpoint (Kyutai's english_2026-10, CC BY 4.0: config.json, model.safetensors, tokenizer.json, voices/); this is the default
-    # stt_model_dir: ~/.theuth/models/parakeet-tdt  # Parakeet TDT ONNX (encoder-model.onnx, decoder_joint-model.onnx, vocab.txt) plus libonnxruntime.{dylib,so}; this is the default
-    stt_idle_secs: 600            # unload the speech-to-text model (1.7 GB resident) after this long unused; 0 keeps it resident
-    # dictation_model_dir: ~/.theuth/models/nemotron-streaming-en  # Nemotron streaming STT ONNX (encoder.onnx, decoder_joint.onnx, tokenizer.model) for live dictation; this is the default
-    dictation_max_secs: 300       # a running dictation stops itself after this long (design doc 54)
-  slack:
-    # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
-    allowed: []                    # more user ids; each owns their threads
-    channels: []                   # channel ids where @theuth is honoured; empty = DMs only
-    tools: all                     # all | errors | none — task cards per tool call
-    reasoning: true                # the quoted reasoning message
-    approvals: all                 # all | threads — where approvals for non-Slack sessions go
-  telegram:
-    # owner: 123456789             # user id; set by --telegram-setup / telegram_link / the deep link; owner-only commands; receives unbound cards
-    allowed: []                    # more user ids; each owns their threads
-    groups: []                     # chat ids (−100…) where @mentions and commands are honoured; empty = private chats only
-    tools: all                     # all | errors | none — activity cards per tool batch
-    reasoning: true                # reasoning text in the expandable quote
-    approvals: all                 # all | threads — where approvals for non-Telegram sessions go
-  ```
-
-  The Python runtime is always on: the worker is the `theuth` binary itself (`t subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
-- `secrets.vault` — encrypted (XChaCha20-Poly1305) vault of named, versioned secrets; the key lives in the OS keychain (or `secrets.key`, mode 0600, where there is none). Provider keys (genai adapter names: `anthropic`, `openai`, …) beat env vars; a provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name; web search keys (`firecrawl`, `brave`, optional `github`) and the Slack tokens (`slack_bot`, `slack_app`) live here too. Add, replace, restore or delete with `/secrets`, Settings › Secrets or `t --secret-set NAME` (a server over ssh; value read without echo or piped on stdin). The agent uses a secret by name — `{{secret:NAME}}` in any tool argument — and never sees its value; it asks you for one or several at once with `secret_request`, and what you hand over on that card can carry an expiry (Never, in N minutes/hours/days, or on a date): from then a placeholder for it fails and the engine deletes it with every version, on every paired engine. An existing `credentials.yaml` is imported into the vault and removed on first start. See [`docs/design/37-secrets.md`](docs/design/37-secrets.md).
-- `providers.yaml` — named OpenAI-compatible gateways (`name: { base_url }`); keys live in the vault. `/provider add` writes both and fetches `GET {base}models` into `models.json`.
-- `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`. `/provider add` writes the fetched model list here.
-- `oauth/` — tokens from `/login` (`openai.json` = ChatGPT subscription via the Codex client, `anthropic.json` = Claude Pro/Max via the Claude Code client, `cursor.json` = Cursor subscription, `xai.json` = SuperGrok via the Grok CLI client; `mcp/<server>.json` = MCP servers that answered 401), mode 0600; `/logout <name>` deletes one. See [`docs/design/05-oauth.md`](docs/design/05-oauth.md).
-- `prompt.md` — standing instructions, read into the system prompt on every model call; `/prompt` shows the assembled prompt.
-- `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered under their own names — a name two servers both offer (four `grafana-*` entries) registers as `<server>__<name>` for each. `${VAR}` and `$(cmd)` in `command`/`args`/`env`/`url`/`headers` expand through your shell when the server starts (`"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"`); `{{secret:NAME}}` in the same fields is filled from the vault, so a token never sits in the file. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls. A remote entry's optional `oauth: {client_id, client_secret, scopes, redirect_uri}` shapes its login; `redirect_uri` (`http://localhost:8765/callback`) is for servers that only accept a registered loopback URL.
-- `mcp/config.yaml` — per-server / per-tool risk override (`read_only` | `mutating` | `destructive` | `off`); `/mcp` edits it (`off` on a server = disabled). An MCP tool's risk defaults to its annotations, and one without annotations prompts by default; set `risk: read_only` on a trusted server once.
-- `acp/agents.yaml` — one entry per external harness (`name: {command, args, env, description}`); `/acp` lists, probes, adds from the registry (`/acp add <id>`), removes. The model spawns one with `spawn_subagent{agent}`; it runs as a child session like a theuth subagent.
-- `a2a/peers.yaml` — remote A2A agents and the local sessions published to them (see Communication below); owner-edited, `/a2a reload` validates and applies it atomically. No model tool writes it.
-- `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md). `harness.md` is written here on every start: the model's manual for this data dir and its config, loaded on demand.
-- `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
-- `documents/` — one directory per Yjs document (`meta.json`, `snapshot.yjs`, `updates.log`, `snapshots/`) behind the BlockNote editor; `index.sqlite` is its index. A knowledge concept's document is the truth while it is open in the editor and `knowledge/<id>.md` is its export; deleting a document directory loses only the editing history, the file is recreated as a document on next open.
-- `artifacts/` — content-addressed blobs of every file the agent has `show`n or published with `app`; `artifacts.sqlite` beside it is the index, and also holds one row per app invocation (which view pressed which binding, status, result). Deleting the index orphans the blobs, which are swept at the next start. `artifacts.owners/` holds one OS-locked file per running harness on this data dir: invocation rows belong to the owner that dispatched them, so a second harness (or a restart) recovers only rows whose owner is provably dead and reports them as `unknown`, never retried.
-
-TUI: `/` opens the command list; `/model` picks a model (header above the
-input shows model, effort and context used); `/effort [level|clear]` sets the
-reasoning effort for this session and as the default (`agent.effort`), from
-the next turn; `/mcp` sets a server's or tool's risk or turns it off (`l`
-logs a `login required` server in), `/mcp add <url|json>` installs one,
-`/mcp sync` pulls repos; `/login` picks a provider or MCP server to log in
-to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatible
-gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider rm <name>`
-forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `/<skill> [words]` does the same; the status line names the skills in context); `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default; `/clear` drops the conversation and keeps the session (id, title, model, settings; the history is still there on `/resume`);
-`/undo` drops the last turn (yours and the reply), `/redo` restores it; `/shake [images|documents|messages|tools|summary]` removes chosen content from the model's context without dropping what came after it — bare `/shake` opens a picker, a category (e.g. `/shake images`) pre-selects every matching occurrence in the current context, Space toggles a row, Enter reviews the exact targets (a removed tool exchange or assistant message takes its protocol companions with it) and confirms; no model call, later replies stay, the original rows stay in the transcript as collapsed *removed* cards and `/undo` does not bring the content back (attach or send it again); works on idle native sessions only ([`docs/design/48-shake.md`](docs/design/48-shake.md)); `/edit [n]` edits a user message and regenerates from it, `/regen [n]` regenerates the reply to a turn, `/fork [n]` opens a new session with the conversation through a turn; URLs in the transcript are OSC 8 hyperlinks (click them in a terminal that supports it, e.g. ghostty/iTerm2/kitty/WezTerm);
-`/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one (a running job's card shows its last 10 output lines live);
-On desktop, **⋯ → Jobs** shows the session's journal-backed history, newest first, with older-job paging and All / Running / Failed / Finished filters.
-Each card has a bash-highlighted, copyable command, exit state, start/end times, runtime, job kind, originating tool/turn link and retained log size.
-Expand it for scrollable ANSI output, backward paging, Wrap and Copy; running output follows until you scroll up. Expanded transcript job tools use the same body without changing their existing folding.
-`job_history(session, before?: {started_ms, id}, limit?)` merges live jobs over persisted journal rows (50 by default, at most 200), ordered by start time and id descending; the exclusive composite cursor preserves jobs sharing a start time. `job_log(session, id, offset?, limit?)` reads scrubbed UTF-8 log pages (last page by default, at most 64 KiB). Both route to the session owner and exclude user-cell kernels. PTY cards open the existing terminal for its screen/scrollback. Cwd is not recorded in the jobs journal, so cards do not invent it or require a migration.
-`/schedules` lists the scheduled runs and loops with their next and last fire and run count, `/schedules run <name>` fires one now, `/schedules pause|resume <name>` flips its `enabled:` line, `/schedules history <name>` shows its runs and reports;
-`/autoresearch` lists the studies with state and headline, `/autoresearch <slug>` prints one with its last 10 experiments, `/autoresearch pause|resume|stop|stop_now <slug>` and `/autoresearch steer <slug> <text>` control one, `/autoresearch <goal>` hands the setup skill to the model;
-`/artifacts` lists the files the agent has shown in this session and its subagents (⏎ opens one with the OS, `s` shows it inline, `e` exports it); a `▣` artifact card's path is a `file://` link, `o` opens the newest one, Ctrl+O renders markdown, code and CSV inline; `/apps` is the same picker for the apps the agent built — the TUI cannot run them (`interactive on desktop/web`), so `s`/Ctrl+O show the `.openui` source read-only and `e` exports it;
-`/secrets` lists the vault's secrets with their versions and, for one that expires, `expires in 3 h` or the date (`a` adds one into a masked field, `r` replaces the value as a new version and clears an expiry, `h` shows history and restores an older version, `d` deletes); `/secrets add [name]`, `/secrets rm <name>`, `/secrets restore <name> [n]` skip the menu; when the agent calls `secret_request` (one value, or several on one card) a box asks you to type each in turn — masked unless the agent marked it plain, like a username — then an optional expiry (`30m`, `2h`, `3d`, `YYYY-MM-DD HH:MM`; empty = never), after which the values are deleted everywhere;
-`/acp` manages external ACP harnesses;
-`/communication` shows whether this session may talk to other agents and why not (global switch, an ancestor's opt-out, network state), `/communication on|off` opts this session and its descendants out or back in until the daemon restarts, `/communication on|off always` flips the harness-wide switch and writes `agent.communication`; `/peers` lists the peers this session may message and the requests waiting for a human answer (⏎ opens, `i` inspects, `a` answers by exact id), `/peers scope owner|isolated [alias]` sets the shown root's reach; `/a2a` shows network status and configuration errors, `/a2a reload` re-reads `a2a/peers.yaml`;
-`/search [query]` searches everything saved on this harness live as you type
-(below);
-`/knowledge` browses the knowledge base (below); `/approvals off` stops
-approval prompts for this session, `/approvals off always` for good
-(`tools.approvals` in config.yaml). Typing while the model works queues the
-message: it is shown under the response until it enters the context (after
-the current tool batch or when the turn ends), `⌃↵`/`⌘↵` interjects instead
-(the turn is cancelled and the message starts the next one now), and `⌥↑`
-pulls the newest queued one back into the editor. Shift+Enter inserts a newline; PgUp/PgDn (or the
-wheel, ↑/↓) scroll the whole history — what you are reading stays put while
-a reply streams, PgDn to the bottom follows again; select
-text with the mouse to copy it (terminal-native). Images: **Ctrl+V** (not
-⌘V — the terminal's paste sends text only, so a screenshot on the clipboard
-pastes nothing) attaches the clipboard image as `[⎘ image 1: W×H]`; dropping
-an image file onto the terminal attaches it by path. See
-[`docs/design/02-models-and-menus.md`](docs/design/02-models-and-menus.md).
-
-Search: `/search [query]` in the TUI, and ⌘K / Ctrl+K, `/search`, or the
-magnifier beside the sidebar toggle in the desktop/mobile app, open one
-search over four categories — **Sessions** (titles and your/the agent's
-messages), **Artifacts** (every version the agent has shown, by its saved
-text or source — HTML, SVG and compiled PDFs match on their saved source,
-PDFs without one and Office documents are converted once, images and other
-binaries by name only, no OCR), **Knowledge** (current concepts) and
-**Knowledge history** (the complete before/after text of every recorded
-change, deleted concepts included). Chips toggle categories independently
-(All selects all four) and are remembered per harness; results come grouped,
-ten per category with Show more, and each group says whether it is ready,
-still indexing, unavailable or partially covered. fzf syntax: fuzzy words,
-`'exact`, `^prefix`, `suffix$`, `!not`, each against one title or body.
-Opening a hit only reads: a session opens at that message, an artifact at
-that exact version with a **Matched text** panel, a concept as it is now, a
-history hit as a read-only **Historical version** — restoring stays a
-separate action. The agent has the same search as the `search` tool
-(read-only, also `await search(query, categories=…)` from the Python
-runtime) for requests like "find the deployment plan I showed you last
-week"; it returns the same grouped hits with exact ids, and it is not a
-web search (`search_web`) and does not replace `knowledge_search`, which
-the agent keeps using for ordinary fact lookup and the automatic
-`<knowledge>` hints. Everything runs on the harness; a paired phone or
-browser receives results, never the corpus. An app or browser build older
-than the harness gets *Method not found* for `search` and needs updating
-together with it. See [`docs/design/49-search.md`](docs/design/49-search.md).
-
-Knowledge: durable facts about your machines, projects, accounts and
-decisions, kept across sessions as plain markdown concepts in
-`~/.theuth/knowledge/` (Google's Open Knowledge Format — any editor works). The
-agent reads it through `knowledge_search`/`knowledge_get`, and matching
-concepts are surfaced to it as `<knowledge>` hints at the start of a turn and
-every few tool rounds. It is built while you work: after every third turn
-that used tools (and right before a compaction) the harness asks the model,
-on the frame it already has cached, what is worth keeping, and writes the
-answer as concepts; the model can also record with `knowledge_put` at any
-time. Every write is a git commit made in-process (`gix`), so no `git`
-binary is needed and history and undo work everywhere. In the desktop/mobile
-Knowledge view, **History** browses the whole bundle; a document's History
-action narrows it to that concept. Select a commit to inspect its changes,
-including deleted documents, and use **Older** to keep exploring. In the TUI,
-`/knowledge` opens a picker (`h` for that concept's history, `H` for all),
-`/knowledge <query>` searches, and `/knowledge history [id]` opens history
-directly. Enter selects a commit's diff; the older row loads more commits.
-`/knowledge restore <id> [commit]` puts a concept back;
-`/knowledge harvest` runs a harvest now. Turn off with
-`knowledge.enabled: false`; tune hint/harvest cadence under `agent.knowledge`
-in `config.yaml`. See
-[`docs/design/10-knowledge.md`](docs/design/10-knowledge.md).
-
-Files the agent makes for you: when the deliverable is a document — a report,
-a table, a chart, a PDF — the agent calls `show` instead of pasting it into
-the reply. `show{path}` displays a file that exists (something it wrote, a
-screenshot, a PDF you dropped); `show{content, name}` writes one under
-`~/.theuth/artifacts/` and displays it. The extension decides the rendering:
-`.md` as markdown, `.csv` as a table, `.png`/`.svg` as a picture, `.pdf`
-compiled from the markdown (or Typst) in `content` into a real PDF — the
-model gets the first page back as an image and fixes what it sees. Every
-card is an immutable snapshot with a version, so the transcript never lies
-about what you were shown; the same name again in a session is `v2`. In
-Slack or Signal the file lands in the bound thread. `message_user` is still
-how the agent reaches you when you are not looking at this chat. Turn off
-with `artifact.enabled: false`. See
-[`docs/design/35-artifacts.md`](docs/design/35-artifacts.md).
-
-Apps: when the deliverable is a screen you work *in* — a dashboard, a control
-panel, a form, a clickable prototype — the agent calls `app{name, source}`
-with an OpenUI Lang program instead of a static `json-render`/Mermaid picture
-or a `show` file. The desktop and the relay's browser UI open a panel while
-the source is still streaming and promote it when the harness commits the
-version; you press buttons, fill inputs, and its `Query` bindings read
-installed tools (native, MCP, `http_request`) live, without another model
-turn. **The press is the approval**: one click runs the chosen action — a
-`Mutation`, including destructive or `{{secret:NAME}}`-bearing calls — and
-there is no second confirmation card; a tool the policy would ask about
-becomes a Load/Refresh button whose press is the consent, and a denied tool
-is shown unavailable, not confirmed. Timer/load reads never run mutations.
-Links, external HTTP(S) images and external services are ordinary app
-functionality; a `{{secret:…}}` placeholder in the source is committed
-literally and resolved only when the bound tool runs. Every version is an
-immutable `.openui` artifact (`edit: true` merges a patch onto the receipt's
-`record_call_id` and commits only if that version is still the latest); an
-app's tool bindings are pinned by identity and schema, so a changed MCP
-server shows as unavailable rather than silently rebinding. Where an app
-cannot run — the TUI, Slack, Signal — its card is a receipt plus read-only
-source (`/apps`). Validation runs in-process: the OpenUI check/merge TypeScript
-is bundled into `t` and runs in an embedded V8 isolate on its own thread
-(crate `js-runtime`; `t --app-parser-hash` prints the library hash this build
-embeds); a validator that hangs or crashes is rebuilt and that one `app`
-call fails, and nothing else stops working. Turn off with `app.enabled: false`: no `app`
-tool, prompt block, helper or `/apps`; the bundled `apps` skill is still
-written, and existing apps stay readable as source. See
-[`docs/design/46-apps.md`](docs/design/46-apps.md).
-
-Signal: a phone-side frontend that runs only in the daemon. Pair once with
-`t --link-signal --owner +15551234567` (scan the QR from Signal → Settings
-→ Linked devices on the phone that owns the account; the daemon is a linked
-device, so that account needs a primary phone — usually a dedicated number
-you text from your own), then `t --headless`. The owner's number must be
-saved as a contact on that primary phone, or its messages arrive without a
-number and are dropped. Texts become turns in a per-contact session (👀
-while working, ✅/🛑/❌ when done; a message mid-turn steers it); the slash
-commands mirror the TUI (`/status`, `/new`, `/sessions`, `/resume <id>`,
-`/model`, `/effort`, `/compact`, `/clear`, `/undo`, `/redo`, `/signal allow <n>`, …); tool approvals arrive as a
-message you answer with 👍/👎 or `/approve <code>`. Inbound files land in
-`~/.theuth/signal/inbox/`. See
-[`docs/design/09-signal.md`](docs/design/09-signal.md).
-
-Slack: a workspace-side frontend that runs only in the daemon. `theuth
---slack-setup` walks through it in one terminal session: it asks for an
-app configuration token (api.slack.com/apps → Your App Configuration
-Tokens), creates the app from the bundled manifest (`--app <A…>` updates an
-existing one instead), prints the install URL, verifies the bot token
-(`xoxb-`) with `auth.test` and the app-level token (`xapp-`,
-`connections:write`) with `apps.connections.open`, asks for your member id
-(`U…`), and writes `slack_bot`/`slack_app` into the secrets vault and
-`slack.owner`/`slack.enabled` into `config.yaml`; re-running skips every
-step whose token still verifies. The manual path is `t --slack-manifest`:
-create the app from the printed manifest at api.slack.com/apps, install it,
-store the two tokens with `t --secret-set slack_bot` / `slack_app` and set `slack.owner` yourself.
-Then `t --headless`. Each top-level message in the bot's DM (or an `@theuth` mention in
-a `slack.channels` channel) opens a session whose replies stream live into
-the thread — one message per turn with task cards for tool calls, a quoted
-reasoning message when `slack.reasoning` is on, and a footer with model,
-tokens and elapsed time; a reply in the thread steers a running turn or
-starts the next one. Tool approvals arrive as a card with Allow/Deny
-buttons (in the session's thread, or in the owner's DM for sessions started
-elsewhere when `slack.approvals: all`). Every subagent gets its own thread
-with a live board of descendants in the parent thread. The `/theuth` slash
-command carries the sub-commands (replies are ephemeral): `help` — the
-list; `status` — daemon and session state; `sessions` — recent sessions;
-`resume <id>` — bind a new thread to a session; `cancel [id]` — stop the
-turn; `compact [id]` — compact the context; `model [id]` — list or set the
-model; `agents` — the subagent tree; `prompt` — the system prompt; `skills
-[add <url>|rm <name>|sync]`; `mcp [add <url|json>|sync]`; `login [name]` /
-`logout [name]` — MCP OAuth; `approvals on|off [always]` (owner); `slack
-[status|allow <U>|rm <U>|channel add <C>|channel rm <C>]` (owner). The
-native stop button needs the `agent_session_stopped` event in the app's
-Event Subscriptions (the manifest includes it). See
-[`docs/design/21-slack.md`](docs/design/21-slack.md).
-
-Telegram: a phone-side frontend over the Bot API that runs only in the
-daemon (long polling, no public URL). `t --telegram-setup` walks through it
-in one terminal session: create the bot with @BotFather (`/newbot`), paste
-the token (verified with `getMe`, stored as `telegram_bot` in the secrets
-vault), it registers the `/` command menus, prints a `t.me/<bot>?start=…`
-link and QR, and waits for you to open it and tap Start — that pairs your
-user id as `telegram.owner` and writes `telegram.enabled: true`; re-running
-skips every step already done. Two @BotFather switches matter: turn
-**Topics** on (Bot Settings → Topics) so every session gets its own thread
-in the chat; for groups either disable privacy mode (`/setprivacy`) or make
-the bot an admin, then `telegram.groups: [<chat id>]` (or `/telegram group
-add <id>`; `/status` shows the id once the bot is in the group). Then
-`t --headless`. Each message in the private chat (or an `@bot` mention in a
-listed group) opens a session; the reply streams as a live draft and lands
-as one rich message per turn with activity cards for tool batches, the
-reasoning in an expandable quote when `telegram.reasoning` is on, and a
-footer with model, tokens and elapsed time; a reply in the thread steers a
-running turn. Tool approvals and `ask_user` questions are inline-keyboard
-cards in the session's thread (or in the owner's chat for sessions started
-elsewhere when `telegram.approvals: all`); subagents get their own topic
-with a board in the parent's. The `/` menu shows `help status new sessions
-resume cancel compact model agents skills mcp login logout approvals
-telegram …`; replies are panels with buttons that re-render in place, and
-`/telegram [status|link|allow <id>|rm <id>|group add|rm <id>]` (owner) is the
-admin surface. The agent has `telegram_status` and `telegram_link` tools, so
-"set up Telegram for me" works from any chat; the RPC methods are
-`telegram_status`, `telegram_link`, `telegram_allow`, `telegram_remove_allowed`,
-`telegram_allow_group`, `telegram_remove_group`. See
-[`docs/design/98-telegram.md`](docs/design/98-telegram.md).
-
-Desktop: a macOS menubar app (`crates/desktop`, Tauri 2) that looks like
-chatgpt.com and does everything the TUI does over the JSON-RPC socket —
-sessions in a sidebar with the subagent tree under the open one, streamed
-markdown with tool cards, inline approvals, steering chips, attachments,
-the same slash commands, a settings dialog for models, approvals, MCP,
-skills, ACP agents, logins, gateways, channels and linked devices, and a knowledge explorer
-with working links and a raw editor; a globe in the chat header opens a live
-view of the agent's browser while it works. A file the agent shows is a card
-with a thumbnail in the transcript and opens in a side panel with a viewer per
-kind (markdown, highlighted code, CSV table, image, native PDF) and Copy /
-Save as / Open / Reveal; an app card opens the running app in that panel
-(provisional while its source streams, live once committed); a `▣ N` button
-in the header lists the session's artifacts. It has no Dock icon; the tray icon or
-⌥Space toggles the window. On launch it reuses a running `t --serve` on
-the configured port, otherwise it starts the bundled `t --headless` on a
-pseudo-terminal through your login shell so the daemon has exactly the
-environment a terminal would (design doc 18). `just desktop` runs it
-against `target/debug/theuth`; `just package-macos` produces `theuth.app`. See
-[`docs/design/25-desktop.md`](docs/design/25-desktop.md).
-
-Edit-family tool cards (`edit`, `write_file`, `move_text`, `copy_text`, `indent`,
-including Python-cell calls and external ACP edits) show colourised diffs.
-The tool's returned diff takes precedence over argument previews, then ACP
-diff blocks. Collapsed cards show paths and added/removed counts; expanded
-cards show hunks, old/new line numbers and changed words. The first 400 rows
-are shown with **Show all** for larger patches; existing tool folding is unchanged.
-Display-only diff metadata stays in UI/history storage, not model inputs,
-summaries or parent/peer handoffs.
-
-## Link
-
-Drive the harness from a phone (or any browser) without opening a port.
-Pair in three steps:
-
-1. Run the daemon with link on: set `link.enabled: true` (or `/link on` in
-   the TUI, or the toggle in the desktop app's Settings › Link) and start
-   `t --headless`.
-2. Show a pairing code: `t --link` on the same machine, `/link pair` (or
-   `/link` then `p`) in the TUI, or Settings › Link › Pair a device. It is
-   a QR of `https://<relay>/link#1.…` plus the same string as text, valid
-   for a few minutes; the secret is in the URL fragment, which the relay
-   never receives.
-3. Scan it with the phone's camera, open the URL, or paste the string into
-   the app's Add harness screen. A phone without the app lands on the page
-   the relay serves and pairs there; the desktop app pairs the same way to
-   drive another machine. Devices are listed, renamed and revoked from
-   `/link` or Settings › Link.
-
-Self-host the relay (the default `link.relay` is the operator's; any
-`theuth-relay` works):
+### Homebrew (macOS Apple Silicon & Linux)
 
 ```sh
-just web-build                                                             # browser UI → crates/desktop/ui/dist
-cargo run -p relay -- --listen 0.0.0.0:8787 --web crates/desktop/ui/dist   # plain; put TLS in front or add --tls CERT KEY
-RELAY_HOST=relay.example.com docker compose -f deploy/relay/compose.yaml up -d   # or: relay + Caddy with automatic TLS
-# then in config.yaml: link.relay: wss://relay.example.com
+brew install --cask basedatum/tap/theuth   # macOS desktop app + CLI (Apple Silicon)
+brew install basedatum/tap/theuth          # CLI engine `t` (macOS Apple Silicon & Linux)
 ```
 
-The relay keeps no state and no accounts: everything after the WebSocket
-upgrade is Noise-encrypted end to end between your device and your harness,
-so the relay (ours or anyone's) sees ciphertext, frame sizes, timing, IP
-addresses and the harness id — never your messages, keys or which device
-is connected. Design: [`docs/design/31-link.md`](docs/design/31-link.md).
+### Downloads & Platform Support
 
-Share links (design doc 59 §8): a note or concept can be shared by URL,
-`https://<relay>/d#1.<harness>.<doc>.<secret>`. Whoever opens it in a browser
-joins that one document as an editor or viewer over the same relay, with the
-secret in the fragment the relay never sees; the harness stores only its hash.
-What the relay learns is the same as above plus that some browser loaded `/d`
-and that a guest connection reached your harness id from some IP. Links have
-an expiry and can be revoked; members can be demoted or removed from the Share
-dialog; guests reach only the `doc_*` methods of that document. Text a member
-wrote is labelled `doc-member:<id>` when the agent reads the document, and
-the agent is told to treat it as data, never as instructions.
+Every release is built and published automatically to [**GitHub Releases**](https://github.com/BaseDatum/Theuth/releases/latest) with signed binaries and silent self-updates (`t --update`).
 
-## Communication
+| Platform | Architecture & Requirements | Artifacts |
+| :--- | :--- | :--- |
+| **macOS** | Apple Silicon (`arm64`), macOS 15+ *(Intel not supported — Apple Silicon required for MLX & microsandbox)* | [Signed & notarized `.dmg`, `.app.tar.gz`, CLI `.tar.gz`](https://github.com/BaseDatum/Theuth/releases/latest), Homebrew |
+| **Linux** | `x86_64`, glibc 2.39+ | [`.AppImage`, `.deb`, `.rpm`, CLI `.tar.gz`](https://github.com/BaseDatum/Theuth/releases/latest), Homebrew |
+| **Linux** | `ARM64`, glibc 2.39+ | [`.AppImage`, `.deb`, `.rpm`, CLI `.tar.gz`](https://github.com/BaseDatum/Theuth/releases/latest), Homebrew |
+| **Windows** | `x86_64`, Windows 10/11 + WebView2 | [NSIS installer (`-setup.exe`), CLI `.zip`](https://github.com/BaseDatum/Theuth/releases/latest) |
+| **Windows** | `ARM64`, Windows 10/11 + WebView2 | [NSIS installer (`-setup.exe`), CLI `.zip`](https://github.com/BaseDatum/Theuth/releases/latest) |
 
-**Status: implemented.** Final communication verification after every review
-correction: `cargo check --workspace --all-targets` green, 273 runtime tests,
-208 channel/TUI/RPC tests and 134 frontend tests passed, `tsc` clean. Loopback
-smokes passed 57/57 checks over the real supervisor and store and 39/39 checks
-with the official Python SDK against a production export (plus 3/3 with the
-export closed); the desktop surface was visually approved by the user.
-Merged-main apps/search integration is being checked separately; these results
-do not claim that merged integration has passed. The official A2A
-conformance kit and Go CLI have only been run against the SDK probe, not the
-production adapter. The network side rides on the young official Rust SDK
-(`a2a-lf` 0.3.1 with two narrow vendored patches; accepted by the user with a
-maturity waiver, nothing here calls it mature). The as-built record and the
-open items are
-[`docs/design/50-agent-communication.md`](docs/design/50-agent-communication.md)
-§12.4–12.5; treat those, not this section, as the authority on what is proven.
+> **iOS & iPadOS:** Built with Tauri 2 and native Apple Pencil ink whiteboards — available via TestFlight or built from source (`just package-ios`).
 
-**Breaking default.** Model-to-model communication is now off unless you
-turn it on, and off means all of it: `spawn_subagent`, `discover_peers`
-and `send_message` disappear from the model's tools, no child result wakes a
-parent, no peer message is delivered. Existing configs without
-`agent.communication` behave as `false`; nothing is grandfathered from earlier
-spawns. To get subagents back:
+### First Run
 
-```text
-/communication on always      # writes agent.communication: true; same command in the TUI and desktop, `/theuth communication …` on Slack, `/communication …` on Signal
-/communication off always     # turn it off again for good
-/communication off            # this session and its descendants only; in memory, gone at daemon restart
-/communication on             # undo that; cannot override a global off or an ancestor's off
-/communication                # show global, session, inherited blocker, effective and network state
-/peers                        # who this session may message, and requests waiting for your answer; `/requests` on Slack/Signal
+```sh
+t --secret-set anthropic        # store a provider key in the encrypted vault (any provider works)
+t                               # launch the terminal UI (initializes ~/.theuth)
+t -p "summarize this repo"      # print mode: stream one reply and exit (also reads stdin)
+t --headless                    # JSON-RPC daemon on ws://127.0.0.1:7777 for desktop, relay & chat
+t --update                      # verify signature and self-update to the latest release
 ```
 
-Or set it in `config.yaml` (`agent.communication: true`) or the environment
-(`THEUTH_AGENT__COMMUNICATION=true`; an env value wins over the file on every
-start, and the status says where the value came from). The global switch is a
-ceiling, like `/approvals`: a session can opt out under it, never opt in above
-it. Session opt-outs are memory-only and end with the process. Approvals stay
-separate: `/approvals off` does not turn communication on, and `send_message`
-is a mutating tool that asks under the default policy.
+---
 
-With communication on, sessions of one tree (parent, children, siblings) can
-discover and message each other by canonical address (`session:<uuid>`); a
-child's final message arrives at its parent as a
-`<message from="session:…" id="…">` input. Roots created from the owner
-console are `owner` scope and may also reach other owner roots; roots created
-by a scheduled run, an ACP client, or a non-owner Slack/Signal contact are
-`isolated` to their own tree. Promote a root from its communication settings
-(owner only; no model tool does this). `/peers` is the human view of the same
-list; the model never sees another root's title, cwd or transcript.
+## Why theuth
 
-**Network (A2A).** Remote agents are a second, separate switch. Nothing
-listens, dials, fetches a card or loads a credential until `a2a.enabled: true`
-is in `config.yaml` **and** communication is on; the default first-run config
-has the section commented out. Peers and exports are the owner's file
-`~/.theuth/a2a/peers.yaml`:
+- **Model-agnostic orchestrator & external coding agents** — Switch across Anthropic, OpenAI, Gemini, AWS Bedrock, Ollama, and custom OpenAI-compatible gateways, or delegate codebases directly to external coding harnesses (**Claude Code**, **Codex**, **OpenCode**, **omp** over ACP, plus **Cursor**) alongside recursive `theuth` subagents running an embedded persistent Python sandbox.
+- **Leaderless encrypted mesh across your machines** — Pair laptops, workstations, remote servers, and isolated Linux microVMs over `iroh` QUIC and Noise-encrypted relays with zero open ports. Sessions, tasks, and replicated state follow you across engines, and any paired device can drive any node.
+- **Blind secrets vault & unified approval gate** — Store credentials in an XChaCha20-Poly1305 vault (keyed by your OS keychain) or connect AWS Secrets Manager and Bitwarden / Vaultwarden. Agents reference secrets solely via `{{secret:NAME}}` placeholders — substituted at tool execution time and scrubbed from output, never entering model context — while every mutating or destructive call flows through one policy-enforced approval gate.
+- **Local-first by default** — Everything lives under `~/.theuth`: SQLite session transcripts with compaction epochs, `gix`-versioned Markdown knowledge, Yjs-backed collaborative documents, on-device Parakeet TDT / Nemotron STT and Kyutai Pocket TTS, and a local `candle` decision model for fast bulk classification and your personal approval double.
+
+---
+
+## Capabilities
+
+| Domain | Included in the Single Engine |
+| :--- | :--- |
+| **Workspace & Surfaces** | Ratatui TUI, native Tauri 2 Desktop & iPadOS apps, live interactive **OpenUI Lang** apps, side-by-side **Web / PTY / File / Diff / Note** tiles, **Whiteboards** with Apple Pencil ink, **Notebooks** with source indexing, **Code-Anchored Boards**, one-press **User Cells**, and compiled **Typst PDFs** |
+| **Delegation & Automation** | **Standing Agents** with charters & budgets, **Kanban Tasks** with dependency graphs, cron/interval **Schedules** & `until` **Loops**, zero-token Python **Watcher** sensors, measured git-worktree **Autoresearch** studies, nightly **Dreaming** memory consolidation, and the **Owner's Double** |
+| **Local AI & Capture** | On-device **Parakeet TDT** (ONNX / MLX) & **Nemotron** streaming dictation, **Pocket TTS** read-aloud & **Live Talk**, bot-free macOS **Meetings** with live briefs, embedded headless **Browser** (`obscura`) with cookie import & JSON **Route Learning**, site **Crawler** (`firecrawl-native`), and OS Accessibility **Desktop Control** |
+| **Connectivity & Isolation** | Encrypted **`iroh` Mesh**, **Sandboxes** (microsandbox Linux desktop VMs, Docker, SSH nodes), owner-approved **Contacts** & **A2A 1.0** remote peer exports, and SNI-spliced **Public HTTPS Sharing** (`theuth-share-edge`) |
+| **Extensibility** | Hot-reloaded **MCP** servers (`~/.theuth/mcp/`), **`t mcp`** server mode for external MCP clients, **External Plugins** with SDKs in 6 languages (`python`, `ts`, `go`, `rust`, `ruby`, `sh`), and reusable Markdown **Skills** |
+
+---
+
+## Connect From Anywhere
+
+Every client attaches to the same engine over typed JSON-RPC, keeping sessions, approvals, and artifacts synchronized in real time.
+
+| Surface | Entry Point | What You Get |
+| :--- | :--- | :--- |
+| **Desktop & iPadOS** | `theuth.app` | Multi-pane workspace, whiteboards, live browser / PTY / file / diff tiles, voice, and mesh switcher |
+| **Terminal** | `t` / `t -p "…"` | Full-screen TUI with streaming Markdown, inline diffs, approvals, PTY takeover, and pipeable print mode |
+| **Editors (ACP)** | `t --acp` | Agent Client Protocol over stdio for Zed and compatible editors |
+| **MCP Clients** | `t mcp` | Expose theuth's tools, skills, and data catalogue over stdio / HTTP to any MCP client |
+| **Web & Phone Relay** | `t --link` · [app.theuth.io](https://app.theuth.io) | Noise-encrypted QR / URL-fragment pairing; stateless relay never sees keys or messages |
+| **Slack** | `t --slack-setup` | Socket Mode bot with Block Kit approvals, threaded subagent activity, and out-of-band file handoff |
+| **Signal** | `t --link-signal` | Linked-device bridge for private chats, approvals, voice notes, and file delivery |
+| **Telegram** | `t --telegram-setup` | Long-polling bot with deep-link pairing, command menus, and threaded approvals |
+
+---
+
+## Architecture
+
+`theuth` runs as a single Rust process composed of in-process plugin crates wired over a typed message bus (`runtime` + `wire`), with every frontend speaking typed JSON-RPC (`rpc` / `rpc-core`).
+
+```mermaid
+flowchart TB
+    subgraph clients["Clients & Surfaces"]
+        direction LR
+        C1["Desktop & iPadOS<br/>(Tauri 2)"]
+        C2["Terminal UI<br/>(t)"]
+        C3["Editors & MCP<br/>(ACP / t mcp)"]
+        C4["Slack · Signal<br/>Telegram · Web"]
+    end
+
+    subgraph engine["theuth Single-Process Engine (t)"]
+        direction TB
+        RPC["JSON-RPC · Link · ACP · MCP Server"]
+        BUS["Typed Event Bus & Plugin Runtime"]
+        CORE["Agent Loop · Monty Python · Approval Gate · Blind Vault"]
+        CAP["Tools · Browser · CodeIndex · Knowledge · Yjs Docs · Voice · Sandboxes"]
+        RPC --> BUS --> CORE --> CAP
+    end
+
+    subgraph mesh["External Harnesses, Mesh & State"]
+        direction LR
+        M1["External Agents<br/>(Claude Code · Codex · OpenCode · Cursor)"]
+        M2["Encrypted iroh Mesh<br/>(Nodes · MicroVMs · A2A · Share Edge)"]
+        M3["Local Data Dir (~/.theuth)<br/>(SQLite · gix · Yjs · Encrypted Vault)"]
+    end
+
+    C1 & C2 & C3 & C4 --> RPC
+    CAP --> M1 & M2 & M3
+
+    classDef dark fill:#1a1612,stroke:#8f2f1f,stroke-width:1.5px,color:#e8dcc8;
+    classDef accent fill:#8f2f1f,stroke:#e8dcc8,stroke-width:1.5px,color:#f5ede0;
+    classDef mid fill:#2b2520,stroke:#8f2f1f,stroke-width:1px,color:#e8dcc8;
+    class C1,C2,C3,C4,M1,M2,M3 dark;
+    class BUS,CORE accent;
+    class RPC,CAP mid;
+```
+
+### Workspace Map (70 Crates)
+
+| Domain | Crates (`crates/*`) |
+| :--- | :--- |
+| **Engine & RPC (11)** | `theuth`, `runtime`, `wire`, `rpc`, `rpc-core`, `rpc-core-macros`, `rpc-compose`, `platform`, `models`, `oauth`, `update` |
+| **Agent, Delegation & Automation (9)** | `agent`, `acp`, `cursor`, `roster`, `tasks`, `schedule`, `autoresearch`, `dreaming`, `evalcore` |
+| **Tools, Code & Local AI (13)** | `tools`, `codeindex`, `cells`, `computer`, `decision`, `double`, `voice`, `voice-mlx`, `talk`, `meeting`, `js-runtime`, `app-parser-stub`, `plugins` |
+| **Documents, Knowledge & Search (7)** | `document`, `knowledge`, `artifact`, `app`, `surface`, `markdown`, `search` |
+| **Browser, Web & Scraping (7)** | `browser`, `web`, `webprofile`, `routes`, `scrape`, `firecrawl-native`, `search-providers` |
+| **Secrets & Security (4)** | `secrets`, `secrets-aws`, `secrets-bitwarden`, `aws-profiles` |
+| **Mesh, Sandboxes, Relay & Sharing (11)** | `mesh`, `nodes`, `replica`, `sessionsync`, `sandbox`, `link`, `relay`, `a2a`, `share`, `share-edge`, `share-proto` |
+| **Clients, Channels & MCP (8)** | `tui`, `desktop`, `tauri-plugin-ink`, `mcp-server`, `slack`, `signal`, `telegram`, `chat-common` |
+
+Deep dives: [`docs/design/00-architecture.md`](docs/design/00-architecture.md) · [`docs/plugins.md`](docs/plugins.md) · [`sdk/README.md`](sdk/README.md)
+
+---
+
+## Build from Source
+
+### Prerequisites
+
+- **Rust** stable toolchain ([`rust-toolchain.toml`](rust-toolchain.toml), Edition 2024) and [`just`](https://github.com/casey/just)
+- **Native build tools** for the embedded browser's BoringSSL: `cmake`, `clang` / `libclang`, `llvm-objcopy`, `llvm-nm` (`brew install cmake llvm` on macOS; `apt install cmake clang libclang-dev` on Debian/Ubuntu)
+- **Network** on the first build to fetch the prebuilt V8 archive (or set `RUSTY_V8_ARCHIVE` to build offline)
+- **`bun`** (`brew install oven-sh/bun/bun`) — required only for the desktop UI and rebuilding committed JS bundles (`just apps-bundle`, `just documents-bundle`); installed `t` binaries need neither Node nor Bun at runtime
+
+### Common `just` Recipes
+
+```sh
+just setup                 # install the pinned rustup toolchain
+just run                   # build and launch the terminal UI
+just check                 # workspace check + committed JS bundle freshness checks
+just test                  # run workspace tests
+just install               # install release `t` + compatibility stub into ~/.cargo/bin
+just desktop               # launch the Tauri + Vite desktop app in dev mode
+just package-macos         # build macOS .app + .dmg (Apple Silicon)
+just package-linux         # build Linux .AppImage, .deb, and .rpm
+just package-windows       # build Windows NSIS installer
+just package-ios           # build signed iOS / iPadOS IPA for TestFlight
+just relay                 # run a local theuth-relay on 127.0.0.1:8787
+```
+
+<details>
+<summary><strong>macOS Privacy Permissions</strong> — desktop control &amp; meetings</summary>
+
+`computer_*` desktop control needs **Screen Recording** and **Accessibility** granted in **System Settings › Privacy & Security** to the app running theuth (your terminal — Ghostty, iTerm, Terminal — or `theuth.app`). Screen Recording takes effect only after restarting that app; Accessibility applies immediately. Run `/computer` inside theuth to check granted permissions.
+
+</details>
+
+<details>
+<summary><strong>Self-Hosting the Relay &amp; Share Edge</strong> — zero-knowledge relay &amp; public HTTPS sharing</summary>
+
+**Link Relay** (`theuth-relay`, stateless Noise tunnel for phones, browsers, and shared docs):
+
+```sh
+just web-build                                                              # build browser UI → crates/desktop/ui/dist
+cargo run -p relay -- --listen 0.0.0.0:8787 --web crates/desktop/ui/dist    # plain; put TLS in front or pass --tls CERT KEY
+RELAY_HOST=relay.example.com docker compose -f deploy/relay/compose.yaml up -d
+# then set in ~/.theuth/config.yaml:
+#   link:
+#     relay: wss://relay.example.com
+```
+
+**Public Share Edge** (`theuth-share-edge`, SNI-spliced TLS passthrough over `iroh` — never decrypts traffic or holds certificates):
+
+```sh
+cp deploy/share-edge/config.example.yaml deploy/share-edge/config.yaml      # configure domain, iroh.public_addrs, DNS
+docker compose -f deploy/share-edge/compose.yaml up -d
+```
+
+See [`deploy/relay/README.md`](deploy/relay/README.md) and [`deploy/share-edge/README.md`](deploy/share-edge/README.md) for Kubernetes manifests, systemd units, and TLS notes.
+
+</details>
+
+<details>
+<summary><strong>A2A Peer Configuration (<code>~/.theuth/a2a/peers.yaml</code>)</strong> — connecting remote A2A 1.0 agents</summary>
+
+Agent-to-agent communication is **off by default**. Enable local communication with `/communication on always` (or `agent.communication: true` in `config.yaml`), then enable `a2a.enabled: true` and define peers and exports in `~/.theuth/a2a/peers.yaml`:
 
 ```yaml
 peers:
   lab:
     card_url: https://lab.example/agents/research/.well-known/agent-card.json
-    outbound_secret: a2a_lab_outbound   # vault names (`t --secret-set a2a_lab_outbound`), never the value
+    outbound_secret: a2a_lab_outbound   # vault secret names (`t --secret-set …`), never raw values
     inbound_secret: a2a_lab_inbound
     sessions: ["<local-root-uuid>"]     # local roots whose enabled trees may send to `lab`
     exports: [research]                 # exports `lab` may call
@@ -690,53 +247,29 @@ exports:
     description: Answer explicitly submitted research requests.
 ```
 
-`/a2a reload` validates the whole file (unknown sessions, missing secrets,
-duplicate names, non-HTTPS card URLs) and installs all of it or none;
-`/a2a` shows the result. The listener is loopback only (`a2a.listen`,
-restart to change). For anything beyond same-machine development put an
-HTTPS reverse proxy in front of it and set `a2a.public_url` to the base it
-publishes: without `public_url` the listener speaks plain HTTP and the
-harness treats the deployment as development. Never forward that port to a
-network directly. Cards are served at
-`<public_url>/agents/<export>/.well-known/agent-card.json` to holders of a
-matching inbound credential only; there is no public list of exports. Turning
-communication off (globally, or for an exported session) closes its routes at
-once; a global off also stops the listener. Setting `a2a.enabled: false` (or
-removing the section) and restarting removes the actor entirely.
+Run `/a2a reload` to atomically validate and install changes (`/a2a` shows live status). The listener binds loopback only (`a2a.listen`); put an HTTPS reverse proxy in front of it and set `a2a.public_url` before exposing it beyond same-machine development. Details: [`docs/design/50-agent-communication.md`](docs/design/50-agent-communication.md).
 
-An exported session is still yours: what you type there never joins a peer's
-task, it waits behind one and runs as a private turn (the composer says “Send
-privately…” and the notice above it spells this out). The peer's messages can
-run the session's tools under its normal approvals, and the model may
-summarize anything already in that session into its reply to the peer, so
-export a session dedicated to that peer rather than a working conversation.
-The only way you take part in a peer exchange is answering a specific pending
-request from `/peers` (or `/requests answer <id> <text>` on Slack/Signal).
+</details>
 
-## Nodes
+---
 
-Give the model, and your phone, another machine. Four lines on the box:
+## Documentation
 
-```sh
-ssh box
-brew install basedatum/tap/theuth         # or `just install` (release `theuth` + its `theuth-app-parser-<hash>` into ~/.cargo/bin), or copy both binaries over
-t --secret-set anthropic            # a model key, typed without echo (or piped: `printf %s "$KEY" | t --secret-set anthropic`)
-t --install-service --relay wss://relay.example.com   # writes a launchd LaunchAgent / systemd user unit running `$SHELL -l -i -c 'exec t --headless'`, sets link.enabled, starts it, prints a QR + key
-```
+Full guides and reference documentation live at [**theuth.io/docs**](https://theuth.io/docs). Key in-repo references:
 
-On your main harness, `/nodes add <key>` in the TUI (or Settings › Nodes ›
-Add node in the desktop app, or scan the QR with the phone and choose "as a
-node of …"). From then on `spawn_subagent{agent: "<node>"}` runs the child
-on that machine over the same encrypted link conn, its approvals land in
-your UI, and the desktop and phone switcher list the node nested under its
-parent — your devices pair with it automatically, so switching to it shows
-its own sessions. `/nodes` lists, renames, removes and invites; `theuth
---uninstall-service` removes the unit and nothing else. The node has its own
-`~/.theuth` (config, secrets vault, skills, MCP servers): nothing is synced.
-Design: [`docs/design/32-nodes.md`](docs/design/32-nodes.md).
+| Guide | Path |
+| :--- | :--- |
+| **Architecture & Event Bus** | [`docs/design/00-architecture.md`](docs/design/00-architecture.md) |
+| **In-Process & External Plugins** | [`docs/plugins.md`](docs/plugins.md) · [`docs/design/216-external-plugins.md`](docs/design/216-external-plugins.md) · [`sdk/README.md`](sdk/README.md) |
+| **Skills & Owner's Double** | [`docs/skills.md`](docs/skills.md) · [`docs/double.md`](docs/double.md) |
+| **Secrets Vault & External Managers** | [`docs/design/37-secrets.md`](docs/design/37-secrets.md) · [`docs/design/221-external-secrets.md`](docs/design/221-external-secrets.md) |
+| **Encrypted Link, Nodes & Sandboxes** | [`docs/design/31-link.md`](docs/design/31-link.md) · [`docs/design/32-nodes.md`](docs/design/32-nodes.md) · [`docs/design/79-sandbox-vm.md`](docs/design/79-sandbox-vm.md) |
+| **Agent Communication, Autoresearch & Sharing** | [`docs/design/50-agent-communication.md`](docs/design/50-agent-communication.md) · [`docs/design/140-autoresearch.md`](docs/design/140-autoresearch.md) · [`docs/design/210-public-share.md`](docs/design/210-public-share.md) |
 
-A node this machine makes itself is a *sandbox* (`crates/sandbox`, design
-doc 79): `t mesh add --vm` creates an isolated Linux desktop microVM
-(microsandbox) with chosen host directories shared in, joins it to the mesh
-as an engine, and the `sandbox_*` tools let the model do the same;
-`t sandbox ls|start|stop|rm|desktop` and `/sandbox` manage them.
+---
+
+## License
+
+- **Source code:** Licensed under the GNU General Public License, version 3 or later (**`GPL-3.0-or-later`**) — see [`LICENSE`](LICENSE).
+- **Distributed binaries & Bitwarden SDK:** Released binaries enable the default `bitwarden` Cargo feature, linking [`bitwarden/sdk-internal`](https://github.com/bitwarden/sdk-internal) under its **`GPL-3.0`** option only, which makes distributed binaries works covered by **`GPL-3.0`** as a whole — see [`NOTICE`](NOTICE). Building from source with `--no-default-features` omits the Bitwarden SDK.
+- **Third-party notices:** Complete dependency licenses are listed in [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES).

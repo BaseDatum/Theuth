@@ -23,9 +23,8 @@
 #               runtimes/<rid>/native/* → s3://…/models/onnxruntime/<triple>/plugins/<file>
 #               for win-x64 (the plugin DLL, dxcompiler.dll and the preview D3D12 Agility SDK as plugins/D3D12/,
 #               beside the plugin as the package's targets lay it out: on a Developer Mode box 0.6.0 activates
-#               the SDK and died with 0xC0000409 without it, build-B 2026-11-17; 0.6.0 has no dxil.dll) and
-#               linux-*; macOS's runtime has WebGPU built in (no plugin); win-arm64 is in the nupkg but we ship
-#               no such build
+#               the SDK and died with 0xC0000409 without it, build-B 2026-11-17; 0.6.0 has no dxil.dll),
+#               win-arm64, and linux-*; macOS's runtime has WebGPU built in (no plugin)
 #   verify      anonymous HEAD of every URL: 200 and Content-Length == local size
 #   models.json {files: [{path, size, sha256, revision?, origin?, platform?, key?}]} — written last.
 #               `revision` = the origin's commit (x-repo-commit) from the .origin record, `origin` =
@@ -73,15 +72,19 @@ need unzip
 
 # Runtime platforms: Microsoft's archive name → rust target triple, archive kind and member, on-disk
 # name, sha256 variable in ort-version.env, and the nupkg rid whose plugin files go beside it.
-PLATFORMS=(osx-arm64 linux-x64 linux-aarch64 win-x64)
-triple_of()  { case "$1" in osx-arm64) echo aarch64-apple-darwin ;; linux-x64) echo x86_64-unknown-linux-gnu ;; linux-aarch64) echo aarch64-unknown-linux-gnu ;; win-x64) echo x86_64-pc-windows-msvc ;; *) echo "error: unknown platform $1" >&2; exit 1 ;; esac; }
+PLATFORMS=(osx-arm64 linux-x64 linux-aarch64 win-x64 win-arm64)
+triple_of()  { case "$1" in osx-arm64) echo aarch64-apple-darwin ;; linux-x64) echo x86_64-unknown-linux-gnu ;; linux-aarch64) echo aarch64-unknown-linux-gnu ;; win-x64) echo x86_64-pc-windows-msvc ;; win-arm64) echo aarch64-pc-windows-msvc ;; *) echo "error: unknown platform $1" >&2; exit 1 ;; esac; }
 lib_of()     { case "$1" in osx-*) echo libonnxruntime.dylib ;; linux-*) echo libonnxruntime.so ;; win-*) echo onnxruntime.dll ;; esac; }
 ext_of()     { case "$1" in win-*) echo zip ;; *) echo tgz ;; esac; }
 member_of()  { case "$1" in osx-*) echo "onnxruntime-$1-${ORT_VERSION}/lib/libonnxruntime.${ORT_VERSION}.dylib" ;; linux-*) echo "onnxruntime-$1-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}" ;; win-*) echo "onnxruntime-$1-${ORT_VERSION}/lib/onnxruntime.dll" ;; esac; }
-sha_of()     { case "$1" in osx-arm64) echo "$ORT_SHA256_OSX_ARM64" ;; linux-x64) echo "$ORT_SHA256_LINUX_X64" ;; linux-aarch64) echo "$ORT_SHA256_LINUX_AARCH64" ;; win-x64) echo "$ORT_SHA256_WIN_X64" ;; esac; }
-plugin_rid_of()   { case "$1" in linux-x64) echo linux-x64 ;; linux-aarch64) echo linux-arm64 ;; win-x64) echo win-x64 ;; *) echo "" ;; esac; }
+sha_of()     { case "$1" in osx-arm64) echo "${ORT_SHA256_OSX_ARM64:-}" ;; linux-x64) echo "${ORT_SHA256_LINUX_X64:-}" ;; linux-aarch64) echo "${ORT_SHA256_LINUX_AARCH64:-}" ;; win-x64) echo "${ORT_SHA256_WIN_X64:-}" ;; win-arm64) echo "${ORT_SHA256_WIN_ARM64:-}" ;; esac; }
+lib_sha_of() { case "$1" in osx-arm64) echo "${ORT_DYLIB_SHA256_OSX_ARM64:-}" ;; win-x64) echo "${ORT_DLL_SHA256_WIN_X64:-}" ;; win-arm64) echo "${ORT_DLL_SHA256_WIN_ARM64:-}" ;; *) echo "" ;; esac; }
+ort_rid_of() { case "$1" in osx-arm64) echo osx-arm64 ;; linux-x64) echo linux-x64 ;; linux-aarch64) echo linux-arm64 ;; win-x64) echo win-x64 ;; win-arm64) echo win-arm64 ;; esac; }
+plugin_rid_of()   { case "$1" in linux-x64) echo linux-x64 ;; linux-aarch64) echo linux-arm64 ;; win-x64) echo win-x64 ;; win-arm64) echo win-arm64 ;; *) echo "" ;; esac; }
 plugin_files_of() { case "$1" in win-*) echo "onnxruntime_providers_webgpu.dll dxcompiler.dll D3D12/D3D12Core.dll D3D12/d3d12SDKLayers.dll" ;; linux-*) echo libonnxruntime_providers_webgpu.so ;; esac; }
 ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}"
+ORT_NUPKG="microsoft.ml.onnxruntime.${ORT_VERSION}.nupkg"
+ORT_NUPKG_URL="https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${ORT_VERSION}/${ORT_NUPKG}"
 NUPKG="microsoft.ml.onnxruntime.ep.webgpu.${WEBGPU_EP_VERSION}.nupkg"
 NUPKG_URL="https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.ep.webgpu/${WEBGPU_EP_VERSION}/${NUPKG}"
 
@@ -164,20 +167,68 @@ cached_archive() {
   fi
   echo "$file"
 }
+# Non-fatal variant of cached_archive for github.com/microsoft/onnxruntime (404 since 2026-11-18).
+# Returns the cached path if already present or downloaded cleanly; prints nothing on download failure.
+try_cached_archive() {
+  local file="$ROOT/target/$1"
+  if [[ -f "$file" ]] && echo "$3  $file" | shasum -a 256 -c --status; then
+    echo "$file"
+    return 0
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then return 0; fi
+  echo "    fetching $1" >&2
+  if curl -sSfL -o "$file.part" "$2" 2>/dev/null; then
+    echo "$3  $file.part" | shasum -a 256 -c --status || { rm -f "$file.part"; echo "error: $1 sha256 mismatch (scripts/ort-version.env)" >&2; exit 1; }
+    mv "$file.part" "$file"
+    echo "$file"
+  else
+    rm -f "$file.part"
+    echo "    $1 unavailable at $2; falling back to NuGet $ORT_NUPKG" >&2
+  fi
+}
 # Member $2 of archive $1 (tgz or zip) to stdout.
 extract() { case "$1" in *.tgz) tar -xzf "$1" -O "$2" ;; *) unzip -p "$1" "$2" ;; esac; }
+# Extract native ORT library for platform $2 ($3 = lib filename) from Microsoft.ML.OnnxRuntime nupkg $1.
+extract_from_ort_nupkg() {
+  local pkg="$1" plat="$2" lib="$3" rid member=""
+  rid="$(ort_rid_of "$plat")"
+  if unzip -Z1 "$pkg" "runtimes/$rid/native/$lib" >/dev/null 2>&1; then
+    member="runtimes/$rid/native/$lib"
+  elif [[ "$plat" == "osx-arm64" ]]; then
+    member="$(unzip -Z1 "$pkg" | grep -E "^runtimes/osx[^/]*/native/${lib}\$" | head -n1 || true)"
+  fi
+  [[ -n "$member" ]] || { echo "error: $pkg has no native library for $plat ($lib)" >&2; exit 1; }
+  unzip -p "$pkg" "$member"
+}
 
 echo "==> ONNX Runtime ${ORT_VERSION} + WebGPU EP ${WEBGPU_EP_VERSION} → $S3_MODELS/onnxruntime/<triple>/"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$ROOT/target"
 nupkg="$(cached_archive "$NUPKG" "$NUPKG_URL" "$WEBGPU_EP_SHA256")"
+ort_nupkg=""
 for plat in "${PLATFORMS[@]}"; do
   triple="$(triple_of "$plat")"; lib="$(lib_of "$plat")"; sha="$(sha_of "$plat")"; ext="$(ext_of "$plat")"
-  [[ -n "$sha" ]] || { echo "error: no sha256 for $plat in scripts/ort-version.env" >&2; exit 1; }
-  archive="$(cached_archive "onnxruntime-${plat}-${ORT_VERSION}.${ext}" "$ORT_URL/onnxruntime-${plat}-${ORT_VERSION}.${ext}" "$sha")"
+  archive=""
+  if [[ -n "$sha" ]]; then
+    archive="$(try_cached_archive "onnxruntime-${plat}-${ORT_VERSION}.${ext}" "$ORT_URL/onnxruntime-${plat}-${ORT_VERSION}.${ext}" "$sha")"
+  fi
   mkdir -p "$WORK/$triple/plugins"
   if [[ -n "$archive" ]]; then
     extract "$archive" "$(member_of "$plat")" > "$WORK/$triple/$lib"
+  else
+    [[ -n "${ORT_NUPKG_SHA256:-}" ]] || { echo "error: no ORT_NUPKG_SHA256 in scripts/ort-version.env for NuGet fallback ($plat)" >&2; exit 1; }
+    if [[ -z "$ort_nupkg" ]]; then
+      ort_nupkg="$(cached_archive "$ORT_NUPKG" "$ORT_NUPKG_URL" "$ORT_NUPKG_SHA256")"
+    fi
+    if [[ -n "$ort_nupkg" ]]; then
+      extract_from_ort_nupkg "$ort_nupkg" "$plat" "$lib" > "$WORK/$triple/$lib"
+    fi
+  fi
+  if [[ -s "$WORK/$triple/$lib" ]]; then
+    lib_sha="$(lib_sha_of "$plat")"
+    if [[ -n "$lib_sha" ]]; then
+      echo "$lib_sha  $WORK/$triple/$lib" | shasum -a 256 -c --status || { echo "error: $triple/$lib sha256 mismatch (scripts/ort-version.env)" >&2; exit 1; }
+    fi
     printf '%s\n' "$ORT_VERSION" > "$WORK/$triple/VERSION"
   fi
   for name in "$lib" VERSION; do

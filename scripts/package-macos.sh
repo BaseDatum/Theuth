@@ -21,8 +21,9 @@
 # Arm64-only: built on/for the host. Universal binaries are out of scope.
 #
 # Env:
-#   THEUTH_SIGN_IDENTITY      codesign identity (default: "-" ad-hoc)
-#   THEUTH_SKIP_BUN_INSTALL=1 skip `bun install` (desktop UI)
+#   THEUTH_SIGN_IDENTITY        codesign identity (default: "-" ad-hoc)
+#   THEUTH_SKIP_BUN_INSTALL=1   skip `bun install` (desktop UI)
+#   THEUTH_SKIP_TS_BINDINGS=1   skip `just ts-desktop` (bindings pre-populated in crates/desktop/ui/src/rpc/bindings)
 # Optional local defaults: repo-root `.env.signing`.
 set -euo pipefail
 
@@ -70,8 +71,14 @@ check_sidecar() {
   [[ "$out" == t\ * ]] || { echo "error: $1 --version printed '$out', expected 't <version>'" >&2; exit 1; }
 }
 
-echo "==> [1/5] TypeScript bindings"
-just ts-desktop
+if [[ "${THEUTH_SKIP_TS_BINDINGS:-0}" == "1" ]]; then
+  echo "==> [1/5] TypeScript bindings (skipped: THEUTH_SKIP_TS_BINDINGS=1)"
+  [[ -d crates/desktop/ui/src/rpc/bindings && -n "$(ls -A crates/desktop/ui/src/rpc/bindings 2>/dev/null)" ]] \
+    || { echo "error: THEUTH_SKIP_TS_BINDINGS=1 but crates/desktop/ui/src/rpc/bindings is missing or empty" >&2; exit 1; }
+else
+  echo "==> [1/5] TypeScript bindings"
+  just ts-desktop
+fi
 
 echo "==> [1/5] building theuth (release, $HOST_TRIPLE)"
 # 202: mlx-sys compiles MLX's Metal kernels into $MLX_RS_METAL_PATH/mlx.metallib; pinned here so the

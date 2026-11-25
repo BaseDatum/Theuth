@@ -6,8 +6,9 @@
 
 .DESCRIPTION
   1. Stops a running Theuth.Companion (a running exe locks the output: MSB3021).
-  2. dotnet publish src\Theuth.Companion -c <Configuration> -p:Platform=x64 -o <Output>  (RuntimeIdentifier win-x64 and
-     SelfContained come from the csproj; ExtractRuntimeMsixPayload copies the five runtime-MSIX files into the output).
+  2. dotnet publish src\Theuth.Companion -c <Configuration> -p:Platform=<Platform> -p:RuntimeIdentifier=<rid>
+     -p:TheuthMsixArch=<msixArch> -o <Output>  (SelfContained comes from the csproj; ExtractRuntimeMsixPayload copies
+     the five runtime-MSIX files for the target architecture into the output).
   3. Checks: the five files present, no ML component (onnxruntime.dll / DirectML.dll), the resolved WASDK packages;
      prints the file count and size (~170 MB expected, A2).
   4. Runs the published exe with --register-smoke: Register() must succeed (it throws 0x8007007E without the five files).
@@ -19,6 +20,7 @@
 #>
 param(
     [ValidateSet('Release', 'Debug')] [string] $Configuration = 'Release',
+    [ValidateSet('x64', 'ARM64')] [string] $Platform = 'x64',
     [string] $Output = '',
     [switch] $Clean,
     [switch] $NoSmoke
@@ -44,9 +46,12 @@ Get-Process -Name 'Theuth.Companion' -ErrorAction SilentlyContinue |
     Stop-Process -Force
 if ($Clean -and (Test-Path $Output)) { Remove-Item -Recurse -Force $Output }
 
-Write-Host "[1/4] dotnet publish $Configuration -> $Output"
+$rid = if ($Platform -eq 'ARM64') { 'win-arm64' } else { 'win-x64' }
+$msixArch = if ($Platform -eq 'ARM64') { 'arm64' } else { 'x64' }
+
+Write-Host "[1/4] dotnet publish $Configuration ($Platform / $rid) -> $Output"
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-& dotnet publish $proj -c $Configuration -p:Platform=x64 -o $Output --nologo
+& dotnet publish $proj -c $Configuration -p:Platform=$Platform -p:RuntimeIdentifier=$rid -p:TheuthMsixArch=$msixArch -o $Output --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)" }
 $secs = $sw.Elapsed.TotalSeconds
 

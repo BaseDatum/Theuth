@@ -10,16 +10,18 @@ description: Install the t command or the desktop app on macOS, Linux and Window
 
 They share `~/.theuth` (`--data-dir` / `THEUTH_DATA_DIR` relocate it on every OS, `C:\Users\<you>\.theuth` on Windows). Installing both is normal.
 
-The updater and Homebrew tap read releases from the manifest configured as `update.url` (default `https://s3.rwx.dev/theuth/releases/latest.json`), which names the current version and a download URL per platform; the files for one version sit under `…/releases/<version>/` with a `SHA256SUMS` listing. Which platform entries a given release carries is decided per release — the manifest is the authority, not this page. Signed payloads carry a detached minisign `.sig` the updater checks against the key committed in `crates/update/pubkey.txt`.
+Direct downloads for every platform are published on [GitHub Releases](https://github.com/BaseDatum/Theuth/releases), with `latest.json` (`https://github.com/BaseDatum/Theuth/releases/latest/download/latest.json`) and `SHA256SUMS` attached to each release. The updater and Homebrew tap read the manifest configured as `update.url`, which defaults to the public S3 mirror (`https://s3.rwx.dev/theuth/releases/latest.json`) so auto-updates work even while the repository is private — you can point `update.url` at GitHub Releases once the repository is public. Signed payloads carry a detached minisign `.sig` the updater checks against the key committed in `crates/update/pubkey.txt`.
 
 ## macOS
 
-Requirements: Apple silicon and macOS 15 or newer. There is no Intel build.
+Requirements: Apple silicon (`aarch64`) and macOS 15 or newer. Intel macOS is not supported.
 
 ```sh
 brew install basedatum/tap/theuth          # `t` into $(brew --prefix)/bin
 brew install --cask basedatum/tap/theuth   # theuth.app into /Applications
 ```
+
+Or download `theuth_<version>_macos-aarch64.dmg` (desktop app) or `theuth_<version>_macos-aarch64.tar.gz` (CLI) directly from [GitHub Releases](https://github.com/BaseDatum/Theuth/releases).
 
 The app behaves like a menubar utility:
 
@@ -53,9 +55,9 @@ Requirements: x86_64 or aarch64 with glibc 2.39 or newer (Ubuntu 24.04+, Debian 
 brew install basedatum/tap/theuth
 ```
 
-Or download `theuth_<version>_linux-<arch>.tar.gz` from the release directory above (its `.sig` and `SHA256SUMS` sit beside it), unpack `t` and `theuth-app-parser-<hash>` into one directory on your `PATH`. The compatibility file stays beside `t`; the updater keeps them together.
+Or download `theuth_<version>_linux-x86_64.tar.gz` or `theuth_<version>_linux-aarch64.tar.gz` from [GitHub Releases](https://github.com/BaseDatum/Theuth/releases) (its `.sig` and `SHA256SUMS` sit beside it), and unpack `t` and `theuth-app-parser-<hash>` into one directory on your `PATH`. The compatibility file stays beside `t`; the updater keeps them together.
 
-**The desktop app.** Releases may include `theuth_<version>_linux-<arch>.deb`, `.rpm` and `.AppImage`, built with `scripts/package-linux.sh` on a Linux host of the target architecture. Check `latest.json` and `SHA256SUMS` for the version you want; if a Linux desktop file is not listed, that release shipped the CLI only and you can build the bundles yourself (`just package-linux`, see [Development](/docs/reference/development)). The `.deb` installs `theuth-desktop`, `t` and `theuth-app-parser-<hash>` into `/usr/bin`, so the command is on your `PATH` afterwards. The app depends on WebKitGTK and the usual GTK/appindicator libraries your package manager pulls in.
+**The desktop app.** Releases publish native `x86_64` and `aarch64` (ARM64) packages — `theuth_<version>_linux-<arch>.AppImage`, `.deb`, and `.rpm` — built on native Linux hosts with `scripts/package-linux.sh` (or build locally with `just package-linux`, see [Development](/docs/reference/development)). Check `latest.json` and `SHA256SUMS` on the release for checksums and signatures. The `.deb` installs `theuth-desktop`, `t` and `theuth-app-parser-<hash>` into `/usr/bin`, so the command is on your `PATH` afterwards. The app depends on WebKitGTK and the usual GTK/appindicator libraries your package manager pulls in.
 
 What differs from macOS:
 
@@ -67,14 +69,14 @@ What differs from macOS:
 
 ## Windows
 
-Windows support is x86_64 only and the installers are **unsigned**: there is no Authenticode certificate yet, so SmartScreen shows "unknown publisher" on the first run. Builds are produced on a Windows machine with `scripts/package-windows.ps1` (`just package-windows`; needs PowerShell 7, the rustup MSVC toolchain, `cargo tauri`, and `bun`). A release may publish the results under the same release directory as `windows-x86_64` / `cli-windows-x86_64` entries in `latest.json`; when they are absent, build from source ([Development](/docs/reference/development)).
+Releases ship native **x86_64** and **ARM64 (`aarch64`)** builds on [GitHub Releases](https://github.com/BaseDatum/Theuth/releases). The installers are **unsigned**: there is no Authenticode certificate yet, so SmartScreen shows "unknown publisher" on the first run. Builds are produced on native Windows hosts with `scripts/package-windows.ps1` (`just package-windows`; needs PowerShell 7, the rustup MSVC toolchain, `cargo tauri`, and `bun`), and listed as `windows-<arch>` / `cli-windows-<arch>` in `latest.json`. You can also build from source ([Development](/docs/reference/development)).
 
-The two artifacts:
+The artifacts (`<arch>` is `x86_64` or `aarch64`):
 
 | File | What it is |
 |---|---|
-| `theuth_<version>_windows-x86_64-setup.exe` | NSIS installer, per-user (no UAC prompt), into `%LOCALAPPDATA%\theuth\`: `theuth-desktop.exe`, `t.exe`, the app parser helper, `onnxruntime.dll`, `uninstall.exe`. Start-menu and desktop shortcuts, an Add/Remove Programs entry. `/S` installs silently. |
-| `theuth_<version>_windows-x86_64.zip` | `t.exe`, `theuth-app-parser-<hash>.exe` — unzip into one folder and put it on your `PATH`. |
+| `theuth_<version>_windows-<arch>-setup.exe` | NSIS installer, per-user (no UAC prompt), into `%LOCALAPPDATA%\theuth\`: `theuth-desktop.exe`, `t.exe`, the app parser helper, `onnxruntime.dll`, `uninstall.exe`. Start-menu and desktop shortcuts, an Add/Remove Programs entry. `/S` installs silently. |
+| `theuth_<version>_windows-<arch>.zip` | `t.exe`, `theuth-app-parser-<hash>.exe` — unzip into one folder and put it on your `PATH`. |
 
 WebView2 is required by the app; Windows 11 ships it, and where it is missing the installer downloads Microsoft's bootstrapper (about 2 MB). The app lives in the notification area like on macOS (Windows may tuck a new tray icon under the overflow chevron); closing the window hides it, right-click › **Quit** stops the engine with it.
 
@@ -155,6 +157,8 @@ Two config keys, under `update:` in `config.yaml`:
 ```yaml
 update:
   enabled: true     # false: never checks on its own; `t --update` still works
+  # Defaults to the public S3 mirror so auto-updates work while the repo is private;
+  # can be pointed to https://github.com/BaseDatum/Theuth/releases/latest/download/latest.json once public.
   url: https://s3.rwx.dev/theuth/releases/latest.json
 ```
 

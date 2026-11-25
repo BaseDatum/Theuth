@@ -10,13 +10,20 @@ const { version } = JSON.parse(readFileSync(new URL('../crates/desktop/tauri.con
 }
 
 /**
- * The released version from the bucket's latest.json, baked in at build time so the first paint (and dev/preview on
- * localhost, which the bucket's CORS policy does not allow) links a real release; on theuth.io the runtime fetch of
- * latest.json still refreshes it. Offline builds fall back to the product version.
+ * The latest published release from GitHub Releases, baked in at build time so the first paint links a real release;
+ * at runtime the page refreshes from the GitHub Releases API. Offline, private-repo (404), or rate-limited builds
+ * fall back to the product version in tauri.conf.json.
  */
-const released = await fetch('https://s3.rwx.dev/theuth/releases/latest.json')
-  .then((r) => r.json() as Promise<{ version: string }>)
-  .then((j) => j.version)
+const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+const released = await fetch('https://api.github.com/repos/BaseDatum/Theuth/releases/latest', {
+  headers: {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'theuth-site-build',
+    ...(githubToken ? { Authorization: `Bearer ${githubToken}` } : {}),
+  },
+})
+  .then((r) => (r.ok ? (r.json() as Promise<{ tag_name?: string }>) : null))
+  .then((j) => j?.tag_name?.replace(/^v/, '') || version)
   .catch(() => version)
 
 export default defineConfig({

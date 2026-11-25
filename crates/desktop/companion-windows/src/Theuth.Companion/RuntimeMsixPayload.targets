@@ -11,6 +11,7 @@
     every build output ($(OutDir), after Build) and publish output ($(PublishDir), after Publish).
   -->
   <PropertyGroup>
+    <TheuthMsixArch Condition="'$(TheuthMsixArch)' == '' and ('$(Platform)' == 'ARM64' or '$(RuntimeIdentifier)' == 'win-arm64')">arm64</TheuthMsixArch>
     <TheuthMsixArch Condition="'$(TheuthMsixArch)' == ''">x64</TheuthMsixArch>
     <TheuthRuntimeMsix>$(PkgMicrosoft_WindowsAppSDK_Runtime)\tools\MSIX\win10-$(TheuthMsixArch)\Microsoft.WindowsAppRuntime.2.msix</TheuthRuntimeMsix>
     <TheuthRuntimeMsixPayloadDir>$(IntermediateOutputPath)runtime-msix-payload\</TheuthRuntimeMsixPayloadDir>

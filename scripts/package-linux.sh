@@ -27,6 +27,7 @@
 #   THEUTH_S3_DRY_RUN=1                     print the upload instead of running it
 #   THEUTH_SKIP_UPLOAD=1                    stop after dist/ (local install / smoke test; release-s3.sh reads dist/ first)
 #   THEUTH_SKIP_BUN_INSTALL=1               skip `bun install` (desktop UI)
+#   THEUTH_SKIP_TS_BINDINGS=1               skip `just ts-desktop` (bindings pre-populated in crates/desktop/ui/src/rpc/bindings)
 set -euo pipefail
 
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -45,7 +46,7 @@ source "$ROOT/scripts/app-parser-env.sh"
 
 HOST_PKGS=(
   curl ca-certificates git build-essential clang cmake llvm libclang-dev pkg-config perl unzip
-  protobuf-compiler nasm   # signal's spqr (prost-build); aws-lc-sys / boringssl assembly
+  protobuf-compiler   # signal's spqr (prost-build)
   libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev
   libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev
   libdbus-1-dev
@@ -56,6 +57,10 @@ HOST_PKGS=(
   libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
   xdg-utils file   # AppImage bundler copies xdg-open into the image and linuxdeploy runs file(1)
 )
+# aws-lc-sys / boringssl assembly uses nasm on x86_64; Ubuntu 24.04 arm64 has no nasm package.
+if [[ "$(uname -m)" == "x86_64" ]]; then
+  HOST_PKGS+=(nasm)
+fi
 # check_prereqs: every HOST_PKGS entry installed (dpkg hosts only) and every tool present; exit 2 listing the gaps.
 check_prereqs() {
   local missing=() p t
@@ -117,8 +122,14 @@ BUCKET="${THEUTH_S3_BUCKET:-theuth}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-0}"
 DEST="s3://${BUCKET}/staging/${VERSION}/"
 
-echo "==> [1/5] TypeScript bindings"
-just ts-desktop
+if [[ "${THEUTH_SKIP_TS_BINDINGS:-0}" == "1" ]]; then
+  echo "==> [1/5] TypeScript bindings (skipped: THEUTH_SKIP_TS_BINDINGS=1)"
+  [[ -d crates/desktop/ui/src/rpc/bindings && -n "$(ls -A crates/desktop/ui/src/rpc/bindings 2>/dev/null)" ]] \
+    || { echo "error: THEUTH_SKIP_TS_BINDINGS=1 but crates/desktop/ui/src/rpc/bindings is missing or empty" >&2; exit 1; }
+else
+  echo "==> [1/5] TypeScript bindings"
+  just ts-desktop
+fi
 
 echo "==> [1/5] building theuth (release, $HOST_TRIPLE)"
 cargo build --release -p theuth

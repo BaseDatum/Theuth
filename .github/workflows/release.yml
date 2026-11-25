@@ -1,0 +1,1015 @@
+# Multi-platform release workflow for BaseDatum/Theuth.
+#
+# Builds 5 native release targets in parallel on every tag push `v*` (or manual dispatch):
+#   1. macOS Apple Silicon (aarch64-apple-darwin) on macos-15
+#   2. Linux x86_64        (x86_64-unknown-linux-gnu) on ubuntu-24.04
+#   3. Linux ARM64         (aarch64-unknown-linux-gnu) on ubuntu-24.04-arm
+#   4. Windows x86_64      (x86_64-pc-windows-msvc) on windows-latest
+#   5. Windows ARM64       (aarch64-pc-windows-msvc) on windows-11-arm
+#
+# Note: Intel macOS (x86_64-apple-darwin) is intentionally skipped — it is hard incompatible with
+# `microsandbox` 0.7.13, `mlx-sys`, the `sandbox` preflight, and the SwiftPM macOS companion.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   APPLE_SIGNING_CERT_P12       Base64-encoded Developer ID Application .p12 certificate
+#   APPLE_SIGNING_CERT_PASSWORD  Password for the .p12 certificate
+#   APPLE_SIGNING_IDENTITY       Full codesign identity string ("Developer ID Application: ...")
+#   APPLE_NOTARY_KEY_P8          Base64-encoded App Store Connect API key (.p8) for notarytool
+#   APPLE_NOTARY_KEY_ID          App Store Connect API Key ID
+#   APPLE_NOTARY_ISSUER_ID       App Store Connect API Issuer UUID
+#   THEUTH_UPDATE_KEY            Tauri minisign private key (contents)
+#   THEUTH_UPDATE_KEY_PASSWORD   Password for THEUTH_UPDATE_KEY (empty for --ci keys)
+#   S3_ACCESS_KEY_ID             S3/RustFS access key for release publishing
+#   S3_SECRET_ACCESS_KEY         S3/RustFS secret key for release publishing
+#   HOMEBREW_TAP_TOKEN           Fine-grained PAT (contents:write on BaseDatum/homebrew-tap), OR
+#   HOMEBREW_TAP_SSH_KEY         SSH deploy key with push access to BaseDatum/homebrew-tap
+#
+# Optional repository variables:
+#   THEUTH_S3_ENDPOINT           Default: https://s3.rwx.dev
+#   THEUTH_S3_BUCKET             Default: theuth
+#   THEUTH_S3_PREFIX             Default: releases
+#   THEUTH_S3_PUBLIC_BASE_URL    Default: https://s3.rwx.dev/theuth/releases
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build & publish (e.g. v2.31.1 or 2.31.1; defaults to v<Cargo.toml version>)'
+        type: string
+        required: false
+        default: ''
+      prerelease:
+        description: 'Publish as prerelease (writes latest-prerelease.json; skips Homebrew tap bump)'
+        type: boolean
+        default: false
+      skip_s3:
+        description: 'Skip S3 upload and Homebrew tap bump (sign locally and publish GitHub Release only)'
+        type: boolean
+        default: false
+      skip_tap:
+        description: 'Skip Homebrew tap bump'
+        type: boolean
+        default: false
+      skip_docker:
+        description: 'Skip multi-arch Docker image builds and GHCR pushes'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BUN_VERSION: '1.4.2'
+
+jobs:
+  prepare:
+    name: Prepare & TypeScript Bindings
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      ref: ${{ steps.meta.outputs.ref }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag/ref and verify version & updater pubkey consistency
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          HEAD_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          CHECKOUT_REF="${GITHUB_SHA}"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_TAG}" ]]; then
+            TAG="${INPUT_TAG}"
+            [[ "$TAG" == v* ]] || TAG="v${TAG}"
+            if [[ "$TAG" != "v${HEAD_VERSION}" ]]; then
+              if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+                git checkout --force "refs/tags/${TAG}"
+                CHECKOUT_REF="refs/tags/${TAG}"
+              else
+                echo "::error::Requested tag ($TAG) does not match dispatched ref version (v${HEAD_VERSION}) and does not exist as a git tag"
+                exit 1
+              fi
+            fi
+          else
+            TAG="v${HEAD_VERSION}"
+          fi
+
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          TAURI_VER="$(jq -r '.version' crates/desktop/tauri.conf.json)"
+          if [[ "$VERSION" != "$TAURI_VER" ]]; then
+            echo "::error::Version mismatch: Cargo.toml ($VERSION) != crates/desktop/tauri.conf.json ($TAURI_VER)"
+            exit 1
+          fi
+          if [[ "$TAG" != "v${VERSION}" && "$TAG" != "v${VERSION}-"* ]]; then
+            echo "::error::Tag ($TAG) does not match Cargo.toml version (v${VERSION})"
+            exit 1
+          fi
+
+          PRERELEASE="false"
+          if [[ "${{ inputs.prerelease }}" == "true" || "$TAG" == *-* ]]; then
+            PRERELEASE="true"
+          fi
+
+          PUBKEY_TXT="$(head -n1 crates/update/pubkey.txt)"
+          PUBKEY_CONF="$(jq -r '.plugins.updater.pubkey // empty' crates/desktop/tauri.conf.json)"
+          if [[ -z "$PUBKEY_TXT" || "$PUBKEY_TXT" != "$PUBKEY_CONF" ]]; then
+            echo "::error::Updater pubkey mismatch between crates/update/pubkey.txt and crates/desktop/tauri.conf.json"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Release metadata: version=$VERSION tag=$TAG ref=$CHECKOUT_REF prerelease=$PRERELEASE"
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Check committed JS bundles
+        run: just apps-bundle-check documents-bundle-check
+
+      - name: Install Linux build dependencies for export_bindings
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential clang cmake llvm libclang-dev pkg-config perl unzip \
+            protobuf-compiler nasm \
+            libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev \
+            libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev \
+            libdbus-1-dev \
+            libpipewire-0.3-dev libspa-0.2-dev libdrm-dev libgbm-dev libwayland-dev libegl1-mesa-dev libgl-dev \
+            libasound2-dev libpulse-dev libudev-dev \
+            libssl-dev libcap-ng-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ts-bindings-linux-x86_64
+          cache-all-crates: true
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-linux-x86_64-${{ hashFiles('crates/desktop/ui/bun.lock') }}
+          restore-keys: bun-linux-x86_64-
+
+      - name: Generate TypeScript bindings
+        run: |
+          set -euo pipefail
+          just ts-desktop
+          test -d crates/desktop/ui/src/rpc/bindings
+          test -n "$(ls -A crates/desktop/ui/src/rpc/bindings)"
+
+      - name: Upload TypeScript bindings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ts-bindings
+          path: crates/desktop/ui/src/rpc/bindings
+          if-no-files-found: error
+          retention-days: 1
+
+  build-macos-arm64:
+    name: Build macOS (aarch64)
+    needs: prepare
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Select latest Xcode
+        run: |
+          set -euo pipefail
+          LATEST_XCODE="$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)"
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install cargo-tauri and just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tauri,just
+
+      - name: Install Homebrew build tools
+        run: |
+          set -euo pipefail
+          brew install llvm cmake protobuf jq
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib" >> "$GITHUB_ENV"
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos-aarch64
+          cache-all-crates: true
+
+      - name: Cache microsandbox and ONNX Runtime artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/release/.microsandbox-runtime-cache
+            target/onnxruntime-*
+          key: macos-aarch64-runtime-${{ hashFiles('scripts/ort-version.env', 'Cargo.lock') }}
+          restore-keys: macos-aarch64-runtime-
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-macos-aarch64-${{ hashFiles('crates/desktop/ui/bun.lock') }}
+          restore-keys: bun-macos-aarch64-
+
+      - name: Cache SwiftPM companion packages
+        uses: actions/cache@v4
+        with:
+          path: crates/desktop/companion/.build/xcode/SourcePackages
+          key: swiftpm-macos-aarch64-${{ hashFiles('crates/desktop/companion/Package.swift', 'crates/desktop/companion/Package.resolved') }}
+          restore-keys: swiftpm-macos-aarch64-
+
+      - name: Download TypeScript bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: ts-bindings
+          path: crates/desktop/ui/src/rpc/bindings
+
+      - name: Configure ephemeral Apple signing keychain and notary key
+        env:
+          APPLE_SIGNING_CERT_P12: ${{ secrets.APPLE_SIGNING_CERT_P12 }}
+          APPLE_SIGNING_CERT_PASSWORD: ${{ secrets.APPLE_SIGNING_CERT_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$APPLE_SIGNING_CERT_P12" ]]; then
+            if [[ -z "$APPLE_SIGNING_IDENTITY" ]]; then
+              echo "::error::APPLE_SIGNING_IDENTITY secret must be set when APPLE_SIGNING_CERT_P12 is set"
+              exit 1
+            fi
+            KEYCHAIN_PATH="$RUNNER_TEMP/theuth-signing.keychain-db"
+            KEYCHAIN_PASS="$(openssl rand -hex 24)"
+            CERT_PATH="$RUNNER_TEMP/cert.p12"
+            printf '%s' "$APPLE_SIGNING_CERT_P12" | base64 --decode > "$CERT_PATH"
+
+            security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security import "$CERT_PATH" -P "$APPLE_SIGNING_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            # shellcheck disable=SC2046
+            security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed -e 's/"//g')
+            security default-keychain -d user -s "$KEYCHAIN_PATH"
+            rm -f "$CERT_PATH"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+            echo "THEUTH_SIGN_ENABLED=1" >> "$GITHUB_ENV"
+          elif [[ "$IS_PRERELEASE" == "true" ]]; then
+            echo "::warning::APPLE_SIGNING_CERT_P12 unset; proceeding with ad-hoc signing for prerelease"
+            echo "THEUTH_SIGN_ENABLED=0" >> "$GITHUB_ENV"
+          else
+            echo "::error::APPLE_SIGNING_CERT_P12 secret is required for non-prerelease macOS builds"
+            exit 1
+          fi
+
+          if [[ -n "$APPLE_NOTARY_KEY_P8" ]]; then
+            NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+            printf '%s' "$APPLE_NOTARY_KEY_P8" | base64 --decode > "$NOTARY_KEY_PATH"
+            chmod 600 "$NOTARY_KEY_PATH"
+            echo "THEUTH_NOTARY_KEY_PATH=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
+          elif [[ "$IS_PRERELEASE" != "true" ]]; then
+            echo "::error::APPLE_NOTARY_KEY_P8 secret is required for non-prerelease macOS notarization"
+            exit 1
+          fi
+
+      - name: Package macOS app and DMG
+        env:
+          THEUTH_SKIP_TS_BINDINGS: '1'
+          THEUTH_SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          THEUTH_S3_PUBLIC_BASE_URL: ${{ vars.THEUTH_S3_PUBLIC_BASE_URL || 'https://s3.rwx.dev/theuth/releases' }}
+        run: ./scripts/package-macos.sh
+
+      - name: Notarize and staple macOS DMG
+        if: env.THEUTH_NOTARY_KEY_PATH != '' && env.THEUTH_SIGN_ENABLED == '1'
+        env:
+          THEUTH_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          THEUTH_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: ./scripts/notarize-macos.sh
+
+      - name: Package macOS update payloads
+        run: ./scripts/package-update-macos.sh
+
+      - name: Clean up signing keychain and notary key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/theuth-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos-aarch64
+          path: |
+            target/release/dist/theuth_${{ needs.prepare.outputs.version }}_macos-aarch64.dmg
+            target/release/dist/theuth_${{ needs.prepare.outputs.version }}_macos-aarch64.app.tar.gz
+            target/release/dist/theuth_${{ needs.prepare.outputs.version }}_macos-aarch64.tar.gz
+          if-no-files-found: error
+          retention-days: 5
+
+  build-linux:
+    name: Build Linux (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            docker_platform: linux/amd64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            docker_platform: linux/arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Install Linux packaging dependencies
+        run: |
+          set -euo pipefail
+          PKGS=(
+            curl ca-certificates git build-essential clang cmake llvm libclang-dev pkg-config perl unzip
+            protobuf-compiler
+            libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev
+            libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev
+            libdbus-1-dev
+            libpipewire-0.3-dev libspa-0.2-dev libdrm-dev libgbm-dev libwayland-dev libegl1-mesa-dev libgl-dev
+            libasound2-dev libpulse-dev libudev-dev
+            libssl-dev
+            libcap-ng-dev
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+            xdg-utils file
+          )
+          if [[ "$(uname -m)" == "x86_64" ]]; then
+            PKGS+=(nasm)
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends "${PKGS[@]}"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install cargo-tauri and just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tauri,just
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-${{ matrix.arch }}
+          cache-all-crates: true
+
+      - name: Cache microsandbox runtime artifacts
+        uses: actions/cache@v4
+        with:
+          path: target/release/.microsandbox-runtime-cache
+          key: linux-${{ matrix.arch }}-runtime-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-${{ matrix.arch }}-runtime-
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-linux-${{ matrix.arch }}-${{ hashFiles('crates/desktop/ui/bun.lock') }}
+          restore-keys: bun-linux-${{ matrix.arch }}-
+
+      - name: Download TypeScript bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: ts-bindings
+          path: crates/desktop/ui/src/rpc/bindings
+
+      - name: Build Linux desktop bundles and CLI tarball
+        env:
+          THEUTH_SKIP_TS_BINDINGS: '1'
+          THEUTH_SKIP_UPLOAD: '1'
+          THEUTH_LINUX_NATIVE: '1'
+        run: |
+          set -euo pipefail
+          ./scripts/package-linux.sh
+          ./scripts/stage-linux.sh
+
+      - name: Smoke-test Linux CLI tarball in clean ubuntu:24.04 container
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          DOCKER_PLATFORM: ${{ matrix.docker_platform }}
+        run: |
+          set -euo pipefail
+          source scripts/app-parser-env.sh
+          TGZ="theuth_${VERSION}_linux-${ARCH}.tar.gz"
+          LISTED="$(tar -tzf "target/release/dist/$TGZ" | sed 's|^\./||' | sort | tr '\n' ' ')"
+          if [[ "$LISTED" != "t $HELPER " ]]; then
+            echo "::error::$TGZ lists '$LISTED', expected 't $HELPER'"
+            exit 1
+          fi
+
+          SMOKE_DEPS='apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq --no-install-recommends libgbm1 libwayland-client0 libxcb1 libasound2t64 libpipewire-0.3-0 >/dev/null 2>&1 && '
+          OUT="$(docker run --rm --platform "$DOCKER_PLATFORM" \
+            -v "$PWD/target/release/dist/$TGZ:/tmp/t.tgz:ro" ubuntu:24.04 \
+            sh -c "${SMOKE_DEPS}tar -xzf /tmp/t.tgz -C /tmp && /tmp/t --version && /tmp/t --app-parser-hash && /tmp/$HELPER --version")"
+          echo "$OUT"
+          [[ "$OUT" == *"$VERSION"* ]] || { echo "::error::t --version did not print $VERSION"; exit 1; }
+          grep -qxF "$HELPER_HASH" <<<"$OUT" || { echo "::error::t --app-parser-hash did not print $HELPER_HASH"; exit 1; }
+          [[ "$OUT" == *"theuth-app-parser $HELPER_HASH"* ]] || { echo "::error::$HELPER --version did not print expected hash"; exit 1; }
+
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: |
+            target/release/dist/theuth_${{ needs.prepare.outputs.version }}_linux-${{ matrix.arch }}.tar.gz
+            target/release/dist/theuth_${{ needs.prepare.outputs.version }}_linux-${{ matrix.arch }}.AppImage
+            target/release/dist/theuth_${{ needs.prepare.outputs.version }}_linux-${{ matrix.arch }}.deb
+            target/release/dist/theuth_${{ needs.prepare.outputs.version }}_linux-${{ matrix.arch }}.rpm
+          if-no-files-found: error
+          retention-days: 5
+
+  build-windows:
+    name: Build Windows (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+          - arch: aarch64
+            runner: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: crates/desktop/companion-windows/Directory.Build.props
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install cargo-tauri and just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tauri,just
+
+      - name: Ensure Windows native build tools (LLVM, protoc, cmake, perl, nasm)
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Add-PathIfPresent([string]$Dir) {
+            if (Test-Path $Dir) {
+              if (-not ($env:PATH.Split(';') -contains $Dir)) {
+                $env:PATH = "$Dir;$env:PATH"
+              }
+              $Dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              return $true
+            }
+            return $false
+          }
+
+          function Install-WingetOrChoco([string]$WingetId, [string]$ChocoPkg) {
+            if (Get-Command choco -ErrorAction SilentlyContinue) {
+              & choco install $ChocoPkg -y --no-progress
+              if ($LASTEXITCODE -eq 0) { return }
+            }
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
+              & winget install --id $WingetId --exact --silent --accept-package-agreements --accept-source-agreements
+              if ($LASTEXITCODE -eq 0) { return }
+            }
+            throw "Failed to install $WingetId / $ChocoPkg"
+          }
+
+          # Probe common preinstalled directories first.
+          @(
+            'C:\Program Files\LLVM\bin',
+            'C:\Program Files\CMake\bin',
+            'C:\Strawberry\perl\bin',
+            'C:\Program Files\NASM',
+            'C:\ProgramData\chocolatey\bin'
+          ) | ForEach-Object { [void](Add-PathIfPresent $_) }
+
+          # LLVM (llvm-nm, llvm-objcopy, libclang.dll)
+          if (-not (Get-Command llvm-nm -ErrorAction SilentlyContinue) -or -not (Get-Command llvm-objcopy -ErrorAction SilentlyContinue)) {
+            Install-WingetOrChoco 'LLVM.LLVM' 'llvm'
+            [void](Add-PathIfPresent 'C:\Program Files\LLVM\bin')
+          }
+          $llvmBin = Split-Path (Get-Command llvm-nm).Source -Parent
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $env:LIBCLANG_PATH = $llvmBin
+
+          # protoc (signal's spqr / prost-build)
+          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
+            $protocDir = Join-Path $env:RUNNER_TEMP 'protoc'
+            $protocZip = Join-Path $env:RUNNER_TEMP 'protoc.zip'
+            $protocUrl = 'https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-win64.zip'
+            Invoke-WebRequest -Uri $protocUrl -OutFile $protocZip
+            Expand-Archive -Path $protocZip -DestinationPath $protocDir -Force
+            Remove-Item $protocZip -Force -ErrorAction SilentlyContinue
+            [void](Add-PathIfPresent (Join-Path $protocDir 'bin'))
+          }
+
+          # cmake
+          if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+            Install-WingetOrChoco 'Kitware.CMake' 'cmake'
+            [void](Add-PathIfPresent 'C:\Program Files\CMake\bin')
+          }
+
+          # perl (OpenSSL / aws-lc-sys)
+          if (-not (Get-Command perl -ErrorAction SilentlyContinue)) {
+            Install-WingetOrChoco 'StrawberryPerl.StrawberryPerl' 'strawberryperl'
+            [void](Add-PathIfPresent 'C:\Strawberry\perl\bin')
+          }
+
+          # nasm (x86_64 assembly only)
+          if ($env:ARCH -eq 'x86_64' -and -not (Get-Command nasm -ErrorAction SilentlyContinue)) {
+            Install-WingetOrChoco 'NASM.NASM' 'nasm'
+            [void](Add-PathIfPresent 'C:\Program Files\NASM')
+          }
+
+          # Verify every required tool is present before compiling.
+          Write-Host "LIBCLANG_PATH=$env:LIBCLANG_PATH"
+          if (-not (Test-Path (Join-Path $env:LIBCLANG_PATH 'libclang.dll'))) {
+            throw "libclang.dll not found under $env:LIBCLANG_PATH"
+          }
+          & llvm-nm --version | Select-Object -First 1
+          & llvm-objcopy --version | Select-Object -First 1
+          & protoc --version
+          & cmake --version | Select-Object -First 1
+          & perl --version | Select-String 'This is perl' | Select-Object -First 1
+          if ($env:ARCH -eq 'x86_64') { & nasm -v }
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows-${{ matrix.arch }}
+          cache-all-crates: true
+
+      - name: Cache microsandbox and ONNX Runtime artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/release/.microsandbox-runtime-cache
+            target/onnxruntime-*
+            target/microsoft.ml.onnxruntime.*.nupkg
+          key: windows-${{ matrix.arch }}-runtime-${{ hashFiles('scripts/ort-version.env', 'Cargo.lock') }}
+          restore-keys: windows-${{ matrix.arch }}-runtime-
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-windows-${{ matrix.arch }}-${{ hashFiles('crates/desktop/ui/bun.lock') }}
+          restore-keys: bun-windows-${{ matrix.arch }}-
+
+      - name: Download TypeScript bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: ts-bindings
+          path: crates/desktop/ui/src/rpc/bindings
+
+      - name: Package Windows NSIS installer and CLI zip
+        shell: pwsh
+        env:
+          THEUTH_SKIP_TS_BINDINGS: '1'
+          THEUTH_SKIP_COMPANION_SMOKE: '1'
+          THEUTH_S3_PUBLIC_BASE_URL: ${{ vars.THEUTH_S3_PUBLIC_BASE_URL || 'https://s3.rwx.dev/theuth/releases' }}
+        run: pwsh -NoProfile -File scripts/package-windows.ps1
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-${{ matrix.arch }}
+          path: |
+            target/release/dist/theuth_${{ needs.prepare.outputs.version }}_windows-${{ matrix.arch }}-setup.exe
+            target/release/dist/theuth_${{ needs.prepare.outputs.version }}_windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 5
+
+  publish:
+    name: Sign, Publish S3, Homebrew Tap & GitHub Release
+    needs:
+      - prepare
+      - build-macos-arm64
+      - build-linux
+      - build-windows
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Download all platform release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: target/release/dist
+
+      - name: Unpack macOS app bundle for release-s3.sh gates 1-3
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -lh target/release/dist
+          mkdir -p target/release/bundle/macos
+          tar -xzf "target/release/dist/theuth_${VERSION}_macos-aarch64.app.tar.gz" -C target/release/bundle/macos
+          test -d target/release/bundle/macos/theuth.app
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-tauri and minisign
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tauri,minisign
+
+      - name: Install awscli and jq
+        run: brew install awscli jq
+
+      - name: Configure Homebrew tap credentials
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_SSH_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+          SKIP_TAP: ${{ inputs.skip_tap }}
+          SKIP_S3: ${{ inputs.skip_s3 }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ "$SKIP_TAP" == "true" || "$SKIP_S3" == "true" || "$IS_PRERELEASE" == "true" ]]; then
+            echo "TAP_REPO_EFFECTIVE=" >> "$GITHUB_ENV"
+            echo "Homebrew tap bump skipped (skip_tap=$SKIP_TAP, skip_s3=$SKIP_S3, prerelease=$IS_PRERELEASE)"
+          elif [[ -n "$HOMEBREW_TAP_TOKEN" ]]; then
+            AUTH_B64="$(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 | tr -d '\n')"
+            git config --global "http.https://github.com/BaseDatum/homebrew-tap.git.extraheader" "AUTHORIZATION: basic ${AUTH_B64}"
+            echo "TAP_REPO_EFFECTIVE=https://github.com/BaseDatum/homebrew-tap.git" >> "$GITHUB_ENV"
+            git config --global user.name "theuth-release[bot]"
+            git config --global user.email "release@theuth.io"
+          elif [[ -n "$HOMEBREW_TAP_SSH_KEY" ]]; then
+            KEY_PATH="$RUNNER_TEMP/homebrew_tap_key"
+            KNOWN_HOSTS="$RUNNER_TEMP/known_hosts"
+            printf '%s\n' "$HOMEBREW_TAP_SSH_KEY" > "$KEY_PATH"
+            chmod 600 "$KEY_PATH"
+            ssh-keyscan -t ed25519,rsa github.com > "$KNOWN_HOSTS" 2>/dev/null
+            echo "GIT_SSH_COMMAND=ssh -i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS" >> "$GITHUB_ENV"
+            echo "TAP_REPO_EFFECTIVE=git@github.com:BaseDatum/homebrew-tap.git" >> "$GITHUB_ENV"
+            git config --global user.name "theuth-release[bot]"
+            git config --global user.email "release@theuth.io"
+          else
+            echo "::warning::Neither HOMEBREW_TAP_TOKEN nor HOMEBREW_TAP_SSH_KEY is set; skipping Homebrew tap bump"
+            echo "TAP_REPO_EFFECTIVE=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Sign payloads, upload to S3, verify, and bump Homebrew tap
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          THEUTH_S3_ENDPOINT: ${{ vars.THEUTH_S3_ENDPOINT || 'https://s3.rwx.dev' }}
+          THEUTH_S3_BUCKET: ${{ vars.THEUTH_S3_BUCKET || 'theuth' }}
+          THEUTH_S3_PREFIX: ${{ vars.THEUTH_S3_PREFIX || 'releases' }}
+          THEUTH_S3_PUBLIC_BASE_URL: ${{ vars.THEUTH_S3_PUBLIC_BASE_URL || 'https://s3.rwx.dev/theuth/releases' }}
+          THEUTH_UPDATE_KEY: ${{ secrets.THEUTH_UPDATE_KEY }}
+          THEUTH_UPDATE_KEY_PASSWORD: ${{ secrets.THEUTH_UPDATE_KEY_PASSWORD }}
+          THEUTH_TAP_REPO: ${{ env.TAP_REPO_EFFECTIVE }}
+          THEUTH_RELEASE_LINUX: require
+          THEUTH_RELEASE_WINDOWS_ARM64: require
+          THEUTH_SKIP_LINUX_SMOKE: '1'
+          THEUTH_RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease == 'true' && '1' || '0' }}
+          THEUTH_SKIP_S3: ${{ inputs.skip_s3 && '1' || '0' }}
+        run: ./scripts/release-s3.sh
+
+      - name: Generate GitHub Releases latest.json
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          THEUTH_S3_PUBLIC_BASE_URL: ${{ vars.THEUTH_S3_PUBLIC_BASE_URL || 'https://s3.rwx.dev/theuth/releases' }}
+        run: |
+          set -euo pipefail
+          MANIFEST_NAME="latest.json"
+          [[ "$IS_PRERELEASE" == "true" ]] && MANIFEST_NAME="latest-prerelease.json"
+          SRC="target/release/dist/${MANIFEST_NAME}"
+          test -s "$SRC"
+
+          S3_PREFIX_URL="${THEUTH_S3_PUBLIC_BASE_URL%/}/${VERSION}/"
+          GH_PREFIX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/"
+          mkdir -p "$RUNNER_TEMP/gh-release"
+          DST="$RUNNER_TEMP/gh-release/latest.json"
+
+          jq --arg from "$S3_PREFIX_URL" --arg to "$GH_PREFIX_URL" \
+            '.platforms |= with_entries(.value.url |= (if startswith($from) then $to + ltrimstr($from) else . end))' \
+            "$SRC" > "$DST"
+
+          # Verify every platform URL was rewritten to the GitHub Release asset URL.
+          BAD="$(jq -r --arg p "$GH_PREFIX_URL" '.platforms | to_entries[] | select(.value.url | startswith($p) | not) | .key' "$DST")"
+          if [[ -n "$BAD" ]]; then
+            echo "::error::Failed to rewrite latest.json URLs for platforms: $BAD"
+            exit 1
+          fi
+          jq . "$DST"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          ASSETS=(target/release/dist/theuth_"${VERSION}"_*)
+          ASSETS+=(
+            target/release/dist/SHA256SUMS
+            "$RUNNER_TEMP/gh-release/latest.json"
+            LICENSE
+            NOTICE
+            THIRD-PARTY-NOTICES
+          )
+          echo "Uploading ${#ASSETS[@]} release assets to $TAG:"
+          printf '  %s\n' "${ASSETS[@]}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            if [[ "$IS_PRERELEASE" == "true" ]]; then
+              gh release edit "$TAG" --prerelease
+            else
+              gh release edit "$TAG" --prerelease=false
+            fi
+          else
+            EXTRA_ARGS=()
+            [[ "$IS_PRERELEASE" == "true" ]] && EXTRA_ARGS+=(--prerelease)
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --title "theuth ${TAG}" \
+              --generate-notes \
+              "${EXTRA_ARGS[@]}"
+          fi
+
+      - name: Clean up Homebrew tap credentials
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/homebrew_tap_key" "$RUNNER_TEMP/known_hosts"
+          git config --global --unset-all "http.https://github.com/BaseDatum/homebrew-tap.git.extraheader" 2>/dev/null || true
+
+  docker-images:
+    name: Docker (${{ matrix.name }})
+    needs: prepare
+    if: inputs.skip_docker != true
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: relay
+            image: ghcr.io/basedatum/theuth/relay
+            file: deploy/relay/Dockerfile
+            context: .
+            target: ''
+            build_args: ''
+            extra_tags: ''
+            fetch_iroh: false
+          - name: share-edge
+            image: ghcr.io/basedatum/theuth/share-edge
+            file: deploy/share-edge/Dockerfile
+            context: .
+            target: ''
+            build_args: FEATURES=k8s
+            extra_tags: ''
+            fetch_iroh: false
+          - name: iroh-relay
+            image: ghcr.io/basedatum/theuth/iroh-relay
+            file: deploy/relay/Dockerfile.iroh-relay
+            context: .
+            target: ''
+            build_args: ''
+            extra_tags: ''
+            fetch_iroh: true
+          - name: theuth-vm-base
+            image: ghcr.io/basedatum/theuth-vm-base
+            file: deploy/vm/Dockerfile
+            context: deploy/vm
+            target: base
+            build_args: ''
+            extra_tags: |
+              type=raw,value=trixie
+            fetch_iroh: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Fetch pinned iroh-relay release tarballs
+        if: matrix.fetch_iroh
+        id: iroh
+        run: |
+          set -euo pipefail
+          PINNED="$( { grep -E '^iroh[[:space:]]*=' Cargo.toml || true; } | { grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true; } | head -1)"
+          IROH_VERSION="${PINNED:-1.2.0}"
+          mkdir -p deploy/relay/.iroh-relay
+          for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            f="iroh-relay-v${IROH_VERSION}-${triple}.tar.gz"
+            curl -fsSL --retry 3 -o "deploy/relay/.iroh-relay/${f}"               "https://github.com/n0-computer/iroh/releases/download/v${IROH_VERSION}/${f}"
+          done
+          echo "version=${IROH_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.tag }}
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.prerelease != 'true' }}
+            type=sha,prefix=sha-
+            ${{ matrix.extra_tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+
+      - name: Build and push ${{ matrix.image }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            ${{ matrix.build_args }}
+            ${{ matrix.fetch_iroh && format('IROH_RELAY_VERSION={0}', steps.iroh.outputs.version) || '' }}
+          cache-from: type=gha,scope=docker-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.name }}
+
+  docker-release-images:
+    name: Docker (${{ matrix.name }})
+    needs:
+      - prepare
+      - publish
+    if: inputs.skip_docker != true && inputs.skip_s3 != true
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: theuth-vm
+            image: ghcr.io/basedatum/theuth-vm
+            file: deploy/vm/Dockerfile
+            context: deploy/vm
+          - name: engine
+            image: ghcr.io/basedatum/theuth/engine
+            file: deploy/computer/Dockerfile
+            context: deploy/computer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Read release pubkey and manifest URL
+        id: cfg
+        env:
+          THEUTH_S3_PUBLIC_BASE_URL: ${{ vars.THEUTH_S3_PUBLIC_BASE_URL || 'https://s3.rwx.dev/theuth/releases' }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          PUBKEY="$(head -n1 crates/update/pubkey.txt)"
+          MANIFEST_NAME="latest.json"
+          [[ "$IS_PRERELEASE" == "true" ]] && MANIFEST_NAME="latest-prerelease.json"
+          echo "pubkey=${PUBKEY}" >> "$GITHUB_OUTPUT"
+          echo "manifest=${THEUTH_S3_PUBLIC_BASE_URL%/}/${MANIFEST_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.tag }}
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.prerelease != 'true' }}
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+
+      - name: Build and push ${{ matrix.image }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            THEUTH_VERSION=${{ needs.prepare.outputs.version }}
+            THEUTH_PUBKEY=${{ steps.cfg.outputs.pubkey }}
+            THEUTH_MANIFEST=${{ steps.cfg.outputs.manifest }}
+          cache-from: type=gha,scope=docker-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.name }}

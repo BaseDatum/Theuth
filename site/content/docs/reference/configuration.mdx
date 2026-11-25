@@ -386,7 +386,7 @@ in Settings › Sharing. See [Public sharing](/docs/automation/sharing).
 | `a2a.public_url` | `null` | HTTPS base your reverse proxy publishes; without it the listener is plain HTTP for loopback development |
 | `a2a.contact_window_secs` | `600` | how long an Add contact window and its invite ticket stay open; see [Contacts](/docs/automation/contacts) |
 | `update.enabled` | `true` | silent self-update of the `t` binary: download the release tarball, verify its signature, replace `t` and its helpers on disk, live at next start; `t --update` still works when `false`. The updater handles `.tar.gz` releases only: macOS and Linux CLI installs, not the Windows CLI zip |
-| `update.url` | `https://s3.rwx.dev/theuth/releases/latest.json` | release manifest |
+| `update.url` | `https://s3.rwx.dev/theuth/releases/latest.json` | release manifest (public S3 mirror so auto-updates work while the repo is private; can also point to GitHub Releases at `https://github.com/BaseDatum/Theuth/releases/latest/download/latest.json`) |
 | `artifact.enabled` / `fonts` | `true` / `[]` | the `show` tool; extra font directories for PDF compilation |
 | `app.enabled` | `true` | the `app` tool, `/apps` and `app_*` RPC |
 

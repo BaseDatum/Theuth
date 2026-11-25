@@ -95,10 +95,10 @@ From `crates/platform/src/target.rs`:
 | iOS (link client only) | arm64 | iOS 17 |
 | Android (link client only) | arm64 | minSdk 26; no build recipe in the repository |
 
-The release pipeline can produce: the macOS app (with the native companion
-nested inside) and CLI (arm64), Linux CLI tarballs (x86_64, arm64), Linux
-desktop `.deb`/`.rpm`/`.AppImage` (x86_64), a Windows installer and CLI zip
-(x86_64). Which of these ship for a given version depends on that release;
+The release pipeline produces five native platform targets: the macOS app (with
+the native companion nested inside) and CLI (`arm64`), Linux desktop
+`.AppImage`/`.deb`/`.rpm` and CLI tarballs (`x86_64`, `arm64`), and Windows
+NSIS installers and CLI zips (`x86_64`, `arm64`). Intel macOS is not shipped;
 Linux and Windows desktop builds are the least exercised.
 
 ## Everyday recipes
@@ -189,21 +189,27 @@ The site is a React Router project in SPA mode with Fumadocs
 (`site/package.json`: `dev`, `check` = `tsc -b` plus `scripts/check-docs.ts`,
 `build` = check, `react-router build` and `scripts/finish.ts`). Every docs
 page is prerendered to static HTML; `check-docs.ts` validates front matter,
-slugs, `meta.json` entries and every internal `/docs` link. The version comes
-from `crates/desktop/tauri.conf.json` and the latest release manifest at build
-time. The documentation lives as MDX under `site/content/docs/` with one
+slugs, `meta.json` entries and every internal `/docs` link. The release version is resolved from GitHub Releases (`BaseDatum/Theuth`) at
+build time and at runtime, falling back to `crates/desktop/tauri.conf.json`
+when offline or unauthenticated against a private repo. The documentation lives
+as MDX under `site/content/docs/` with one
 `meta.json` per section and is served by the relay container
 (`deploy/relay`), which exposes the browser UI on 8787 and the site on 8788.
 
 ### Release
 
 `just bump-version <major|minor|patch|x.y.z>` edits `Cargo.toml`,
-`tauri.conf.json` and `Cargo.lock`. `just release` runs the macOS pipeline
-(package, notarize, update payloads, publish, tag); Windows and Linux
-artifacts are built first with `just build-remote <host> windows|linux`
-(`--no-wait` and `--resume` for long builds), the linux-aarch64 CLI tarball
-with `just stage-linux`, and `just release-update` publishes any platform the
-live version is missing. When a model origin or the ONNX Runtime pin changed,
+`tauri.conf.json` and `Cargo.lock`. Automated multi-platform builds and
+publishing run in GitHub Actions (`.github/workflows/release.yml`), building
+all five native targets (macOS arm64, Linux x86_64/arm64, Windows x86_64/arm64)
+and attaching the binaries, `latest.json` and `SHA256SUMS` to the GitHub
+Release (with optional S3 mirroring for auto-updates). Local release recipes
+remain available too: `just release` runs the macOS pipeline (package,
+notarize, update payloads, publish, tag); Windows and Linux artifacts can be
+built remotely with `just build-remote <host> windows|linux` (`--no-wait` and
+`--resume` for long builds), the linux-aarch64 CLI tarball with
+`just stage-linux`, and `just release-update` publishes any platform the live
+version is missing. When a model origin or the ONNX Runtime pin changed,
 `just release-models` publishes the model files first. Signing, notarization
 and publishing credentials come from a local `.env.signing` file whose
 variable names are listed in `.env.signing.example`. Sandbox VM images are
