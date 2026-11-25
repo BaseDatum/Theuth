@@ -451,7 +451,9 @@ mod tests {
 
     #[test]
     fn whiteboard_ids_in_every_spelling() {
-        let id = "01a2f3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b";
+        // A DocId is 26 base32 chars (not the uuid the contract's example shows).
+        let id = DocId::new().to_string();
+        let id = id.as_str();
         for s in [id.to_owned(), format!("whiteboard:{id}"), format!("theuth://whiteboards/{id}#01KAR3ZC4M0000000000000001")] {
             assert_eq!(whiteboard_id(&s).map(|d| d.to_string()), Some(id.to_owned()));
         }

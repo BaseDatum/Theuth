@@ -641,9 +641,8 @@ async fn bake_deletes_old_answered_strokes() {
 }
 
 /// B3's fixture (`canvas/fixtures/example-v1.update.b64`, the §2.10 example written by yjs) reads
-/// back through the Rust twin. Run by the orchestrator once both sides landed.
+/// back through the Rust twin (218 review M7: a normal test).
 #[test]
-#[ignore]
 fn reads_the_yjs_fixture() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../desktop/ui/src/components/whiteboard/canvas/fixtures/example-v1.update.b64");

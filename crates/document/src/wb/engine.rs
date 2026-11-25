@@ -1101,6 +1101,23 @@ pub(crate) fn check_source(kind: CardKind, mut s: Source, session: uuid::Uuid) -
         Source::Page { session, .. } | Source::Diff { session, .. } | Source::Terminal { session, .. } => {
             session.get_or_insert(me);
         }
+        // 218 review B1: a web card is framed for the user; only http(s) pages, never a local
+        // scheme (asset:, theuth-page:, tauri:, file:, javascript:, data: …).
+        Source::Web { url } => {
+            let u = url.trim().to_owned();
+            let scheme = u.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
+            let host_ok = u
+                .split_once("://")
+                .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
+                .is_some_and(|h| !h.is_empty());
+            if !matches!(scheme.as_deref(), Some("http" | "https")) || !host_ok {
+                return Err(format!(
+                    "a web card takes an http(s) URL with a host; {} is refused — show other things as a page, image or note card",
+                    outline::quote(&u, 80)
+                ));
+            }
+            *url = u;
+        }
         Source::Image { session, call_id, path, blob } => {
             if call_id.is_some() {
                 session.get_or_insert(me);
@@ -1699,4 +1716,37 @@ fn export_note(doc: &DocId, title: &str, snap: &Snapshot) -> String {
         md.push('\n');
     }
     md
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn web(url: &str) -> Result<Source, String> {
+        check_source(CardKind::Web, Source::Web { url: url.into() }, uuid::Uuid::nil())
+    }
+
+    /// 218 review B1: only http(s) URLs with a host become web cards.
+    #[test]
+    fn web_cards_take_http_urls_only() {
+        for ok in ["https://example.com", "http://localhost:5173/app", "  HTTPS://Example.com/x?y#z  "] {
+            assert!(web(ok).is_ok(), "{ok} refused");
+        }
+        assert!(matches!(web("  https://a.b  "), Ok(Source::Web { url }) if url == "https://a.b"));
+        for bad in [
+            "asset://localhost/etc/passwd",
+            "theuth-page://x/index.html",
+            "tauri://localhost/",
+            "file:///Users/sky/.ssh/id_rsa",
+            "javascript:alert(1)",
+            "data:text/html,<script>1</script>",
+            "ipc://localhost",
+            "https:///nohost",
+            "example.com",
+            "",
+        ] {
+            let e = web(bad).expect_err(bad);
+            assert!(e.contains("http(s) URL"), "{e}");
+        }
+    }
 }
