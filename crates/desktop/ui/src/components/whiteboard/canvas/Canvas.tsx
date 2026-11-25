@@ -26,7 +26,7 @@ import { Ctx, type CanvasCtx } from './context'
 import { FrameNode } from './FrameNode'
 import { contains, intersects, pad, scaleOf, shownCards, strokeWorldBox, union } from './geom'
 import { FreeInk, indexInk } from './InkLayer'
-import { MultiTap, PALM_MS, palmActive, pointerKind, routePointer, StrokeSamples, type PointerKind } from './input'
+import { MultiTap, PALM_MS, palmActive, penPoints, pointerKind, routePointer, StrokeSamples, type PointerKind } from './input'
 import { LinkEdge } from './LinkEdge'
 import { assignLod, emptyLodState, type Lod } from './lod'
 import { beside } from './beside'
@@ -754,8 +754,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     const touch = (e: TouchEvent) => {
       const stylus = Array.from(e.changedTouches).some((t) => (t as Touch & { touchType?: string }).touchType === 'stylus')
       const s = stateNow()
-      // In link mode the Pencil is a pointer: its touches reach React Flow (node taps, handle drags).
-      const pencilInk = stylus && s.mode !== 'link'
+      // In hand and link mode the Pencil is a pointer: its touches reach React Flow (pan, node taps and drags, handles).
+      const pencilInk = stylus && !penPoints(s.mode)
       const palm = !stylus && (s.penDown || s.now < s.palmUntil)
       const fingerInking = wet.current !== null && wet.current.kind === 'touch'
       if (pencilInk || palm || fingerInking || rubberRef.current || lassoRef.current) {
@@ -815,8 +815,10 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       if (e.key === 'Escape') {
         if (s.entered) return // the shell leaves the card
         if (menuOpen.current) setMenu(null)
-        // Esc also puts down an ink tool (it latches through every pick and pen-up otherwise).
-        if (s.mode === 'link' || s.mode === 'select' || s.mode === 'frame' || s.mode === 'draw' || s.mode === 'erase') s.set({ mode: 'idle' })
+        // Esc puts down an ink tool as Hand does (it latches through every pick and pen-up otherwise): the Pencil
+        // then navigates. Link, select and frame go back to idle.
+        if (s.mode === 'draw' || s.mode === 'erase') s.set({ mode: 'hand' })
+        else if (s.mode === 'link' || s.mode === 'select' || s.mode === 'frame') s.set({ mode: 'idle' })
         else if (s.selection.length || inkSelRef.current.length) {
           s.set({ selection: [] })
           setInkSel([])
@@ -995,7 +997,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   }, [doc, readOnly, store, undo])
   const onPaneClick = useCallback(() => {
     const kind = lastKind.current
-    if (kind === 'pen' || suppressClick.current) {
+    // A Pencil tap is a tap only where the Pencil is a pointer (hand, link); elsewhere it was ink.
+    if ((kind === 'pen' && !penPoints(store.getState().mode)) || suppressClick.current) {
       suppressClick.current = false
       return
     }

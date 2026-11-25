@@ -31,12 +31,15 @@ export type RouteState = {
 
 /**
  * The cluster's ink tool pick: choosing a pen arms `draw` (so a mouse or, with fingerInk, a finger inks; a Pencil inks
- * in every mode anyway). It latches: picking the armed pen again keeps it (a re-fired pick never switches it off);
- * another tool, select or Esc leaves it.
+ * in every mode but link and hand anyway). It latches: picking the armed pen again keeps it (a re-fired pick never
+ * switches it off); another tool, Hand, select or Esc leaves it.
  */
 export function pickInkTool(picked: InkTool): { tool: InkTool; mode: Mode } {
   return { tool: picked, mode: 'draw' }
 }
+
+/** Hand (the tools menu, H, Esc from an ink tool) and link: the Pencil is a pointer — it pans, selects, drags and taps. */
+export const penPoints = (mode: Mode): boolean => mode === 'link' || mode === 'hand'
 
 export const palmActive = (s: Pick<RouteState, 'penDown' | 'palmUntil' | 'now'>) => s.penDown || s.now < s.palmUntil
 
@@ -68,7 +71,7 @@ export function routePointer(kind: PointerKind, s: RouteState): Route {
   switch (kind) {
     case 'pen':
       if (s.readOnly) return 'swallow'
-      if (s.mode === 'link') return 'pass' // the Pencil is a pointer in link mode only
+      if (penPoints(s.mode)) return 'pass' // the Pencil is a pointer in hand and link mode only
       if (s.mode === 'erase') return 'erase'
       return 'ink'
     case 'touch':

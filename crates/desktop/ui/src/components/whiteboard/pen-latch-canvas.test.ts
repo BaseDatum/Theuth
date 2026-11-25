@@ -161,7 +161,7 @@ describe('iPad + Pencil: the picked tool draws every stroke', () => {
     expect(strokes().at(-1)).toMatchObject({ tool: 'monoline' })
   })
 
-  it('the tool comes down only by a pick of another tool, Select, or Esc', async () => {
+  it('the tool comes down only by a pick of another tool, Hand, Select, or Esc', async () => {
     await openInkTools('touch')
     await tap(button('Pen')!, 'pen')
     await pencilStroke(100)
@@ -181,7 +181,61 @@ describe('iPad + Pencil: the picked tool draws every stroke', () => {
     await act(async () => {
       document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
-    expect(store.getState().mode).toBe('idle')
+    // Esc puts the ink tool down as Hand does: the Pencil navigates.
+    expect(store.getState().mode).toBe('hand')
+  })
+})
+
+/** A drag on the canvas: whether its pointer-down reached React Flow (not prevented), as a pan or drag needs. */
+async function drag(kind: 'pen' | 'mouse', x0: number): Promise<boolean> {
+  const down = { passed: false }
+  await act(async () => {
+    down.passed = pointer(pane(), 'pointerdown', kind, x0, 300)
+    for (let i = 1; i <= 20; i++) pointer(pane(), 'pointermove', kind, x0 + i * 4, 300, { buttons: 1 })
+    pointer(pane(), 'pointerup', kind, x0 + 80, 300)
+  })
+  await settle()
+  return down.passed
+}
+
+/** The same Hand round trip with the Pencil (iPad) or the mouse (desktop): pick pen → strokes draw → pick Hand → a
+ *  drag reaches React Flow (pan / select) and draws nothing → pick pen again → it draws. */
+describe.each([
+  { name: 'iPad + Pencil', kind: 'pen' as const, opener: 'touch' as const, stroke: pencilStroke },
+  { name: 'desktop + mouse', kind: 'mouse' as const, opener: 'mouse' as const, stroke: mouseStroke },
+])('$name: Hand puts the ink tool down', ({ kind, opener, stroke }) => {
+  beforeEach(() => mount())
+
+  /** The ink panel, from wherever the last step left it: the cluster raised as a canvas tap raises it (a mouse tap on
+   *  the canvas would ink in draw mode), then its ink tools button. */
+  async function inkPanel() {
+    if (!store.getState().clusterOpen) act(() => timer.show())
+    if (!button('Pen')) await tap(inkTools()!, kind)
+    expect(button('Hand')).not.toBeNull()
+  }
+
+  it('pick Pen → draws; pick Hand → a drag pans or selects and makes no stroke; pick Pen → draws again', async () => {
+    await openInkTools(opener)
+    await tap(button('Pen')!, kind)
+    await stroke(100)
+    await stroke(220)
+    expect(strokes()).toHaveLength(2)
+
+    await inkPanel()
+    await tap(button('Hand')!, kind)
+    expect(store.getState().mode).toBe('hand')
+    expect(button('Hand')!.getAttribute('aria-pressed')).toBe('true')
+    expect(inkTools()!.getAttribute('aria-label')).toBe('Ink tools: Hand')
+    expect(await drag(kind, 340)).toBe(true) // not taken by the ink layer: React Flow gets it
+    expect(await drag(kind, 460)).toBe(true)
+    expect(strokes()).toHaveLength(2)
+    expect(store.getState().mode).toBe('hand') // latched through the drags
+
+    await inkPanel()
+    await tap(button('Pen')!, kind)
+    await stroke(580)
+    expect(strokes()).toHaveLength(3)
+    expect(store.getState().mode).toBe('draw')
   })
 })
 

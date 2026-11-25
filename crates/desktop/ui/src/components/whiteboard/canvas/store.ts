@@ -1,7 +1,8 @@
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import type { Id, InkColour, InkTool } from './model'
 
-export type Mode = 'idle' | 'draw' | 'erase' | 'link' | 'frame' | 'select'
+/** `hand`: no ink from any pointer — the Pencil navigates like a finger (picked from the tools menu, H, or Esc). */
+export type Mode = 'idle' | 'hand' | 'draw' | 'erase' | 'link' | 'frame' | 'select'
 export type WbView = {
   mode: Mode
   tool: InkTool; colour: InkColour; width: number   // the current pen (defaults: 'pen', 'ink', 2.8)
