@@ -65,9 +65,14 @@ pub const DEFAULT_CATEGORIES: &[DefaultCategoryDef] = &[
         description: "Link and check messaging channels",
     },
     DefaultCategoryDef {
-        id: "collaboration",
-        label: "Meetings & Tasks",
-        description: "Meetings, transcripts, briefs, tasks and schedules",
+        id: "agents",
+        label: "Agents",
+        description: "Subagents, peers, tasks and escalations",
+    },
+    DefaultCategoryDef {
+        id: "meetings",
+        label: "Meetings",
+        description: "Join, record, transcribe and brief on meetings",
     },
     DefaultCategoryDef {
         id: "secrets",
@@ -77,7 +82,7 @@ pub const DEFAULT_CATEGORIES: &[DefaultCategoryDef] = &[
     DefaultCategoryDef {
         id: "harness",
         label: "Harness",
-        description: "Subagents, peers, skills, MCP setup, decisions and dreaming",
+        description: "Skills, MCP setup, schedules, reminders, decisions and dreaming",
     },
 ];
 
@@ -91,9 +96,10 @@ pub fn default_category_for_builtin(tool_name: &str) -> &'static str {
         "documents" => "documentation",
         "knowledge" => "knowledge",
         "channels" => "comms",
-        "meetings" | "tasks" | "schedules" => "collaboration",
+        "agents" | "tasks" => "agents",
+        "meetings" => "meetings",
         "secrets" => "secrets",
-        "agents" | "setup" | "decisions" | "dreaming" | "other" => "harness",
+        "setup" | "schedules" | "decisions" | "dreaming" | "other" => "harness",
         _ => "harness",
     }
 }
@@ -231,7 +237,8 @@ mod tests {
                 "documentation",
                 "knowledge",
                 "comms",
-                "collaboration",
+                "agents",
+                "meetings",
                 "secrets",
                 "harness"
             ]
@@ -241,8 +248,9 @@ mod tests {
         assert_eq!(DEFAULT_CATEGORIES[3].label, "Design & Output");
         assert_eq!(DEFAULT_CATEGORIES[5].label, "Knowledge");
         assert_eq!(DEFAULT_CATEGORIES[6].label, "Comms");
-        assert_eq!(DEFAULT_CATEGORIES[7].label, "Meetings & Tasks");
-        assert_eq!(DEFAULT_CATEGORIES[8].label, "Secrets");
+        assert_eq!(DEFAULT_CATEGORIES[7].label, "Agents");
+        assert_eq!(DEFAULT_CATEGORIES[8].label, "Meetings");
+        assert_eq!(DEFAULT_CATEGORIES[9].label, "Secrets");
         assert_eq!(default_category("web").unwrap().id, "web");
         assert!(default_category("missing").is_none());
     }
@@ -261,11 +269,11 @@ mod tests {
             ("knowledge", "knowledge_search", "knowledge"),
             ("documents", "doc_read", "documentation"),
             ("output", "show", "design"),
-            ("agents", "spawn_subagent", "harness"),
-            ("tasks", "task_create", "collaboration"),
-            ("schedules", "schedule", "collaboration"),
+            ("agents", "spawn_subagent", "agents"),
+            ("tasks", "task_create", "agents"),
+            ("schedules", "schedule", "harness"),
             ("autoresearch", "experiment_run", "engineering"),
-            ("meetings", "meeting_join", "collaboration"),
+            ("meetings", "meeting_join", "meetings"),
             ("secrets", "secret_get", "secrets"),
             ("decisions", "decide", "harness"),
             ("dreaming", "dreaming_replay", "harness"),
