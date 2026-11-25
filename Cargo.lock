@@ -24047,6 +24047,7 @@ dependencies = [
  "oauth",
  "parking_lot",
  "platform",
+ "plugins",
  "png",
  "roster",
  "rpc",
