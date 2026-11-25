@@ -4,7 +4,7 @@ import { Handle, NodeResizer, NodeToolbar, Position, type Node, type NodeProps }
 import { ChevronLeft, ChevronRight, ExternalLink, EyeOff, Eye, Archive, Pin, PinOff } from 'lucide-react'
 import { memo, useRef, useState } from 'react'
 import { useStore as useZustand } from 'zustand'
-import { Chip, KIND_NAME, LiveBody, Snapshot } from './cards/bodies'
+import { CardBoundary, Chip, KIND_NAME, LiveBody, Snapshot } from './cards/bodies'
 import { useCanvas } from './context'
 import { versionOf, type Card } from './model'
 import { archive, dim, patchCard, restore } from './ops'
@@ -135,7 +135,7 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
         <NodeResizer
           minWidth={80}
           minHeight={60}
-          color="var(--accent)"
+          color="var(--fg-accent)"
           handleStyle={{ width: 11, height: 11, borderRadius: 4 }}
           lineStyle={{ borderColor: 'transparent' }}
           onResizeEnd={(_, p) => {
@@ -173,7 +173,9 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
           {placeholder ? (
             <div className="wb-shimmer">{card.placeholder || 'building…'}</div>
           ) : level === 'live' || entered ? (
-            <LiveBody card={card} source={source} editing={entered} />
+            <CardBoundary card={card}>
+              <LiveBody card={card} source={source} editing={entered} />
+            </CardBoundary>
           ) : level === 'snapshot' && !scrub ? (
             <Snapshot card={card} />
           ) : (

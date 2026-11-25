@@ -26,7 +26,7 @@ export const FrameNode = memo(function FrameNode({ data, selected }: NodeProps<F
           <NodeResizer
             minWidth={160}
             minHeight={120}
-            color="var(--accent)"
+            color="var(--fg-accent)"
             lineStyle={{ borderColor: 'transparent' }}
             onResizeEnd={(_, p) => {
               patchFrame(doc, frame.id, { x: Math.round(p.x), y: Math.round(p.y), w: Math.round(p.width), h: Math.round(p.height) })

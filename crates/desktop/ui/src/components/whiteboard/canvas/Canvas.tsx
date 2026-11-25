@@ -24,7 +24,7 @@ import { composeImage } from './compose'
 import { Ctx, type CanvasCtx } from './context'
 import { FrameNode } from './FrameNode'
 import { contains, intersects, pad, scaleOf, shownCards, strokeWorldBox, union } from './geom'
-import { FreeInk } from './InkLayer'
+import { FreeInk, indexInk } from './InkLayer'
 import { MultiTap, PALM_MS, pointerKind, routePointer, type PointerKind } from './input'
 import { LinkEdge } from './LinkEdge'
 import { assignLod, emptyLodState, type Lod } from './lod'
@@ -322,9 +322,10 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const enter = useCallback((id: Id | null) => {
     store.getState().set({ entered: id, ...(id ? { selection: [id] } : {}) })
   }, [store])
+  const inkByCard = useMemo(() => indexInk(board.ink), [board.ink])
   const ctx: CanvasCtx = useMemo(
-    () => ({ doc, store, host, board, lod, dark, readOnly, frames, enter, open: (id) => onCardOpen?.(id), stopCapturing: () => undo.stopCapturing(), spot }),
-    [doc, store, host, board, lod, dark, readOnly, frames, enter, onCardOpen, undo, spot],
+    () => ({ doc, store, host, board, lod, dark, readOnly, frames, enter, open: (id) => onCardOpen?.(id), stopCapturing: () => undo.stopCapturing(), spot, inkByCard }),
+    [doc, store, host, board, lod, dark, readOnly, frames, enter, onCardOpen, undo, spot, inkByCard],
   )
 
   const focus = useCallback((id: Id, opts?: { spotlight?: boolean; animate?: boolean }) => {
@@ -596,7 +597,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         const w = Math.abs(rb.x1 - rb.x0)
         const h = Math.abs(rb.y1 - rb.y0)
         if (w >= 40 && h >= 40 && e.type === 'pointerup') {
-          const inside = shownCards(boardRef.current).filter((c) => contains([x, y, w, h], [c.x + c.w / 2, c.y + c.h / 2, 0, 0]) && !c.frame).map((c) => c.id)
+          // The drawn frame takes every card whose centre it encloses (from a larger frame too: the innermost wins, as on drop).
+          const inside = shownCards(boardRef.current).filter((c) => contains([x, y, w, h], [c.x + c.w / 2, c.y + c.h / 2, 0, 0])).map((c) => c.id)
           const id = addFrame(doc, { title: 'Frame', x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), cards: inside })
           undo.stopCapturing()
           store.getState().set({ mode: 'idle', selection: [id] })

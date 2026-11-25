@@ -11,7 +11,7 @@ export function LassoPath({ pts }: { pts: [number, number][] }) {
   const d = pts.map(([px, py], i) => `${i ? 'L' : 'M'}${px * zoom + x},${py * zoom + y}`).join('') + 'Z'
   return (
     <svg className="pointer-events-none absolute inset-0 z-[7] size-full" aria-hidden>
-      <path d={d} fill="color-mix(in oklab, var(--accent) 8%, transparent)" stroke="var(--accent)" strokeWidth={1.5} strokeDasharray="5 4" />
+      <path d={d} fill="color-mix(in oklab, var(--fg-accent) 8%, transparent)" stroke="var(--fg-accent)" strokeWidth={1.5} strokeDasharray="5 4" />
     </svg>
   )
 }
@@ -28,7 +28,7 @@ export function InkSelection({ board, ids }: { board: Board; ids: Id[] }) {
   const [bx, by, bw, bh] = pad(u, 6)
   return (
     <svg className="wb-ink" width={1} height={1} style={{ zIndex: 1_000_001 }} aria-hidden>
-      <rect x={bx} y={by} width={bw} height={bh} rx={6} fill="none" stroke="var(--accent)" strokeWidth={1.5} strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />
+      <rect x={bx} y={by} width={bw} height={bh} rx={6} fill="none" stroke="var(--fg-accent)" strokeWidth={1.5} strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />
     </svg>
   )
 }
@@ -123,7 +123,7 @@ export function Offscreen({ board, width, height, onGo }: { board: Board; width:
           key={o.id}
           type="button"
           aria-label={`Go to ${o.label} (being made off screen)`}
-          className="absolute z-[8] grid size-11 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-border-subtle bg-layer-1/90 text-accent shadow-md backdrop-blur"
+          className="absolute z-[8] grid size-11 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-border-subtle bg-layer-1/90 text-fg-accent shadow-md backdrop-blur"
           style={{ left: o.left, top: o.top }}
           onClick={() => onGo(o.id)}
         >

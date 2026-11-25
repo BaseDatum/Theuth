@@ -3,7 +3,7 @@ import { createContext, useContext } from 'react'
 import type * as Y from 'yjs'
 import type { CanvasHost } from './api'
 import type { Lod } from './lod'
-import type { Board, Id } from './model'
+import type { Board, Id, Stroke } from './model'
 import type { WbStore } from './store'
 
 export type CanvasCtx = {
@@ -23,6 +23,8 @@ export type CanvasCtx = {
   stopCapturing(): void
   /** Spotlit card (meta.focus / handle.focus with spotlight), null otherwise. */
   spot: Id | null
+  /** Strokes by anchor card ('' = free), oldest first; rebuilt only when the ink map changes. */
+  inkByCard: ReadonlyMap<Id, Stroke[]>
 }
 
 export const Ctx = createContext<CanvasCtx | null>(null)

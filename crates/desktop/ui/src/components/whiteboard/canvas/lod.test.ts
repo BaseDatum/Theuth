@@ -9,12 +9,20 @@ const page = (id: string, x: number, extra: Partial<Card> = {}) => mkCard(id, x,
 
 describe('LOD (§8.5)', () => {
   it('240 px on screen → live; below → snapshot when one exists, else chip; under 60 px → chip', () => {
-    const c = mkCard('c', 0, 0, 300, 200, { kind: 'diagram' })
+    const c = mkCard('c', 0, 0, 300, 200, { kind: 'note' })
     expect(naturalLod(c, 0.8, VIEW)).toBe('live') // 240 px
     expect(naturalLod(c, 0.79, VIEW)).toBe('chip')
     expect(naturalLod({ ...c, snap }, 0.79, VIEW)).toBe('snapshot')
     expect(naturalLod({ ...c, snap }, 0.19, VIEW)).toBe('chip') // 57 px
     expect(naturalLod({ ...c, snap }, 0.2, VIEW)).toBe('snapshot') // 60 px
+  })
+
+  it('cheap kinds (sticky, excerpt, diagram, image) are live from 60 px: a sticky reads as text at zoom 1', () => {
+    for (const kind of ['sticky', 'excerpt', 'diagram', 'image'] as const) {
+      const c = mkCard('c', 0, 0, 220, 150, { kind })
+      expect(naturalLod(c, 1, VIEW)).toBe('live')
+      expect(naturalLod(c, 0.27, VIEW)).toBe('chip') // 59 px
+    }
   })
 
   it('live only within the view ± one screen; web is never live', () => {

@@ -1,7 +1,7 @@
 // §8.5 renderers by kind (live LOD). Each fills the card's body; the chrome (title bar, shield, ink, scrubber) is
 // CardNode's. Heavy live views (pages) are budgeted by lod.ts; terminals and web views never run live on the canvas.
 import { AppWindow, FileCode2, FileDiff, FileText, Globe, Image as ImageIcon, MessageSquare, Shapes, StickyNote, Terminal as TerminalIcon, type LucideIcon } from 'lucide-react'
-import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import type { CustomRendererProps } from 'streamdown'
 import { useSessions } from '@/store/sessions'
 import { useCanvas } from '../context'
@@ -108,6 +108,26 @@ function SessionBody({ id }: { id: string }) {
   const s = useSessions((st) => st.sessions[id])
   const title = (s as { title?: string } | undefined)?.title
   return <Info icon={MessageSquare} lines={[title || 'Session', 'open to read its turns']} />
+}
+
+/** One card's renderer failing must not take the whole whiteboard down: it shows a chip saying so. */
+export class CardBoundary extends Component<{ card: Card; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error('whiteboard card render failed', this.props.card.id, error, info.componentStack)
+  }
+  componentDidUpdate(prev: { card: Card }) {
+    // A new version (or a retitle) gets a fresh try.
+    if (this.state.failed && prev.card.versions !== this.props.card.versions) this.setState({ failed: false })
+  }
+  render() {
+    if (!this.state.failed) return this.props.children
+    const Icon = KIND_ICON[this.props.card.kind]
+    return <Info icon={Icon} lines={[this.props.card.title || KIND_NAME[this.props.card.kind], 'could not render here — open it']} />
+  }
 }
 
 /** The live body of a card, by its version's source. */

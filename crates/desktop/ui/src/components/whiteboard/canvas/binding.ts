@@ -3,7 +3,7 @@
 // Nothing here writes; `dragEnd` returns the writes the canvas commits (positions are written on drag end only).
 import { ridersOf } from '../ink/anchor'
 import { containsPoint } from './geom'
-import type { Board, Card, Frame, Id, Link, Stroke } from './model'
+import type { Board, Card, Frame, Id, Link, Port, Stroke } from './model'
 import type { Move } from './ops'
 
 /** Frames sit under every card; React Flow draws a child above its parent anyway. */
@@ -49,11 +49,22 @@ export function edgesOf(board: Board, selection: readonly Id[]): FlowEdge[] {
   }
   return Object.values(board.links)
     .filter((l) => shown(l.from) && shown(l.to))
-    .map((l) => ({
-      id: l.id, source: l.from, target: l.to, type: 'link' as const, data: { link: l }, selected: sel.has(l.id),
-      ...(l.from_port ? { sourceHandle: `s-${l.from_port}` } : {}),
-      ...(l.to_port ? { targetHandle: `s-${l.to_port}` } : {}),
-    }))
+    .map((l) => {
+      const [fp, tp] = facing(board.cards[l.from]!, board.cards[l.to]!)
+      return {
+        id: l.id, source: l.from, target: l.to, type: 'link' as const, data: { link: l }, selected: sel.has(l.id),
+        sourceHandle: `s-${l.from_port ?? fp}`,
+        targetHandle: `s-${l.to_port ?? tp}`,
+      }
+    })
+}
+
+/** The sides two cards face each other with, for a link drawn without explicit ports. */
+export function facing(a: Card, b: Card): [Port, Port] {
+  const dx = b.x + b.w / 2 - (a.x + a.w / 2)
+  const dy = b.y + b.h / 2 - (a.y + a.h / 2)
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? ['right', 'left'] : ['left', 'right']
+  return dy >= 0 ? ['bottom', 'top'] : ['top', 'bottom']
 }
 
 /** A React Flow position (parent-relative for a child) → absolute world. */

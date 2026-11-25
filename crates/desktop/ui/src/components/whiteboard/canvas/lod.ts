@@ -11,6 +11,11 @@ export const CHIP_PX = 60
 export const IDLE_MS = 30_000
 /** Kinds whose live view is costly (an iframe or a terminal) and therefore budgeted. */
 export const BUDGETED: readonly CardKind[] = ['page', 'terminal']
+/**
+ * Kinds whose live view is plain DOM with no state to lose (text, a cached SVG, an image): live from the chip
+ * threshold up, so a sticky reads as text at any legible size (a 220 px sticky at zoom 1 would otherwise be a chip).
+ */
+export const CHEAP: readonly CardKind[] = ['sticky', 'excerpt', 'diagram', 'image']
 
 /** The view grown by one screen on every side. */
 export const reach = (view: Box): Box => [view[0] - view[2], view[1] - view[3], view[2] * 3, view[3] * 3]
@@ -21,7 +26,8 @@ export function naturalLod(card: Pick<Card, 'kind' | 'x' | 'y' | 'w' | 'h' | 'sn
   const hasSnap = card.snap !== undefined
   if (card.placeholder !== undefined) return 'live' // the shimmer is cheap
   if (px < CHIP_PX) return 'chip'
-  if (card.kind !== 'web' && px >= LIVE_PX && intersects([card.x, card.y, card.w, card.h], reach(view))) return 'live'
+  const min = CHEAP.includes(card.kind) ? CHIP_PX : LIVE_PX
+  if (card.kind !== 'web' && px >= min && intersects([card.x, card.y, card.w, card.h], reach(view))) return 'live'
   return hasSnap ? 'snapshot' : 'chip'
 }
 

@@ -75,4 +75,16 @@ describe('the Yjs ↔ React Flow binding (§8.4)', () => {
     const e = edgesOf(b, [])
     expect(e.map((x) => [x.id, x.sourceHandle])).toEqual([['l1', 's-right']])
   })
+
+  it('a link without ports joins the sides the cards face each other with', () => {
+    const b = mkBoard({ cards: [mkCard('A', 0, 0, 100, 100), mkCard('R', 400, 30, 100, 100), mkCard('D', 20, 500, 100, 100)] })
+    b.links = {
+      r: { id: 'r', from: 'A', to: 'R', style: 'solid', arrow: 'end', by: 'owner' },
+      d: { id: 'd', from: 'D', to: 'A', style: 'solid', arrow: 'end', by: 'owner', to_port: 'left' },
+    }
+    expect(edgesOf(b, []).map((x) => [x.id, x.sourceHandle, x.targetHandle])).toEqual([
+      ['r', 's-right', 's-left'],
+      ['d', 's-top', 's-left'], // an explicit port wins on its end
+    ])
+  })
 })
