@@ -7,10 +7,30 @@ import { Licences } from '@/components/settings/Licences'
 import type * as Rpc from '@/lib/rpc'
 import { notify } from '@/lib/notify'
 import { useConnection } from '@/store/connection'
-import type { ConnInfo, LoginStep } from '@/rpc/bindings/method.secrets.output'
+import type { ConnInfo, LoginStep, SendRecord } from '@/rpc/bindings/method.secrets.output'
 import { SendDialog } from './SendDialog'
+import { Sends } from './Sends'
 import { CONN_DEFAULTS } from './types'
 import { LoginCard, UnlockRequestCard } from './UnlockCard'
+
+const send = (o: Partial<SendRecord>): SendRecord => ({
+  access_count: 0,
+  conn: 'personal',
+  created_ms: 0,
+  deletion_ms: 2_000_000_000_000,
+  expiration_ms: null,
+  file_bytes: null,
+  file_name: null,
+  has_password: false,
+  id: 's',
+  kind: 'file',
+  link_secret: null,
+  max_access: null,
+  name: 'Shared from theuth',
+  source_ref: 'db_password',
+  status: 'active',
+  ...o,
+})
 
 vi.hoisted(() => vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined }))
 const fake = {
@@ -23,6 +43,10 @@ const fake = {
     ],
   ),
   get_external_settings: vi.fn(async () => ({ send_max_file_mb: 100, copy_link_needs_press: true, timeout_secs: 20 })),
+  list_sends: vi.fn(async (): Promise<SendRecord[]> => [
+    send({ id: 'text', file_name: '.env', file_bytes: null }),
+    send({ id: 'file', file_name: 'dump.sql', file_bytes: 2048, source_ref: 'artifact:a1' }),
+  ]),
 }
 const invoke = vi.hoisted(() => vi.fn())
 vi.mock('@tauri-apps/api/core', () => ({ invoke }))
@@ -116,4 +140,12 @@ test('Licences: a slower earlier legal_text never replaces the file pressed last
   await act(async () => first.resolve('GPL TEXT'))
   expect(document.body.textContent).toContain('NOTICE TEXT')
   expect(document.body.textContent).not.toContain('GPL TEXT')
+})
+
+test('§12.5: a text sent as a file shows its file name and no size; a real file keeps its size', async () => {
+  await mount(h(Sends, { info: (await fake.list_secret_connections())[0]! }))
+  const rows = [...document.querySelectorAll('.truncate')].map((e) => e.textContent ?? '')
+  const text = rows.find((r) => r.startsWith('.env'))!
+  expect(text).toBe('.env · active')
+  expect(rows.find((r) => r.startsWith('dump.sql'))).toContain('dump.sql · 2.0 KB')
 })

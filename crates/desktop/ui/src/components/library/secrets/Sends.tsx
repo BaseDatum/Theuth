@@ -50,7 +50,8 @@ export function Sends({ info }: { info: ConnInfo }) {
         <div key={s.id} className="flex items-center justify-between gap-3 border-b border-border-subtle py-1.5 last:border-0">
           <div className="min-w-0">
             <div className="truncate">
-              {s.kind === 'file' && s.file_name ? `${s.file_name}${s.file_bytes !== null ? ` · ${bytesLabel(s.file_bytes)}` : ''}` : s.name} <span className="text-fg-tertiary">· {s.status.replace(/_/g, ' ')}</span>
+              {/* `file_bytes` is null for a text sent as a file (and absent from an older engine): no size then. */}
+              {s.kind === 'file' && s.file_name ? `${s.file_name}${s.file_bytes != null ? ` · ${bytesLabel(s.file_bytes)}` : ''}` : s.name} <span className="text-fg-tertiary">· {s.status.replace(/_/g, ' ')}</span>
             </div>
             <div className="truncate text-xs text-fg-tertiary">
               {s.source_ref} · opened {s.access_count}
