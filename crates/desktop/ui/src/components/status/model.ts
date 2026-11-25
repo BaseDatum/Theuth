@@ -21,6 +21,15 @@ export const DOT_BG: Record<Tone, string> = {
 
 export const isDown = (state: ConnState) => state === 'reconnecting' || state === 'closed'
 
+/** A frame received this recently proves the socket, whatever the last state event said. */
+export const LIVE_MS = 5_000
+
+/**
+ * 217 §4: the state the bar shows, from evidence as well as events. Anything received in the last `LIVE_MS` reads as
+ * `open`; so disconnected/reconnecting shows only when the client says so and the line has been silent that long.
+ */
+export const liveState = (state: ConnState, lastRx: number, now: number): ConnState => (now - lastRx < LIVE_MS ? 'open' : state)
+
 export const KIND_TAG: Record<NoticeKind, { label: string; className: string }> = {
   info: { label: 'info', className: 'bg-layer-2 text-fg-secondary' },
   done: { label: 'done', className: 'bg-success-bg text-success' },

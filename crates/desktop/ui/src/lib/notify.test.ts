@@ -73,49 +73,62 @@ test('dedupe needs the same description and action too, and never touches an id\
   expect(st().history).toHaveLength(5)
 })
 
-test('a superseded sticky notice returns to the slot once the newer one expires; a dismissed one does not', () => {
+test('a superseded notice never returns to the slot; it stays in history with its action', () => {
+  const open = vi.fn()
   notify.loading('Downloading speech models… 40%', { id: 'models' })
   notify('cancelled 2 sessions')
   st().expire(Date.now() + 4_000)
-  expect(st().current?.id).toBe('models')
-  notify.error('boom')
+  expect(st().current).toBeNull()
+  notify.error('boom', { action: { label: 'Open', onClick: open } })
   notify('hello')
   st().expire(Date.now() + 4_000)
-  expect(st().current?.text).toBe('boom')
-  notify.dismiss()
-  expect(st().current?.id).toBe('models')
-  notify.dismiss('models')
   expect(st().current).toBeNull()
-  expect(st().history.map((n) => [n.text, n.dismissed ?? false])).toEqual([
-    ['hello', false],
-    ['boom', true],
-    ['cancelled 2 sessions', false],
-  ])
+  const boom = st().history.find((n) => n.text === 'boom')!
+  boom.action!.onClick()
+  expect(open).toHaveBeenCalledOnce()
+  // A progress update is current state again: it takes the slot.
+  notify.loading('Downloading speech models… 41%', { id: 'models' })
+  expect(st().current?.id).toBe('models')
 })
 
-test('default lifetimes, and what is sticky', () => {
+test('default lifetimes: every notice leaves the slot; held ones (action, Infinity, progress) carry a ×', () => {
   const now = Date.now()
   const life = (fn: () => unknown) => (fn(), st().current && { sticky: st().current!.sticky, expiresAt: st().current!.expiresAt })
   expect(life(() => notify.info('i'))).toEqual({ sticky: false, expiresAt: now + 4_000 })
   expect(life(() => notify.success('d'))).toEqual({ sticky: false, expiresAt: now + 6_000 })
   expect(life(() => notify.warning('w'))).toEqual({ sticky: false, expiresAt: now + 8_000 })
-  expect(life(() => notify.error('e'))).toEqual({ sticky: true, expiresAt: null })
-  expect(life(() => notify.loading('p'))).toEqual({ sticky: true, expiresAt: null })
-  expect(life(() => notify('inf', { duration: Infinity }))).toEqual({ sticky: true, expiresAt: null })
-  expect(life(() => notify('act', { action: { label: 'Open', onClick: () => {} } }))).toEqual({ sticky: true, expiresAt: null })
+  expect(life(() => notify.error('e'))).toEqual({ sticky: false, expiresAt: now + 8_000 })
+  expect(life(() => notify.loading('p'))).toEqual({ sticky: true, expiresAt: now + 30_000 })
+  expect(life(() => notify('inf', { duration: Infinity }))).toEqual({ sticky: true, expiresAt: now + 10_000 })
+  expect(life(() => notify('act', { action: { label: 'Open', onClick: () => {} } }))).toEqual({ sticky: true, expiresAt: now + 10_000 })
   expect(life(() => notify.error('short', { duration: 2_000 }))).toEqual({ sticky: false, expiresAt: now + 2_000 })
+  expect(life(() => notify('long', { duration: 60_000 }))).toEqual({ sticky: false, expiresAt: now + 10_000 })
 })
 
-test('expire drops the slot only once the lifetime is over', () => {
+test('expire drops the slot only once the lifetime is over; an error does not linger', () => {
   notify('hello')
   st().expire(Date.now() + 3_999)
   expect(st().current?.text).toBe('hello')
   st().expire(Date.now() + 4_000)
   expect(st().current).toBeNull()
   expect(st().history).toHaveLength(1)
-  notify.error('stuck')
-  st().expire(Date.now() + 1e9)
-  expect(st().current?.text).toBe('stuck')
+  // The owner's report: a call that failed during a reconnect said "not connected", and it stayed in the slot.
+  notify.error('not connected')
+  st().expire(Date.now() + 7_999)
+  expect(st().current?.text).toBe('not connected')
+  st().expire(Date.now() + 8_000)
+  expect(st().current).toBeNull()
+  expect(st().unreadErrors).toBe(1)
+})
+
+test('progress holds the slot while updated, and leaves 30 s after its last update', () => {
+  notify.loading('Downloading… 10%', { id: 'dl' })
+  vi.advanceTimersByTime(25_000)
+  notify.loading('Downloading… 90%', { id: 'dl' })
+  st().expire(Date.now() + 29_999)
+  expect(st().current?.text).toBe('Downloading… 90%')
+  st().expire(Date.now() + 30_000)
+  expect(st().current).toBeNull()
 })
 
 test('dismiss: no id clears the slot; a dismissed progress leaves history', () => {

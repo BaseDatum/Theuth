@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { createConnection, routerMounted, watchDrops } from './connection'
+import { createConnection, mirror, routerMounted, watchDrops } from './connection'
+import type { ConnState, Retry } from '@/rpc/client'
 import type { Info } from "@/rpc/bindings/method.rpc_2dcompose.output"
 
 beforeEach(() => {
@@ -54,4 +55,54 @@ test('no info yet: the startup screen, whatever the state', () => {
   const conn = createConnection()
   conn.setState({ state: 'open' })
   expect(routerMounted(conn.getState(), true, false)).toBe(false)
+})
+
+test('open clears the backoff in the store, whatever order the client reports it in', () => {
+  const conn = createConnection()
+  conn.setState({ state: 'reconnecting', retryAt: Date.now() + 4_000, attempt: 3 })
+  conn.getState().setConnState('open')
+  expect(conn.getState()).toMatchObject({ state: 'open', retryAt: null, attempt: 0 })
+})
+
+/** A client the test drives: `state`/`retry` are what it would answer now, `emit` what it reports. */
+const fakeClient = () => {
+  const listeners = new Set<(s: ConnState) => void>()
+  const c = {
+    state: 'closed' as ConnState,
+    retry: { at: null, attempt: 0 } as Retry,
+    onState(cb: (s: ConnState) => void) {
+      listeners.add(cb)
+      cb(c.state)
+      return () => listeners.delete(cb)
+    },
+    onRetry: () => () => true,
+    emit(s: ConnState) {
+      c.state = s
+      for (const cb of listeners) cb(s)
+    },
+  }
+  return c
+}
+
+test('mirror: a window coming back re-reads the client, so a state it missed does not linger', () => {
+  const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' })
+  vi.stubGlobal('document', doc)
+  vi.stubGlobal('window', Object.assign(new EventTarget(), { setTimeout, clearTimeout }))
+  const conn = createConnection()
+  const client = fakeClient()
+  const ctl = new AbortController()
+  const seen: ConnState[] = []
+  mirror(conn, client, ctl.signal, (s) => seen.push(s))
+  client.emit('reconnecting')
+  conn.setState({ retryAt: Date.now() + 2_000, attempt: 1 })
+  // Reopened without the store hearing it (the case §4's re-read exists for).
+  client.state = 'open'
+  doc.dispatchEvent(new Event('visibilitychange'))
+  expect(conn.getState()).toMatchObject({ state: 'open', retryAt: null, attempt: 0 })
+  expect(seen).toEqual(['closed', 'reconnecting', 'open'])
+  // Aborted (a relaunch replaced it): the old client's close no longer reaches the store.
+  ctl.abort()
+  client.emit('closed')
+  doc.dispatchEvent(new Event('visibilitychange'))
+  expect(conn.getState().state).toBe('open')
 })

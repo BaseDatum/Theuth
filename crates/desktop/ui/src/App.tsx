@@ -70,7 +70,7 @@ import { RpcClient, RpcError } from '@/rpc/client'
 import type { TopicEvent } from '@/rpc/bindings/client'
 import { disconnected, ready, supports } from '@/rpc/discovery'
 import { routeTree } from '@/routeTree.gen'
-import { routerMounted, useConnection, watchDrops } from '@/store/connection'
+import { mirror, routerMounted, useConnection, watchDrops } from '@/store/connection'
 import { useEventRate } from '@/store/event-rate'
 import { EngineProvider, type Stores, dropScope, scope } from '@/store/engine-scope'
 import { hydrateMeeting, installMeetingListeners } from '@/store/meeting'
@@ -306,7 +306,9 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
   conn.setClient(null, null)
   conn.setInfo(null)
   conn.setDiscovery(disconnected())
-  st.connection.setState({ outage: false })
+  // A relaunch: the client it replaces no longer reports (its listeners check `signal`), so its last state must not
+  // stand in for the new one while `make()` launches the daemon.
+  st.connection.setState({ outage: false, state: 'connecting', retryAt: null, attempt: 0 })
   let client: RpcClient | undefined
   const drops = watchDrops(st.connection)
   signal.addEventListener('abort', () => {
@@ -335,14 +337,9 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
       const api = makeApi(client)
       let gap: number | undefined
       let initialized = -1
-      client.onState((s) => {
-        if (signal.aborted) return
-        conn.setConnState(s)
+      mirror(st.connection, client, signal, (s) => {
         const elapsed = drops.next(s)
         if (elapsed !== undefined) gap = elapsed
-      })
-      client.onRetry((r) => {
-        if (!signal.aborted) st.connection.setState({ retryAt: r.at, attempt: r.attempt })
       })
       conn.setClient(client, api)
       client.onDiscovery((discovery) => {

@@ -10,7 +10,7 @@ export type NoticeOpts = {
   id?: string | number
   /** Second line; shown in history, truncated in the slot. */
   description?: string
-  /** Ms; `Infinity` is sticky until dismissed or acted on. */
+  /** Ms in the slot, at most 10 s; `Infinity` holds it (with a ×) for those 10 s, then history keeps it. */
   duration?: number
   action?: NoticeAction
   /** Second button, as toasts had. */

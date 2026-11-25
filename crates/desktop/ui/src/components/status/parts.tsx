@@ -7,7 +7,7 @@ import { useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
 import { rate, useEventRate } from '@/store/event-rate'
 import { type Notice, useNotices } from '@/store/notices'
-import { DOT_BG, type Dot, KIND_TAG, dotOf } from './model'
+import { DOT_BG, type Dot, KIND_TAG, dotOf, liveState } from './model'
 
 /** §5: approvals, asks and secret requests waiting on the active engine. */
 export function useNeedsYou(): number {
@@ -19,6 +19,7 @@ export function useNeedsYou(): number {
 
 export type EngineStatus = {
   name: string
+  /** What the bar shows: the client's state, overruled by `liveState` when frames are still arriving. */
   state: ConnState
   retryAt: number | null
   attempt: number
@@ -29,12 +30,17 @@ export type EngineStatus = {
   dot: Dot
 }
 
-/** The active engine as the bar shows it. Link engines dial through the same `RpcClient` backoff, so one source. */
+/**
+ * The active engine as the bar shows it. Link engines dial through the same `RpcClient` backoff, so one source.
+ * `state` is live (§4): read at render against the client's last inbound frame; `useStatusClock` re-renders every
+ * second while the client is not `open`, so the evidence ageing out (or arriving) shows within a second.
+ */
 export function useEngineStatus(): EngineStatus {
   const active = useEngines((s) => s.active)
   const listed = useEngines((s) => s.engines.find((h) => h.id === s.active)?.name)
   const info = useConnection((s) => s.info?.name)
-  const state = useConnection((s) => s.state)
+  const raw = useConnection((s) => s.state)
+  const client = useConnection((s) => s.client)
   const retryAt = useConnection((s) => s.retryAt)
   const attempt = useConnection((s) => s.attempt)
   const retryNow = useConnection((s) => s.retryNow)
@@ -42,30 +48,33 @@ export function useEngineStatus(): EngineStatus {
   const needsYou = useNeedsYou()
   const r = rate(buckets)
   const name = info ?? listed ?? (active === LOCAL ? LOCAL_NAME : 'Node')
+  const state = liveState(raw, client?.lastRx ?? Number.NEGATIVE_INFINITY, Date.now())
   return { name, state, retryAt, attempt, retryNow, buckets, rate: r, needsYou, dot: dotOf(state, needsYou, r) }
 }
 
 /**
- * The bar's one clock: closes the event-rate second, expires the slot's notice and re-renders the countdown, once a
- * second. Store changes re-render their own readers; the forced render is only for what reads `Date.now()` at render,
- * the reconnect countdown, so an idle bar does not repaint every second. A hidden window skips the tick: the next
- * visible one catches up (`roll` closes the silent seconds).
+ * The bar's one clock: closes the event-rate second, expires the slot's notice and re-renders, once a second. Store
+ * changes re-render their own readers; the forced render is only for what reads `Date.now()` at render: the reconnect
+ * countdown and the live state (§4) while the client is not `open`. So an idle, connected bar does not repaint every
+ * second. A hidden window skips the tick: the next visible one catches up (`roll` closes the silent seconds).
+ * `engine`: false for the guest bar, which has no connection.
  */
-export function useStatusClock(rate = true): void {
+export function useStatusClock(engine = true): void {
   const [, setTick] = useState(0)
   const retryAt = useConnection((s) => s.retryAt)
+  const state = useConnection((s) => s.state)
   const counting = useRef(false)
-  counting.current = retryAt !== null
+  counting.current = engine && (retryAt !== null || state !== 'open')
   useEffect(() => {
     const id = window.setInterval(() => {
       if (document.visibilityState === 'hidden') return
       const t = Date.now()
-      if (rate) useEventRate.getState().roll(t)
+      if (engine) useEventRate.getState().roll(t)
       useNotices.getState().expire(t)
       if (counting.current) setTick((n) => n + 1)
     }, 1_000)
     return () => clearInterval(id)
-  }, [rate])
+  }, [engine])
   // A notice's lifetime ends on time, not on the next whole-second tick.
   const expiresAt = useNotices((s) => s.current?.expiresAt ?? null)
   useEffect(() => {

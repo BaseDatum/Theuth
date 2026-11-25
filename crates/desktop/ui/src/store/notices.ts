@@ -14,9 +14,11 @@ export type Notice = {
   action?: NoticeAction
   cancel?: NoticeAction
   at: number
+  /** Held for the user (an action, `duration: Infinity`, progress): it carries a ×, in the slot and in history. */
   sticky: boolean
-  expiresAt: number | null
-  /** Dismissed or acted on: it stays in history but never returns to the slot. */
+  /** When it leaves the slot. Every notice has one (§2: nothing lingers); history keeps it after. */
+  expiresAt: number
+  /** Dismissed or acted on: it stays in history, without its ×. */
   dismissed?: boolean
 }
 
@@ -33,7 +35,11 @@ export type NoticeInput = {
 
 export const HISTORY_CAP = 50
 export const DEDUPE_MS = 2_000
-const LIFETIME: Record<NoticeKind, number> = { info: 4_000, done: 6_000, warn: 8_000, error: Infinity, progress: Infinity }
+const LIFETIME: Record<Exclude<NoticeKind, 'progress'>, number> = { info: 4_000, done: 6_000, warn: 8_000, error: 8_000 }
+/** The longest any notice holds the slot: one with an action or `duration: Infinity`. */
+export const HELD_MS = 10_000
+/** A progress notice is current state: it holds the slot while updated, and leaves after this long without an update. */
+export const PROGRESS_IDLE_MS = 30_000
 
 type NoticesState = {
   current: Notice | null
@@ -46,17 +52,15 @@ type NoticesState = {
   dismiss(id?: string | number): void
   clear(): void
   markRead(): void
-  /** Called by the host's timer: once `current`'s lifetime is over, the newest sticky notice still open takes the slot. */
+  /** Called by the host's timer: once `current`'s lifetime is over, the slot empties. */
   expire(now?: number): void
 }
 
 const lifetime = (n: NoticeInput, at: number): Pick<Notice, 'sticky' | 'expiresAt'> => {
-  const ms = n.duration ?? (n.action ? Infinity : LIFETIME[n.kind])
-  return Number.isFinite(ms) ? { sticky: false, expiresAt: at + ms } : { sticky: true, expiresAt: null }
+  const sticky = n.kind === 'progress' || n.action !== undefined || n.duration === Infinity
+  const ms = n.kind === 'progress' ? PROGRESS_IDLE_MS : Math.min(n.duration ?? (n.action ? HELD_MS : LIFETIME[n.kind]), HELD_MS)
+  return { sticky, expiresAt: at + ms }
 }
-
-/** A superseded sticky notice (progress, an action, an offer) comes back when the slot frees up. */
-const fallback = (history: readonly Notice[]): Notice | null => history.find((h) => h.sticky && !h.dismissed) ?? null
 
 let seq = 0
 
@@ -107,12 +111,12 @@ export const useNotices = create<NoticesState>()((set, get) => ({
       target.kind === 'progress'
         ? history.filter((h) => h.id !== target.id)
         : history.map((h) => (h.id === target.id ? { ...h, dismissed: true } : h))
-    set({ history: next, current: current?.id === target.id ? fallback(next) : current })
+    set({ history: next, current: current?.id === target.id ? null : current })
   },
   clear: () => set({ current: null, history: [], unreadErrors: 0 }),
   markRead: () => set({ unreadErrors: 0 }),
   expire(now = Date.now()) {
-    const { current, history } = get()
-    if (current?.expiresAt != null && now >= current.expiresAt) set({ current: fallback(history) })
+    const { current } = get()
+    if (current && now >= current.expiresAt) set({ current: null })
   },
 }))
