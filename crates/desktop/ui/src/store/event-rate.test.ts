@@ -68,3 +68,24 @@ test('a long silence clears the ring; reset starts over', () => {
   st().roll()
   expect(st().buckets.at(-1)).toBe(0)
 })
+
+test('silence on silence keeps the same array: an idle sparkline and its readers do not re-render each second', () => {
+  st().reset()
+  st().roll()
+  const idle = st().buckets
+  for (let i = 0; i < 5; i++) {
+    vi.advanceTimersByTime(1_000)
+    st().roll()
+  }
+  expect(st().buckets).toBe(idle)
+  // Activity still lands, and the seconds after it roll until the window is silent again.
+  st().tick(4)
+  vi.advanceTimersByTime(1_000)
+  st().roll()
+  expect(st().buckets.at(-1)).toBe(4)
+  const busy = st().buckets
+  vi.advanceTimersByTime(1_000)
+  st().roll()
+  expect(st().buckets).not.toBe(busy)
+  expect(st().buckets.slice(-2)).toEqual([4, 0])
+})

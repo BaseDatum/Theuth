@@ -1,5 +1,5 @@
 import { LoaderCircle } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { LOCAL, LOCAL_NAME, useEngines } from '@/link/engines'
 import { cn } from '@/lib/utils'
 import type { ConnState } from '@/rpc/client'
@@ -47,16 +47,22 @@ export function useEngineStatus(): EngineStatus {
 
 /**
  * The bar's one clock: closes the event-rate second, expires the slot's notice and re-renders the countdown, once a
- * second. Readers take `Date.now()` at render; the tick only forces the render.
+ * second. Store changes re-render their own readers; the forced render is only for what reads `Date.now()` at render,
+ * the reconnect countdown, so an idle bar does not repaint every second. A hidden window skips the tick: the next
+ * visible one catches up (`roll` closes the silent seconds).
  */
 export function useStatusClock(rate = true): void {
   const [, setTick] = useState(0)
+  const retryAt = useConnection((s) => s.retryAt)
+  const counting = useRef(false)
+  counting.current = retryAt !== null
   useEffect(() => {
     const id = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return
       const t = Date.now()
       if (rate) useEventRate.getState().roll(t)
       useNotices.getState().expire(t)
-      setTick((n) => n + 1)
+      if (counting.current) setTick((n) => n + 1)
     }, 1_000)
     return () => clearInterval(id)
   }, [rate])

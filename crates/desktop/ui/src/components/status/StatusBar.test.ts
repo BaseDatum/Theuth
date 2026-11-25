@@ -237,3 +237,35 @@ test('tapping the phone line opens the sheet: engine, rate, needs-you and the hi
   expect(useNotices.getState().unreadErrors).toBe(0)
   await act(async () => root.unmount())
 })
+
+test('idle, the bar does not re-render every second; a reconnect countdown does; a hidden window skips the tick', async () => {
+  vi.useFakeTimers()
+  try {
+    const parts = await import('./parts')
+    let renders = 0
+    const Probe = () => {
+      parts.useStatusClock()
+      renders++
+      return null
+    }
+    const host = document.body.appendChild(document.createElement('div'))
+    const root = createRoot(host)
+    await act(async () => root.render(h(Probe)))
+    const settled = renders
+    for (let i = 0; i < 5; i++) await act(async () => void vi.advanceTimersByTime(1_000))
+    expect(renders).toBe(settled)
+    await act(async () => st.connection.setState({ state: 'reconnecting', retryAt: Date.now() + 10_000 }))
+    const counting = renders
+    // One act per second: React batches the updates of one act into one render.
+    for (let i = 0; i < 3; i++) await act(async () => void vi.advanceTimersByTime(1_000))
+    expect(renders - counting).toBeGreaterThanOrEqual(3)
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+    const hidden = renders
+    for (let i = 0; i < 3; i++) await act(async () => void vi.advanceTimersByTime(1_000))
+    expect(renders).toBe(hidden)
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+    await act(async () => root.unmount())
+  } finally {
+    vi.useRealTimers()
+  }
+})
