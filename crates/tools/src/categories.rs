@@ -36,28 +36,48 @@ pub const DEFAULT_CATEGORIES: &[DefaultCategoryDef] = &[
     },
     DefaultCategoryDef {
         id: "web",
-        label: "Web & Browser",
+        label: "Web",
         description: "Web search, scraping, HTTP requests and browser automation",
+    },
+    DefaultCategoryDef {
+        id: "computer",
+        label: "Computer",
+        description: "Control the desktop, its apps and system automation",
     },
     DefaultCategoryDef {
         id: "design",
         label: "Design & Output",
-        description: "Interactive apps, previews, tiles, visual output and computer use",
+        description: "Interactive apps, previews, tiles and visual output",
     },
     DefaultCategoryDef {
         id: "documentation",
         label: "Documentation",
-        description: "Documents, notebooks, sources, knowledge base and search",
+        description: "Documents, notebooks and their sources",
+    },
+    DefaultCategoryDef {
+        id: "knowledge",
+        label: "Knowledge",
+        description: "Search and maintain the knowledge base and past sessions",
+    },
+    DefaultCategoryDef {
+        id: "comms",
+        label: "Comms",
+        description: "Link and check messaging channels",
     },
     DefaultCategoryDef {
         id: "collaboration",
         label: "Meetings & Tasks",
-        description: "Meetings, transcripts, briefs, tasks, schedules and channels",
+        description: "Meetings, transcripts, briefs, tasks and schedules",
+    },
+    DefaultCategoryDef {
+        id: "secrets",
+        label: "Secrets",
+        description: "Store and use secrets from the vault",
     },
     DefaultCategoryDef {
         id: "harness",
         label: "Harness",
-        description: "Subagents, peers, skills, MCP setup, secrets, decisions and dreaming",
+        description: "Subagents, peers, skills, MCP setup, decisions and dreaming",
     },
 ];
 
@@ -66,10 +86,14 @@ pub fn default_category_for_builtin(tool_name: &str) -> &'static str {
     match crate::builtins::category_of(tool_name) {
         "files" | "shell" | "code" | "sandbox" | "autoresearch" => "engineering",
         "web" | "browser" => "web",
-        "output" | "computer" => "design",
-        "documents" | "knowledge" => "documentation",
-        "meetings" | "tasks" | "schedules" | "channels" => "collaboration",
-        "agents" | "setup" | "secrets" | "decisions" | "dreaming" | "other" => "harness",
+        "computer" => "computer",
+        "output" => "design",
+        "documents" => "documentation",
+        "knowledge" => "knowledge",
+        "channels" => "comms",
+        "meetings" | "tasks" | "schedules" => "collaboration",
+        "secrets" => "secrets",
+        "agents" | "setup" | "decisions" | "dreaming" | "other" => "harness",
         _ => "harness",
     }
 }
@@ -202,15 +226,23 @@ mod tests {
             [
                 "engineering",
                 "web",
+                "computer",
                 "design",
                 "documentation",
+                "knowledge",
+                "comms",
                 "collaboration",
+                "secrets",
                 "harness"
             ]
         );
-        assert_eq!(DEFAULT_CATEGORIES[1].label, "Web & Browser");
-        assert_eq!(DEFAULT_CATEGORIES[2].label, "Design & Output");
-        assert_eq!(DEFAULT_CATEGORIES[4].label, "Meetings & Tasks");
+        assert_eq!(DEFAULT_CATEGORIES[1].label, "Web");
+        assert_eq!(DEFAULT_CATEGORIES[2].label, "Computer");
+        assert_eq!(DEFAULT_CATEGORIES[3].label, "Design & Output");
+        assert_eq!(DEFAULT_CATEGORIES[5].label, "Knowledge");
+        assert_eq!(DEFAULT_CATEGORIES[6].label, "Comms");
+        assert_eq!(DEFAULT_CATEGORIES[7].label, "Meetings & Tasks");
+        assert_eq!(DEFAULT_CATEGORIES[8].label, "Secrets");
         assert_eq!(default_category("web").unwrap().id, "web");
         assert!(default_category("missing").is_none());
     }
@@ -224,9 +256,9 @@ mod tests {
             ("code", "code_find", "engineering"),
             ("web", "search_web", "web"),
             ("browser", "browser_open", "web"),
-            ("computer", "computer_screenshot", "design"),
+            ("computer", "computer_screenshot", "computer"),
             ("sandbox", "sandbox_create", "engineering"),
-            ("knowledge", "knowledge_search", "documentation"),
+            ("knowledge", "knowledge_search", "knowledge"),
             ("documents", "doc_read", "documentation"),
             ("output", "show", "design"),
             ("agents", "spawn_subagent", "harness"),
@@ -234,11 +266,11 @@ mod tests {
             ("schedules", "schedule", "collaboration"),
             ("autoresearch", "experiment_run", "engineering"),
             ("meetings", "meeting_join", "collaboration"),
-            ("secrets", "secret_get", "harness"),
+            ("secrets", "secret_get", "secrets"),
             ("decisions", "decide", "harness"),
             ("dreaming", "dreaming_replay", "harness"),
             ("setup", "load_skill", "harness"),
-            ("channels", "signal_status", "collaboration"),
+            ("channels", "signal_status", "comms"),
             ("other", "unclassified_tool", "harness"),
         ];
         assert_eq!(CATEGORIES.len(), probes.len());

@@ -37,7 +37,7 @@ const toolCategory = (id: string, label: string, over: Partial<ToolCategoryInfo>
 })
 const toolCategories = [
   toolCategory('engineering', 'Engineering', { builtin_count: 12, mcp_servers: ['fs'] }),
-  toolCategory('web', 'Web & Browser', { default_enabled: false, hidden: true, builtin_count: 4 }),
+  toolCategory('web', 'Web', { default_enabled: false, hidden: true, builtin_count: 4 }),
 ]
 const mcpTool = (name: string, hidden = false): McpToolInfo => ({ name, description: '', gate: null, risk: 'read_only', action: 'allow', registered: name, hidden })
 const server = (name: string, over: Partial<McpServer> = {}): McpServer => ({
@@ -158,8 +158,8 @@ test('Categories toggles a live chat through its tcat hide key', async () => {
   await vi.waitFor(() => expect(rows()).toHaveLength(2))
   await act(async () => row('Engineering').click())
   await vi.waitFor(() => expect(calls).toEqual([['s1', ['tcat:engineering'], true]]))
-  await vi.waitFor(() => expect(row('Web & Browser').disabled).toBe(false))
-  await act(async () => row('Web & Browser').click())
+  await vi.waitFor(() => expect(row('Web').disabled).toBe(false))
+  await act(async () => row('Web').click())
   await vi.waitFor(() => expect(calls[1]).toEqual(['s1', ['tcat:web'], false]))
   unmount()
 })
@@ -168,10 +168,10 @@ test('Categories stores both hide and explicit unhide choices in a new-chat draf
   const { row, rows, unmount } = await mount('')
   await vi.waitFor(() => expect(rows()).toHaveLength(2))
   expect(listedCategories).toEqual([null])
-  expect(row('Web & Browser').getAttribute('aria-checked')).toBe('false')
-  await act(async () => row('Web & Browser').click())
+  expect(row('Web').getAttribute('aria-checked')).toBe('false')
+  await act(async () => row('Web').click())
   await vi.waitFor(() => expect(useDrafts.getState().settings.hidden).toEqual({ 'tcat:web': false }))
-  await vi.waitFor(() => expect(row('Web & Browser').getAttribute('aria-checked')).toBe('true'))
+  await vi.waitFor(() => expect(row('Web').getAttribute('aria-checked')).toBe('true'))
   await vi.waitFor(() => expect(row('Engineering').disabled).toBe(false))
   await act(async () => row('Engineering').click())
   await vi.waitFor(() => expect(useDrafts.getState().settings.hidden).toEqual({ 'tcat:web': false, 'tcat:engineering': true }))
