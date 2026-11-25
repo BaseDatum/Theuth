@@ -72,10 +72,41 @@ pub trait ExternalBackend: Send + Sync + 'static {
     async fn restore(&self, r: &ExtRef) -> Result<ExtVersion, ExtError>;
     /// Lock (Bitwarden: drop keys; AWS: drop the cached SdkConfig credentials). Idempotent.
     async fn lock(&self);
+
+    /// The connection as a Send maker (Bitwarden, 221 §12); `None` for backends without Sends.
+    fn sender(&self) -> Option<Arc<dyn crate::tools_send::SendBackend>> {
+        None
+    }
+
+    /// §6.3 `connection_login`: store this connection's credentials (sealed in `meta` through the
+    /// [`ConnStore`] the factory gave it) and log in. Default: nothing to log in to.
+    async fn login(&self, form: LoginForm) -> Result<LoginStep, ExtError> {
+        let _ = form;
+        Err(ExtError::Unsupported(format!(
+            "{} connections have no login",
+            self.backend()
+        )))
+    }
+    /// §6.3 `connection_unlock` / the unlock card: turn the master password into keys.
+    /// Default: nothing to unlock.
+    async fn unlock(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {
+        drop(password);
+        Err(ExtError::Unsupported(format!(
+            "{} connections have no unlock",
+            self.backend()
+        )))
+    }
+    /// Forget the stored credentials (the connection is being removed). Default: nothing stored.
+    async fn logout(&self) {}
+    /// The connection's D20 settings changed (also called once after the factory built it).
+    fn apply_settings(&self, settings: &crate::settings::ConnSettings) {
+        let _ = settings;
+    }
 }
 
 /// How [`ExternalBackend::delete`] deletes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum DeleteMode {
     /// AWS recovery window (`days` 7..=30; `None` = the connection's `delete_recovery_days`) /
@@ -89,10 +120,61 @@ pub enum DeleteMode {
 }
 
 /// What a delete did.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DeleteOutcome {
     /// RFC 3339: until when [`ExternalBackend::restore`] can undo it; `None` = gone.
     pub recoverable_until: Option<String>,
+}
+
+/// §6.3 `connection_login`'s form. Values transit once and are never echoed.
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum LoginForm {
+    /// A personal API key (Account settings › Security › Keys).
+    ApiKey {
+        /// `user.<uuid>`.
+        client_id: String,
+        /// The secret half.
+        client_secret: String,
+    },
+    /// Email + master password (+ 2FA), B5b.
+    Password {
+        /// The account.
+        email: String,
+        /// The master password.
+        password: String,
+        /// `[provider, code]` when the server asked for a second factor.
+        two_factor: Option<(String, String)>,
+        /// The new-device code when the server asked for one.
+        new_device_otp: Option<String>,
+    },
+}
+
+impl fmt::Debug for LoginForm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ApiKey { .. } => "LoginForm::ApiKey",
+            Self::Password { .. } => "LoginForm::Password",
+        })
+    }
+}
+
+/// What a login step asks next.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum LoginStep {
+    /// Logged in.
+    Done,
+    /// The server wants a second factor from one of `providers`.
+    NeedTwoFactor {
+        /// `authenticator` | `email` | `yubikey`.
+        providers: Vec<String>,
+    },
+    /// The server wants the new-device code it emailed.
+    NeedNewDeviceOtp,
 }
 
 /// A parsed reference inside one connection: the part of `{{secret:<backend>/<conn>/<id>#<key>:-N}}`
@@ -200,7 +282,8 @@ pub enum BwField {
 }
 
 /// One version of an external entry.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtVersion {
     /// AWS: VersionId (UUID). Bitwarden: the cipher's revision_date (RFC 3339).
     pub id: String,
@@ -211,7 +294,8 @@ pub struct ExtVersion {
 }
 
 /// One external entry's metadata. Never a value.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ExtEntry {
     /// The placeholder body, `bw/personal/2f1c…` / `aws/prod/db/main`.
     pub r#ref: String,
@@ -226,20 +310,29 @@ pub struct ExtEntry {
     pub location: String,
     /// AWS: up to 5 by VersionIdsToStages; Bitwarden: one.
     pub versions: Vec<ExtVersion>,
+    /// A deleted entry ([`ListQuery::deleted`]): RFC 3339 until when [`ExternalBackend::restore`]
+    /// works (AWS purge date / Bitwarden trash). `None` for a live entry.
+    #[serde(default)]
+    pub recoverable_until: Option<String>,
 }
 
 /// [`ExternalBackend::list`]'s query.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct ListQuery {
     /// Substring on name, folder, collection.
     pub query: Option<String>,
     /// From the previous page's [`ListPage::next`].
     pub cursor: Option<String>,
+    /// List the deleted entries instead (AWS: pending deletion; Bitwarden: the trash), each with
+    /// [`ExtEntry::recoverable_until`].
+    pub deleted: bool,
 }
 
 /// One page of [`ExternalBackend::list`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ListPage {
     /// The entries, metadata only.
     pub entries: Vec<ExtEntry>,
@@ -248,7 +341,8 @@ pub struct ListPage {
 }
 
 /// A connection's state, as the UIs show it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case", tag = "state", content = "detail")]
 pub enum ConnStatus {
     /// Usable now.
@@ -332,10 +426,22 @@ pub fn valid_conn(conn: &str) -> bool {
 
 /// The registered connections, keyed by connection name (unique across backends, 221 §3.1).
 /// Shared between the [`SecretsActor`] (which writes it) and the `tools::secrets` hook (which
-/// reads it on every resolve).
+/// reads it on every resolve). Also holds the open unlock cards (§9.4).
 #[derive(Default)]
 pub struct Externals {
     map: RwLock<BTreeMap<String, Arc<dyn ExternalBackend>>>,
+    /// Per connection, the account the unlock card names (`me@… · vault.bitwarden.eu`).
+    accounts: RwLock<BTreeMap<String, String>>,
+    /// The bus the unlock card goes out on, and how long it waits; `None` = no card (a locked
+    /// connection fails the call).
+    unlock: Option<(runtime::Runtime, Duration)>,
+    /// Unlock cards waiting for [`Externals::answer_unlock`].
+    pending: std::sync::Mutex<
+        std::collections::HashMap<
+            crate::RequestId,
+            tokio::sync::oneshot::Sender<Option<Zeroizing<String>>>,
+        >,
+    >,
 }
 
 impl fmt::Debug for Externals {
@@ -347,6 +453,99 @@ impl fmt::Debug for Externals {
                     .map(|b| format!("{}/{}", b.backend(), b.conn())),
             )
             .finish()
+    }
+}
+
+impl Externals {
+    /// A registry whose locked connections raise the unlock card on `rt` and wait `timeout`.
+    pub fn new(rt: runtime::Runtime, timeout: Duration) -> Self {
+        Self {
+            unlock: Some((rt, timeout)),
+            ..Self::default()
+        }
+    }
+
+    /// The account the unlock card names for `conn`.
+    pub fn set_account(&self, conn: &str, account: String) {
+        let mut a = self
+            .accounts
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        a.insert(conn.to_owned(), account);
+    }
+
+    /// §9.4: ask the user to unlock `b` on the unlock card and unlock it with the typed password.
+    /// `Err` (model-facing): declined, timed out, no card possible, or the unlock failed.
+    pub async fn request_unlock(
+        &self,
+        b: &Arc<dyn ExternalBackend>,
+        reason: String,
+    ) -> Result<(), String> {
+        let name = format!("{}/{}", b.backend(), b.conn());
+        let Some((rt, timeout)) = &self.unlock else {
+            return Err(format!("{name} is locked; unlock it in the Secrets page"));
+        };
+        let id = crate::RequestId(uuid::Uuid::now_v7());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, tx);
+        let account = self
+            .accounts
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(b.conn())
+            .cloned()
+            .unwrap_or_default();
+        rt.publish(crate::SecretsEvent::UnlockRequested {
+            id,
+            conn: b.conn().to_owned(),
+            backend: b.backend().to_owned(),
+            account,
+            reason,
+        })
+        .await;
+        let answer = tokio::time::timeout(*timeout, rx).await;
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+        let out = match answer {
+            Ok(Ok(Some(password))) => match b.unlock(password).await {
+                Ok(ConnStatus::Ready) => Ok(()),
+                Ok(s) => Err(format!("{name} did not unlock ({s:?})")),
+                Err(e) => Err(format!("{name}: unlock failed: {e}")),
+            },
+            Ok(_) => Err(format!("{name} is locked; the user declined to unlock it")),
+            Err(_) => Err(format!(
+                "{name} is locked; no unlock after {} s",
+                timeout.as_secs()
+            )),
+        };
+        rt.publish(crate::SecretsEvent::UnlockResolved {
+            id,
+            unlocked: out.is_ok(),
+        })
+        .await;
+        out
+    }
+
+    /// The unlock cards waiting for an answer.
+    pub fn pending_unlocks(&self) -> Vec<crate::RequestId> {
+        let p = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        p.keys().copied().collect()
+    }
+
+    /// Answer an unlock card: `Some(password)` unlocks, `None` declines. `false` when `id` is not
+    /// waiting (answered, timed out, another engine's).
+    pub fn answer_unlock(&self, id: crate::RequestId, password: Option<Zeroizing<String>>) -> bool {
+        let tx = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+        tx.is_some_and(|tx| tx.send(password).is_ok())
     }
 }
 
@@ -586,6 +785,19 @@ impl Hook {
                 ));
             };
             let body = &f.text["{{secret:".len()..f.text.len() - "}}".len()];
+            match b.status() {
+                ConnStatus::Locked => {
+                    let reason = format!("a tool call uses {body}");
+                    self.externals.request_unlock(&b, reason).await?;
+                }
+                ConnStatus::LoggedOut => {
+                    return Err(format!(
+                        "{}/{} is logged out on this engine; the user logs in from the Secrets page",
+                        f.backend, r.conn
+                    ));
+                }
+                _ => {}
+            }
             let value = match tokio::time::timeout(self.timeout, b.get(&r)).await {
                 Ok(Ok((value, _))) => value,
                 Ok(Err(e)) => return Err(format!("{body}: {e}")),

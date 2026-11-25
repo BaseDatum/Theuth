@@ -3814,6 +3814,7 @@ mod tests {
             outcome: None,
             hlc: None,
             expires: None,
+            destination: None,
         }
     }
 

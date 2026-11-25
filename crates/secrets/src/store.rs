@@ -122,6 +122,24 @@ pub async fn meta_put(pool: &SqlitePool, k: &str, v: &[u8]) -> anyhow::Result<()
     Ok(())
 }
 
+/// Delete every local-only `meta` row whose key starts with `prefix`.
+pub async fn meta_delete_prefix(pool: &SqlitePool, prefix: &str) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM meta WHERE substr(k, 1, length(?1)) = ?1")
+        .bind(prefix)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Delete the local-only `meta` row `k`.
+pub async fn meta_delete(pool: &SqlitePool, k: &str) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM meta WHERE k = ?")
+        .bind(k)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

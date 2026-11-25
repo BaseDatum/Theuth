@@ -106,7 +106,7 @@ impl Secrets {
                 Request::SetSecret { name, value, note } => Msg::Set(api.set_secret(name, value, note).await.map_err(crate::reason)),
                 Request::RestoreSecret { name, back } => Msg::Set(api.restore_secret(name, back).await.map_err(crate::reason)),
                 Request::DeleteSecret(name) => Msg::Done(api.delete_secret(name.clone()).await.map(|_| Some(format!("{name}: deleted"))).map_err(crate::reason)),
-                Request::AnswerSecret { id, values, expires_ms } => Msg::Done(api.answer_secret(id, None, values, expires_ms).await.map(|_| None).map_err(crate::reason)),
+                Request::AnswerSecret { id, values, expires_ms } => Msg::Done(api.answer_secret(id, None, values, expires_ms, None).await.map(|_| None).map_err(crate::reason)),
             }
         });
     }
@@ -261,7 +261,8 @@ impl Secrets {
                 let r = self.requests.remove(i).expect("position");
                 if timed_out { cx.core(CoreAction::Notice(format!("{}: request timed out", r.names()))); }
             },
-            Rotation(_) => {}
+            // 221 §9.3: the unlock modal is B8's; until then the card is answered elsewhere.
+            Rotation(_) | UnlockRequested { .. } | UnlockResolved { .. } => {}
         }
     }
 }

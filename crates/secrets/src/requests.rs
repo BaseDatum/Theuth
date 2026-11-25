@@ -17,6 +17,7 @@ type RowTuple = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 fn from_row(r: RowTuple) -> anyhow::Result<SecretRequest> {
@@ -32,14 +33,16 @@ fn from_row(r: RowTuple) -> anyhow::Result<SecretRequest> {
         outcome: r.7,
         hlc: r.8,
         expires: r.9,
+        // A destination a newer peer shaped differently is dropped, not the row.
+        destination: r.10.and_then(|d| serde_json::from_str(&d).ok()),
     })
 }
 
 /// Write a new row (`hlc` is stamped by the replica's trigger).
 pub async fn insert(pool: &SqlitePool, r: &SecretRequest) -> anyhow::Result<()> {
     sqlx::query(
-        "INSERT INTO secret_requests (id, engine, session, title, fields, created_ms, expires) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO secret_requests (id, engine, session, title, fields, created_ms, expires, \
+         destination) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(r.id.0.to_string())
     .bind(&r.engine)
@@ -48,6 +51,12 @@ pub async fn insert(pool: &SqlitePool, r: &SecretRequest) -> anyhow::Result<()> 
     .bind(serde_json::to_string(&r.fields)?)
     .bind(r.created_ms as i64)
     .bind(&r.expires)
+    .bind(
+        r.destination
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
+    )
     .execute(pool)
     .await?;
     Ok(())
@@ -56,8 +65,8 @@ pub async fn insert(pool: &SqlitePool, r: &SecretRequest) -> anyhow::Result<()> 
 /// One row by id.
 pub async fn get(pool: &SqlitePool, id: RequestId) -> anyhow::Result<Option<SecretRequest>> {
     let r: Option<RowTuple> = sqlx::query_as(
-        "SELECT id, engine, session, title, fields, created_ms, answered_ms, outcome, hlc, expires \
-         FROM secret_requests WHERE id = ?",
+        "SELECT id, engine, session, title, fields, created_ms, answered_ms, outcome, hlc, expires, \
+         destination FROM secret_requests WHERE id = ?",
     )
     .bind(id.0.to_string())
     .fetch_optional(pool)
@@ -69,11 +78,11 @@ pub async fn get(pool: &SqlitePool, id: RequestId) -> anyhow::Result<Option<Secr
 /// JSON does not parse (a newer peer's shape) is skipped with a warning.
 pub async fn list(pool: &SqlitePool, unanswered_only: bool) -> anyhow::Result<Vec<SecretRequest>> {
     let sql = if unanswered_only {
-        "SELECT id, engine, session, title, fields, created_ms, answered_ms, outcome, hlc, expires \
-         FROM secret_requests WHERE answered_ms IS NULL ORDER BY created_ms DESC"
+        "SELECT id, engine, session, title, fields, created_ms, answered_ms, outcome, hlc, expires, \
+         destination FROM secret_requests WHERE answered_ms IS NULL ORDER BY created_ms DESC"
     } else {
-        "SELECT id, engine, session, title, fields, created_ms, answered_ms, outcome, hlc, expires \
-         FROM secret_requests ORDER BY created_ms DESC"
+        "SELECT id, engine, session, title, fields, created_ms, answered_ms, outcome, hlc, expires, \
+         destination FROM secret_requests ORDER BY created_ms DESC"
     };
     let rows: Vec<RowTuple> = sqlx::query_as(sql).fetch_all(pool).await?;
     Ok(rows
@@ -134,6 +143,7 @@ mod tests {
             outcome: None,
             hlc: None,
             expires: title.map(|_| "2h".to_owned()),
+            destination: None,
         }
     }
 

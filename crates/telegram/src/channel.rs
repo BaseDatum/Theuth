@@ -4124,6 +4124,7 @@ pub(crate) mod tests {
                 title: None,
                 fields: Vec::new(),
                 expires: None,
+                destination: None,
             }))
             .await;
         assert!(
@@ -4152,6 +4153,7 @@ pub(crate) mod tests {
                 title: None,
                 fields: Vec::new(),
                 expires: None,
+                destination: None,
             }))
             .await;
         assert_eq!(

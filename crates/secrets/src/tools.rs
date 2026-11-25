@@ -182,6 +182,10 @@ pub struct RequestArgs {
     /// once it passes the values are deleted. Omit unless the value is short-lived.
     #[serde(default)]
     pub expires: Option<String>,
+    /// 221 §7.3: store the answer(s) in an external manager (a connection from
+    /// `secret_external_list`) instead of the local vault; the user may change it on the card.
+    #[serde(default)]
+    pub destination: Option<crate::connections::Destination>,
 }
 
 /// At most this many fields on one card.
@@ -286,7 +290,13 @@ impl Tool for SecretRequestTool {
     const RISK: Risk = Risk::ReadOnly;
     const DIRECT: bool = true;
     const CONSUMES_SECRETS: bool = false;
+    /// D14: with a destination the call writes with the user's credentials.
+    const CREDENTIALED: bool = true;
     type Args = RequestArgs;
+
+    fn credentialed(&self, _session: runtime::SessionId, a: &RequestArgs) -> bool {
+        a.destination.is_some()
+    }
 
     /// A human wait (145 §0.4).
     fn promotable(&self) -> bool {
@@ -301,16 +311,28 @@ impl Tool for SecretRequestTool {
          an expiry on the card, after which the values are deleted; `expires` (`30m`, `2h`, `3d` \
          or an ISO-8601 date / date-time) only pre-fills it. Then use `{{secret:NAME}}` \
          placeholders. Returns `stored a v1, b v2` (and the expiry, if set), `declined` or `no \
-         answer`. Never ask the user to paste a secret into the chat instead."
+         answer`. With `destination` (an external connection) the answer is stored in that \
+         manager instead, and the receipt gives the `{{secret:aws/…}}` / `{{secret:bw/…}}` \
+         reference. Never ask the user to paste a secret into the chat instead."
             .into()
     }
 
-    async fn call(&self, a: RequestArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, mut a: RequestArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let destination = a.destination.take();
         let ask = match parse_request(a, crate::now_ms()) {
             Ok(ask) => ask,
             Err(e) => return Ok(ToolOutput::err(e)),
         };
-        Ok(run(&self.actor, self.timeout, &cx, ask).await)
+        let view = match destination {
+            None => None,
+            Some(d) => match crate::tools_external::destination_view(&self.actor, d, &ask.fields)
+                .await
+            {
+                Ok(v) => Some(v),
+                Err(e) => return Ok(ToolOutput::err(e)),
+            },
+        };
+        Ok(run(&self.actor, self.timeout, &cx, ask, view).await)
     }
 }
 
@@ -320,6 +342,7 @@ async fn run(
     timeout: Duration,
     cx: &ToolCx,
     ask: Ask,
+    destination: Option<crate::connections::DestinationView>,
 ) -> ToolOutput {
     let single = ask.title.is_none() && ask.fields.len() == 1;
     let names = ask
@@ -328,8 +351,12 @@ async fn run(
         .map(|f| f.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    match request(actor, timeout, cx, ask.title, ask.fields, ask.expires).await {
-        Ok(out) => receipt(&out, single, timeout, &names),
+    match request(actor, timeout, cx, ask.title, ask.fields, ask.expires, destination).await {
+        Ok(out) => match out.external.clone() {
+            Some(Ok(line)) => ToolOutput::ok(line),
+            Some(Err(e)) => ToolOutput::err(e),
+            None => receipt(&out, single, timeout, &names),
+        },
         Err(SendError::HandlerError(e)) => ToolOutput::err(e),
         Err(e) => ToolOutput::err(format!("secrets actor: {e}")),
     }
@@ -381,7 +408,8 @@ async fn request(
     title: Option<String>,
     fields: Vec<SecretRequestField>,
     expires: Option<String>,
-) -> Result<Outcome, SendError<Request, String>> {
+    destination: Option<crate::connections::DestinationView>,
+) -> Result<Outcome, SendError<crate::RequestTo, String>> {
     let journal = tools::registry::journal();
     let (row, title, fields, expires) = match tools::registry::take_republish(cx.session, &cx.call_id) {
         Some(row) if row.state == QuestionState::Pending => {
@@ -413,6 +441,7 @@ async fn request(
                 timed_out: row.state == QuestionState::TimedOut,
                 waived: false,
                 expires_ms: None,
+                external: None,
             });
         }
         None => {
@@ -456,12 +485,15 @@ async fn request(
             .await;
     }
     let out = actor
-        .ask(Request {
-            session: cx.session,
-            title,
-            fields,
-            id: Some(id),
-            expires,
+        .ask(crate::RequestTo {
+            request: Request {
+                session: cx.session,
+                title,
+                fields,
+                id: Some(id),
+                expires,
+            },
+            destination,
         })
         .await;
     if row.state == QuestionState::Pending {
@@ -540,7 +572,7 @@ impl Tool for SecretRequestFormTool {
             Ok(ask) => ask,
             Err(e) => return Ok(ToolOutput::err(e)),
         };
-        Ok(run(&self.actor, self.timeout, &cx, ask).await)
+        Ok(run(&self.actor, self.timeout, &cx, ask, None).await)
     }
 }
 
@@ -760,9 +792,6 @@ pub struct SecretDeleteTool {
     pub actor: ActorRef<SecretsActor>,
 }
 
-/// Source a Send's link secret is written with (221 §12.4).
-const SEND_SOURCE: &str = "secret_send_create";
-
 /// Why `name` may not be deleted by the agent, or its current entry.
 fn deletable(vault: &Vault, name: &str) -> Result<SecretInfo, String> {
     if name.contains('/') {
@@ -776,7 +805,11 @@ fn deletable(vault: &Vault, name: &str) -> Result<SecretInfo, String> {
                 && hex.bytes().all(|b| b.is_ascii_hexdigit())
         })
     });
-    if send_name || info.versions.first().is_some_and(|v| v.source == SEND_SOURCE) {
+    let send_source = info
+        .versions
+        .first()
+        .is_some_and(|v| crate::tools_send::is_send_secret(&v.source));
+    if send_name || send_source {
         return Err(format!(
             "{name} is a Send link; secret_send_revoke revokes it"
         ));
@@ -876,6 +909,7 @@ mod tests {
             timed_out: false,
             waived: true,
             expires_ms: None,
+            external: None,
         };
         let o = receipt(&out, false, Duration::from_secs(60), "gh.user, gh.pass");
         assert!(!o.is_error);
@@ -1002,6 +1036,7 @@ mod tests {
             timed_out: false,
             waived: false,
             expires_ms,
+            external: None,
         };
         assert_eq!(
             receipt(&out(&[("a", 1), ("b", 2)], None), false, t, "a, b").content,
@@ -1022,6 +1057,7 @@ mod tests {
             timed_out: true,
             waived: false,
             expires_ms: None,
+            external: None,
         };
         assert_eq!(receipt(&timed, false, t, "a").content, "no answer after 60 s");
     }
@@ -1158,35 +1194,37 @@ mod delete_tests {
 
     /// 221 §13 B6b: the seeded entry makes `secret_delete` ask with approvals off; removing it
     /// (the user's press) stops the asking, and seeding again does not bring it back.
-    #[tokio::test]
-    async fn secret_delete_is_seeded_once_as_always_ask() {
-        let dir = tempfile::tempdir().unwrap();
-        let (t, vault, rt) = tool(dir.path()).await;
-        let reg = ::tools::registry::start(&rt).await.unwrap();
-        reg.ask(RegisterTool(Arc::new(t))).await.unwrap();
-        let session = SessionId::new();
-        let action = || async {
-            reg.ask(InspectTool {
-                session,
-                name: "secret_delete".into(),
-                args: None,
+    #[test]
+    fn secret_delete_is_seeded_once_as_always_ask() {
+        crate::connections::tests::serial(async {
+            let dir = tempfile::tempdir().unwrap();
+            let (t, vault, rt) = tool(dir.path()).await;
+            let reg = ::tools::registry::start(&rt).await.unwrap();
+            reg.ask(RegisterTool(Arc::new(t))).await.unwrap();
+            let session = SessionId::new();
+            let action = || async {
+                reg.ask(InspectTool {
+                    session,
+                    name: "secret_delete".into(),
+                    args: None,
+                })
+                .await
+                .unwrap()
+                .action
+            };
+            assert_eq!(action().await, PolicyAction::Allow, "approvals off, no entry");
+            seed_delete_ask(&reg, &vault).await.unwrap();
+            assert_eq!(action().await, PolicyAction::Ask, "always ask with approvals off");
+            reg.ask(SetAlwaysAsk {
+                session: None,
+                tool: "secret_delete".into(),
+                on: false,
             })
             .await
-            .unwrap()
-            .action
-        };
-        assert_eq!(action().await, PolicyAction::Allow, "approvals off, no entry");
-        seed_delete_ask(&reg, &vault).await.unwrap();
-        assert_eq!(action().await, PolicyAction::Ask, "always ask with approvals off");
-        reg.ask(SetAlwaysAsk {
-            session: None,
-            tool: "secret_delete".into(),
-            on: false,
-        })
-        .await
-        .unwrap();
-        assert_eq!(action().await, PolicyAction::Allow);
-        seed_delete_ask(&reg, &vault).await.unwrap();
-        assert_eq!(action().await, PolicyAction::Allow, "a removed entry stays removed");
+            .unwrap();
+            assert_eq!(action().await, PolicyAction::Allow);
+            seed_delete_ask(&reg, &vault).await.unwrap();
+            assert_eq!(action().await, PolicyAction::Allow, "a removed entry stays removed");
+        });
     }
 }

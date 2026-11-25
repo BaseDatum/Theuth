@@ -2956,6 +2956,7 @@
             title: None,
             fields: vec![],
             expires: None,
+            destination: None,
         }));
         assert!(m.components.get::<Secrets>().unwrap().requests.front().is_none());
         m.apply(wire_event("secrets.events", secrets::SecretsEvent::Requested {
@@ -2967,6 +2968,7 @@
             title: None,
             fields: vec![],
             expires: None,
+            destination: None,
         }));
         assert!(m.components.get::<Secrets>().unwrap().requests.front().is_some() && m.input_focused());
         m.component_submit("ghp_requested");
@@ -2989,6 +2991,7 @@
             title: None,
             fields: vec![],
             expires: None,
+            destination: None,
         }));
         m.apply(wire_event("secrets.events", secrets::SecretsEvent::Resolved {
             id,

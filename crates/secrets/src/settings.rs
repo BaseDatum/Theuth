@@ -12,7 +12,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// Which items `create` / `update` / `delete` may touch (D20 `write_scope`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum WriteScope {
     /// The personal vault only.
@@ -23,7 +26,8 @@ pub enum WriteScope {
 }
 
 /// The per-connection D20 settings (`secrets.connections.<conn>.…`), each at its safe default.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct ConnSettings {
     /// A Send's card is answerable only by the owner in person.
@@ -79,7 +83,10 @@ impl Default for ConnSettings {
 }
 
 /// The harness-wide D20 settings and the backend-call bound (`secrets.external.…`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct ExternalSettings {
     /// Every backend call runs under this bound (221 §4).

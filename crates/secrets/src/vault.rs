@@ -610,6 +610,27 @@ impl Vault {
         Ok(fresh)
     }
 
+    /// 221 D11: the engine-local `meta` row `name` (`ext/<backend>/<conn>/<key>`), opened with this
+    /// engine's key. `Err` when it does not open (another engine's database, tampering).
+    pub async fn local_secret(&self, name: &str) -> anyhow::Result<Option<Zeroizing<Vec<u8>>>> {
+        match store::meta_get(&self.pool, name).await? {
+            None => Ok(None),
+            Some(sealed) => open_bytes(&self.key, name.as_bytes(), &sealed)
+                .map(Some)
+                .ok_or_else(|| anyhow::anyhow!("{name}: does not open with this engine's key")),
+        }
+    }
+
+    /// Write [`Vault::local_secret`] `name`, sealed with this engine's key; it never replicates.
+    pub async fn set_local_secret(&self, name: &str, plain: &[u8]) -> anyhow::Result<()> {
+        store::meta_put(&self.pool, name, &seal(&self.key, name.as_bytes(), plain)).await
+    }
+
+    /// Delete every engine-local `meta` row under `prefix` (a removed connection's `ext/…/`).
+    pub async fn delete_local_prefix(&self, prefix: &str) -> anyhow::Result<()> {
+        store::meta_delete_prefix(&self.pool, prefix).await
+    }
+
     /// `nonce ‖ XChaCha20-Poly1305(mesh key, aad)` — for callers that keep a
     /// value in their own replicated table but want it sealed like a vault
     /// row (69: link's `pending.psk_sealed`).
