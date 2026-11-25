@@ -78,6 +78,7 @@ import { EngineProvider, type Stores, dropScope, scope } from '@/store/engine-sc
 import { hydrateMeeting, installMeetingListeners } from '@/store/meeting'
 import { dispatch, on, useSessions } from '@/store/sessions'
 import { activeShares, trayBadge, usePublicShares } from '@/store/public-shares'
+import { useUnlockRequests } from '@/store/unlock-requests'
 
 /** 03 §0.1: the island webview loads the same bundle and lives at `/island`; the browser history cannot read a window label. */
 const ISLAND = isIsland()
@@ -195,6 +196,22 @@ function useForegroundReseed(st: Stores): void {
 }
 
 /**
+ * 221 §9.4: the unlock cards are fed by events only; when the stream (re)starts or lags, the active engine's
+ * `list_unlock_requests` is the truth. An engine without the method leaves the store empty (a switch cleared it).
+ */
+function reseedUnlocks(st: Stores): void {
+  if (useEngines.getState().active !== st.id) return
+  const { api, discovery } = st.connection.getState()
+  if (!api || !ready(discovery) || !supports(discovery, { methods: ['list_unlock_requests'] })) return
+  api.list_unlock_requests().then(
+    (rows) => {
+      if (useEngines.getState().active === st.id) useUnlockRequests.getState().replace(rows)
+    },
+    (e: unknown) => console.warn('[secrets] list_unlock_requests failed', e),
+  )
+}
+
+/**
  * 129 D3: `Lagged` is a resync, not a reset. The gap is lost, so every slice is labelled stale and the mounted
  * chats re-settle through their `contextStale → settle()` path; `loaded` stays, so nothing on screen empties.
  * The session list is the one query refetched (`TurnStarted`/`TurnFinished` may have been dropped).
@@ -205,6 +222,7 @@ function resync(st: Stores): void {
   sessions.markStale()
   void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
   reseedLiveness(st)
+  reseedUnlocks(st)
   if (useEngines.getState().active === st.id)
     window.dispatchEvent(new CustomEvent('theuth:reload-session', { detail: { settled: true } }))
 }
@@ -280,8 +298,12 @@ function attach(st: Stores): void {
   const attached = client.subscribe(null, null, (e) => {
     useEventRate.getState().tick()
     if (generation !== client.generation) { queue.length = 0; generation = client.generation }
-    // The stream's first item (also after a reconnect's re-issue): the subscription is up, seed the live sets.
-    if (e.key === 'rpc.stream@1' && e.event.type === 'PendingPrompts') seedLive(st)
+    // The stream's first item (also after a reconnect's re-issue): the subscription is up, seed the live sets and
+    // the unlock cards.
+    if (e.key === 'rpc.stream@1' && e.event.type === 'PendingPrompts') {
+      seedLive(st)
+      reseedUnlocks(st)
+    }
     queue.push(e)
     if (frame) return
     frame = requestAnimationFrame(drain)
@@ -810,6 +832,8 @@ function Main() {
   useEffect(() => {
     const st = scope(active)
     useEventRate.getState().reset()
+    // 221 §9.4: the cards belong to the engine left; the destination's arrive with its stream's first item.
+    useUnlockRequests.getState().clear()
     attach(st)
     return () => {
       detach(st)
