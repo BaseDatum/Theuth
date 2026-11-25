@@ -1269,3 +1269,15 @@ html .tg-canvas .tg-edge {
   94% { transform: translateX(26px); }
   100% { transform: translateX(26px); }
 }
+
+/* StopButton: the square grows in from a single point, with a slight overshoot, when Stop replaces Send. */
+@media (prefers-reduced-motion: no-preference) {
+  .stop-square-in {
+    transform-origin: center;
+    animation: stop-square-in 320ms cubic-bezier(0.2, 0.9, 0.3, 1.35) both;
+  }
+}
+@keyframes stop-square-in {
+  from { transform: scale(0); }
+  to { transform: scale(1); }
+}

@@ -114,7 +114,9 @@ export function StopButton({ count, ring, onStop }: { count: number; ring: numbe
         onPointerCancel={reset}
         onContextMenu={(e) => e.preventDefault()}
       >
-        <Square className="size-4 fill-current" />
+        {/* The square grows in from a point when Stop replaces Send (`.stop-square-in`, styles.css); it is the page
+            background, a cut-out, so it never reads as white on the dark theme. */}
+        <Square className="stop-square-in size-4 fill-current text-background" />
         {ring > 0 && (
           <svg className="pointer-events-none absolute -inset-1 -rotate-90" viewBox={`0 0 ${RING} ${RING}`} aria-hidden>
             <circle
