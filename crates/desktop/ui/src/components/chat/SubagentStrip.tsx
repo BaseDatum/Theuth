@@ -58,6 +58,7 @@ export function BackgroundDashes({ session, tray }: { session: string; tray: Tra
     ['terminals', [...terminalIds].map((id) => ({ key: id, label: `Terminal ${id} · open terminal`, color: backgroundColors.terminals.bg, beat: beats?.[id], open: { terminal: id } }))],
     ['kernels', kernels.map((k) => ({ key: JSON.stringify(k.id), label: `Kernel ${kernelName(k)} · ${phaseText(k)} · show kernels`, color: cn(backgroundColors.kernels.bg, k.phase !== 'ready' && 'motion-safe:animate-pulse'), open: reveal('kernels') }))],
     ['browsers', tray.browsers.map((t) => ({ key: t.kind === 'agent' ? 'agent' : t.id, label: targetAction(t), color: backgroundColors.browser.bg, open: () => tray.openBrowser(t) }))],
+    ['whiteboards', tray.whiteboards.map((w) => ({ key: w.doc, label: `Whiteboard ${w.title} · open`, color: backgroundColors.whiteboard.bg, open: () => tray.openWhiteboard(w) }))],
     ['artifacts', tray.artifacts.map((a) => ({ key: a.call_id, label: `Artifact ${a.title} · open`, color: backgroundColors.artifacts.bg, width: backgroundColors.artifacts.dash, open: () => showArtifact(session, a.call_id) }))],
     ['desktops', tray.vm ? [{ key: tray.vm.name, label: `Desktop of ${tray.vm.name}`, color: backgroundColors.desktop.bg, open: tray.vm.open }] : []],
     ['reminders', [...(reminders ?? [])].map((id) => ({ key: id, label: `Reminder ${id} · ${details?.get(id)?.message ?? 'pending'}`, color: backgroundColors.reminders.bg, open: reveal('reminders') }))],

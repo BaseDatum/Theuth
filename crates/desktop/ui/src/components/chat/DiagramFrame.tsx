@@ -16,6 +16,7 @@ import { useEngines } from '@/link/engines'
 import { Reserve } from './Reserve'
 import { useScopedDisclosure } from './disclosure'
 import { FenceContext } from './surface/JsonRenderFence'
+import { useBare } from './surface/bare'
 
 // Design 30 §8.3, 65 §3.4: the frame every diagram card shares — pan/zoom surface, hover toolbar (Copy PNG · Save PNG… ·
 // Save SVG… · Fullscreen) and the fullscreen dialog (a `diagram` tile in a tiling chat pane, `kinds/diagram`). The content
@@ -253,6 +254,9 @@ export function DiagramFrame({
   const { entry } = useContext(FenceContext)
   // 164 D3: a channel picture carries no toolbar; its placeholder tells the snapshot the layout is still pending.
   const snap = useSnapshot()
+  // A whiteboard card is the frame: no border, label or inline height of ours; the diagram fills the card.
+  const bare = useBare()
+  fill ||= bare
   const content: Content | null = svg ? { svg } : children ? { children } : null
   /** The markup to export: mermaid's string, or the mounted `<svg>` of the React content. */
   const markup = () => svg ?? inline.current?.querySelector('svg')?.outerHTML ?? ''
@@ -262,10 +266,15 @@ export function DiagramFrame({
     if (host && content) openDiagramTile(host, { svg: markup(), name, label }, true)
   }, [host, svg, name, label])
   return (
-    <div className={cn('group relative rounded-xl border bg-layer-1 p-2', fill ? 'flex h-full flex-col' : 'my-4')} data-streamdown={kind} title={title}>
-      <div className="flex h-8 items-center px-1 font-mono text-xs text-fg-tertiary">{label}</div>
+    <div
+      className={cn('group relative', bare ? 'flex h-full min-h-0 flex-1 flex-col' : cn('rounded-xl border bg-layer-1 p-2', fill ? 'flex h-full flex-col' : 'my-4'))}
+      data-streamdown={kind}
+      data-bare={bare || undefined}
+      title={title}
+    >
+      {!bare && <div className="flex h-8 items-center px-1 font-mono text-xs text-fg-tertiary">{label}</div>}
       {content && !snap && (
-        <div className="absolute top-2 right-2 flex items-center gap-0.5 rounded-md bg-layer-1/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
+        <div className={cn('absolute top-2 right-2 flex items-center gap-0.5 rounded-md bg-layer-1/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100', !bare && 'pointer-coarse:opacity-100')}>
           <Tools
             markup={markup}
             name={name}
@@ -273,7 +282,7 @@ export function DiagramFrame({
           />
         </div>
       )}
-      <Reserve id={entry && !fill ? `${entry}/${name}` : null} ready={content !== null} className={cn('rounded-md border bg-background', fill && 'min-h-0 flex-1')}>
+      <Reserve id={entry && !fill ? `${entry}/${name}` : null} ready={content !== null} className={bare ? 'min-h-0 flex-1' : cn('rounded-md border bg-background', fill && 'min-h-0 flex-1')}>
         {content ? (
           <Surface content={content} view={view} onView={setView} fill={fill} contentRef={inline} />
         ) : (

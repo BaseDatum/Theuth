@@ -13,6 +13,10 @@ export const FREE_PAD = 24
 export const FREE_MIN = 160
 /** Card chrome geometry the captions are computed against (kept in step with cards/CardShell.tsx). */
 export const CARD_HEADER = 30
+/** Kinds drawn bare: the content is the whole card, with no title bar above it (a caption shows on hover). */
+export const isBare = (c: Pick<Card, 'kind'>): boolean => c.kind === 'diagram'
+/** The height of a card's title bar: none on a bare card. */
+export const headerOf = (c: Pick<Card, 'kind'>): number => (isBare(c) ? 0 : CARD_HEADER)
 export const EXCERPT_ROW = 18
 export const EXCERPT_PAD = 8
 

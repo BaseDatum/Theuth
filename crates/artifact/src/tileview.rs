@@ -610,6 +610,13 @@ impl Tool for ShowWhiteboardTool {
             .or_else(|| Some(clean_title(&meta.title)).filter(|t| !t.is_empty()))
             .unwrap_or_else(|| "Whiteboard".to_owned());
         document::wb::hooks::bind(cx.session.0, &id);
+        // The transcript card's summary; a count that cannot be read leaves the line out.
+        let cards = handle
+            .actor()
+            .ask(document::wb::WbInfo { doc: id.clone() })
+            .await
+            .ok()
+            .map(|i| i.cards);
         let doc = id.to_string();
         self.rt
             .publish(WhiteboardViewOpened {
@@ -619,12 +626,13 @@ impl Tool for ShowWhiteboardTool {
                 title: title.clone(),
             })
             .await;
-        let content = whiteboard_receipt(&title, &doc, crate::preview::feed_live());
+        let content = whiteboard_receipt(&title, &doc, cards, crate::preview::feed_live());
         Ok(ToolOutput {
             structured: Some(serde_json::json!({
                 "session": cx.session,
                 "doc": doc,
                 "title": title,
+                "cards": cards,
                 "href": format!("theuth://whiteboards/{doc}"),
             })),
             ..ToolOutput::ok(content)
@@ -647,12 +655,16 @@ fn not_a_whiteboard(id: &str, kind: DocKind) -> Option<String> {
     })
 }
 
-/// The text the model reads; the first line is fixed (218 §3.4).
-fn whiteboard_receipt(title: &str, doc: &str, live: bool) -> String {
+/// The text the model reads; the first line is fixed (218 §3.4). The transcript card reads the title, the link line's
+/// document and the `N cards` line.
+fn whiteboard_receipt(title: &str, doc: &str, cards: Option<u32>, live: bool) -> String {
     let mut s = format!(
         "opened whiteboard {}\ntheuth://whiteboards/{doc}",
         serde_json::to_string(title).unwrap_or_default()
     );
+    if let Some(n) = cards {
+        let _ = write!(s, "\n{n} {}", if n == 1 { "card" } else { "cards" });
+    }
     if !live {
         let _ = write!(s, "\n{NO_APP}");
     }
@@ -1011,10 +1023,16 @@ mod tests {
             "artifact.whiteboard-view-opened"
         );
         assert_eq!(
-            whiteboard_receipt("Attention \"inbox\"", doc, true),
+            whiteboard_receipt("Attention \"inbox\"", doc, None, true),
             format!("opened whiteboard \"Attention \\\"inbox\\\"\"\ntheuth://whiteboards/{doc}")
         );
-        assert!(whiteboard_receipt("A", doc, false).ends_with(NO_APP));
+        // The transcript card's summary line (218 cards): what the chat card shows under the title.
+        assert_eq!(
+            whiteboard_receipt("Plan", doc, Some(3), true),
+            format!("opened whiteboard \"Plan\"\ntheuth://whiteboards/{doc}\n3 cards")
+        );
+        assert!(whiteboard_receipt("Plan", doc, Some(1), true).ends_with("\n1 card"));
+        assert!(whiteboard_receipt("A", doc, Some(0), false).ends_with(NO_APP));
     }
 
     #[test]

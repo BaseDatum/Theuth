@@ -6,7 +6,7 @@ import { MARKER_OPACITY, strokePath } from '../ink/render'
 import type { PlannedImage } from './api'
 import { intersects, scaleOf, shownCards } from './geom'
 import type { Board, Card, Id } from './model'
-import { CARD_HEADER } from './send'
+import { headerOf } from './send'
 
 type Theme = { bg: string; card: string; border: string; fg: string; fg2: string }
 const THEMES: Record<'light' | 'dark', Theme> = {
@@ -85,17 +85,20 @@ async function drawCard(ctx: CanvasRenderingContext2D, c: Card, t: Theme, blobUr
   ctx.lineWidth = 1
   ctx.stroke()
   ctx.clip()
-  ctx.fillStyle = t.fg
-  ctx.font = '600 11.5px system-ui, sans-serif'
-  ctx.textBaseline = 'middle'
-  ctx.fillText(c.title || c.kind, c.x + 10, c.y + CARD_HEADER / 2, c.w - 20)
-  ctx.beginPath()
-  ctx.moveTo(c.x, c.y + CARD_HEADER)
-  ctx.lineTo(c.x + c.w, c.y + CARD_HEADER)
-  ctx.stroke()
+  const head = headerOf(c)
+  if (head > 0) {
+    ctx.fillStyle = t.fg
+    ctx.font = '600 11.5px system-ui, sans-serif'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(c.title || c.kind, c.x + 10, c.y + head / 2, c.w - 20)
+    ctx.beginPath()
+    ctx.moveTo(c.x, c.y + head)
+    ctx.lineTo(c.x + c.w, c.y + head)
+    ctx.stroke()
+  }
   const url = c.snap ? await blobUrl(`snap/${c.id}/${c.snap.v}`) : null
   const img = url ? await loadImage(url) : null
-  if (img) ctx.drawImage(img, c.x, c.y + CARD_HEADER, c.w, c.h - CARD_HEADER)
+  if (img) ctx.drawImage(img, c.x, c.y + head, c.w, c.h - head)
   else {
     // The labelled box: what the relay web client shows for a card nobody has snapshotted (design §3.4).
     ctx.fillStyle = t.fg2
@@ -104,7 +107,7 @@ async function drawCard(ctx: CanvasRenderingContext2D, c: Card, t: Theme, blobUr
     const src = c.versions.at(-1)?.source
     const text = src?.t === 'sticky' ? src.text : `${c.kind} · no snapshot`
     const lines = text.split('\n').slice(0, 8)
-    lines.forEach((l, i) => ctx.fillText(l, c.x + c.w / 2, c.y + CARD_HEADER + 24 + i * 16, c.w - 16))
+    lines.forEach((l, i) => ctx.fillText(l, c.x + c.w / 2, c.y + head + 24 + i * 16, c.w - 16))
   }
   ctx.restore()
 }

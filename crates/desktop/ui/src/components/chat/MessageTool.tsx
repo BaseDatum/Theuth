@@ -15,6 +15,7 @@ import { WebViewCard } from './WebViewCard'
 import { ElementFormCard } from './ElementFormCard'
 import { PtyViewCard } from './PtyViewCard'
 import { NoteViewCard } from './NoteViewCard'
+import { WhiteboardViewCard } from './WhiteboardViewCard'
 import { FileViewCard } from './FileViewCard'
 import { DiffViewCard } from './DiffViewCard'
 import { RosterCard, rosterRows } from './RosterCard'
@@ -106,6 +107,8 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
       <PtyViewCard tool={tool} />
     ) : tool.name === 'show_note' ? (
       <NoteViewCard tool={tool} />
+    ) : tool.name === 'show_whiteboard' || tool.name === 'wb_create' ? (
+      <WhiteboardViewCard tool={tool} session={session} />
     ) : tool.name === 'show_file' ? (
       <FileViewCard tool={tool} session={session} />
     ) : tool.name === 'show_diff' ? (

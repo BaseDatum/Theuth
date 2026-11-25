@@ -7,6 +7,7 @@ import { FenceScope, useScopedDisclosure } from '../disclosure'
 import { type ParseResult, parseSpec } from './parse'
 import { openSpec } from './streaming'
 import { registry } from './registry'
+import { unwrapRoot, useBare } from './bare'
 
 /**
  * What a fence renderer knows about its place in the transcript (30 §8), set by `MessageAssistant`: whether the turn
@@ -80,10 +81,12 @@ class Boundary extends Component<
 }
 
 function Surface({ spec, loading, title }: { spec: Spec; loading: boolean; title?: string }) {
+  const bare = useBare()
+  const shown = useMemo(() => (bare ? unwrapRoot(spec) : spec), [bare, spec])
   return (
-    <div className="my-4 text-sm" data-streamdown="json-render" title={title}>
+    <div className={bare ? 'flex h-full min-h-0 flex-col overflow-auto text-sm' : 'my-4 text-sm'} data-streamdown="json-render" data-bare={bare || undefined} title={title}>
       <JSONUIProvider registry={registry}>
-        <Renderer spec={spec} registry={registry} loading={loading} />
+        <Renderer spec={shown} registry={registry} loading={loading} />
       </JSONUIProvider>
     </div>
   )

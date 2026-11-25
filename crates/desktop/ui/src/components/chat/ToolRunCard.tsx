@@ -27,10 +27,10 @@ export type Run = Entry[]
  * do at the desktop. `secret_request` and approvals still use their prompt cards.
  * `send_message` (Sky, 2026-11-10): every send is its own card with its delivery track (`SendCard`). `show_web` (205): its
  * card reopens the web view tile; `show_pty`/`show_note` (211) likewise their terminal and note tiles, `show_file`/
- * `show_diff` (212) their file and diff tiles.
+ * `show_diff` (212) their file and diff tiles; `show_whiteboard`/`wb_create` (218) the whiteboard's tile.
  * `browser_show_element` (209 §4.10): its card is the form the user fills, so it is never folded away.
  * `share_publish` (210 §7.4 item 3): something is public on the internet; its card carries the URL and Stop. */
-const DELIVERABLE_TOOLS: Record<string, true> = { show: true, show_web: true, show_pty: true, show_note: true, show_file: true, show_diff: true, app: true, agent_draft: true, task_draft: true, routine_draft: true, ask_user: true, desktop_handoff: true, send_message: true, browser_show_element: true, share_publish: true }
+const DELIVERABLE_TOOLS: Record<string, true> = { show: true, show_web: true, show_pty: true, show_note: true, show_whiteboard: true, wb_create: true, show_file: true, show_diff: true, app: true, agent_draft: true, task_draft: true, routine_draft: true, ask_user: true, desktop_handoff: true, send_message: true, browser_show_element: true, share_publish: true }
 export function isDeliverable(tool: Tool): boolean {
   return DELIVERABLE_TOOLS[tool.name] === true || isBoardCreate(tool)
 }

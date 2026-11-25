@@ -23,6 +23,7 @@ import { useSessions } from '@/store/sessions'
 import { FenceScope, useScopedDisclosure } from '../disclosure'
 import { FenceContext, FenceFallback } from './JsonRenderFence'
 import { registerDiagramHosts } from './diagram-hosts'
+import { useBare } from './bare'
 
 // 123 §6: a static openui fence draws its diagrams with the chat's renderers, as `AppHost` does.
 registerDiagramHosts()
@@ -81,6 +82,7 @@ function OpenUI({ code, isIncomplete }: CustomRendererProps) {
   const dark = useDark()
   // 164 D3: a channel picture: no toolbar, the requested palette.
   const snap = useSnapshot()
+  const bare = useBare()
   const [busy, setBusy] = useState(false)
   const [source, setSource] = useScopedDisclosure('source')
   // The closed program's first failure; tool availability is the engine's business (the transcript has no snapshot).
@@ -98,7 +100,7 @@ function OpenUI({ code, isIncomplete }: CustomRendererProps) {
     }
   }
   return (
-    <div className="group relative my-4 text-sm" data-streamdown="openui">
+    <div className={bare ? 'group relative h-full overflow-auto text-sm' : 'group relative my-4 text-sm'} data-streamdown="openui" data-bare={bare || undefined}>
       {!snap && (
         <div className="absolute top-0 right-0 z-10 flex gap-1 rounded-lg bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           {session !== undefined && (

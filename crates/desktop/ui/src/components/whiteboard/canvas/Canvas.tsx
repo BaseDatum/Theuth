@@ -35,7 +35,7 @@ import { WB_SCHEMA, type Board, type Box, type Id, type Port, type Stroke } from
 import { addCard, addFrame, addLink, addStrokes, eraseStrokes, holdGroup, moveItems, pinMark, raise, setSnap, archive, removeLink, removeFrame, dim } from './ops'
 import { lassoSelect } from './lasso'
 import { InkSelection, LassoPath, Offscreen, SelectionBar } from './Overlays'
-import { CARD_HEADER, commitSend as writeSend, planSend as plan, type Caption } from './send'
+import { CARD_HEADER, commitSend as writeSend, headerOf, planSend as plan, type Caption } from './send'
 import { createUndo } from './undo'
 import { sourceOf } from './useBoard'
 
@@ -240,7 +240,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     const th = themeRef.current
     const key = `snap/${c.id}/${v}`
     if (snapping.current.has(key + th)) return
-    const rect = windowRect([c.x, c.y + CARD_HEADER, c.w, c.h - CARD_HEADER])
+    const head = headerOf(c)
+    const rect = windowRect([c.x, c.y + head, c.w, c.h - head])
     if (!rect || rect.width < 8 || rect.height < 8) return
     snapping.current.add(key + th)
     try {
