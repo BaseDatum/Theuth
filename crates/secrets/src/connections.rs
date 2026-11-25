@@ -389,7 +389,6 @@ impl SecretsActor {
                 self.connections.artifacts.clone(),
             ));
         }
-        self.refresh_owner_only();
         if !self.connections.tools {
             return;
         }
@@ -398,18 +397,6 @@ impl SecretsActor {
         crate::tools_external::register(&reg, cx, &names).await;
         if fresh_send && let Some(send) = &self.connections.send {
             crate::tools_send::register(&reg, send.clone()).await;
-        }
-    }
-
-    /// D17 `send_owner_only` as the Send gate reads it: on when any Bitwarden connection has it on.
-    fn refresh_owner_only(&self) {
-        if let Some(send) = &self.connections.send {
-            let on = self
-                .connections
-                .conns
-                .values()
-                .any(|c| c.backend == "bw" && c.settings.send_owner_only);
-            send.set_owner_only(on);
         }
     }
 }
@@ -501,10 +488,13 @@ impl SecretsActor {
     }
 
     /// Add the always-ask entries of `backend/conn` (harness-wide) and stamp them seeded.
+    /// Without a tool registry (`secrets.tools: false`) nothing is seeded and nothing stamped, so
+    /// a later start with the tools on still seeds (R4).
     async fn seed(&self, backend: &str, conn: &str) -> Result<(), String> {
-        if let Some(reg) = registry() {
-            ::tools::secrets::seed_ask(&reg, backend, conn).await?;
-        }
+        let Some(reg) = registry() else {
+            return Ok(());
+        };
+        ::tools::secrets::seed_ask(&reg, backend, conn).await?;
         crate::store::meta_put(self.vault.pool(), &seeded_stamp(conn), b"1")
             .await
             .map_err(|e| format!("{e:#}"))
@@ -610,9 +600,12 @@ impl Message<SeedConnections> for SecretsActor {
             }
         }
         self.connections.ready = true;
+        // Without the tool registry nothing reads placeholders: the connections serve the
+        // owner's UI unseeded (R4).
+        let tools_off = registry().is_none();
         for (conn, _) in conns {
             let stamped = crate::store::meta_get(self.vault.pool(), &seeded_stamp(&conn)).await;
-            if matches!(stamped, Ok(Some(_))) {
+            if tools_off || matches!(stamped, Ok(Some(_))) {
                 self.build(&conn);
             }
         }
@@ -839,7 +832,6 @@ impl Message<SetSetting> for SecretsActor {
         if let Some(b) = self.externals.by_conn(&conn) {
             b.apply_settings(&next);
         }
-        self.refresh_owner_only();
         Ok(loosens)
     }
 }
