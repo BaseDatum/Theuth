@@ -130,9 +130,7 @@ export async function sendWhiteboard(d: SendDeps, i: SendInput): Promise<SendRes
       sent.push({ card: image.card, marks: image.marks })
     }
   }
-  // 5. The marks become `sent` (one wb-local transaction, B3).
-  d.handle.commitSend(plan, { to: i.session, hw, blobs: [...stored] })
-  // 6. Bind, then the context the injection consumes.
+  // 5. Bind, then the context the injection consumes.
   if (i.session && !i.bound) await d.wb.bind(i.session, i.doc)
   const seen = d.handle.visible()
   const omitted = i.vision ? budget.omitted : blobs.length + budget.omitted
@@ -144,10 +142,14 @@ export async function sendWhiteboard(d: SendDeps, i: SendInput): Promise<SendRes
     omitted_why: omitted === 0 ? null : i.vision ? 'budget' : 'no vision',
   }
   await d.wb.sendContext(i.session, i.doc, context)
-  // 7. The message.
+  // 6. The message.
   const body = sendBody(i.doc, i.title, i.cards, i.text)
   let session = i.session
   if (session && i.running) await d.steer(session, body, i.clientId, files)
   else session = await d.sendInput(session, body, files, i.clientId)
+  // 7. Only now do the marks become `sent` (one wb-local transaction, B3): a failure above leaves the ink fresh, nothing
+  // hidden, ready to send again (218 review M2). The update follows the input by one round trip; an injection that
+  // already read the outline lists these marks as `+m…` on the next turn.
+  d.handle.commitSend(plan, { to: session, hw, blobs: [...stored] })
   return { session: session ?? '', plan, images: sent.length, omitted }
 }

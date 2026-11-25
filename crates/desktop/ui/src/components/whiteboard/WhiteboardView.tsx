@@ -355,7 +355,8 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
       if (spoken === undefined) setText('')
       closeComposer()
     } catch (e) {
-      notify.error(e instanceof Error ? e.message : String(e))
+      // M2: nothing was marked sent; the ink stays fresh and the text stays in the sheet for a retry.
+      notify.error('Not sent — your marks are kept for the next try', { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setSending(false)
     }

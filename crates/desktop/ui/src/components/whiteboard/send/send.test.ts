@@ -63,7 +63,7 @@ describe('sendWhiteboard', () => {
   it('runs the contract order: plan, images, handwriting, mark blobs, attachments, commit, bind, context, send', async () => {
     const { deps, calls } = rig()
     const r = await sendWhiteboard(deps, input())
-    expect(calls).toEqual(['planSend', 'capture', 'compose', 'recognize', 'blobPut:mark/M1', 'blobPut:mark/M2', 'putAttachment', 'putAttachment', 'commitSend', 'bind', 'sendContext', 'sendInput'])
+    expect(calls).toEqual(['planSend', 'capture', 'compose', 'recognize', 'blobPut:mark/M1', 'blobPut:mark/M2', 'putAttachment', 'putAttachment', 'bind', 'sendContext', 'sendInput', 'commitSend'])
     expect(r.session).toBe('NEW-SESSION')
     expect(deps.sendInput).toHaveBeenCalledWith('S', sendBody(DOC, 'Attention inbox', 5, 'Drop that tab.'), ['/att/x.png', '/att/x.png'], 'cid')
     expect(deps.wb.sendContext).toHaveBeenCalledWith('S', DOC, {
@@ -82,7 +82,7 @@ describe('sendWhiteboard', () => {
     const { deps, commitSend } = rig()
     await sendWhiteboard(deps, input())
     expect(deps.recognize).toHaveBeenCalledTimes(1)
-    expect(commitSend).toHaveBeenCalledWith(PLAN, { to: 'S', hw: { M2: 'no third tab' }, blobs: ['M1', 'M2'] })
+    expect(commitSend).toHaveBeenCalledWith(PLAN, { to: 'NEW-SESSION', hw: { M2: 'no third tab' }, blobs: ['M1', 'M2'] })
   })
 
   it('no session (R1): context keyed by the whiteboard alone, send_input(null) creates the session, nothing is bound', async () => {
@@ -98,7 +98,7 @@ describe('sendWhiteboard', () => {
     const { deps, calls } = rig()
     const r = await sendWhiteboard(deps, input({ running: true, bound: true }))
     expect(calls).not.toContain('bind')
-    expect(calls.at(-1)).toBe('steer')
+    expect(calls.slice(-2)).toEqual(['steer', 'commitSend'])
     expect(r.session).toBe('S')
   })
 
@@ -109,6 +109,23 @@ describe('sendWhiteboard', () => {
     expect(calls).toContain('blobPut:mark/M1')
     expect(deps.sendInput).toHaveBeenCalledWith('S', expect.any(String), [], 'cid')
     expect(deps.wb.sendContext).toHaveBeenCalledWith('S', DOC, expect.objectContaining({ images: [], omitted: 2, omitted_why: 'no vision' }))
+  })
+
+  it('a failed send leaves the marks fresh: commitSend never runs (review M2)', async () => {
+    for (const fail of ['bind', 'sendContext', 'sendInput'] as const) {
+      const { deps, commitSend } = rig()
+      const boom = () => Promise.reject(new Error(`${fail} failed`))
+      if (fail === 'sendInput') deps.sendInput = boom
+      else deps.wb[fail] = boom
+      await expect(sendWhiteboard(deps, input())).rejects.toThrow(`${fail} failed`)
+      expect(commitSend).not.toHaveBeenCalled()
+    }
+  })
+
+  it('a new session (R1) is the `to` of the committed marks', async () => {
+    const { deps, commitSend } = rig()
+    await sendWhiteboard(deps, input({ session: null }))
+    expect(commitSend).toHaveBeenCalledWith(PLAN, expect.objectContaining({ to: 'NEW-SESSION' }))
   })
 
   it('the marker leads the text and says "1 card" in the singular', () => {
