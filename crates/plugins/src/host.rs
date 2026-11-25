@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use kameo::actor::ActorRef;
 use serde_json::{Value, json};
-use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -155,6 +154,15 @@ impl Conn {
         if let Ok(mut p) = self.pending.lock() {
             p.insert(id.clone(), tx);
         }
+        // `fail_all` cancels `gone` before it drains: an insert that raced past the drain sees it.
+        if self.gone.is_cancelled() {
+            if let Ok(mut p) = self.pending.lock() {
+                p.remove(&id);
+            }
+            return Err(PluginsError::Exited {
+                name: self.name.clone(),
+            });
+        }
         self.outbox
             .control(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
         let cancelled = async {
@@ -259,7 +267,8 @@ impl Conn {
     }
 }
 
-/// Everything a supervisor needs to run one process generation.
+/// Everything a supervisor needs to run one process generation. `hello` is already queued as
+/// the outbox's first line (design §6.2: always first).
 pub(crate) struct Launch {
     pub name: String,
     pub epoch: u64,
@@ -267,7 +276,6 @@ pub(crate) struct Launch {
     pub manifest: Manifest,
     pub data_dir: PathBuf,
     pub base_env: Arc<BTreeMap<String, String>>,
-    pub hello: Value,
     pub conn: Arc<Conn>,
     pub log: Arc<PluginLog>,
     pub stderr_tail: Arc<Mutex<VecDeque<String>>>,
@@ -362,13 +370,11 @@ pub(crate) async fn supervise(l: Launch) {
     } = spawned;
     let pgids = proc::Pgids::new(l.pgids.clone());
     if let Some(g) = pgid {
-        pgids.add(g, &spec.argv);
+        let start = proc::leader_start(g).await.unwrap_or_default();
+        pgids.add(g, &start, &spec.argv);
     }
     l.log
         .line("host", &format!("started: {}", spec.argv.join(" ")));
-    l.conn
-        .outbox
-        .control(json!({ "jsonrpc": "2.0", "method": "hello", "params": l.hello }));
     let _ = l
         .actor
         .tell(ProcessUp {
@@ -380,10 +386,23 @@ pub(crate) async fn supervise(l: Launch) {
     let writer = tokio::spawn(proc::write_loop(l.conn.outbox.clone(), stdin));
     let err_log = l.log.clone();
     let tail = l.stderr_tail.clone();
+    let max_line = l.cfg.max_line_bytes;
     let err_task = tokio::spawn(async move {
-        let mut lines = tokio::io::BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let red = ::tools::secrets::redact(&line).into_owned();
+        let mut lines = proc::LineReader::new(stderr, max_line);
+        loop {
+            let line = match lines.next().await {
+                Ok(Some(ReadItem::Line(bytes))) => bytes,
+                Ok(Some(ReadItem::TooLong { bytes, .. })) => {
+                    err_log.line(
+                        "host",
+                        &format!("stderr line over max_line_bytes ({bytes} bytes) discarded"),
+                    );
+                    continue;
+                }
+                Ok(None) | Err(_) => break,
+            };
+            let text = String::from_utf8_lossy(&line);
+            let red = ::tools::secrets::redact(text.trim_end_matches('\r')).into_owned();
             err_log.line("stderr", &red);
             if let Ok(mut t) = tail.lock() {
                 t.push_back(red);
@@ -396,11 +415,21 @@ pub(crate) async fn supervise(l: Launch) {
 
     let mut reader = proc::LineReader::new(stdout, l.cfg.max_line_bytes);
     let mut stray = StrayGuard::new(started);
-    let mut flood = false;
+    let overflow = l.conn.outbox.overflowed();
+    // Some(why): the host kills the process at once (a crash, design §6.1/§6.2).
+    let mut fatal: Option<&str> = None;
     loop {
         let item = tokio::select! {
             r = reader.next() => r,
             _ = l.conn.stop.cancelled() => break,
+            _ = overflow.cancelled() => {
+                l.log.line(
+                    "host",
+                    "the plugin does not read stdin and its control lane overflowed: treated as a crash",
+                );
+                fatal = Some("control lane overflow");
+                break;
+            }
         };
         match item {
             Ok(Some(ReadItem::Line(bytes))) => match proc::classify(&bytes) {
@@ -427,7 +456,7 @@ pub(crate) async fn supervise(l: Launch) {
                             "host",
                             "more than 100 stray stdout lines in 10 s: treated as a crash",
                         );
-                        flood = true;
+                        fatal = Some("stray-output flood");
                         break;
                     }
                 }
@@ -448,9 +477,12 @@ pub(crate) async fn supervise(l: Launch) {
 
     // Stopping or EOF: give the process its grace, then kill the tree.
     let grace = Duration::from_millis(l.cfg.shutdown_grace_ms);
-    let status = if flood {
-        if let Some(t) = &tree {
-            t.kill();
+    let status = if fatal.is_some() {
+        match &tree {
+            Some(t) => t.kill(),
+            None => {
+                let _ = child.start_kill();
+            }
         }
         child.wait().await.ok()
     } else {
@@ -478,10 +510,10 @@ pub(crate) async fn supervise(l: Launch) {
         pgids.remove(g);
     }
     let ran = started.elapsed();
-    let (kind, error) = match (flood, status) {
-        (true, _) => (ExitKind::Failed, Some("stray-output flood".to_owned())),
-        (false, Some(s)) if s.success() => (ExitKind::Clean, None),
-        (false, Some(s)) => {
+    let (kind, error) = match (fatal, status) {
+        (Some(why), _) => (ExitKind::Failed, Some(why.to_owned())),
+        (None, Some(s)) if s.success() => (ExitKind::Clean, None),
+        (None, Some(s)) => {
             let last = l.stderr_tail.lock().ok().and_then(|t| t.back().cloned());
             let why = match s.code() {
                 Some(c) => format!("exit {c}"),
@@ -492,7 +524,7 @@ pub(crate) async fn supervise(l: Launch) {
                 Some(last.map_or(why.clone(), |line| format!("{why}: {line}"))),
             )
         }
-        (false, None) => (ExitKind::Failed, Some("lost the process".to_owned())),
+        (None, None) => (ExitKind::Failed, Some("lost the process".to_owned())),
     };
     l.log.line(
         "host",
@@ -527,7 +559,8 @@ pub(crate) async fn boot(rt: runtime::Runtime, actor: ActorRef<PluginsActor>, cf
     }
     proc::reap_orphans(&paths.pgids(), Duration::from_millis(cfg.shutdown_grace_ms)).await;
     crate::logs::sweep(&paths.logs, cfg.log_days);
-    let key = match secrets::handle(&rt).await {
+    let vault = secrets::handle(&rt).await;
+    let key = match &vault {
         Some(v) => match v.plugins_grants_key().await {
             Ok(k) => Some(k),
             Err(e) => {
@@ -541,7 +574,12 @@ pub(crate) async fn boot(rt: runtime::Runtime, actor: ActorRef<PluginsActor>, cf
         }
     };
     let env = Arc::new(base_env().await);
-    let reply = match actor.ask(Boot { key, base_env: env }).await {
+    let boot = Boot {
+        key,
+        vault,
+        base_env: env,
+    };
+    let reply = match actor.ask(boot).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "plugins: boot failed");
@@ -563,9 +601,11 @@ pub(crate) async fn boot(rt: runtime::Runtime, actor: ActorRef<PluginsActor>, cf
     }
     rt.shutdown.cancelled().await;
     let grace = Duration::from_millis(cfg.shutdown_grace_ms + 500);
-    let _ = tokio::time::timeout(grace, actor.ask(ShutdownAll)).await;
-    // Every tree was asked to stop and killed after its grace (design §5 "Engine shutdown").
-    proc::Pgids::new(paths.pgids()).clear();
+    // Every tree was asked to stop and killed after its grace (design §5 "Engine shutdown");
+    // on a timeout some may survive, and `.pgids` keeps them for the next boot's reaper.
+    if let Ok(Ok(())) = tokio::time::timeout(grace, actor.ask(ShutdownAll)).await {
+        proc::Pgids::new(paths.pgids()).clear();
+    }
 }
 
 #[cfg(test)]

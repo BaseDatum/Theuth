@@ -799,7 +799,15 @@ pub(crate) async fn leader_start(pid: u32) -> Option<String> {
 #[cfg(unix)]
 async fn leader(pid: u32) -> Option<(String, String)> {
     let out = Command::new("ps")
-        .args(["-ww", "-o", "lstart=", "-o", "command=", "-p", &pid.to_string()])
+        .args([
+            "-ww",
+            "-o",
+            "lstart=",
+            "-o",
+            "command=",
+            "-p",
+            &pid.to_string(),
+        ])
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -830,21 +838,18 @@ fn split_lstart(s: &str) -> Option<(String, String)> {
     (!cmd.is_empty()).then(|| (words.join(" "), cmd.to_owned()))
 }
 
-/// The recorded argv exactly, or (an interpreter shim exec'd into the real binary) the same
-/// arguments after a different program.
+/// The whole recorded `run`, or else its last word: an interpreter shim or `sh -c` may have
+/// exec'd past the recorded program. The start time, compared first, is what rules out a
+/// recycled pid.
 #[cfg(unix)]
 fn command_matches(cmd: &str, run: &str) -> bool {
     let run = run.trim();
-    if run.is_empty() {
-        return false;
-    }
-    if cmd == run {
-        return true;
-    }
-    match run.split_once(' ') {
-        Some((_, args)) if !args.trim().is_empty() => cmd.ends_with(&format!(" {}", args.trim())),
-        _ => false,
-    }
+    !run.is_empty()
+        && (cmd.contains(run)
+            || run
+                .split_whitespace()
+                .last()
+                .is_some_and(|last| cmd.contains(last)))
 }
 
 /// SIGTERM the tree, poll every 50 ms up to `grace`, then SIGKILL.
@@ -1035,7 +1040,8 @@ mod tests {
         // Reap the leader as it dies so the group stops counting a zombie.
         let waiter = tokio::spawn(async move { child.wait().await });
         let path = dir.path().join(".pgids");
-        Pgids::new(path.clone()).add(pgid, &argv);
+        let started = leader_start(pgid).await.expect("leader start time");
+        Pgids::new(path.clone()).add(pgid, &started, &argv);
         // Let the fork exec so `ps` shows the plugin, not this test binary.
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(tree.alive());
@@ -1052,5 +1058,85 @@ mod tests {
         }
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
         let _ = waiter.await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn orphan_with_other_start_time_not_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv: Vec<String> = vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()];
+        let spec = SpawnSpec {
+            argv: argv.clone(),
+            cwd: dir.path().to_path_buf(),
+            env: [("PATH".to_owned(), "/bin:/usr/bin".to_owned())].into(),
+        };
+        let s = spawn(&spec).unwrap();
+        let (pgid, tree) = (s.pgid.unwrap(), s.tree.clone().unwrap());
+        let path = dir.path().join(".pgids");
+        // A recycled pid (or a forged line) carries another start time.
+        Pgids::new(path.clone()).add(pgid, "Thu Jan  1 00:00:00 1970", &argv);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        reap_orphans(&path, Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            tree.alive(),
+            "a group with another start time is left alone"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        tree.kill();
+        drop(s.child);
+    }
+
+    #[test]
+    fn pgids_lines_of_other_plugins_survive_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".pgids");
+        let argv = vec!["a".to_owned()];
+        Pgids::new(path.clone()).add(10, "s", &argv);
+        Pgids::new(path.clone()).add(11, "s", &argv);
+        Pgids::new(path.clone()).remove(10);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "11\ts\ta\n");
+    }
+
+    #[tokio::test]
+    async fn hello_first_even_after_lagged_and_control() {
+        let out = Outbox::new(2);
+        for i in 0..5 {
+            out.event(serde_json::json!({"jsonrpc":"2.0","method":"event","params":{"n":i}}));
+        }
+        out.control(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call"}));
+        out.first(serde_json::json!({"jsonrpc":"2.0","method":"hello"}));
+        let (w, r) = tokio::io::duplex(64 * 1024);
+        let writer = tokio::spawn(write_loop(out.clone(), w));
+        let mut lines = tokio::io::BufReader::new(r).lines();
+        let mut methods = Vec::new();
+        for _ in 0..5 {
+            let l = lines.next_line().await.unwrap().unwrap();
+            let v: Value = serde_json::from_str(&l).unwrap();
+            methods.push(v["method"].as_str().unwrap().to_owned());
+        }
+        assert_eq!(methods, ["hello", "lagged", "tools/call", "event", "event"]);
+        out.close();
+        writer.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn control_lane_overflow_ends_the_outbox() {
+        let out = Outbox::new(4);
+        let token = out.overflowed();
+        for i in 0..CONTROL_MAX_LINES {
+            out.control(serde_json::json!({"jsonrpc":"2.0","id":i,"result":{}}));
+        }
+        assert!(!token.is_cancelled());
+        out.control(serde_json::json!({"jsonrpc":"2.0","id":"x","result":{}}));
+        assert!(token.is_cancelled());
+        assert!(matches!(out.take(), Take::End(None)));
+
+        let out = Outbox::new(4);
+        let big = "x".repeat(CONTROL_MAX_BYTES / 2);
+        out.control(serde_json::json!({ "r": big }));
+        assert!(!out.overflowed().is_cancelled());
+        out.control(serde_json::json!({ "r": big }));
+        assert!(out.overflowed().is_cancelled());
     }
 }

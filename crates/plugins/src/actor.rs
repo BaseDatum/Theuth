@@ -33,6 +33,11 @@ use crate::{PLUGINS_ACTOR, broker, catalog, ptools};
 const MAX_INFLIGHT: usize = 16;
 /// `plugin_logs` cap.
 const MAX_TAIL: u32 = 2000;
+/// `plugin_approve_request` re-files per plugin per minute (an agent tool that never prompts).
+const APPROVE_REQUESTS_PER_MIN: u32 = 3;
+/// Refusal `log` lines sent back to one plugin per second; the rest are counted and reported
+/// with the next one that goes out.
+const REFUSALS_PER_S: u32 = 5;
 
 /// ms since the epoch.
 pub(crate) fn now_ms() -> u64 {
@@ -96,6 +101,12 @@ struct Entry {
     input_rl: RateLimit,
     pace: HashMap<String, Pace>,
     inflight: Arc<AtomicUsize>,
+    /// `ping` / `catalog`: answered inline, so paced like OpenUI queries.
+    ctl_rl: RateLimit,
+    approve_rl: RateLimit,
+    refuse_rl: RateLimit,
+    /// Refusals not sent since the last one that was.
+    refused_quiet: u64,
 }
 
 impl Entry {
@@ -138,6 +149,8 @@ pub(crate) fn spawn(
 pub(crate) struct Boot {
     /// The vault's `plugins/grants-key`; `None` = nothing verifies and nothing can be approved.
     pub key: Option<Zeroizing<[u8; 32]>>,
+    /// The vault holding the grant generations (review R3); `None` = in memory only.
+    pub vault: Option<Arc<secrets::Vault>>,
     /// [`host::base_env`].
     pub base_env: Arc<BTreeMap<String, String>>,
 }
@@ -206,6 +219,17 @@ fn risk_rank(r: tools::Risk) -> u8 {
     }
 }
 
+/// Run blocking file work (reads, hashing, copies, `sync_all`) off the runtime's worker threads.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, PluginsError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| PluginsError::Io {
+            message: format!("file task: {e}"),
+        })
+}
+
 fn not_found(name: &str) -> PluginsError {
     PluginsError::NotFound {
         name: name.to_owned(),
@@ -267,6 +291,14 @@ impl PluginsActor {
             ),
             pace: HashMap::new(),
             inflight: Arc::default(),
+            ctl_rl: RateLimit::new(cfg.query_per_s, Duration::from_secs(1), cfg.query_per_s),
+            approve_rl: RateLimit::new(
+                APPROVE_REQUESTS_PER_MIN,
+                Duration::from_secs(60),
+                APPROVE_REQUESTS_PER_MIN,
+            ),
+            refuse_rl: RateLimit::new(REFUSALS_PER_S, Duration::from_secs(1), REFUSALS_PER_S),
+            refused_quiet: 0,
         }
     }
 
@@ -358,14 +390,13 @@ impl PluginsActor {
     // ----- grants ------------------------------------------------------------------------------
 
     fn verified(&self, name: &str) -> Option<&GrantEntry> {
-        let key = self.key.as_ref()?;
-        let g = self.grants.entries.get(name)?;
-        grants::verify(key, name, g).then_some(g)
+        self.grants.verified(self.key.as_ref()?, name)
     }
 
-    fn save_grants(&self) -> Result<(), PluginsError> {
-        self.grants
-            .save(&self.paths.grants())
+    async fn save_grants(&self) -> Result<(), PluginsError> {
+        let (file, path) = (self.grants.clone(), self.paths.grants());
+        blocking(move || file.save(&path))
+            .await?
             .map_err(|e| PluginsError::Io {
                 message: format!("grants.yaml: {e}"),
             })
@@ -522,24 +553,38 @@ impl PluginsActor {
 
     // ----- loading and the gate ---------------------------------------------------------------
 
-    /// Re-read one folder: parse, hashes, requested grants.
-    fn reload(&mut self, name: &str) {
+    /// Re-read one folder: parse, hashes, requested grants (file IO off the runtime threads).
+    async fn reload(&mut self, name: &str) {
         let mut e = self
             .plugins
             .remove(name)
             .unwrap_or_else(|| self.new_entry(name));
-        match manifest::load(&e.dir) {
-            Ok(parsed) => {
+        let (dir, mcp, plugin) = (e.dir.clone(), self.paths.mcp.clone(), name.to_owned());
+        let read = blocking(move || {
+            manifest::load(&dir).map(|parsed| {
+                let risk = |t: &manifest::ToolDecl| {
+                    ptools::risk_of(&mcp, &plugin, t).unwrap_or_else(|| manifest::hint_risk(t))
+                };
+                let requested = manifest::requested(&parsed.manifest, &risk);
+                let files = manifest::code_files(&dir);
+                let sha = manifest::code_hash(&files);
+                (parsed, requested, files, sha)
+            })
+        })
+        .await;
+        match read {
+            Ok(Ok((parsed, requested, files, sha))) => {
                 let mut issues = self.catalog_issues(&parsed.manifest);
+                issues.extend(ptools::clashes(&parsed.manifest).await);
                 if let Err(err) = manifest::check_name(name) {
                     issues.push(CheckIssue {
                         path: "/name".into(),
                         message: err.to_string(),
                     });
                 }
-                e.requested = Some(manifest::requested(&parsed.manifest, &self.tool_risk(name)));
-                e.code_files = manifest::code_files(&e.dir, &parsed.manifest);
-                e.code_sha256 = manifest::code_hash(&e.code_files);
+                e.requested = Some(requested);
+                e.code_files = files;
+                e.code_sha256 = sha;
                 if issues.is_empty() {
                     e.issues = parsed.warnings.clone();
                     e.parsed = Some(parsed);
@@ -548,10 +593,18 @@ impl PluginsActor {
                     e.parsed = None;
                 }
             }
-            Err((errors, _)) => {
+            Ok(Err((errors, _))) => {
                 e.parsed = None;
                 e.requested = None;
                 e.issues = errors;
+            }
+            Err(err) => {
+                e.parsed = None;
+                e.requested = None;
+                e.issues = vec![CheckIssue {
+                    path: String::new(),
+                    message: err.to_string(),
+                }];
             }
         }
         self.plugins.insert(name.to_owned(), e);
@@ -572,10 +625,14 @@ impl PluginsActor {
             Some(g) if !grants::covers(&g.grants, req) => {
                 (CardKind::Widen, Some(g.grants.clone()), Vec::new())
             }
+            // Code changed under a hashed grant, or a grant approved hashless (`plugins.dev`)
+            // now needs a hash: either way the code was never approved as it is.
             Some(g)
                 if !dev
-                    && g.code_sha256.is_some()
-                    && g.code_sha256.as_deref() != Some(e.code_sha256.as_str()) =>
+                    && match (&g.code_sha256, &code) {
+                        (Some(old), _) => old != &e.code_sha256,
+                        (None, need) => need.is_some(),
+                    } =>
             {
                 let changed: Vec<String> = match &e.approved_files {
                     Some(old) => e
@@ -598,9 +655,14 @@ impl PluginsActor {
         let lines = if kind == CardKind::CodeChanged {
             Vec::new()
         } else {
-            manifest::card_lines(&parsed.manifest, req, prior.as_ref(), &e.dir, &|n| {
-                describe.get(n).cloned()
-            })
+            manifest::card_lines(
+                &parsed.manifest,
+                req,
+                prior.as_ref(),
+                &e.dir,
+                self.cfg.input_per_min,
+                &|n| describe.get(n).cloned(),
+            )
         };
         let risk = lines
             .iter()
@@ -663,7 +725,7 @@ impl PluginsActor {
 
     /// Bring one plugin to where its folder, grant and state say it should be.
     async fn evaluate(&mut self, name: &str, ctx_ref: &ActorRef<Self>) {
-        self.reload(name);
+        self.reload(name).await;
         let card = self.sync_card(name);
         let Some(e) = self.plugins.get(name) else {
             return;
@@ -702,10 +764,10 @@ impl PluginsActor {
                 let differs =
                     run.manifest_sha256 != msha || run.code_sha256 != csha || self.cfg.dev;
                 if run.stopping.is_none() && differs {
-                    if enabled {
-                        self.stop(name, AfterStop::Again);
-                    } else {
+                    if !enabled {
                         self.stop(name, AfterStop::Disable);
+                    } else if !self.apply_live(name) {
+                        self.stop(name, AfterStop::Again);
                     }
                 }
             }
@@ -737,12 +799,13 @@ impl PluginsActor {
 
     // ----- processes --------------------------------------------------------------------------
 
-    fn hello(&self, m: &Manifest, granted: &Grants, data_dir: &Path) -> Value {
+    fn hello(&self, m: &Manifest, granted: &Grants, data_dir: &Path, engine: &str) -> Value {
         json!({
             "protocol": crate::PROTOCOL,
             "plugin": m.name,
             "version": m.version,
             "theuth": platform::version::get(),
+            "engine": engine,
             "data_dir": data_dir.display().to_string(),
             "grants": grants_view(granted),
             "clients": {},
@@ -754,20 +817,31 @@ impl PluginsActor {
         let Some(g) = self.verified(name).cloned() else {
             return;
         };
-        let data_dir = self.paths.data.join(name);
-        let timeout = Duration::from_millis(self.cfg.request_timeout_ms);
-        let Some(e) = self.plugins.get_mut(name) else {
-            return;
-        };
-        let (Some(parsed), Some(req)) = (e.parsed.clone(), e.requested.clone()) else {
+        let Some((parsed, req)) = self
+            .plugins
+            .get(name)
+            .and_then(|e| Some((e.parsed.clone()?, e.requested.clone()?)))
+        else {
             return;
         };
         if !grants::covers(&g.grants, &req) {
             return;
         }
-        e.epoch += 1;
+        let data_dir = self.paths.data.join(name);
+        let timeout = Duration::from_millis(self.cfg.request_timeout_ms);
+        let engine = agent::communication::mesh::engine_names().await.0;
         let outbox = Outbox::new(self.cfg.queue_frames);
+        // `hello` is queued before the outbox is shared with the router, tools or actions, so it
+        // is the first line whatever reaches the outbox next (design §6.2).
+        outbox.first(json!({
+            "jsonrpc": "2.0", "method": "hello",
+            "params": self.hello(&parsed.manifest, &req, &data_dir, &engine),
+        }));
         let conn = Conn::new(name, outbox.clone(), timeout);
+        let Some(e) = self.plugins.get_mut(name) else {
+            return;
+        };
+        e.epoch += 1;
         if let Ok(mut l) = e.line.write() {
             *l = Some(conn.clone());
         }
@@ -783,8 +857,20 @@ impl PluginsActor {
         if let Ok(mut t) = e.stderr_tail.lock() {
             t.clear();
         }
-        let epoch = e.epoch;
-        let hello = self.hello(&parsed.manifest, &req, &data_dir);
+        let launch = Launch {
+            name: name.to_owned(),
+            epoch: e.epoch,
+            dir: e.dir.clone(),
+            manifest: parsed.manifest.clone(),
+            data_dir,
+            base_env: self.base_env.clone(),
+            conn,
+            log: e.log.clone(),
+            stderr_tail: e.stderr_tail.clone(),
+            cfg: self.cfg.clone(),
+            pgids: self.paths.pgids(),
+            actor: me.clone(),
+        };
         if let Ok(mut t) = self.targets.write() {
             t.retain(|t| t.name != name);
             t.push(Target {
@@ -794,8 +880,16 @@ impl PluginsActor {
                 outbox,
             });
         }
-        // Tools: registered once per manifest; they survive restarts.
-        let e = self.plugins.get_mut(name).expect("entry present");
+        self.register_tools(name, &parsed);
+        tokio::spawn(host::supervise(launch));
+        self.set_state(name, PluginRunState::Starting, None).await;
+    }
+
+    /// Register the manifest's tools (they survive restarts) and drop the ones it no longer has.
+    fn register_tools(&mut self, name: &str, parsed: &Parsed) {
+        let Some(e) = self.plugins.get_mut(name) else {
+            return;
+        };
         let tools = ptools::build(
             &self.paths.mcp,
             &parsed.manifest,
@@ -810,24 +904,52 @@ impl PluginsActor {
             .cloned()
             .collect();
         e.tools = names;
-        tokio::spawn(ptools::sync(self.rt.clone(), gone, tools));
-        let launch = Launch {
-            name: name.to_owned(),
-            epoch,
-            dir: e.dir.clone(),
-            manifest: parsed.manifest.clone(),
-            data_dir,
-            base_env: self.base_env.clone(),
-            hello,
-            conn,
-            log: e.log.clone(),
-            stderr_tail: e.stderr_tail.clone(),
-            cfg: self.cfg.clone(),
-            pgids: self.paths.pgids(),
-            actor: me.clone(),
+        tokio::spawn(ptools::sync(self.rt.clone(), name.to_owned(), gone, tools));
+    }
+
+    /// A covered manifest change that leaves the spawn recipe (`run`, `cwd`, `env`) and the code
+    /// as they are: the running process takes the new grants and is told with `granted` (design
+    /// §6.2) instead of being restarted. False = the caller restarts it. `plugins.dev` always
+    /// restarts.
+    fn apply_live(&mut self, name: &str) -> bool {
+        if self.cfg.dev {
+            return false;
+        }
+        let Some(e) = self.plugins.get(name) else {
+            return false;
         };
-        tokio::spawn(host::supervise(launch));
-        self.set_state(name, PluginRunState::Starting, None).await;
+        let (Some(parsed), Some(req), Some(run)) =
+            (e.parsed.clone(), e.requested.clone(), e.run.as_ref())
+        else {
+            return false;
+        };
+        let (old, new) = (&run.manifest, &parsed.manifest);
+        if run.stopping.is_some()
+            || run.code_sha256 != e.code_sha256
+            || old.run != new.run
+            || old.cwd != new.cwd
+            || old.env != new.env
+        {
+            return false;
+        }
+        let (conn, changed) = (run.conn.clone(), run.granted != req);
+        if let Some(run) = self.plugins.get_mut(name).and_then(|e| e.run.as_mut()) {
+            run.granted = req.clone();
+            run.manifest = parsed.manifest.clone();
+            run.manifest_sha256 = parsed.manifest_sha256.clone();
+        }
+        if let Ok(mut t) = self.targets.write()
+            && let Some(t) = t.iter_mut().find(|t| t.name == name)
+        {
+            t.subs = parsed.manifest.subscribe.clone();
+            t.granted = req.subscribe.clone();
+        }
+        self.register_tools(name, &parsed);
+        if changed {
+            self.log_to(name, "host", "grants changed while running: `granted` sent");
+            conn.notify("granted", json!({ "grants": grants_view(&req) }));
+        }
+        true
     }
 
     /// Ask the running process to stop (`shutdown` ahead of both lanes, then grace, then kill).
@@ -858,22 +980,31 @@ impl PluginsActor {
         };
         let gone = std::mem::take(&mut e.tools);
         if !gone.is_empty() {
-            tokio::spawn(ptools::sync(self.rt.clone(), gone, Vec::new()));
+            tokio::spawn(ptools::sync(
+                self.rt.clone(),
+                name.to_owned(),
+                gone,
+                Vec::new(),
+            ));
         }
     }
 
-    fn sign_and_store(&mut self, name: &str, mut entry: GrantEntry) -> Result<(), PluginsError> {
-        let Some(key) = self.key.as_ref() else {
+    /// Sign and save `entry`. Replacing an earlier entry (re-approve, enable, disable) bumps the
+    /// plugin's generation first, so the earlier entry cannot be written back (review R3).
+    async fn sign_and_store(&mut self, name: &str, entry: GrantEntry) -> Result<(), PluginsError> {
+        let Some(key) = self.key.clone() else {
             return Err(PluginsError::Io {
                 message: "the vault's grants key is unavailable".into(),
             });
         };
-        grants::sign(key, name, &mut entry);
-        self.grants.entries.insert(name.to_owned(), entry);
-        if !self.grants.order.iter().any(|n| n == name) {
-            self.grants.order.push(name.to_owned());
+        let io = |e: anyhow::Error| PluginsError::Io {
+            message: format!("grants: {e:#}"),
+        };
+        if self.grants.entries.contains_key(name) {
+            self.grants.bump(name).await.map_err(io)?;
         }
-        self.save_grants()
+        self.grants.insert_signed(&key, name, entry).map_err(io)?;
+        self.save_grants().await
     }
 
     // ----- plugin → host ----------------------------------------------------------------------
@@ -884,8 +1015,20 @@ impl PluginsActor {
         }
     }
 
-    /// The validator's verdict goes back to the plugin as a `log` error (design §9.4) and into its log.
-    fn refuse(&self, name: &str, conn: &Conn, path: &str, message: &str) {
+    /// The validator's verdict goes back to the plugin as a `log` error (design §9.4) and into its
+    /// log, at most [`REFUSALS_PER_S`] a second; the ones over are counted into the next.
+    fn refuse(&mut self, name: &str, conn: &Conn, path: &str, message: &str) {
+        let Some(e) = self.plugins.get_mut(name) else {
+            return;
+        };
+        if e.refuse_rl.check(Instant::now()).is_err() {
+            e.refused_quiet += 1;
+            return;
+        }
+        let message = match std::mem::take(&mut e.refused_quiet) {
+            0 => message.to_owned(),
+            n => format!("{message} (and {n} earlier refusals not reported)"),
+        };
         self.log_to(name, "host", &format!("refused {path}: {message}"));
         conn.notify(
             "log",
@@ -910,6 +1053,12 @@ impl PluginsActor {
             conn.reply(id, Err(PipeError::rate_limited(100)));
             return;
         }
+        if matches!(method, "ping" | "catalog")
+            && let Err(ms) = e.ctl_rl.check(Instant::now())
+        {
+            conn.reply(id, Err(PipeError::rate_limited(ms)));
+            return;
+        }
         match method {
             "ping" => conn.reply(id, Ok(broker::ping())),
             "catalog" => {
@@ -926,11 +1075,10 @@ impl PluginsActor {
                     conn.reply(id, Err(err));
                 }
                 Ok((tool, args)) => {
-                    let grant = granted
-                        .capabilities
-                        .call
-                        .clone()
-                        .expect("checked by check_call");
+                    let Some(grant) = granted.capabilities.call.clone() else {
+                        conn.reply(id, Err(PipeError::not_granted("capability", "call")));
+                        return;
+                    };
                     let inflight = e.inflight.clone();
                     inflight.fetch_add(1, Ordering::Relaxed);
                     let (slot, plugin) = (e.session.clone(), name.to_owned());
@@ -1161,8 +1309,25 @@ impl PluginsActor {
                     .and_then(Value::as_str)
                     .map(|b| tools::secrets::redact(b).into_owned());
                 let title = tools::secrets::redact(title).into_owned();
+                // `open` names one of its granted placements; anything else is dropped.
+                let open = params
+                    .pointer("/open/placement")
+                    .and_then(Value::as_str)
+                    .filter(|p| granted.placements.iter().any(|g| g == p))
+                    .map(|p| crate::attention::placement_link(name, p));
+                // OS notifications at warn/error are deferred (as-built); the level is recorded.
+                let note = crate::attention::Note {
+                    id: String::new(),
+                    title,
+                    body,
+                    level: crate::attention::NoteLevel::parse(
+                        params.get("level").and_then(Value::as_str),
+                    ),
+                    open,
+                    at_ms: now_ms(),
+                };
                 if let Ok(mut i) = self.inbox.lock() {
-                    i.note(name, title, body, now_ms());
+                    i.note(name, note);
                 }
             }
             _ => {} // unknown notifications are ignored (design §7.5)
@@ -1346,10 +1511,48 @@ fn command_reply(v: &Value) -> Result<CommandReply, PluginsError> {
     Ok(CommandReply { text, ui })
 }
 
-fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
+/// Files one install copies at most (review S2).
+const INSTALL_MAX_FILES: usize = 10_000;
+/// Bytes one install copies at most.
+const INSTALL_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Copy the plugin folder `src` to `tmp` under `plugins`, then rename it to `dest`. Refuses a
+/// source that is, holds or sits inside the plugins folder, any symlink, and more than
+/// [`INSTALL_MAX_FILES`] files or [`INSTALL_MAX_BYTES`] bytes; `tmp` is removed on failure.
+fn install_copy(src: &Path, plugins: &Path, tmp: &Path, dest: &Path) -> Result<(), PluginsError> {
+    let io = |e: std::io::Error| PluginsError::Io {
+        message: format!("install: {e}"),
+    };
+    let src = std::fs::canonicalize(src).map_err(|e| PluginsError::Invalid {
+        message: format!("{}: {e}", src.display()),
+    })?;
+    std::fs::create_dir_all(plugins).map_err(io)?;
+    let plugins = std::fs::canonicalize(plugins).map_err(io)?;
+    if src.starts_with(&plugins) || plugins.starts_with(&src) {
+        return Err(PluginsError::Invalid {
+            message: format!(
+                "{} is, holds or sits inside the plugins folder {}",
+                src.display(),
+                plugins.display()
+            ),
+        });
+    }
+    let mut left = (INSTALL_MAX_FILES, INSTALL_MAX_BYTES);
+    let res = copy_dir(&src, tmp, &mut left).and_then(|()| std::fs::rename(tmp, dest).map_err(io));
+    if res.is_err() {
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+    res
+}
+
+/// Recursive copy without `.git`, `node_modules`, `target`; `left` = (files, bytes) still allowed.
+fn copy_dir(from: &Path, to: &Path, left: &mut (usize, u64)) -> Result<(), PluginsError> {
+    let io = |e: std::io::Error| PluginsError::Io {
+        message: format!("install: {e}"),
+    };
+    std::fs::create_dir_all(to).map_err(io)?;
+    for entry in std::fs::read_dir(from).map_err(io)? {
+        let entry = entry.map_err(io)?;
         let name = entry.file_name();
         if name
             .to_str()
@@ -1357,12 +1560,30 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
         {
             continue;
         }
-        let ty = entry.file_type()?;
+        let ty = entry.file_type().map_err(io)?;
         let dest = to.join(&name);
-        if ty.is_dir() {
-            copy_dir(&entry.path(), &dest)?;
+        if ty.is_symlink() {
+            return Err(PluginsError::Invalid {
+                message: format!(
+                    "{} is a symlink: a plugin folder is installed without links",
+                    entry.path().display()
+                ),
+            });
+        } else if ty.is_dir() {
+            copy_dir(&entry.path(), &dest, left)?;
         } else if ty.is_file() {
-            std::fs::copy(entry.path(), &dest)?;
+            let len = entry.metadata().map_err(io)?.len();
+            if left.0 == 0 || len > left.1 {
+                return Err(PluginsError::Invalid {
+                    message: format!(
+                        "the plugin folder is over {INSTALL_MAX_FILES} files or {} MiB",
+                        INSTALL_MAX_BYTES / (1024 * 1024)
+                    ),
+                });
+            }
+            left.0 -= 1;
+            left.1 -= len;
+            std::fs::copy(entry.path(), &dest).map_err(io)?;
         }
     }
     Ok(())
@@ -1376,16 +1597,28 @@ impl Message<Boot> for PluginsActor {
     async fn handle(&mut self, m: Boot, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.key = m.key;
         self.base_env = m.base_env;
-        self.grants = GrantsFile::load(&self.paths.grants());
-        let names: BTreeSet<String> = std::fs::read_dir(&self.paths.plugins)
-            .map(|rd| {
-                rd.flatten()
-                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                    .filter_map(|e| e.file_name().to_str().map(str::to_owned))
-                    .filter(|n| !n.starts_with('.'))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let (grants_path, dir) = (self.paths.grants(), self.paths.plugins.clone());
+        let (file, names) = blocking(move || {
+            let names: BTreeSet<String> = std::fs::read_dir(&dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+                        .filter(|n| !n.starts_with('.'))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (GrantsFile::load(&grants_path), names)
+        })
+        .await
+        .unwrap_or_default();
+        self.grants = file;
+        if let Some(vault) = m.vault
+            && let Err(e) = self.grants.attach(vault).await
+        {
+            // Fail closed: nothing verifies, nothing can be approved.
+            tracing::warn!(error = %e, "plugins: grant generations unreadable");
+        }
         let me = ctx.actor_ref().clone();
         for n in &names {
             self.evaluate(n, &me).await;
@@ -1478,7 +1711,9 @@ impl Message<ProcessEnded> for PluginsActor {
                 self.evaluate(&name, &me).await;
             }
             None => {
-                let e = self.plugins.get_mut(&name).expect("entry present");
+                let Some(e) = self.plugins.get_mut(&name) else {
+                    return;
+                };
                 if e.card.is_some() {
                     // A widen/code-changed card is pending: wait for the press (design §5).
                     self.set_state(&name, PluginRunState::AwaitingApproval, m.error)
@@ -1513,9 +1748,14 @@ impl Message<ProcessEnded> for PluginsActor {
                         if let Ok(mut i) = self.inbox.lock() {
                             i.note(
                                 &name,
-                                format!("{name} keeps crashing and was stopped"),
-                                Some(tail.join("\n")).filter(|t| !t.is_empty()),
-                                now_ms(),
+                                crate::attention::Note {
+                                    id: String::new(),
+                                    title: format!("{name} keeps crashing and was stopped"),
+                                    body: Some(tail.join("\n")).filter(|t| !t.is_empty()),
+                                    level: crate::attention::NoteLevel::Error,
+                                    open: None,
+                                    at_ms: now_ms(),
+                                },
                             );
                         }
                         self.set_state(&name, PluginRunState::Failed, m.error).await;
@@ -1536,7 +1776,7 @@ impl Message<Retry> for PluginsActor {
             return;
         }
         let me = ctx.actor_ref().clone();
-        self.reload(&m.name);
+        self.reload(&m.name).await;
         if self.sync_card(&m.name).is_some() {
             self.set_state(&m.name, PluginRunState::AwaitingApproval, None)
                 .await;
@@ -1740,11 +1980,17 @@ impl Message<CheckPath> for PluginsActor {
             let name = parsed.manifest.name.clone();
             let req = manifest::requested(&parsed.manifest, &self.tool_risk(&name));
             let mut errors = self.catalog_issues(&parsed.manifest);
+            errors.extend(ptools::clashes(&parsed.manifest).await);
             errors.extend(self.secret_issues(&req).await);
             let describe = self.describe();
-            report.lines = manifest::card_lines(&parsed.manifest, &req, None, &m.path, &|n| {
-                describe.get(n).cloned()
-            });
+            report.lines = manifest::card_lines(
+                &parsed.manifest,
+                &req,
+                None,
+                &m.path,
+                self.cfg.input_per_min,
+                &|n| describe.get(n).cloned(),
+            );
             report.errors.extend(errors);
             report.ok = report.errors.is_empty();
         }
@@ -1755,7 +2001,15 @@ impl Message<CheckPath> for PluginsActor {
 impl Message<Install> for PluginsActor {
     type Reply = Result<InstallReport, PluginsError>;
     async fn handle(&mut self, m: Install, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let parsed = manifest::load(&m.path).map_err(|(errors, _)| PluginsError::Invalid {
+        // The source folder may have any name (`~/Downloads/turns-main`): only the manifest's
+        // `name` must be valid; the folder rules run on the installed copy.
+        let src = m.path.clone();
+        let text = blocking(move || std::fs::read_to_string(src.join(manifest::FILE)))
+            .await?
+            .map_err(|e| PluginsError::Invalid {
+                message: format!("{}: {e}", m.path.join(manifest::FILE).display()),
+            })?;
+        let parsed = manifest::parse(&text).map_err(|(errors, _)| PluginsError::Invalid {
             message: errors
                 .iter()
                 .map(|i| format!("{}: {}", i.path, i.message))
@@ -1772,14 +2026,8 @@ impl Message<Install> for PluginsActor {
             .paths
             .plugins
             .join(format!(".install-{name}-{}", now_ms()));
-        copy_dir(&m.path, &tmp)
-            .and_then(|()| std::fs::rename(&tmp, &dest))
-            .map_err(|e| {
-                let _ = std::fs::remove_dir_all(&tmp);
-                PluginsError::Io {
-                    message: format!("install {name}: {e}"),
-                }
-            })?;
+        let (src, plugins, to) = (m.path.clone(), self.paths.plugins.clone(), dest.clone());
+        blocking(move || install_copy(&src, &plugins, &tmp, &to)).await??;
         let me = ctx.actor_ref().clone();
         self.evaluate(&name, &me).await;
         self.changed().await;
@@ -1812,7 +2060,7 @@ impl Message<Approve> for PluginsActor {
             return Err(not_found(&m.name));
         }
         // The card is recomputed from disk: a press on a card that changed meanwhile is stale.
-        self.reload(&m.name);
+        self.reload(&m.name).await;
         let card = self.sync_card(&m.name);
         let e = self
             .plugins
@@ -1836,7 +2084,7 @@ impl Message<Approve> for PluginsActor {
             grants: req,
             mac: String::new(),
         };
-        self.sign_and_store(&m.name, entry)?;
+        self.sign_and_store(&m.name, entry).await?;
         self.sync_card(&m.name);
         let e = self
             .plugins
@@ -1846,7 +2094,11 @@ impl Message<Approve> for PluginsActor {
             .line("host", &format!("approved via {}", m.press.client()));
         e.backoff.reset();
         if e.run.is_some() {
-            self.stop(&m.name, AfterStop::Again);
+            // A widening with the same run/env/code applies to the running process (`granted`);
+            // anything else restarts it.
+            if !self.apply_live(&m.name) {
+                self.stop(&m.name, AfterStop::Again);
+            }
         } else {
             e.state = PluginRunState::AwaitingApproval;
             self.start(&m.name, &me).await;
@@ -1866,7 +2118,7 @@ impl Message<RequestApproval> for PluginsActor {
         if !self.plugins.contains_key(&m.name) {
             return Err(not_found(&m.name));
         }
-        self.reload(&m.name);
+        self.reload(&m.name).await;
         let e = self
             .plugins
             .get(&m.name)
@@ -1886,6 +2138,9 @@ impl Message<RequestApproval> for PluginsActor {
             });
         }
         if let Some(e) = self.plugins.get_mut(&m.name) {
+            if let Err(ms) = e.approve_rl.check(Instant::now()) {
+                return Err(PluginsError::RateLimited { retry_after_ms: ms });
+            }
             e.card_seq += 1;
         }
         let card = self
@@ -1910,7 +2165,7 @@ impl Message<SetEnabled> for PluginsActor {
         };
         if g.enabled != m.on {
             g.enabled = m.on;
-            self.sign_and_store(&m.name, g)?;
+            self.sign_and_store(&m.name, g).await?;
         }
         if m.on {
             self.evaluate(&m.name, &me).await;
@@ -1944,7 +2199,7 @@ impl Message<SetHidden> for PluginsActor {
             });
         }
         self.grants.set_hidden(&m.name, &m.placement, m.hidden);
-        self.save_grants()?;
+        self.save_grants().await?;
         self.changed().await;
         self.info_of(&m.name)
     }
@@ -1962,7 +2217,7 @@ impl Message<SetOrder> for PluginsActor {
         let listed: BTreeSet<String> = order.iter().cloned().collect();
         order.extend(current.into_iter().filter(|n| !listed.contains(n)));
         self.grants.order = order;
-        self.save_grants()?;
+        self.save_grants().await?;
         self.changed().await;
         Ok(self.list())
     }
@@ -2005,24 +2260,29 @@ impl Message<Uninstall> for PluginsActor {
             m.name,
             chrono::Utc::now().format("%Y%m%dT%H%M%S")
         ));
-        std::fs::create_dir_all(&trash).map_err(|e| PluginsError::Io {
-            message: format!("trash: {e}"),
-        })?;
         let dir = self.paths.plugins.join(&m.name);
-        std::fs::rename(&dir, trash.join("plugin")).map_err(|e| PluginsError::Io {
-            message: format!("move {}: {e}", dir.display()),
-        })?;
         let data = self.paths.data.join(&m.name);
-        if !m.keep_data && data.exists() {
-            std::fs::rename(&data, trash.join("data")).map_err(|e| PluginsError::Io {
-                message: format!("move {}: {e}", data.display()),
-            })?;
+        let keep_data = m.keep_data;
+        blocking(move || -> Result<(), String> {
+            std::fs::create_dir_all(&trash).map_err(|e| format!("trash: {e}"))?;
+            std::fs::rename(&dir, trash.join("plugin"))
+                .map_err(|e| format!("move {}: {e}", dir.display()))?;
+            if !keep_data && data.exists() {
+                std::fs::rename(&data, trash.join("data"))
+                    .map_err(|e| format!("move {}: {e}", data.display()))?;
+            }
+            Ok(())
+        })
+        .await?
+        .map_err(|message| PluginsError::Io { message })?;
+        if let Err(e) = self.grants.revoke(&m.name).await {
+            tracing::warn!(plugin = %m.name, error = %e, "plugins: grant not revoked in the vault");
+            self.grants.entries.remove(&m.name);
         }
-        self.grants.entries.remove(&m.name);
         self.grants.order.retain(|n| n != &m.name);
         let prefix = format!("{}/", m.name);
         self.grants.hidden.retain(|h| !h.starts_with(&prefix));
-        self.save_grants()?;
+        self.save_grants().await?;
         if let Ok(mut i) = self.inbox.lock() {
             i.forget(&m.name);
         }
@@ -2197,23 +2457,24 @@ impl Message<Surface> for PluginsActor {
 impl Message<Logs> for PluginsActor {
     type Reply = Result<LogTail, PluginsError>;
     async fn handle(&mut self, m: Logs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let path = self
-            .plugins
-            .get(&m.name)
-            .map(|e| e.log.path_today())
-            .or_else(|| {
-                self.paths
-                    .plugins
-                    .join(&m.name)
-                    .is_dir()
-                    .then(|| crate::logs::path_today(&self.paths.logs, &m.name))
-            })
-            .ok_or_else(|| not_found(&m.name))?;
+        let path = match self.plugins.get(&m.name) {
+            Some(e) => e.log.path_today(),
+            None => {
+                // Not a loaded plugin: the name is joined into paths, so it must be one.
+                manifest::check_name(&m.name)?;
+                if !self.paths.plugins.join(&m.name).is_dir() {
+                    return Err(not_found(&m.name));
+                }
+                crate::logs::path_today(&self.paths.logs, &m.name)
+            }
+        };
         let n = usize::try_from(m.tail.min(MAX_TAIL)).unwrap_or(200);
+        let file = path.clone();
+        let lines = blocking(move || crate::logs::tail(&file, n)).await?;
         Ok(LogTail {
             name: m.name,
             path: path.display().to_string(),
-            lines: crate::logs::tail(&path, n),
+            lines,
         })
     }
 }
@@ -2236,9 +2497,14 @@ mod tests {
     }
 
     async fn booted(data: &Path) -> ActorRef<PluginsActor> {
+        booted_with(data, false).await
+    }
+
+    async fn booted_with(data: &Path, dev: bool) -> ActorRef<PluginsActor> {
         let rt = runtime::Runtime::new(Default::default(), data.to_path_buf());
         let cfg = PluginsConfig {
             watch: false,
+            dev,
             ..PluginsConfig::default()
         };
         let actor = PluginsActor::spawn(PluginsActor::new(rt, cfg));
@@ -2248,6 +2514,7 @@ mod tests {
         actor
             .ask(Boot {
                 key: Some(Zeroizing::new([7u8; 32])),
+                vault: None,
                 base_env: Arc::new(env),
             })
             .await
@@ -2340,7 +2607,7 @@ mod tests {
         assert!(info.enabled && !info.needs_approval && info.approved_at.is_some());
         let file = GrantsFile::load(&tmp.path().join("plugins/grants.yaml"));
         let entry = file.entries.get("alpha").expect("grant written");
-        assert!(grants::verify(&[7u8; 32], "alpha", entry));
+        assert!(file.verified(&[7u8; 32], "alpha").is_some());
         assert_eq!(entry.manifest_sha256, card.manifest_sha256);
         assert_eq!(entry.approved_via, "desktop");
         assert_eq!(
@@ -2445,6 +2712,195 @@ mod tests {
             .card
             .unwrap();
         assert_eq!(again.id, changed.id);
+        actor.ask(ShutdownAll).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hashless_dev_grant_needs_a_card_once_dev_is_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let open = "{";
+        let env = format!("env:\n  TOKEN: \"{open}{open}secret:github.pat}}}}\"\n");
+        write_plugin(&tmp.path().join("plugins"), "alpha", &env);
+        let dev = booted_with(tmp.path(), true).await;
+        let card = card_of(&dev, "alpha").await;
+        assert_eq!(
+            card.code_sha256, None,
+            "dev mode approves without a code hash"
+        );
+        approve(&dev, &card).await.unwrap();
+        wait_state(&dev, "alpha", PluginRunState::Running).await;
+        dev.ask(ShutdownAll).await.unwrap();
+
+        let actor = booted(tmp.path()).await;
+        let card = card_of(&actor, "alpha").await;
+        assert_eq!(card.kind, CardKind::CodeChanged);
+        assert!(card.code_sha256.is_some());
+        assert_eq!(
+            wait_state(&actor, "alpha", PluginRunState::AwaitingApproval)
+                .await
+                .state,
+            PluginRunState::AwaitingApproval
+        );
+    }
+
+    #[tokio::test]
+    async fn logs_refuses_names_that_are_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("plugins")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("elsewhere")).unwrap();
+        let actor = booted(tmp.path()).await;
+        for name in ["../elsewhere", "/etc", "a/../../elsewhere"] {
+            let err = actor
+                .ask(Logs {
+                    name: name.into(),
+                    tail: 10,
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    kameo::error::SendError::HandlerError(PluginsError::Invalid { .. })
+                ),
+                "{name}: {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_request_is_rate_limited_per_plugin() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugin(&tmp.path().join("plugins"), "alpha", "");
+        write_plugin(&tmp.path().join("plugins"), "beta", "");
+        let actor = booted(tmp.path()).await;
+        let ask = |name: &str| {
+            actor.ask(RequestApproval {
+                name: name.to_owned(),
+            })
+        };
+        for _ in 0..APPROVE_REQUESTS_PER_MIN {
+            ask("alpha").await.unwrap();
+        }
+        assert!(matches!(
+            ask("alpha").await.unwrap_err(),
+            kameo::error::SendError::HandlerError(PluginsError::RateLimited { .. })
+        ));
+        ask("beta").await.unwrap();
+    }
+
+    #[test]
+    fn install_copy_refuses_plugins_dir_links_and_floods() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins = tmp.path().join("plugins");
+        let inside = write_plugin(&plugins, "alpha", "");
+        let copy = |src: &Path, dest: &str| {
+            let tmp_dir = plugins.join(format!(".install-{dest}"));
+            install_copy(src, &plugins, &tmp_dir, &plugins.join(dest))
+        };
+        let invalid = |r: Result<(), PluginsError>| matches!(r, Err(PluginsError::Invalid { .. }));
+        // The plugins folder itself, a folder inside it, and a folder holding it.
+        assert!(invalid(copy(&plugins, "x1")));
+        assert!(invalid(copy(&inside, "x2")));
+        assert!(invalid(copy(tmp.path(), "x3")));
+        assert!(!plugins.join("x1").exists() && !plugins.join(".install-x1").exists());
+
+        let src = write_plugin(&tmp.path().join("src"), "beta", "");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc/hosts", src.join("hosts")).unwrap();
+            assert!(invalid(copy(&src, "beta")));
+            assert!(!plugins.join(".install-beta").exists(), "temp copy removed");
+            std::fs::remove_file(src.join("hosts")).unwrap();
+        }
+        let many = src.join("many");
+        std::fs::create_dir_all(&many).unwrap();
+        for i in 0..INSTALL_MAX_FILES {
+            std::fs::write(many.join(i.to_string()), "").unwrap();
+        }
+        assert!(invalid(copy(&src, "beta")));
+        std::fs::remove_dir_all(&many).unwrap();
+        copy(&src, "beta").unwrap();
+        assert!(plugins.join("beta/run.sh").is_file());
+    }
+
+    #[tokio::test]
+    async fn install_from_a_folder_named_otherwise() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = write_plugin(&tmp.path().join("Downloads"), "alpha-main", "");
+        let yaml = std::fs::read_to_string(src.join("plugin.yaml"))
+            .unwrap()
+            .replace("name: alpha-main", "name: alpha");
+        std::fs::write(src.join("plugin.yaml"), yaml).unwrap();
+        std::fs::create_dir_all(src.join("target/debug")).unwrap();
+        std::fs::write(src.join("target/debug/big"), "x").unwrap();
+        let actor = booted(tmp.path()).await;
+        let report = actor.ask(Install { path: src }).await.unwrap();
+        assert_eq!(report.name, "alpha");
+        let dest = tmp.path().join("plugins/alpha");
+        assert!(dest.join("run.sh").is_file());
+        assert!(!dest.join("target").exists(), "build output is not copied");
+        wait_state(&actor, "alpha", PluginRunState::AwaitingApproval).await;
+    }
+
+    #[tokio::test]
+    async fn hello_first_and_granted_on_a_live_narrowing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins = tmp.path().join("plugins");
+        let dir = write_plugin(&plugins, "alpha", "capabilities: [notify]\n");
+        std::fs::write(
+            dir.join("run.sh"),
+            "#!/bin/sh\nwhile read -r line; do printf '%s\\n' \"$line\" >> \"$THEUTH_PLUGIN_DATA/stdin.log\"; done\n",
+        )
+        .unwrap();
+        let actor = booted(tmp.path()).await;
+        approve(&actor, &card_of(&actor, "alpha").await)
+            .await
+            .unwrap();
+        wait_state(&actor, "alpha", PluginRunState::Running).await;
+        let log = tmp.path().join("plugin-data/alpha/stdin.log");
+        let read = || std::fs::read_to_string(&log).unwrap_or_default();
+        for _ in 0..100 {
+            if !read().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let first: Value = serde_json::from_str(read().lines().next().unwrap()).unwrap();
+        assert_eq!(first["method"], "hello");
+        assert!(first["params"]["engine"].is_string());
+        assert_eq!(first["params"]["grants"]["capabilities"]["notify"], true);
+        let pgids = || std::fs::read_to_string(plugins.join(".pgids")).unwrap();
+        let before = pgids();
+
+        // Narrow: drop `notify`; run, env and code stay → applied live, no restart.
+        let yaml = std::fs::read_to_string(dir.join("plugin.yaml"))
+            .unwrap()
+            .replace("capabilities: [notify]\n", "");
+        std::fs::write(dir.join("plugin.yaml"), yaml).unwrap();
+        actor
+            .tell(FolderChanged(BTreeSet::from(["alpha".to_owned()])))
+            .await
+            .unwrap();
+        let mut granted = None;
+        for _ in 0..100 {
+            granted = read()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .find(|v| v["method"] == "granted");
+            if granted.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let granted = granted.expect("a granted notification");
+        assert_eq!(granted["params"]["grants"]["capabilities"]["notify"], false);
+        assert_eq!(pgids(), before, "same process");
+        assert_eq!(
+            wait_state(&actor, "alpha", PluginRunState::Running)
+                .await
+                .state,
+            PluginRunState::Running
+        );
         actor.ask(ShutdownAll).await.unwrap();
     }
 }

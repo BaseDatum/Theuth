@@ -13,12 +13,21 @@ use crate::actor::{FolderChanged, PluginsActor};
 /// Same debounce as the MCP loader (`crates/tools/src/mcp.rs`).
 pub(crate) const DEBOUNCE: Duration = Duration::from_millis(300);
 
+/// Folders inside a plugin whose changes are build output, caches or VCS state, never a reason to
+/// re-validate or restart (a `cargo run` plugin writes `target/` on every start).
+const IGNORED: &[&str] = &["target", "__pycache__", "node_modules", ".git"];
+
 /// The plugin folder a changed path belongs to: the first component under `root`, skipping
-/// host-owned entries (`grants.yaml`, dot names such as `.pgids`, `.trash`) and temp files.
+/// host-owned entries (`grants.yaml`, dot names such as `.pgids`, `.trash`), temp files and
+/// paths under an [`IGNORED`] folder.
 pub(crate) fn plugin_of(root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(root).ok()?;
-    let first = rel.components().next()?.as_os_str().to_str()?;
+    let mut parts = rel.components().map(|c| c.as_os_str().to_str());
+    let first = parts.next()??;
     if first.starts_with('.') || first.starts_with(crate::grants::FILE) {
+        return None;
+    }
+    if parts.any(|p| p.is_some_and(|p| IGNORED.contains(&p))) {
         return None;
     }
     Some(first.to_owned())
@@ -98,5 +107,18 @@ mod tests {
             Some("turns")
         );
         assert_eq!(plugin_of(root, Path::new("/elsewhere/x/y")), None);
+        for ignored in [
+            "/d/plugins/rs/target/debug/rs",
+            "/d/plugins/py/__pycache__/main.cpython-312.pyc",
+            "/d/plugins/js/node_modules/x/index.js",
+            "/d/plugins/js/.git/index",
+            "/d/plugins/py/lib/__pycache__/a.pyc",
+        ] {
+            assert_eq!(plugin_of(root, Path::new(ignored)), None, "{ignored}");
+        }
+        assert_eq!(
+            plugin_of(root, Path::new("/d/plugins/rs/src/target.rs")).as_deref(),
+            Some("rs")
+        );
     }
 }
