@@ -531,6 +531,9 @@ impl Tool for CreateTool {
 
     async fn call(&self, a: ExtCreateArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let cx = &self.0;
+        if let Err(e) = cx.vault.copy_source_allowed(&a.from) {
+            return Ok(ToolOutput::err(e));
+        }
         let Some(value) = cx.vault.get(&a.from, 0) else {
             return Ok(ToolOutput::err(format!("unknown secret {}", a.from)));
         };
@@ -596,6 +599,9 @@ impl Tool for UpdateTool {
 
     async fn call(&self, a: ExtUpdateArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let cx = &self.0;
+        if let Err(e) = cx.vault.copy_source_allowed(&a.from) {
+            return Ok(ToolOutput::err(e));
+        }
         let Some(value) = cx.vault.get(&a.from, 0) else {
             return Ok(ToolOutput::err(format!("unknown secret {}", a.from)));
         };
@@ -1162,6 +1168,42 @@ mod tests {
                 again.content,
                 "aws/prod/app/ci/token exists; secret_external_update replaces it"
             );
+
+            // R1: backend rows and Send link/password secrets are never copied out.
+            e.ext
+                .vault
+                .set(
+                    "LINK",
+                    "https://vault/#/send/a/b",
+                    None,
+                    crate::tools_send::SEND_SOURCE,
+                )
+                .await
+                .unwrap();
+            for (from, want) in [
+                ("mesh/device_key", "mesh/device_key is not a user secret"),
+                (
+                    "send-prod-0123abcd",
+                    "send-prod-0123abcd is a Send link or password; it is never copied",
+                ),
+                (
+                    "LINK",
+                    "LINK is a Send link or password; it is never copied",
+                ),
+            ] {
+                let out = CreateTool(e.ext.clone())
+                    .call(
+                        ExtCreateArgs {
+                            connection: "prod".into(),
+                            from: from.into(),
+                            destination: destination("app/ci/other"),
+                        },
+                        cx(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(out.content, want);
+            }
 
             use ::tools::secrets::Secrets as _;
             let hook = crate::external::Hook::new(

@@ -18,7 +18,9 @@ use tools::{
 };
 
 use crate::vault::{self, MIN_REDACT, SecretInfo, Vault};
-use crate::{DeleteConfirmed, Outcome, Request, RequestId, SecretRequestField, SecretsActor, expiry};
+use crate::{
+    DeleteConfirmed, Outcome, Request, RequestId, SecretRequestField, SecretsActor, expiry,
+};
 
 /// The plugin's system-prompt block (37 §4). Static, so it never busts the
 /// system cache.
@@ -325,12 +327,12 @@ impl Tool for SecretRequestTool {
         };
         let view = match destination {
             None => None,
-            Some(d) => match crate::tools_external::destination_view(&self.actor, d, &ask.fields)
-                .await
-            {
-                Ok(v) => Some(v),
-                Err(e) => return Ok(ToolOutput::err(e)),
-            },
+            Some(d) => {
+                match crate::tools_external::destination_view(&self.actor, d, &ask.fields).await {
+                    Ok(v) => Some(v),
+                    Err(e) => return Ok(ToolOutput::err(e)),
+                }
+            }
         };
         Ok(run(&self.actor, self.timeout, &cx, ask, view).await)
     }
@@ -351,7 +353,17 @@ async fn run(
         .map(|f| f.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    match request(actor, timeout, cx, ask.title, ask.fields, ask.expires, destination).await {
+    match request(
+        actor,
+        timeout,
+        cx,
+        ask.title,
+        ask.fields,
+        ask.expires,
+        destination,
+    )
+    .await
+    {
         Ok(out) => match out.external.clone() {
             Some(Ok(line)) => ToolOutput::ok(line),
             Some(Err(e)) => ToolOutput::err(e),
@@ -369,7 +381,11 @@ fn receipt(out: &Outcome, single: bool, timeout: Duration, names: &str) -> ToolO
     if out.stored.is_empty() {
         return not_stored(out, timeout, names);
     }
-    let list: Vec<String> = out.stored.iter().map(|(n, v)| format!("{n} v{v}")).collect();
+    let list: Vec<String> = out
+        .stored
+        .iter()
+        .map(|(n, v)| format!("{n} v{v}"))
+        .collect();
     let mut line = format!("stored {}", list.join(", "));
     if single
         && let [(name, v)] = &out.stored[..]
@@ -411,7 +427,10 @@ async fn request(
     destination: Option<crate::connections::DestinationView>,
 ) -> Result<Outcome, SendError<crate::RequestTo, String>> {
     let journal = tools::registry::journal();
-    let (row, title, fields, expires) = match tools::registry::take_republish(cx.session, &cx.call_id) {
+    let (row, title, fields, expires) = match tools::registry::take_republish(
+        cx.session,
+        &cx.call_id,
+    ) {
         Some(row) if row.state == QuestionState::Pending => {
             let title = row
                 .payload
@@ -798,18 +817,7 @@ fn deletable(vault: &Vault, name: &str) -> Result<SecretInfo, String> {
         return Err(format!("{name} is not a user secret"));
     }
     let info = find(vault, name).ok_or_else(|| format!("unknown secret {name}"))?;
-    let send_name = name.strip_prefix("send-").is_some_and(|rest| {
-        rest.rsplit_once('-').is_some_and(|(conn, hex)| {
-            crate::external::valid_conn(conn)
-                && hex.len() == 8
-                && hex.bytes().all(|b| b.is_ascii_hexdigit())
-        })
-    });
-    let send_source = info
-        .versions
-        .first()
-        .is_some_and(|v| crate::tools_send::is_send_secret(&v.source));
-    if send_name || send_source {
+    if vault.is_send_link(name) {
         return Err(format!(
             "{name} is a Send link; secret_send_revoke revokes it"
         ));
@@ -993,7 +1001,13 @@ mod tests {
             one("2030-01-02T14:30:00Z").unwrap().expires.as_deref(),
             Some("2030-01-02T14:30:00Z")
         );
-        assert!(one("2030-01-02").unwrap().expires.unwrap().starts_with("20"));
+        assert!(
+            one("2030-01-02")
+                .unwrap()
+                .expires
+                .unwrap()
+                .starts_with("20")
+        );
         assert_eq!(one("").unwrap().expires, None, "empty = no suggestion");
         assert!(one("0h").is_err());
         assert!(one("next week").is_err());
@@ -1009,7 +1023,9 @@ mod tests {
                 .contains("not both")
         );
         assert!(err(serde_json::json!({"name": "A"})).contains("both name and note"));
-        assert!(err(serde_json::json!({"fields": [{"name": "a", "label": "a"}]})).contains("title"));
+        assert!(
+            err(serde_json::json!({"fields": [{"name": "a", "label": "a"}]})).contains("title")
+        );
         assert!(err(serde_json::json!({"name": "a/b", "note": "n"})).contains("name"));
         assert!(err(serde_json::json!({"title": "t", "fields": []})).contains("1 to 16"));
         let many: Vec<_> = (0..17)
@@ -1059,7 +1075,10 @@ mod tests {
             expires_ms: None,
             external: None,
         };
-        assert_eq!(receipt(&timed, false, t, "a").content, "no answer after 60 s");
+        assert_eq!(
+            receipt(&timed, false, t, "a").content,
+            "no answer after 60 s"
+        );
     }
 
     #[test]
@@ -1158,18 +1177,26 @@ mod delete_tests {
             out.content,
             "TOK is at v3, not v2; secret_list shows the current version"
         );
-        assert_eq!(find(&vault, "TOK").unwrap().versions.len(), 3, "nothing deleted");
+        assert_eq!(
+            find(&vault, "TOK").unwrap().versions.len(),
+            3,
+            "nothing deleted"
+        );
 
         let out = run(&t, "TOK", 3).await;
         assert_eq!(
-            out.content,
-            "deleted TOK (v3 and 2 older versions); {{secret:TOK}} no longer resolves",
+            out.content, "deleted TOK (v3 and 2 older versions); {{secret:TOK}} no longer resolves",
             "{out:?}"
         );
         assert!(find(&vault, "TOK").is_none());
         assert!(vault.get("TOK", 2).is_none(), "older versions are gone too");
         let mut args = serde_json::json!({"a": "{{secret:TOK}}"});
-        assert!(vault.expand(&mut args).unwrap_err().starts_with("unknown secret TOK"));
+        assert!(
+            vault
+                .expand(&mut args)
+                .unwrap_err()
+                .starts_with("unknown secret TOK")
+        );
         let out = run(&t, "TOK", 3).await;
         assert!(out.content.starts_with("unknown secret TOK"), "{out:?}");
 
@@ -1181,7 +1208,12 @@ mod delete_tests {
         assert_eq!(out.content, "oauth/x is not a user secret");
         assert!(vault.get("oauth/x", 0).is_some());
         vault
-            .set("send-personal-3fa9c2d1", "https://vault/#/send/a/b", None, "user")
+            .set(
+                "send-personal-3fa9c2d1",
+                "https://vault/#/send/a/b",
+                None,
+                "user",
+            )
             .await
             .unwrap();
         let out = run(&t, "send-personal-3fa9c2d1", 1).await;
@@ -1212,9 +1244,17 @@ mod delete_tests {
                 .unwrap()
                 .action
             };
-            assert_eq!(action().await, PolicyAction::Allow, "approvals off, no entry");
+            assert_eq!(
+                action().await,
+                PolicyAction::Allow,
+                "approvals off, no entry"
+            );
             seed_delete_ask(&reg, &vault).await.unwrap();
-            assert_eq!(action().await, PolicyAction::Ask, "always ask with approvals off");
+            assert_eq!(
+                action().await,
+                PolicyAction::Ask,
+                "always ask with approvals off"
+            );
             reg.ask(SetAlwaysAsk {
                 session: None,
                 tool: "secret_delete".into(),
@@ -1224,7 +1264,11 @@ mod delete_tests {
             .unwrap();
             assert_eq!(action().await, PolicyAction::Allow);
             seed_delete_ask(&reg, &vault).await.unwrap();
-            assert_eq!(action().await, PolicyAction::Allow, "a removed entry stays removed");
+            assert_eq!(
+                action().await,
+                PolicyAction::Allow,
+                "a removed entry stays removed"
+            );
         });
     }
 }

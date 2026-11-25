@@ -1037,12 +1037,46 @@ impl Vault {
         Ok(n)
     }
 
+    /// 221 R1: whether the agent may copy `name`'s value elsewhere (an external manager, a Send
+    /// password). Refuses backend rows (any name with `/`: `mesh/*`, `oauth/*`, `share/*`, …)
+    /// and Send link/password secrets (current version source `secret_send_create`, or the
+    /// default `send-<conn>-<8 hex>` name). An unknown name passes; the caller reports it.
+    pub fn copy_source_allowed(&self, name: &str) -> Result<(), String> {
+        if name.contains('/') {
+            return Err(format!("{name} is not a user secret"));
+        }
+        if self.is_send_link(name) {
+            return Err(format!(
+                "{name} is a Send link or password; it is never copied"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether `name` is a Send link or password secret: the default `send-<conn>-<8 hex>` name,
+    /// or a current version written by `secret_send_create`.
+    pub(crate) fn is_send_link(&self, name: &str) -> bool {
+        let send_name = name.strip_prefix("send-").is_some_and(|rest| {
+            rest.rsplit_once('-').is_some_and(|(conn, hex)| {
+                crate::external::valid_conn(conn)
+                    && hex.len() == 8
+                    && hex.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        });
+        send_name
+            || self
+                .read()
+                .entries
+                .get(name)
+                .and_then(|e| e.versions.first())
+                .is_some_and(|v| v.source == crate::tools_send::SEND_SOURCE)
+    }
+
     /// 221 §3.4: scrub `value` back to `placeholder` in tool output from now on, for the life of
     /// the process (an external value fetched for a call). Never written anywhere.
     pub fn remember_external(&self, placeholder: &str, value: &str) {
         let mut g = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if g
-            .external
+        if g.external
             .iter()
             .any(|(p, v)| p == placeholder && v.as_str() == value)
         {
@@ -1497,10 +1531,7 @@ fn scrubber(
         .filter(|(_, v)| long(v))
         .map(|(ph, v)| (ph.clone(), v));
     for (ph, value) in local.chain(fetched) {
-        for text in [
-            value.clone(),
-            Zeroizing::new(B64.encode(value.as_bytes())),
-        ] {
+        for text in [value.clone(), Zeroizing::new(B64.encode(value.as_bytes()))] {
             if !patterns.contains(&text) {
                 patterns.push(text);
                 placeholders.push(ph.clone());
