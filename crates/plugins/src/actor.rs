@@ -1976,7 +1976,7 @@ impl Message<CheckPath> for PluginsActor {
         report
             .warnings
             .retain(|w| !w.message.starts_with("engine not running"));
-        if let Ok(parsed) = manifest::load(&m.path) {
+        if let Ok(parsed) = manifest::load_source(&m.path) {
             let name = parsed.manifest.name.clone();
             let req = manifest::requested(&parsed.manifest, &self.tool_risk(&name));
             let mut errors = self.catalog_issues(&parsed.manifest);
