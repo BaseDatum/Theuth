@@ -78,6 +78,9 @@ elif op == "get":
     if not re.fullmatch("(?:%s)*" % T, path):
         sys.stderr.write("theuth_get: the python3 fallback supports .a.b, .[0], .[\"k\"] and |length\n"); sys.exit(2)
     for i, k, n, q in re.findall(T, path):
+        want = list if i else dict if (k or n or q) else None
+        if want and v is not None and not isinstance(v, want):  # jq: "Cannot index ...", exit 5
+            sys.stderr.write("theuth_get: cannot index %s with %s\n" % (type(v).__name__, "a number" if i else "a key")); sys.exit(5)
         if i: i = int(i); v = v[i] if isinstance(v, list) and -len(v) <= i < len(v) else None
         elif k or n or q: v = v.get(k or n or q) if isinstance(v, dict) else None
     if ln: v = len(v) if isinstance(v, (list, dict, str)) else 0 if v is None else abs(v)
@@ -125,8 +128,8 @@ _th_str() {
   _th_s="\"$s\""
 }
 
-# _th_obj PAIRS...: build a JSON object into $_th_o. `key=value` is a string (`badge` digits -> number),
-# `key:=json` is raw JSON. A repeated key keeps its first position and its last value.
+# _th_obj PAIRS...: build a JSON object into $_th_o. `key=value` is a string, `key:=json` is raw JSON.
+# A repeated key keeps its first position and its last value.
 _th_obj() {
   local a k v i n
   _th_ok=() _th_ov=()
@@ -135,7 +138,6 @@ _th_obj() {
     k=${a%%=*} v=${a#*=}
     case $k in
       *:) k=${k%:}; [ -n "$v" ] || v=null ;;
-      badge) case $v in '' | *[!0-9]*) _th_str "$v"; v=$_th_s ;; *) v=$((10#$v)) ;; esac ;;
       *) _th_str "$v"; v=$_th_s ;;
     esac
     n=${#_th_ok[@]} i=0
@@ -211,7 +213,16 @@ _th_place() { # sets $_th_pa to the default placement=… pair unless the argume
   _th_pa=placement=$_th_pl0
 }
 # theuth_status dot=ok|busy|warn|error|off|none [badge=N|text] [label=…] [tooltip=…] [placement=…]
-theuth_status() { _th_place "$@" || return 1; theuth_send status ${_th_pa:+"$_th_pa"} "$@"; }
+# badge= of 1–9 digits is sent as a number (0 hides the badge); anything else as a string (≤ 4 chars shown).
+theuth_status() {
+  local a n=$#
+  for a in "$@"; do
+    case $a in badge=*) case ${a#badge=} in '' | *[!0-9]* | ??????????*) ;; *) a=badge:=$((10#${a#badge=})) ;; esac ;; esac
+    set -- "$@" "$a"
+  done
+  shift $n
+  _th_place "$@" || return 1; theuth_send status ${_th_pa:+"$_th_pa"} "$@"
+}
 # theuth_ui text=… [button=Label:action[:style]]... [source=…] [format=…] [placement=…]
 # Without source=, format openui (the default) sends an OpenUI card of text + buttons; another format sends text.
 theuth_ui() {
@@ -235,7 +246,7 @@ theuth_ui() {
     _th_str "$text"; fmt=openui src="root = Card([body])"$'\n'"body = TextContent($_th_s)"
     [ $i = 0 ] || src="root = Card([body, controls])"$'\n'"body = TextContent($_th_s)$muts"$'\n'"controls = Buttons([${calls#, }])"
   elif [ $has = 0 ]; then src=$text; fi
-  _th_place $pl || return 1
+  _th_place ${pl:+"$pl"} || return 1
   theuth_send ui ${_th_pa:+"$_th_pa"} ${pl:+"$pl"} format="${fmt:-openui}" text="$text" source="$src"
 }
 # theuth_emit EVENT [PAIRS...]: publish a declared event with data built from PAIRS. The host drops an
@@ -298,6 +309,7 @@ theuth_fail() {
 theuth_cancelled() { case $'\n'$THEUTH_CANCELLED in *$'\n'"${1-$THEUTH_ID}"$'\n'*) return 0 ;; esac; return 1; }
 # theuth_get PATH [JSON]: the value at a jq path in JSON (default $THEUTH_PARAMS); strings raw, else JSON.
 # With jq any filter works; the python3 fallback supports `.a.b`, `.[0]`, `.["k"]` and a trailing `|length`.
+# Both print null for a missing key or index and fail (status 5) when a path indexes into a scalar.
 theuth_get() { _th_j get "$1" <<<"${2-$THEUTH_PARAMS}"; }
 
 # ---- state: an object in <dir>/state.json, dir = $THEUTH_PLUGIN_DATA, hello data_dir, or ./.plugin-data ----
@@ -306,11 +318,15 @@ _th_sload() {
   [ -f "$_th_sf" ] || return 0
   _th_st=$(_th_j obj <"$_th_sf") || { _th_st='{}'; theuth_log "state.json unreadable, starting empty" level=warn; }
 }
-_th_sput() { # KEY JSON: set and save atomically (state.tmp + mv)
+_th_sput() { # KEY JSON: set and save atomically (state.tmp, sync, mv)
   local t d=${_th_sf%/*}
   t=$(_th_j sset "$1" "$2" <<<"$_th_st") || { echo "theuth_state_set $1: invalid JSON: $2" >&2; return 1; }
   _th_st=$t
-  mkdir -p "$d" && printf '%s' "$t" >"$d/state.tmp" && mv -f "$d/state.tmp" "$_th_sf"
+  mkdir -p "$d" && printf '%s' "$t" >"$d/state.tmp" || return 1
+  # bash has no fsync: `sync FILE` flushes that file (GNU coreutils 8.24+) or everything (BSD/macOS);
+  # an old sync that refuses arguments flushes everything.
+  sync "$d/state.tmp" 2>/dev/null || sync
+  mv -f "$d/state.tmp" "$_th_sf"
 }
 # theuth_state_get KEY: prints the JSON value (null when missing).
 theuth_state_get() { _th_sload; _th_j sget "$1" <<<"$_th_st"; }
@@ -392,7 +408,7 @@ _th_request() { # ID METHOD: answer one host request
   fi
   if [ $_th_kind = tool ] && case ${_th_out#"${_th_out%%[![:space:]]*}"} in \{*) ;; *) false ;; esac &&
     _th_r=$(_th_j toolres <<<"$_th_out"); then _th_result "$1" "$_th_r"; return; fi
-  case $_th_kind:$_th_out in
+  case $_th_kind:${_th_out#"${_th_out%%[![:space:]]*}"} in # leading whitespace cut, as for tools
     tool:*) _th_str "$_th_out"; _th_result "$1" "{\"content\":[{\"type\":\"text\",\"text\":$_th_s}],\"isError\":false}"; return ;;
     render:*) _th_result "$1" '{}'; return ;;
     action:) _th_out='{"ok":true}' ;;
@@ -442,6 +458,9 @@ theuth_run() {
   case $_th_json in jq | python3) command -v "$_th_json" >/dev/null 2>&1 ;; *) false ;; esac ||
     { echo "theuth-plugin.sh: needs jq or python3 (THEUTH_JSON=$_th_json)" >&2; exit 1; }
   _th_tmp=$(mktemp "${TMPDIR:-/tmp}/theuth-plugin.XXXXXX") || exit 1
+  # The temp file goes with the process, also on a signal (bash 3.2 runs EXIT traps only on `exit`).
+  trap 'rm -f "$_th_tmp"' EXIT
+  trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
   exec 4<&0 0</dev/null
   _th_running=1
   local _th_hi=0

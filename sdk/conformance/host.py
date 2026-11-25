@@ -322,12 +322,20 @@ def status_only(h, data):
 
 def manifest(cmd, want):
     proc = subprocess.Popen(cmd + ["--theuth-manifest"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    chunks = []
+    reader = threading.Thread(target=lambda: chunks.append(proc.stdout.read()), daemon=True)
+    reader.start()
     try:
-        out, _ = proc.communicate(timeout=WAIT_S)  # stdin stays open: the flag must not read it
-        rc = proc.returncode
+        # stdin stays open until the process exits: a plugin that reads it hangs here instead of passing.
+        rc = proc.wait(timeout=WAIT_S)
+        reader.join(WAIT_S)
     except subprocess.TimeoutExpired:
         proc.kill()
-        out, rc = b"", "hung (read stdin?)"
+        proc.wait()
+        rc = "hung (read stdin?)"
+    finally:
+        proc.stdin.close()
+    out = b"".join(chunks)
     text = out.decode("utf-8", "replace")
     got = {}
     for line in text.splitlines():

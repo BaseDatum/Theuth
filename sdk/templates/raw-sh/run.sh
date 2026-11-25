@@ -1,5 +1,5 @@
 #!/bin/bash
-# presses: a status-strip clock, no SDK (`theuth plugin new --raw --lang sh`; the shape of design 216 §13.2).
+# presses: a status-strip clock, no SDK (`t plugin new --raw --lang sh`; the shape of design 216 §13.2).
 # One status line every 10 s. It reads stdin only to learn when to stop. macOS /bin/bash 3.2 and bash 4+.
 read -r hello || exit 0            # the first line is always `hello`; EOF: the host is gone
 while true; do

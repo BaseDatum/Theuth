@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""presses: counts button presses, no SDK (`theuth plugin new --raw`; the shape of design 216 §13.1).
+"""presses: counts button presses, no SDK (`t plugin new --raw`; the shape of design 216 §13.1).
 
 Host -> plugin: one JSON-RPC 2.0 message per stdin line. Plugin -> host: one per stdout line.
 Every request gets an answer; a request this file does not handle gets -32601 at once.
@@ -37,7 +37,10 @@ def load():
 def save(s):
     DATA.mkdir(parents=True, exist_ok=True)
     tmp = STATE.with_name("state.tmp")
-    tmp.write_text(json.dumps(s))
+    with open(tmp, "w") as f:
+        f.write(json.dumps(s))
+        f.flush()
+        os.fsync(f.fileno())  # on disk before the rename publishes it
     tmp.replace(STATE)
 
 

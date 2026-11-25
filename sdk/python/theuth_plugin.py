@@ -87,7 +87,10 @@ class State:
         p = self._path()
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_name("state.tmp")
-        tmp.write_text(json.dumps(self._load(), ensure_ascii=False), encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(self._load(), ensure_ascii=False))
+            f.flush()
+            os.fsync(f.fileno())  # on disk before the rename publishes it
         os.replace(tmp, p)
 
 
@@ -294,7 +297,10 @@ class Plugin:
     # ---- dispatch ----
     def _on_hello(self, p: dict) -> None:
         if p.get("protocol") != PROTOCOL:
-            self.log(f"unsupported protocol {p.get('protocol')!r}; this SDK speaks {PROTOCOL}", level="error")
+            m = f"unsupported protocol {p.get('protocol')!r}; this SDK speaks {PROTOCOL}"
+            if self._sink:
+                raise RuntimeError(m)  # drive(): fail the test, not the test process
+            self.log(m, level="error")
             sys.exit(1)
         self.hello, self.grants = p, p.get("grants") or {}
         self.data_dir, self.clients = p.get("data_dir"), p.get("clients") or {}

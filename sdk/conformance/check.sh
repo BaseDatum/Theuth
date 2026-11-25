@@ -2,7 +2,7 @@
 # SDK conformance (design 216): every SDK's fixture and hello-world template against host.py.
 # Usage: sdk/conformance/check.sh [py js sh go rb rs raw]   (default: all). Needs python3 and perl.
 # A language whose runtime is missing is SKIP; a present runtime that fails is FAIL.
-# Each case runs in a staged copy (template/fixture + the SDK file), the way `theuth plugin new` lays
+# Each case runs in a staged copy (template/fixture + the SDK file), the way `t plugin new` lays
 # out a plugin folder. Rust builds honour the machine build lock ($THEUTH_BUILD_LOCK, "" disables).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)

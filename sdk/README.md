@@ -4,7 +4,7 @@ A theuth plugin is a folder: `plugin.yaml` (the contract the install card shows)
 newline-delimited JSON-RPC 2.0 on stdin/stdout (design 216 §6). These SDKs make that program a short script.
 Each is one vendored file, no dependencies beyond the language's standard library (Rust: `serde_json`).
 
-`theuth plugin new <name> --lang py|js|sh|go|rb|rs` copies `templates/<lang>/` and the SDK file into
+`t plugin new <name> --lang py|js|sh|go|rb|rs` copies `templates/<lang>/` and the SDK file into
 `~/.theuth/plugins/<name>/`, renaming `presses`. `--raw` copies `templates/raw-py` or `templates/raw-sh`:
 the same plugin without an SDK, the shape of the 216 examples. `py`, `js` and `sh` need no compile step;
 `go run .` and `cargo run` compile on first start (the language's cost, not theuth's).
@@ -44,6 +44,36 @@ plugin.run()
 The same program in every language is in `templates/<lang>/`. Its `plugin.yaml` declares the placement
 `presses` (sidebar, popover, openui, status dot) and the tool `presses`.
 
+bash (`run.sh` beside `theuth-plugin.sh`; needs jq or python3):
+
+```bash
+#!/bin/bash
+. "$(dirname "$0")/theuth-plugin.sh"
+paint() { n=$(theuth_state_int n); theuth_status dot=ok badge="$n" label="$n"; theuth_ui text="$n presses" button="Press:inc"; }
+theuth_action inc 'theuth_state_add n 1; paint'
+theuth_tool presses 'theuth_state_int n'
+theuth_on_start paint
+theuth_run
+```
+
+Do not run a bash plugin under `set -e` (or `set -o errexit`): the SDK uses non-zero statuses for control
+flow (a handler lookup that misses, a `theuth_request` that gets an error answer), and `set -e` ends the
+plugin at the first one.
+
+The smallest `plugin.yaml` for it (`name`, `version`, `protocol` and `run` are required; everything else is
+opt-in, and the host grants only what the file declares):
+
+```yaml
+name: presses
+version: 0.1.0
+protocol: 1
+run: [bash, run.sh]
+placements:
+  - {id: presses, kind: sidebar, open: popover, icon: circle, label: Presses, status: true, format: openui}
+tools:
+  - {name: presses, description: How many times the button was pressed., input_schema: {type: object}}
+```
+
 ## Verbs
 
 Same names everywhere. Go capitalizes (`plugin.OnStart`), bash prefixes (`theuth_on_start`), JavaScript
@@ -68,11 +98,11 @@ also accepts camelCase (`plugin.onStart`).
 | `log(message, level, fields)` | A line in the plugin log. Not stdout. |
 | `call(tool, args)` | Host-brokered tool call (capability `call`). Returns the `ToolOutput` `{content, is_error, structured?}` — snake_case, unlike `tools/call` results. |
 | `input(text, session, delivery)` / `catalog(topic)` / `ping()` | The other host requests. |
-| `state` | A dict in `$THEUTH_PLUGIN_DATA/state.json`: `get`, `int`, `set`, `add` (each write is atomic), `save`. |
+| `state` | A dict in `$THEUTH_PLUGIN_DATA/state.json`: `get`, `int`, `set`, `add`, `all`, `save`. Each write goes to `state.tmp`, is fsynced, then renamed over `state.json`. |
 | `send(method, params)` / `request(method, params)` | Raw notification / raw request. |
 | `on_request(method, fn)` / `on_notify(method, fn)` | Raw handlers for host methods the helpers do not wrap. |
 | `run()` | Read `hello`, call `on_start`, dispatch until `shutdown` or EOF. |
-| `drive(lines, responder)` | Test harness (not bash): feed host messages, get back what the plugin sent. |
+| `drive(lines, responder)` | Test harness (not bash): feed host messages, get back what the plugin sent. A `hello` with another `protocol` raises (JS rejects, Go and Rust panic) instead of exiting. |
 
 Placement defaults to the only id in `grants.placements`; with more than one, pass it (omitting it is a local
 error, nothing is sent).
@@ -103,17 +133,42 @@ answers. Requests nobody handles get `-32601` at once.
   `error` (or a panic) for `-32603`. No default arguments: `Log(msg, fields...)`, `LogAt(level, msg, fields...)`,
   `Notify(title, body, level, open)`, `Emit(event, data, session...)`, `Input(text, session, delivery)` (empty =
   unset). `Status{Dot, Badge, Label, Tooltip, Placement}`, `UI{Text, Buttons, Source, Format, Placement}`.
-  gofmt makes `theuth.go` the longest SDK file.
+  `State.All()` returns a copy. gofmt makes `theuth.go` the longest SDK file.
 - **Rust**: `mod theuth; use theuth::*;`, then `plugin().action("inc", |req| …)`. Handlers return `()`,
   strings, `serde_json::Value` or `Result<_, RpcError>`; panics become `-32603` / tool errors.
 - **Ruby**: `plugin.action("inc") { |req| … }`; keyword arguments as in Python (`plugin.status(dot:, badge:)`).
-  `Plugin#send` is the protocol `send`; use `__send__` for Ruby's.
-- **bash**: handlers are strings run in the current shell; a request handler's stdout is its result (an
-  action's JSON, a tool's text, or a tool's whole `CallToolResult` object). `theuth_fail CODE MESSAGE [DATA]`
-  answers an error. Output helpers take `key=value` (string) and `key:=json` pairs; `button=Label:action[:style]`.
-  Context: `$THEUTH_METHOD`, `$THEUTH_NAME`, `$THEUTH_ARGS`, `$THEUTH_PARAMS`, `$THEUTH_DATA`, `theuth_get .path`.
-  `theuth_request` sets `$THEUTH_RESULT` or `$THEUTH_ERROR`; never call it inside `$(…)`. No `drive()`: test
-  through `conformance/host.py`.
+  `Plugin#send` is the protocol `send`; use `__send__` for Ruby's. `plugin.cancelled` is a frozen snapshot.
+- **bash**: see [bash helpers](#bash-helpers).
+
+### bash helpers
+
+Handlers are strings `eval`'d in the current shell, one at a time (functions and globals stay visible;
+`return N` works; `exit` ends the plugin). A request handler's stdout is its result; stdout of hooks and event
+handlers goes to the plugin log. Never under `set -e` (above).
+
+Pairs: `key=value` sends a string, `key:=json` sends raw JSON (`count:=3`, `open:='{"session":"s1"}'`). The
+helpers take pairs except where a positional argument is shown.
+
+| Helper | Signature |
+|---|---|
+| register | `theuth_on NAME CODE`, `theuth_action NAME CODE`, `theuth_query NAME CODE`, `theuth_command NAME CODE`, `theuth_tool NAME CODE`, `theuth_on_request METHOD CODE`, `theuth_on_notify METHOD CODE` |
+| hooks (several allowed) | `theuth_on_start CODE`, `theuth_on_render CODE`, `theuth_on_shutdown CODE`, `theuth_on_granted CODE`, `theuth_on_lagged CODE`, `theuth_on_cancel CODE` |
+| results | action: JSON on stdout (empty → `{"ok":true}`); query: JSON (empty → `null`); command: text → `{"text":…}`, a JSON object as-is, empty → `{}`; tool: text, or a whole `CallToolResult` object; a non-zero status → `-32603` (tool: `isError`). `theuth_fail CODE MESSAGE [DATA_JSON]` answers that error. |
+| `theuth_status` | `dot=ok\|busy\|warn\|error\|off\|none [badge=N\|text] [label=…] [tooltip=…] [placement=…]` — `badge=` of 1–9 digits is a number, anything else a string |
+| `theuth_ui` | `text=… [button=Label:action[:style]]… [source=…] [format=…] [placement=…]` |
+| `theuth_invalidate` | `[placement=…]` |
+| `theuth_notify` | `title=… [body=…] [level=info] [open:=JSON]` (pairs only: `theuth_notify "Hi"` is an error) |
+| `theuth_log` | `MESSAGE [level=info] [PAIRS…]` — the message is positional; the other pairs become `fields` |
+| `theuth_emit` | `EVENT [PAIRS…]` — the pairs are the event's `data` object. With a `session`, or `data` that is not an object: `theuth_send emit event=EVENT data:=JSON session=ID` |
+| raw | `theuth_send METHOD [PAIRS…]`; `theuth_request METHOD [PARAMS_JSON]` |
+| requests | `theuth_call TOOL [ARGS_JSON]`, `theuth_ping`, `theuth_input TEXT [SESSION] [DELIVERY]`, `theuth_catalog [TOPIC]` (positional); status 0 + `$THEUTH_RESULT` (JSON) or status 1 + `$THEUTH_ERROR`. Never inside `$(…)`. |
+| state | `theuth_state_get KEY` (prints JSON), `theuth_state_int KEY` (prints an integer, 0 when missing), `theuth_state_set KEY JSON` (the value is JSON: `theuth_state_set k '"hello"'`), `theuth_state_add KEY [N]`. Each set/add saves at once; there is no `theuth_state_save`. |
+| read | `theuth_get PATH [JSON]` (default `$THEUTH_PARAMS`; strings raw, else JSON), `theuth_cancelled [ID_JSON]` |
+
+Context variables: `$THEUTH_METHOD`, `$THEUTH_ID`, `$THEUTH_NAME`, `$THEUTH_ARGS`, `$THEUTH_PARAMS`,
+`$THEUTH_PLACEMENT`, `$THEUTH_SESSION`, `$THEUTH_TOPIC`, `$THEUTH_TYPE`, `$THEUTH_DATA`, `$THEUTH_GRANTS`,
+`$THEUTH_HELLO`, `$THEUTH_DATA_DIR`. `theuth_request` reads stdin ahead for its answer and replays the other
+lines afterwards, so a subshell would lose them. No `drive()`: test through `conformance/host.py`.
 
 ## yaml wins
 
@@ -135,9 +190,9 @@ on: []
 ```
 
 `manifest.schema.json` is the JSON Schema of `plugin.yaml` v1; the templates point editors at it with a
-`# yaml-language-server: $schema=../../sdk/manifest.schema.json` line (the path `theuth` extracts the SDK to,
-`~/.theuth/sdk/`, seen from `~/.theuth/plugins/<name>/`). The templates' `watch:` lists the SDK file so the
-code hash (§10.2) covers the SDK the plugin runs.
+`# yaml-language-server: $schema=../../sdk/manifest.schema.json` line. `t plugin new` writes the schema there:
+`<plugins dir>/../sdk/manifest.schema.json`, by default `~/.theuth/sdk/` seen from `~/.theuth/plugins/<name>/`.
+The templates' `watch:` lists the SDK file so the code hash (§10.2) covers the SDK the plugin runs.
 
 ## Escape hatch
 

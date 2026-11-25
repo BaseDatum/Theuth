@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -299,6 +300,9 @@ func (p *Plugin) Request(method string, params any) (any, error) {
 	}
 	params = orEmpty(params)
 	if err := p.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
+		p.mu.Lock()
+		delete(p.pending, fmt.Sprint(id))
+		p.mu.Unlock()
 		return nil, err
 	}
 	if responder != nil {
@@ -392,7 +396,11 @@ func (p *Plugin) reply(id, result any, e *RpcError) {
 
 func (p *Plugin) onHello(hp map[string]any) {
 	if v, ok := toInt(hp["protocol"]); !ok || v != PROTOCOL {
-		p.LogAt("error", fmt.Sprintf("unsupported protocol %v; this SDK speaks %d", hp["protocol"], PROTOCOL))
+		m := fmt.Sprintf("unsupported protocol %v; this SDK speaks %d", hp["protocol"], PROTOCOL)
+		if p.sink != nil {
+			panic(m) // Drive: fail the test, not the test process
+		}
+		p.LogAt("error", m)
 		os.Exit(1)
 	}
 	p.Hello, p.Grants, p.Clients = hp, obj(hp["grants"]), obj(hp["clients"])
@@ -772,6 +780,13 @@ func (s *State) Int(key string) int {
 	return int(v)
 }
 
+// All returns a copy of the whole state object (change it, then Set or Save).
+func (s *State) All() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.load())
+}
+
 // Set stores value at key and saves.
 func (s *State) Set(key string, value any) error {
 	s.mu.Lock()
@@ -792,7 +807,7 @@ func (s *State) Add(key string, n int) int {
 	return int(v) + n
 }
 
-// Save writes state.json (mkdir -p, state.tmp, rename).
+// Save writes state.json (mkdir -p, state.tmp, fsync, rename).
 func (s *State) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -805,13 +820,27 @@ func (s *State) save() error {
 	if err == nil {
 		err = os.MkdirAll(filepath.Dir(path), 0o755)
 	}
+	tmp := filepath.Join(filepath.Dir(path), "state.tmp")
 	if err == nil {
-		err = os.WriteFile(filepath.Join(filepath.Dir(path), "state.tmp"), b, 0o644)
+		err = writeSynced(tmp, b)
 	}
 	if err == nil {
-		err = os.Rename(filepath.Join(filepath.Dir(path), "state.tmp"), path)
+		err = os.Rename(tmp, path)
 	}
 	return err
+}
+
+// writeSynced writes b to path and fsyncs it, so a rename that follows publishes data on disk.
+func writeSynced(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	return errors.Join(err, f.Close())
 }
 
 // ---- helpers ----

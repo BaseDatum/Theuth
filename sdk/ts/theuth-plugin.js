@@ -14,7 +14,7 @@
  * stdin reader keeps routing responses meanwhile, so `await plugin.call()` in a handler never deadlocks.
  * Raw hatch: send, request, on_request, on_notify. Every snake_case hook also has a camelCase alias.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
@@ -77,7 +77,13 @@ export class State {
   save() {
     const p = this._path(), tmp = join(dirname(p), "state.tmp");
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(tmp, JSON.stringify(this._load()), "utf8");
+    const fd = openSync(tmp, "w");
+    try {
+      writeSync(fd, JSON.stringify(this._load()));
+      fsyncSync(fd); // on disk before the rename publishes it
+    } finally {
+      closeSync(fd);
+    }
     renameSync(tmp, p);
   }
 }

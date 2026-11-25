@@ -233,7 +233,10 @@ impl State {
 fn save_to(m: &Map<String, Value>, p: &Path) -> io::Result<()> {
     if let Some(d) = p.parent() { fs::create_dir_all(d)? }
     let tmp = p.with_file_name("state.tmp");
-    fs::write(&tmp, serde_json::to_vec(m)?)?;
+    let mut f = fs::File::create(&tmp)?;
+    f.write_all(&serde_json::to_vec(m)?)?;
+    f.sync_all()?; // on disk before the rename publishes it
+    drop(f);
     fs::rename(&tmp, p)
 }
 
@@ -471,7 +474,9 @@ impl Plugin {
 
     fn on_hello(&self, p: &Value) {
         if p.get("protocol").and_then(Value::as_i64) != Some(PROTOCOL) {
-            self.log_with(&format!("unsupported protocol {}; this SDK speaks {PROTOCOL}", get(p, "protocol")), "error", Value::Null);
+            let m = format!("unsupported protocol {}; this SDK speaks {PROTOCOL}", get(p, "protocol"));
+            if lock(&self.wire.sink).is_some() { panic!("{m}") } // drive(): fail the test, not the test process
+            self.log_with(&m, "error", Value::Null);
             process::exit(1);
         }
         let data_dir = s(p, "data_dir");

@@ -56,11 +56,15 @@ module Theuth
     def reset; @data = nil; end # :nodoc: forget the loaded data (data dir changed)
     def path; File.join(@dir || ENV["THEUTH_PLUGIN_DATA"] || "./.plugin-data", "state.json"); end
 
-    # mkdir -p, write state.tmp, rename to state.json.
+    # mkdir -p, write and fsync state.tmp, rename to state.json.
     def save
       FileUtils.mkdir_p(File.dirname(path))
       tmp = File.join(File.dirname(path), "state.tmp")
-      File.write(tmp, JSON.generate(load))
+      File.open(tmp, "w") do |f|
+        f.write(JSON.generate(load))
+        f.flush
+        f.fsync
+      end
       File.rename(tmp, path)
       nil
     end
@@ -111,7 +115,10 @@ module Theuth
     # The process-wide plugin; the global `plugin` method returns it.
     def self.instance; @instance ||= new; end
 
-    attr_reader :state, :hello, :grants, :data_dir, :clients, :cancelled
+    attr_reader :state, :hello, :grants, :data_dir, :clients
+
+    # Ids of host requests the host cancelled: a frozen snapshot (the reader thread adds to the set).
+    def cancelled; @lock.synchronize { @cancelled.dup.freeze }; end
 
     def initialize
       @state, @hello, @grants, @data_dir, @clients = State.new(self), {}, {}, nil, {}
@@ -266,7 +273,7 @@ module Theuth
         if msg["method"] == "hello"
           on_hello(msg["params"] || {})
         elsif msg["method"] == "notifications/cancelled"
-          @cancelled << (msg["params"] || {})["requestId"]
+          mark_cancelled(msg)
           dispatch(msg)
         elsif !dispatch(msg)
           shutdown_hooks
@@ -315,6 +322,8 @@ module Theuth
       write({ "jsonrpc" => "2.0", "id" => id }.merge(error ? { "error" => error } : { "result" => result }))
     end
 
+    def mark_cancelled(msg); @lock.synchronize { @cancelled << (msg["params"] || {})["requestId"] }; end
+
     def drive_request(method, params)
       @sink << { "jsonrpc" => "2.0", "id" => @next_id += 1, "method" => method, "params" => params }
       @responder.call(method, params)
@@ -322,7 +331,9 @@ module Theuth
 
     def on_hello(p)
       if p["protocol"] != PROTOCOL
-        log("unsupported protocol #{p['protocol'].inspect}; this SDK speaks #{PROTOCOL}", level: "error")
+        m = "unsupported protocol #{p['protocol'].inspect}; this SDK speaks #{PROTOCOL}"
+        raise m if @sink # drive: fail the test, not the test process
+        log(m, level: "error")
         exit!(1)
       end
       @hello, @grants, @data_dir, @clients = p, p["grants"] || {}, p["data_dir"], p["clients"] || {}
@@ -431,7 +442,7 @@ module Theuth
         msg = (JSON.parse(raw.force_encoding(Encoding::UTF_8).chomp) rescue nil) # non-JSON lines are ignored
         next unless msg.is_a?(Hash)
         next @lock.synchronize { @pending.delete(msg["id"]) }&.push(msg) if !msg.key?("method") && msg.key?("id")
-        @cancelled << (msg["params"] || {})["requestId"] if msg["method"] == "notifications/cancelled"
+        mark_cancelled(msg) if msg["method"] == "notifications/cancelled"
         inbox.push(msg)
       end
     ensure # fail waiting requests; the closed flag makes later ones fail at once
