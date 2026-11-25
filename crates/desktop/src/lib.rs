@@ -88,6 +88,9 @@ pub fn run() {
             // 209 §4.5: the tile store's cookie observer goes before WebKit does.
             #[cfg(target_os = "macos")]
             apple_cookies::unwatch(app);
+            // 221 D20: the sleep / screen-lock observers too.
+            #[cfg(target_os = "macos")]
+            power::shutdown();
             quit::on_exit(app)
         }
         // 166 D2: a Dock click.
@@ -391,6 +394,8 @@ mod desktop {
             commands::share_stop_all,
             commands::open_window,
             commands::legal_text,
+            commands::pasteboard_change_count,
+            commands::pasteboard_clear_if,
             update::check_update,
             update::install_update,
             island::set_hidden_from_capture,

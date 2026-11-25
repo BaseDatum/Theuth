@@ -4,19 +4,18 @@ import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { notify } from '@/lib/notify'
+import { copySecret } from '@/lib/secret-clipboard'
 import { useApi } from '@/lib/rpc'
 
 /** D25: a revealed value is dropped this long after it arrives. */
 export const REVEAL_MS = 30_000
-/** §9.1: Copy clears the clipboard after this long. */
-export const CLIPBOARD_MS = 60_000
 
 /**
  * D25 Reveal for one value-bearing ref (`aws/prod/db#password`, `bw/personal/<id>#username`). Absent when the
  * connection's `allow_reveal` is off. The press calls `reveal_external_secret` directly, not through TanStack Query: the
  * value lives in this component's state only (no query cache, no mutation cache, no storage), shows masked with an eye
- * toggle, and is dropped after `REVEAL_MS`, on Hide, and on unmount. Copy writes it to the clipboard and clears it after
- * `CLIPBOARD_MS`.
+ * toggle, and is dropped after `REVEAL_MS`, on Hide, on unmount, and when `allowed` turns off. Copy writes it to the
+ * clipboard through `copySecret` (cleared after `CLIPBOARD_MS` while still there).
  */
 export function Reveal({ conn, refText, label, allowed }: { conn: string; refText: string; label: string; allowed: boolean }) {
   const api = useApi()
@@ -30,6 +29,13 @@ export function Reveal({ conn, refText, label, allowed }: { conn: string; refTex
     setShown(false)
   }
   useEffect(() => () => clearTimeout(timer.current), [])
+  // `allow_reveal` switched off while a value shows: drop it.
+  useEffect(() => {
+    if (allowed) return
+    clearTimeout(timer.current)
+    setValue(null)
+    setShown(false)
+  }, [allowed])
   if (!allowed) return null
   const reveal = async () => {
     setBusy(true)
@@ -46,9 +52,8 @@ export function Reveal({ conn, refText, label, allowed }: { conn: string; refTex
   }
   const copy = async () => {
     if (value === null) return
-    await navigator.clipboard.writeText(value)
-    notify.success('Copied; the clipboard clears in 60 s')
-    setTimeout(() => void navigator.clipboard.writeText('').catch(() => undefined), CLIPBOARD_MS)
+    await copySecret(value)
+    notify.success('Copied; the clipboard clears in 60 s unless you copy something else')
   }
   if (value === null)
     return (

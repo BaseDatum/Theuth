@@ -74,8 +74,9 @@ tauri-nspanel = { workspace = true }
 objc2 = "0.6"
 block2 = "0.6"
 # 130 D10 (`companion/macos.rs`): `NSWorkspace` launch and `NSRunningApplication` queries on top of the
-# workspace feature set; `libc` for `kill(pid, 0)` in the quit handshake.
-objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc", "NSImage", "NSImageRep", "NSGraphicsContext", "NSResponder", "NSView", "objc2-core-graphics"] }
+# workspace feature set; `libc` for `kill(pid, 0)` in the quit handshake. `NSPasteboard`: 221's secret
+# Copy clears the pasteboard only while it is unchanged (`commands::pasteboard_clear_if`).
+objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc", "NSImage", "NSImageRep", "NSGraphicsContext", "NSResponder", "NSView", "objc2-core-graphics", "NSPasteboard"] }
 objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSError", "NSUUID", "NSDictionary", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSProcessInfo", "NSSet"] }
 # 209 §4.5 (`apple_cookies.rs`): the web view tiles' cookie store and page storage through WebKit directly,
 # at the version wry resolves; `WKWebView` (with `objc2-app-kit`) for the typed `callAsyncJavaScript…`,
