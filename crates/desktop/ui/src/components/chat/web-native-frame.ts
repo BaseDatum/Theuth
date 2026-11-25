@@ -83,11 +83,68 @@ export const rectOf = (el: HTMLElement): native.Rect => {
 }
 const sameRect = (a: native.Rect, b: native.Rect | null) => b !== null && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
 
+/** Unchanged frames before `followRect` drops from every frame to `FOLLOW_IDLE_MS` polls. */
+export const FOLLOW_FRAMES = 30
+export const FOLLOW_IDLE_MS = 250
+
+/**
+ * Call `moved` with `el`'s rectangle whenever it changes, until the returned stop. Every frame while it moves, and for
+ * `FOLLOW_FRAMES` frames after; then a poll every `FOLLOW_IDLE_MS`, so an idle frame does not keep a display-rate loop
+ * running (on iPad that held the compositor busy for as long as a web view was open). A resize of `el`, a window resize,
+ * a scroll anywhere, or a transition or animation starting goes straight back to every frame; the poll catches what
+ * moves without any of those, one poll late at worst. `moved` does not get the starting rectangle.
+ */
+export function followRect(el: HTMLElement, moved: (r: native.Rect) => void): () => void {
+  let last = rectOf(el)
+  let still = 0
+  let frame = 0
+  let poll: ReturnType<typeof setTimeout> | undefined
+  const check = () => {
+    const r = rectOf(el)
+    if (sameRect(r, last)) return false
+    last = r
+    moved(r)
+    return true
+  }
+  const tick = () => {
+    frame = 0
+    still = check() ? 0 : still + 1
+    if (still < FOLLOW_FRAMES) frame = requestAnimationFrame(tick)
+    else poll = setTimeout(idle, FOLLOW_IDLE_MS)
+  }
+  const idle = () => {
+    poll = undefined
+    if (check()) wake()
+    else poll = setTimeout(idle, FOLLOW_IDLE_MS)
+  }
+  const wake = () => {
+    still = 0
+    if (frame) return
+    clearTimeout(poll)
+    poll = undefined
+    frame = requestAnimationFrame(tick)
+  }
+  const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(wake) : null
+  ro?.observe(el)
+  const opts = { capture: true, passive: true } as const
+  const events = ['resize', 'scroll', 'transitionrun', 'animationstart'] as const
+  for (const e of events) window.addEventListener(e, wake, opts)
+  window.visualViewport?.addEventListener('resize', wake)
+  frame = requestAnimationFrame(tick)
+  return () => {
+    cancelAnimationFrame(frame)
+    clearTimeout(poll)
+    ro?.disconnect()
+    for (const e of events) window.removeEventListener(e, wake, opts)
+    window.visualViewport?.removeEventListener('resize', wake)
+  }
+}
+
 export const warn = (what: string) => (e: unknown) => console.warn(what, e)
 
 /**
  * Lay frame `id`'s native view over the placeholder `ref` while `live`: mounting attaches it at the placeholder's
- * rectangle (an existing view is moved and shown, never navigated), a per-frame check follows the placeholder while it
+ * rectangle (an existing view is moved and shown, never navigated), `followRect` follows the placeholder while it
  * shows, an overlay or a pane drag hides it, unmounting hides it (`detach`); the store's `close` alone destroys it.
  * `onAttachError` gets a refused attach. Answers whether the layer is occluded (the placeholder then shows its face).
  */
@@ -104,24 +161,15 @@ export function useNativeLayer(id: string, ref: RefObject<HTMLElement | null>, l
     return () => void native.detach(id).catch(warn('web_view_visible'))
   }, [id, live, ref])
 
-  // Follow the placeholder (resizes, splits, scrolls, sidebar moves, the keyboard) once per frame while it shows. The
+  // Follow the placeholder (resizes, splits, scrolls, sidebar moves, the keyboard) while it shows (`followRect`). The
   // rectangle is sent once first, before the layer shows again (the effect below): it may have changed while the layer
   // was hidden (an overlay, a zoom, another tab in front, a rotation under it), and showing again would otherwise put
   // the view at its old frame.
   useEffect(() => {
     const el = ref.current
     if (!live || occluded || !el) return
-    let last: native.Rect | null = rectOf(el)
-    void native.bounds(id, last).catch(warn('web_view_bounds'))
-    let frame = requestAnimationFrame(function tick() {
-      const r = rectOf(el)
-      if (!sameRect(r, last)) {
-        last = r
-        void native.bounds(id, r).catch(warn('web_view_bounds'))
-      }
-      frame = requestAnimationFrame(tick)
-    })
-    return () => cancelAnimationFrame(frame)
+    void native.bounds(id, rectOf(el)).catch(warn('web_view_bounds'))
+    return followRect(el, (r) => void native.bounds(id, r).catch(warn('web_view_bounds')))
   }, [id, live, occluded, ref])
 
   // Hide under an overlay, a drag or a zoom, or behind another tab; show again once that is over. The module sends
