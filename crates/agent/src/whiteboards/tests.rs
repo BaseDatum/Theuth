@@ -1,5 +1,4 @@
 use super::*;
-use std::fmt::Write as _;
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/whiteboard_outline.txt");
 const ID: &str = "01a2f3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b";
@@ -440,4 +439,48 @@ fn send_context_is_taken_once_and_falls_back_to_any_session() {
     assert_eq!(take_context(a, wb), None, "consumed");
     put_context(None, wb, ctx.clone());
     assert_eq!(take_context(b, wb), Some(ctx), "a first send is anyone's");
+}
+
+/// 218 M5: a marker binds only from the owner's own input, and only a readable, live whiteboard.
+#[test]
+fn marker_binds_only_an_owners_readable_whiteboard() {
+    let live = MarkerDoc::Readable {
+        whiteboard: true,
+        trashed: false,
+    };
+    assert_eq!(marker_refusal(true, &live), None);
+    assert!(marker_refusal(false, &live).is_some(), "a peer's / contact's / channel's marker");
+    let note = MarkerDoc::Readable {
+        whiteboard: false,
+        trashed: false,
+    };
+    assert_eq!(marker_refusal(true, &note).as_deref(), Some("not a whiteboard"));
+    let trashed = MarkerDoc::Readable {
+        whiteboard: true,
+        trashed: true,
+    };
+    assert_eq!(marker_refusal(true, &trashed).as_deref(), Some("in the trash"));
+    let missing = MarkerDoc::Unreadable("no such document".into());
+    assert_eq!(marker_refusal(true, &missing).as_deref(), Some("no such document"));
+}
+
+/// 218 M6: an outline this engine cannot read becomes a one-line notice, once per context, never a
+/// baseline, never a brief line.
+#[test]
+fn unreadable_outline_is_a_notice_once_per_context() {
+    let failed = vec![(ID.to_owned(), plain("NotHub { hub: Some(\"e2\") }"))];
+    let out = unavailable_messages(&failed, &[] as &[&str]);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].starts_with(&format!(
+        "<whiteboard_unavailable id=\"{ID}\" reason=\"another engine serves it\"/>"
+    )));
+    assert_eq!(out[0].lines().count(), 1, "one line");
+    assert!(out[0].contains("wb_* functions will fail"));
+    assert!(unavailable_messages(&failed, &out).is_empty(), "said once");
+    assert_eq!(Baseline::of(&out, ID), None, "not a baseline");
+    // Once the outline is readable again, the full block follows the notice.
+    assert_eq!(turn_messages(&[board(FIXTURE)], &out), vec![FIXTURE.to_owned()]);
+    // Reasons are flattened: no quotes, brackets or newlines reach the attribute.
+    let odd = unavailable_line(ID, "bad \"x\" <y>\nz");
+    assert!(odd.contains("reason=\"bad  x   y  z\""), "{odd}");
 }

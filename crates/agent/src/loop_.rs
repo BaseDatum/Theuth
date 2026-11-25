@@ -1486,12 +1486,18 @@ impl Session {
         let mut texts = Vec::new();
         let mut opened = false;
         let mut channel = None;
+        // 218 M5: a whiteboard marker binds only from the owner's own words — not a peer's, a
+        // contact's, a channel's or a parent agent's.
+        let foreign = |i: &Input| i.peer.is_some() || i.scope.is_some() || i.channel.is_some();
+        let mut owner = self.shared.depth == 0;
         for (id, input) in inputs.by_ref() {
             let text = input.text.clone();
             let origin = input.channel.clone();
             let peer = bounded(self.shared.depth, &input);
+            let from_other = foreign(&input);
             ids.extend(id);
             if task.take_input(input).await {
+                owner &= !from_other;
                 texts.push(text);
                 channel = origin;
                 if peer {
@@ -1592,6 +1598,7 @@ impl Session {
         texts.extend(rest.iter().map(|i| i.text.clone()));
         let text = texts.join("\n");
         task.input_text = text.clone();
+        task.input_owner = owner && task.scope.cap.is_none() && !rest.iter().any(foreign);
         task.state.title_chars += title::user_chars(texts.iter().map(String::as_str));
         let turn_seq = task.first_seq.unwrap_or(0);
         task.channel_opened = channel.is_some();
@@ -3169,6 +3176,8 @@ struct Turn {
     repl: Option<Repl>,
     /// The turn's inputs joined, the round-0 hint query (10 §4.2).
     input_text: String,
+    /// 218 M5: every input of the turn is the owner's own (no peer, scope, channel, parent).
+    input_owner: bool,
     /// `history[hint_since..]` was appended since the last `<knowledge>` check.
     hint_since: usize,
     /// Tool calls dispatched this turn, the harvest trigger (10 §5.2).
@@ -4102,6 +4111,7 @@ impl Turn {
             window_logged: false,
             repl: None,
             input_text: String::new(),
+            input_owner: false,
             calls: 0,
             cwd,
             landing: false,
@@ -7575,7 +7585,14 @@ impl Turn {
                 .history
                 .last()
                 .is_some_and(|(_, m)| text_of(&m.content).starts_with("<whiteboard"))
-            && crate::whiteboards::bound(&self.shared.store, self.shared.id, &self.input_text).await
+            && let gate = crate::whiteboards::bound(
+                &self.shared.store,
+                self.shared.id,
+                &self.input_text,
+                self.input_owner,
+            )
+            .await
+            && gate.open()
         {
             // Under endless memory the store's rows are the record (as for the notebook above).
             let rows = if endless {
@@ -7594,8 +7611,13 @@ impl Turn {
                 .iter()
                 .map(|(_, m)| text_of(&m.content))
                 .collect();
-            let messages =
-                crate::whiteboards::inject(&self.shared.store, self.shared.id, &history).await;
+            let messages = crate::whiteboards::inject(
+                &self.shared.store,
+                self.shared.id,
+                &history,
+                gate.unreadable,
+            )
+            .await;
             for text in messages {
                 self.persist(ChatMessage::user(text)).await;
             }

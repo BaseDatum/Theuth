@@ -926,45 +926,178 @@ fn gone(e: &str) -> bool {
     e.contains("not a whiteboard") || e.contains("no such document") || e.contains("not found")
 }
 
-/// §5 (a): bind the whiteboards the input's markers name (`by = 'marker'`), then answer whether
-/// `session` is bound to any whiteboard — the cheap gate before [`inject`] reads the transcript.
-pub async fn bound(store: &Store, session: SessionId, input: &str) -> bool {
-    for r in crate::attach::parse(crate::clock::strip(input)).refs {
-        if r.kind == crate::attach::Kind::Whiteboard
-            && let Err(e) = store.bind_whiteboard(session, &r.id, "marker").await
-        {
+/// What the document store says about a marker's id, for [`marker_refusal`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MarkerDoc {
+    /// The owner may read it: its kind and whether it is in the trash.
+    Readable {
+        /// Its kind is `DocKind::Whiteboard`.
+        whiteboard: bool,
+        /// It is in the trash.
+        trashed: bool,
+    },
+    /// The lookup failed (missing, unreadable, another engine serves it, …).
+    Unreadable(String),
+}
+
+/// 218 M5: why a `[attached whiteboard …]` marker must not bind, or `None` when it may: the
+/// input is the owner's own, and the id is a readable whiteboard that is not in the trash.
+pub fn marker_refusal(owner: bool, doc: &MarkerDoc) -> Option<String> {
+    if !owner {
+        return Some("the input is not the owner's".into());
+    }
+    match doc {
+        MarkerDoc::Readable { whiteboard: false, .. } => Some("not a whiteboard".into()),
+        MarkerDoc::Readable { trashed: true, .. } => Some("in the trash".into()),
+        MarkerDoc::Readable { .. } => None,
+        MarkerDoc::Unreadable(e) => Some(e.clone()),
+    }
+}
+
+/// What the owner may read of `id`: `MetaOf` as the owner (access and kind), then `WbInfo` (trash).
+async fn marker_doc(docs: &kameo::actor::ActorRef<document::DocumentActor>, id: &str) -> MarkerDoc {
+    let doc = document::DocId(id.to_owned());
+    let meta = match docs
+        .ask(document::MetaOf {
+            doc: doc.clone(),
+            by: document::Principal::Owner { device: None },
+        })
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => return MarkerDoc::Unreadable(e.to_string()),
+    };
+    if meta.kind != document::DocKind::Whiteboard {
+        return MarkerDoc::Readable {
+            whiteboard: false,
+            trashed: false,
+        };
+    }
+    match docs.ask(document::wb::WbInfo { doc }).await {
+        Ok(info) => MarkerDoc::Readable {
+            whiteboard: true,
+            trashed: info.trashed,
+        },
+        Err(e) => MarkerDoc::Unreadable(e.to_string()),
+    }
+}
+
+/// What [`bound`] found for this turn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Gate {
+    /// The session is bound to at least one whiteboard.
+    pub any: bool,
+    /// The owner's markers whose whiteboard this engine cannot read: `(id, why)` (218 M6).
+    pub unreadable: Vec<(String, String)>,
+}
+
+impl Gate {
+    /// Anything for [`inject`] to do.
+    pub fn open(&self) -> bool {
+        self.any || !self.unreadable.is_empty()
+    }
+}
+
+/// §5 (a): bind the whiteboards the input's markers name (`by = 'marker'`) — only when `owner`
+/// (every input of the turn is the owner's own) and the id is a readable, live whiteboard; a
+/// refused marker is logged, never bound (218 M5); an owner's marker this engine cannot read is
+/// reported for a notice (M6). Then answer whether `session` is bound to any whiteboard — the
+/// cheap gate before [`inject`] reads the transcript.
+pub async fn bound(store: &Store, session: SessionId, input: &str, owner: bool) -> Gate {
+    let refs: Vec<_> = crate::attach::parse(crate::clock::strip(input))
+        .refs
+        .into_iter()
+        .filter(|r| r.kind == crate::attach::Kind::Whiteboard)
+        .collect();
+    let handle = document::Handle::lookup();
+    let mut gate = Gate::default();
+    for r in refs {
+        let doc = match (&handle, owner) {
+            (Some(h), true) => marker_doc(h.actor(), &r.id).await,
+            (None, true) => MarkerDoc::Unreadable("documents are disabled".into()),
+            (_, false) => MarkerDoc::Unreadable(String::new()),
+        };
+        if let Some(why) = marker_refusal(owner, &doc) {
+            tracing::warn!(%session, whiteboard = %r.id, "whiteboard marker not bound: {why}");
+            if owner && let MarkerDoc::Unreadable(e) = &doc {
+                gate.unreadable.push((r.id.clone(), plain(e)));
+            }
+            continue;
+        }
+        if let Err(e) = store.bind_whiteboard(session, &r.id, "marker").await {
             tracing::warn!(%session, whiteboard = %r.id, "whiteboard bind: {e:#}");
         }
     }
-    match store.whiteboards_of(session).await {
+    gate.any = match store.whiteboards_of(session).await {
         Ok(rows) => !rows.is_empty(),
         Err(e) => {
             tracing::warn!(%session, "whiteboards_of: {e:#}");
             false
         }
+    };
+    gate
+}
+
+/// 218 M6: the one-line stand-in for a bound whiteboard whose outline this engine cannot read
+/// (another engine serves it, or the read failed). Not a baseline; said once per context.
+pub fn unavailable_line(id: &str, why: &str) -> String {
+    let why: String = why
+        .chars()
+        .map(|c| if c == '\n' || c == '"' || c == '<' || c == '>' { ' ' } else { c })
+        .take(160)
+        .collect();
+    format!(
+        "<whiteboard_unavailable id=\"{id}\" reason=\"{why}\"/> This chat is bound to that whiteboard, \
+         but its outline cannot be read here, so the wb_* functions will fail too. Tell the user, and \
+         suggest opening this chat on the engine that serves the whiteboard."
+    )
+}
+
+/// The [`unavailable_line`]s not yet said in this context (`history`), in order.
+pub fn unavailable_messages<S: AsRef<str>>(failed: &[(String, String)], history: &[S]) -> Vec<String> {
+    failed
+        .iter()
+        .filter(|(id, _)| {
+            let seen = format!("<whiteboard_unavailable id=\"{id}\"");
+            !history.iter().any(|t| t.as_ref().starts_with(&seen))
+        })
+        .map(|(id, why)| unavailable_line(id, why))
+        .collect()
+}
+
+/// A document error in plain words: `NotHub` → "another engine serves it".
+fn plain(e: &str) -> String {
+    if e.contains("NotHub") || e.contains("hub lease") || e.contains("not the hub") {
+        "another engine serves it".to_owned()
+    } else {
+        e.to_owned()
     }
 }
 
 /// §5 injection for one turn of `session` (round 0 of a chat turn): for every bound whiteboard
 /// open its turn and fetch its outline, and return the messages to persist (user role), in order.
 /// Errors skip a whiteboard; a document that is no longer a whiteboard, or is trashed, is unbound.
-pub async fn inject<S: AsRef<str>>(store: &Store, session: SessionId, history: &[S]) -> Vec<String> {
+pub async fn inject<S: AsRef<str>>(
+    store: &Store,
+    session: SessionId,
+    history: &[S],
+    unreadable: Vec<(String, String)>,
+) -> Vec<String> {
+    let mut failed = unreadable;
     let rows = match store.whiteboards_of(session).await {
-        Ok(rows) if !rows.is_empty() => rows,
-        Ok(_) => return Vec::new(),
+        Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(%session, "whiteboards_of: {e:#}");
-            return Vec::new();
+            Vec::new()
         }
     };
-    let Some(handle) = document::Handle::lookup() else {
-        return Vec::new();
-    };
-    let docs = handle.actor();
+    let handle = document::Handle::lookup();
     let root = store.root_of(session).await.unwrap_or(session);
     let mut bound = Vec::new();
     let mut begun = Vec::new();
     for (wb, _) in rows {
+        let Some(handle) = &handle else { break };
+        let docs = handle.actor();
         let doc = document::DocId(wb.clone());
         match docs.ask(document::wb::WbInfo { doc: doc.clone() }).await {
             Ok(info) if info.trashed => {
@@ -977,7 +1110,8 @@ pub async fn inject<S: AsRef<str>>(store: &Store, session: SessionId, history: &
                 if gone(&e) {
                     let _ = store.unbind_whiteboard(session, &wb).await;
                 } else {
-                    tracing::debug!(%session, whiteboard = %wb, "whiteboard skipped: {e}");
+                    tracing::warn!(%session, whiteboard = %wb, "whiteboard outline unavailable: {e}");
+                    failed.push((wb.clone(), plain(&e)));
                 }
                 continue;
             }
@@ -1003,7 +1137,11 @@ pub async fn inject<S: AsRef<str>>(store: &Store, session: SessionId, history: &
                 text: r.text,
                 aliases: r.aliases,
             }),
-            Err(e) => tracing::debug!(%session, whiteboard = %wb, "whiteboard outline: {e}"),
+            Err(e) => {
+                let e = e.to_string();
+                tracing::warn!(%session, whiteboard = %wb, "whiteboard outline unavailable: {e}");
+                failed.push((wb, plain(&e)));
+            }
         }
     }
     if !begun.is_empty() {
@@ -1012,7 +1150,9 @@ pub async fn inject<S: AsRef<str>>(store: &Store, session: SessionId, history: &
             .unwrap_or_else(|p| p.into_inner())
             .insert(session, begun);
     }
-    turn_messages(&bound, history)
+    let mut out = turn_messages(&bound, history);
+    out.extend(unavailable_messages(&failed, history));
+    out
 }
 
 /// §5 step 4: the turn of `session` finished — `WbTurn { End }` for every whiteboard its injection

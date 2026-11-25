@@ -58,3 +58,10 @@ The fixture `crates/agent/tests/fixtures/whiteboard_outline.txt` was cut from th
 
 - The live injection path end to end (needs a running engine with B1's actor and a bound session); covered by the pure planner tests only.
 - `show_whiteboard`'s `call()` against a real document actor.
+
+## Fix round (review M5, M6)
+
+- **M5 — marker binding vetted.** `loop_.rs` records `Turn::input_owner`: true only when the session is top level (`depth == 0`), the turn has no contact cap, and no input of the turn carries a `peer`, an A2A `scope` or a `channel` (Slack/Telegram/…). `whiteboards::bound(store, session, input, owner)` binds a marker only when owner, `MetaOf` as `Principal::Owner` succeeds (the doc exists and the owner may read it), its kind is `DocKind::Whiteboard`, and `WbInfo` says not trashed (`marker_refusal`). Every refusal is logged at warn and binds nothing. Test: `whiteboards::tests::marker_binds_only_an_owners_readable_whiteboard`.
+- **M6 — unreadable outline is said, not swallowed.** When `WbInfo`/`WbOutline` fail for a bound whiteboard (other than "gone", which unbinds), or an owner's marker cannot be read on this engine, injection logs at warn and adds one line: `<whiteboard_unavailable id="…" reason="another engine serves it"/> This chat is bound to that whiteboard, but its outline cannot be read here, so the wb_* functions will fail too. Tell the user, …`. Once per context (scanned like the brief line); not a baseline, so the full block follows as soon as the outline is readable. `whiteboard_bind` already refuses off the serving engine (its `WbInfo` check fails `NotHub`, `-32011`). Test: `whiteboards::tests::unreadable_outline_is_a_notice_once_per_context`.
+- Migration stays `0077` (the orchestrator renumbers at merge if 219 lands first).
+- Limit: the owner test is by input provenance (`peer`/`scope`/`channel`/depth/cap); a channel input from the owner (e.g. the owner's own Slack DM) does not bind by marker — the composer's `whiteboard_bind` still does.
