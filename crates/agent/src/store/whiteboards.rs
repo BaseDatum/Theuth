@@ -151,10 +151,11 @@ mod tests {
         assert!(store.sessions_of_whiteboard(wb).await.unwrap().is_empty());
     }
 
-    /// 218 §5: the table is node-local — not attached to the session log, the wire schema stays 70.
+    /// 218 §5: the table is node-local — not attached to the session log, so 0077 left the
+    /// wire schema at 70; 219's `0078_session_always_ask` bumped it to 78 since.
     #[tokio::test]
     async fn node_local_no_wire_bump() {
-        assert_eq!(crate::store::SESSIONS_WIRE_SCHEMA, 70);
+        assert_eq!(crate::store::SESSIONS_WIRE_SCHEMA, 78);
         assert!(
             !super::super::capture::ATTACHED
                 .iter()
