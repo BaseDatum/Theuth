@@ -3,6 +3,7 @@ import { Row, Section } from '@/components/settings/shared'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { useAnimations } from '@/lib/animations'
 import { useBoards } from '@/lib/boards'
 import { useNudges } from '@/lib/nudges'
 import { LINGER_MAX_HOURS, useLinger } from '@/lib/sidebar-linger'
@@ -18,6 +19,7 @@ const THEMES: [Theme, string][] = [
 /** 188 A1: Settings › General › Appearance — how the app and the chat transcript look (client-only preferences). */
 export function Appearance() {
   const [theme, setThemeState] = useState(currentTheme)
+  const animations = useAnimations((s) => s.enabled)
   const serif = useBoards((s) => s.serif)
   const collapse = useToolRuns((s) => s.collapse)
   const showNudges = useNudges((s) => s.show)
@@ -43,6 +45,9 @@ export function Appearance() {
               ))}
             </SelectContent>
           </Select>
+        </Row>
+        <Row label="Animations" description="Motion for arriving tool cards, diagrams, folding tool runs, and the session bar warp. Always respects system Reduce Motion.">
+          <Switch checked={animations} onCheckedChange={useAnimations.getState().setEnabled} />
         </Row>
         <Row label="Serif prose on boards" description="Board prose in Newsreader; off uses the interface face. Paths, captions and gutters stay mono.">
           <Switch checked={serif} onCheckedChange={useBoards.getState().setSerif} />

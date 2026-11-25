@@ -1281,3 +1281,255 @@ html .tg-canvas .tg-edge {
   from { transform: scale(0); }
   to { transform: scale(1); }
 }
+
+/* Session scroll-area entrances (A · Paper & Ink, 1x): live-arriving tool cards, diagrams and UI blocks settle
+   upward with blur-to-crisp focus; SVG diagram nodes stagger in and solid edges draw along their path. History,
+   snapshots and reduced-motion stay instant. No permanent will-change (styles-layers iOS WebKit paint budget). */
+@media (prefers-reduced-motion: no-preference) {
+  .paper-enter:not(:where([data-snapshot-light], [data-snapshot-light] *, [data-snapshot-dark], [data-snapshot-dark] *)) {
+    animation: paper-settle 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .paper-enter [data-tool-hint] {
+    animation: paper-hint-slide 300ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both;
+  }
+  .paper-surface-enter:not(:where([data-snapshot-light], [data-snapshot-light] *, [data-snapshot-dark], [data-snapshot-dark] *)) {
+    animation: paper-settle 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .paper-surface-enter svg g[data-node] {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: paper-node-up 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .paper-surface-enter svg g[data-node]:nth-of-type(2) { animation-delay: 55ms; }
+  .paper-surface-enter svg g[data-node]:nth-of-type(3) { animation-delay: 110ms; }
+  .paper-surface-enter svg g[data-node]:nth-of-type(4) { animation-delay: 165ms; }
+  .paper-surface-enter svg g[data-node]:nth-of-type(5) { animation-delay: 220ms; }
+  .paper-surface-enter svg g[data-node]:nth-of-type(6) { animation-delay: 275ms; }
+  .paper-surface-enter svg g[data-node]:nth-of-type(n+7) { animation-delay: 320ms; }
+  .paper-surface-enter svg g[data-unit^="edge:"] > path:not([stroke="transparent"]):not([stroke-dasharray]) {
+    stroke-dasharray: 360;
+    stroke-dashoffset: 360;
+    animation: paper-edge-draw 520ms cubic-bezier(0.22, 1, 0.36, 1) 140ms forwards;
+  }
+  .paper-surface-enter svg g[data-unit^="edge:"] > path[stroke-dasharray]:not([stroke="transparent"]) {
+    animation: paper-fade 340ms ease-out 180ms both;
+  }
+  .paper-surface-enter :is([data-slot="card"], li) {
+    animation: paper-item-stagger 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .paper-surface-enter :is([data-slot="card"], li):nth-child(2) { animation-delay: 50ms; }
+  .paper-surface-enter :is([data-slot="card"], li):nth-child(3) { animation-delay: 100ms; }
+  .paper-surface-enter :is([data-slot="card"], li):nth-child(4) { animation-delay: 150ms; }
+  .paper-surface-enter :is([data-slot="card"], li):nth-child(5) { animation-delay: 200ms; }
+  .paper-surface-enter :is([data-slot="card"], li):nth-child(n+6) { animation-delay: 240ms; }
+}
+@keyframes paper-settle {
+  0% { opacity: 0; transform: translateY(14px) scale(0.985); filter: blur(4px); }
+  65% { opacity: 1; filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+@keyframes paper-hint-slide {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes paper-node-up {
+  from { opacity: 0; transform: translateY(8px) scale(0.93); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes paper-edge-draw {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes paper-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes paper-item-stagger {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Session details bar above the composer (3 · Folded Horizon, 1x): 3D perspective hinge lifting off the grabber
+   plane on open and folding back flat on close, with bottom-up layer stagger and tactile grabber pill response. */
+.horizon-stage {
+  transform-origin: 50% 100%;
+}
+.tray-dash-side {
+  transition: transform 340ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease;
+}
+[data-dash-row][data-open="true"] .tray-dash-left {
+  transform: translateX(5px) scale(0.94);
+  opacity: 0.62;
+}
+[data-dash-row][data-open="true"] .tray-dash-right {
+  transform: translateX(-5px) scale(0.94);
+  opacity: 0.62;
+}
+[data-dash-row] .tray-grabber-pill {
+  transition: background-color 150ms ease, width 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+[data-dash-row][data-open="true"] .tray-grabber-pill {
+  width: 3.5rem;
+  background-color: color-mix(in oklab, var(--fg-accent) 78%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .horizon-in {
+    animation: bg-horizon-up 440ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+  .horizon-out {
+    animation: bg-horizon-down 320ms cubic-bezier(0.55, 0.05, 0.85, 0.3) forwards;
+  }
+  .horizon-in > * {
+    animation: bg-layer-rise 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .horizon-in > *:nth-last-child(1) { animation-delay: 0ms; }
+  .horizon-in > *:nth-last-child(2) { animation-delay: 45ms; }
+  .horizon-in > *:nth-last-child(3) { animation-delay: 90ms; }
+  .horizon-in > *:nth-last-child(n+4) { animation-delay: 135ms; }
+  .tray-pill-launch {
+    animation: bg-pill-launch 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .tray-pill-absorb {
+    animation: bg-pill-absorb 320ms cubic-bezier(0.34, 1.6, 0.64, 1);
+  }
+  .tray-card-collapsible [data-slot="collapsible-content"][data-state="open"] {
+    animation: bg-card-reveal 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tray-dash-side,
+  [data-dash-row] .tray-grabber-pill {
+    transition: none;
+  }
+}
+@keyframes bg-horizon-up {
+  0% {
+    opacity: 0;
+    transform: perspective(780px) translateY(24px) rotateX(-58deg) scaleX(0.84) scaleY(0.5);
+    filter: brightness(0.92);
+  }
+  62% {
+    opacity: 1;
+    transform: perspective(780px) translateY(-1px) rotateX(3.5deg) scaleX(1.005) scaleY(1.01);
+    filter: brightness(1);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(780px) translateY(0) rotateX(0deg) scaleX(1) scaleY(1);
+    filter: brightness(1);
+  }
+}
+@keyframes bg-horizon-down {
+  0% {
+    opacity: 1;
+    transform: perspective(780px) translateY(0) rotateX(0deg) scaleX(1) scaleY(1);
+  }
+  100% {
+    opacity: 0;
+    transform: perspective(780px) translateY(26px) rotateX(-56deg) scaleX(0.82) scaleY(0.42);
+    filter: brightness(0.9);
+  }
+}
+@keyframes bg-layer-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes bg-pill-launch {
+  0% { transform: scaleX(1) scaleY(1); }
+  35% { transform: scaleX(0.86) scaleY(1.35) translateY(-1.5px); }
+  100% { transform: scaleX(1) scaleY(1) translateY(0); }
+}
+@keyframes bg-pill-absorb {
+  0% { transform: scaleX(1) scaleY(1); }
+  35% { transform: scaleX(1.26) scaleY(0.74); }
+  100% { transform: scaleX(1) scaleY(1); }
+}
+@keyframes bg-card-reveal {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Consecutive tool cards appearing, folding into a run, and expanding/collapsing (Paper & Ink, 1x). */
+.tool-fold-stage {
+  transform-origin: 50% 0%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-animations="off"]) .tool-run-fold-in:not(:where([data-snapshot-light], [data-snapshot-light] *, [data-snapshot-dark], [data-snapshot-dark] *)) {
+    transform-origin: 50% 0%;
+    animation: tool-run-fold-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  :root:not([data-animations="off"]) .tool-run-absorb {
+    transform-origin: 50% 50%;
+    animation: tool-run-absorb 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  :root:not([data-animations="off"]) .tool-hint-tick {
+    animation: tool-hint-tick 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  :root:not([data-animations="off"]) .tool-fold-in > * {
+    animation: tool-card-fan-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  :root:not([data-animations="off"]) .tool-fold-in > *:nth-child(2) { animation-delay: 35ms; }
+  :root:not([data-animations="off"]) .tool-fold-in > *:nth-child(3) { animation-delay: 70ms; }
+  :root:not([data-animations="off"]) .tool-fold-in > *:nth-child(4) { animation-delay: 105ms; }
+  :root:not([data-animations="off"]) .tool-fold-in > *:nth-child(5) { animation-delay: 140ms; }
+  :root:not([data-animations="off"]) .tool-fold-in > *:nth-child(n+6) { animation-delay: 170ms; }
+  :root:not([data-animations="off"]) .tool-fold-out {
+    animation: tool-card-fan-out 240ms cubic-bezier(0.55, 0.05, 0.85, 0.3) forwards;
+  }
+  :root:not([data-animations="off"]) .tool-code-reveal {
+    animation: tool-code-reveal 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+@keyframes tool-run-fold-in {
+  0% { opacity: 0.72; transform: translateY(-6px) scaleY(1.06) scaleX(0.99); border-color: color-mix(in oklab, var(--fg-accent) 45%, var(--border-subtle)); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes tool-run-absorb {
+  0% { transform: translateY(0) scaleY(1); }
+  38% { transform: translateY(1px) scaleY(0.975); }
+  100% { transform: translateY(0) scaleY(1); }
+}
+@keyframes tool-hint-tick {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes tool-card-fan-in {
+  0% { opacity: 0; transform: translateY(-8px) scale(0.985); filter: blur(2px); }
+  65% { opacity: 1; filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+@keyframes tool-card-fan-out {
+  0% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-10px) scale(0.98); }
+}
+@keyframes tool-code-reveal {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Global Settings › Appearance › Animations = off: disable all scroll-area, tool-fold and session-bar motion. */
+:root[data-animations="off"] :is(
+  .paper-enter,
+  .paper-enter [data-tool-hint],
+  .paper-surface-enter,
+  .paper-surface-enter svg g[data-node],
+  .paper-surface-enter svg g[data-unit^="edge:"] > path,
+  .paper-surface-enter :is([data-slot="card"], li),
+  .horizon-in,
+  .horizon-in > *,
+  .horizon-out,
+  .tray-pill-launch,
+  .tray-pill-absorb,
+  .tray-card-collapsible [data-slot="collapsible-content"][data-state="open"],
+  .tool-run-fold-in,
+  .tool-run-absorb,
+  .tool-hint-tick,
+  .tool-fold-in > *,
+  .tool-fold-out,
+  .tool-code-reveal
+) {
+  animation: none !important;
+  stroke-dashoffset: 0 !important;
+}
+:root[data-animations="off"] :is(.tray-dash-side, [data-dash-row] .tray-grabber-pill) {
+  transition: none;
+}

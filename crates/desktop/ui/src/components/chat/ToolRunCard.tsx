@@ -1,4 +1,6 @@
 import { ChevronRight, Wrench } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { motionAllowed } from '@/lib/animations'
 import { codeDetails, resultLine } from '@/lib/describe'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
@@ -293,18 +295,33 @@ function ToolRun({ run, prompts, session }: { run: Run; prompts: Prompt[] | null
   )
   const [open, setOpen] = useDisclosure(disclosureKey('run', first.kind === 'tool' ? first.callId : first.id), member)
   const { text, running, failed, hint } = summarize(run)
+  const { headerRef, foldIn, hintTick, pulseAbsorb } = useRunStackMotion(run.length, running, hint)
+  const fold = useToolFold(open, pulseAbsorb)
   return (
     <>
-      <div className={cn('my-2 min-w-0 rounded-xl border bg-layer-1 px-4 py-3 text-sm', failed ? 'border-danger-border' : 'border-border-subtle')}>
+      <div
+        ref={headerRef}
+        className={cn(
+          'my-2 min-w-0 rounded-xl border bg-layer-1 px-4 py-3 text-sm',
+          failed ? 'border-danger-border' : 'border-border-subtle',
+          foldIn && 'tool-run-fold-in',
+        )}
+      >
         <button type="button" className="flex w-full min-w-0 flex-col gap-1 text-left" aria-expanded={open} onClick={() => setOpen(!open)}>
           <div className={cn('flex items-center gap-2 font-medium', failed && 'text-danger')}>
-            <ChevronRight className={cn('size-4 shrink-0 transition-transform', open && 'rotate-90')} />
+            <ChevronRight className={cn('size-4 shrink-0 transition-transform duration-200', open && 'rotate-90')} />
             <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
             <span className="min-w-0 truncate">{text}</span>
             {running && <ToolSpinner />}
           </div>
           {hint && !open && (
-            <div className={cn('w-full truncate pl-6 font-mono text-xs', hint.startsWith('✗') ? 'text-danger' : 'text-success')}>{hint}</div>
+            <div
+              key={hintTick ? hint : undefined}
+              data-tool-hint=""
+              className={cn('w-full truncate pl-6 font-mono text-xs', hint.startsWith('✗') ? 'text-danger' : 'text-success', hintTick && 'tool-hint-tick')}
+            >
+              {hint}
+            </div>
           )}
         </button>
         {run.map(
@@ -313,16 +330,33 @@ function ToolRun({ run, prompts, session }: { run: Run; prompts: Prompt[] | null
             e.result && <Attachments key={e.id} files={e.result.files} occurrences={e.context?.attachments} session={session} active={e.context?.active} className="mt-2" />,
         )}
       </div>
-      {open &&
-        run.map((e) =>
-          isPythonCall(e) ? (
-            <div key={e.id} className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 pb-3 text-sm">
-              <CellCode call={e} />
-            </div>
-          ) : (
-            <Message key={e.id} entry={e} prompts={null} session={session} />
-          ),
-        )}
+      {fold.mounted && (
+        <div
+          ref={fold.shellRef}
+          data-tool-fold=""
+          aria-hidden={fold.phase === 'exiting' || undefined}
+          className={cn(fold.phase !== 'open' && 'overflow-hidden', fold.phase === 'exiting' && 'pointer-events-none')}
+        >
+          <div
+            ref={fold.stageRef}
+            className={cn(
+              'tool-fold-stage',
+              fold.phase === 'entering' && 'tool-fold-in',
+              fold.phase === 'exiting' && 'tool-fold-out',
+            )}
+          >
+            {run.map((e) =>
+              isPythonCall(e) ? (
+                <div key={e.id} className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 pb-3 text-sm">
+                  <CellCode call={e} />
+                </div>
+              ) : (
+                <Message key={e.id} entry={e} prompts={null} session={session} />
+              ),
+            )}
+          </div>
+        </div>
+      )}
       {prompts?.map((p) => <PromptCard key={p.id} prompt={p} />)}
     </>
   )
@@ -341,11 +375,15 @@ function CellCode({ call }: { call: Tool }) {
             <ChevronRight className={cn('size-4 shrink-0 transition-transform', codeOpen && 'rotate-90')} />
             <span>code</span>
           </button>
-          {codeOpen && <Source code={source.code} language={source.language} />}
+          {codeOpen && (
+            <div className="tool-code-reveal">
+              <Source code={source.code} language={source.language} />
+            </div>
+          )}
         </div>
       )}
       {result && (result.isError || codeOpen) && result.output && (
-        <pre className={cn('mt-2 ml-6 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap', result.isError && 'text-danger')}>
+        <pre className={cn('tool-code-reveal mt-2 ml-6 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap', result.isError && 'text-danger')}>
           {result.output}
         </pre>
       )}
@@ -365,25 +403,196 @@ function PythonGroup({ group, prompts, session }: { group: Run; prompts: Prompt[
   const [open, setOpen] = useDisclosure(disclosureKey('run', call.callId), member)
   const { text, running, failed, hint } = summarizeGroup(group)
   const { result } = call
+  const { headerRef, foldIn, hintTick, pulseAbsorb } = useRunStackMotion(group.length, running, hint)
+  const fold = useToolFold(open, pulseAbsorb)
   return (
     <>
-      <div className={cn('my-2 min-w-0 rounded-xl border bg-layer-1 px-4 py-3 text-sm', failed ? 'border-danger-border' : 'border-border-subtle')}>
+      <div
+        ref={headerRef}
+        className={cn(
+          'my-2 min-w-0 rounded-xl border bg-layer-1 px-4 py-3 text-sm',
+          failed ? 'border-danger-border' : 'border-border-subtle',
+          foldIn && 'tool-run-fold-in',
+        )}
+      >
         <button type="button" className="flex w-full min-w-0 flex-col gap-1 text-left" aria-expanded={open} onClick={() => setOpen(!open)}>
           <div className={cn('flex items-center gap-2 font-medium', failed && 'text-danger')}>
-            <ChevronRight className={cn('size-4 shrink-0 transition-transform', open && 'rotate-90')} />
+            <ChevronRight className={cn('size-4 shrink-0 transition-transform duration-200', open && 'rotate-90')} />
             <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
             <span className="min-w-0 truncate">{text}</span>
             {running && <ToolSpinner />}
           </div>
           {hint && !open && (
-            <div className={cn('w-full truncate pl-6 font-mono text-xs', hint.startsWith('✗') ? 'text-danger' : 'text-success')}>{hint}</div>
+            <div
+              key={hintTick ? hint : undefined}
+              data-tool-hint=""
+              className={cn('w-full truncate pl-6 font-mono text-xs', hint.startsWith('✗') ? 'text-danger' : 'text-success', hintTick && 'tool-hint-tick')}
+            >
+              {hint}
+            </div>
           )}
         </button>
-        {open && <CellCode call={call} />}
+        {open && (
+          <div className="tool-code-reveal">
+            <CellCode call={call} />
+          </div>
+        )}
         {result && <Attachments files={result.files} occurrences={call.context?.attachments} session={session} active={call.context?.active} className="mt-2" />}
       </div>
-      {open && calls.map((e) => <Message key={e.id} entry={e} prompts={null} session={session} />)}
+      {fold.mounted && calls.length > 0 && (
+        <div
+          ref={fold.shellRef}
+          data-tool-fold=""
+          aria-hidden={fold.phase === 'exiting' || undefined}
+          className={cn(fold.phase !== 'open' && 'overflow-hidden', fold.phase === 'exiting' && 'pointer-events-none')}
+        >
+          <div
+            ref={fold.stageRef}
+            className={cn(
+              'tool-fold-stage',
+              fold.phase === 'entering' && 'tool-fold-in',
+              fold.phase === 'exiting' && 'tool-fold-out',
+            )}
+          >
+            {calls.map((e) => <Message key={e.id} entry={e} prompts={null} session={session} />)}
+          </div>
+        </div>
+      )}
       {prompts?.map((p) => <PromptCard key={p.id} prompt={p} />)}
     </>
   )
+}
+
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect
+
+type FoldPhase = 'closed' | 'entering' | 'open' | 'exiting'
+const FOLD_OPEN_MS = 300
+const FOLD_CLOSE_MS = 240
+
+/**
+ * Consecutive tool-card stack motion on a folded header: plays `tool-run-fold-in` when a live run first folds
+ * together, pulses `tool-run-absorb` as later consecutive calls join or when an expanded stack folds shut, and glides
+ * updated hint lines in.
+ */
+function useRunStackMotion(count: number, running: boolean, hint: string | null) {
+  const headerRef = useRef<HTMLDivElement>(null)
+  const foldIn = useRef<boolean | null>(null)
+  if (foldIn.current === null) foldIn.current = running && motionAllowed()
+  const prevCount = useRef(count)
+  const prevHint = useRef(hint)
+  const hintChanged = prevHint.current !== hint && prevHint.current !== null && hint !== null && motionAllowed()
+  prevHint.current = hint
+
+  const pulseAbsorb = useCallback(() => {
+    const el = headerRef.current
+    if (!el || !motionAllowed()) return
+    el.classList.remove('tool-run-absorb')
+    void el.offsetWidth
+    el.classList.add('tool-run-absorb')
+  }, [])
+
+  useIsomorphicLayoutEffect(() => {
+    if (count > prevCount.current && running) pulseAbsorb()
+    prevCount.current = count
+  }, [count, running, pulseAbsorb])
+
+  return { headerRef, foldIn: foldIn.current, hintTick: hintChanged, pulseAbsorb }
+}
+
+/**
+ * Height-glided expand/collapse for consecutive tool cards under a folded run header. Keeps nested cards mounted
+ * through the 240 ms fold-shut exit in real browsers, and settles synchronously under reduced motion, Appearance ›
+ * Animations off, SSR or zero-height jsdom layouts.
+ */
+function useToolFold(open: boolean, onCollapse?: () => void) {
+  const [phase, setPhase] = useState<FoldPhase>(open ? 'open' : 'closed')
+  const shellRef = useRef<HTMLDivElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const prevOpen = useRef(open)
+  const timers = useRef<number[]>([])
+
+  const clearTimers = () => {
+    for (const id of timers.current) clearTimeout(id)
+    timers.current = []
+  }
+
+  useIsomorphicLayoutEffect(() => {
+    if (prevOpen.current === open) return
+    prevOpen.current = open
+    clearTimers()
+
+    if (open) {
+      if (!motionAllowed()) {
+        setPhase('open')
+        return
+      }
+      setPhase('entering')
+      return
+    }
+
+    const shell = shellRef.current
+    const startH = shell?.getBoundingClientRect().height ?? 0
+    if (!motionAllowed() || !shell || startH <= 0) {
+      if (shell) {
+        shell.style.transition = ''
+        shell.style.height = ''
+      }
+      setPhase('closed')
+      return
+    }
+
+    shell.style.transition = 'none'
+    shell.style.height = `${startH}px`
+    void shell.offsetHeight
+    shell.style.transition = `height ${FOLD_CLOSE_MS}ms cubic-bezier(0.55, 0.05, 0.85, 0.3)`
+    shell.style.height = '0px'
+    setPhase('exiting')
+
+    timers.current.push(
+      window.setTimeout(() => onCollapse?.(), FOLD_CLOSE_MS - 80),
+      window.setTimeout(() => {
+        if (shellRef.current) {
+          shellRef.current.style.transition = ''
+          shellRef.current.style.height = ''
+        }
+        setPhase('closed')
+      }, FOLD_CLOSE_MS + 20),
+    )
+  }, [open, onCollapse])
+
+  useIsomorphicLayoutEffect(() => {
+    if (phase !== 'entering') return
+    const shell = shellRef.current
+    const stage = stageRef.current
+    if (!shell || !stage) return
+
+    shell.style.transition = 'none'
+    shell.style.height = 'auto'
+    const targetH = stage.getBoundingClientRect().height
+    if (targetH <= 0) {
+      shell.style.transition = ''
+      shell.style.height = ''
+      setPhase('open')
+      return
+    }
+
+    shell.style.height = '0px'
+    void shell.offsetHeight
+    shell.style.transition = `height ${FOLD_OPEN_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`
+    shell.style.height = `${targetH}px`
+
+    timers.current.push(
+      window.setTimeout(() => {
+        if (shellRef.current) {
+          shellRef.current.style.transition = ''
+          shellRef.current.style.height = ''
+        }
+        setPhase('open')
+      }, FOLD_OPEN_MS + 25),
+    )
+  }, [phase])
+
+  useEffect(() => () => clearTimers(), [])
+
+  return { mounted: open || phase !== 'closed', phase, shellRef, stageRef }
 }

@@ -11,10 +11,12 @@ import { GuestApp } from '@/components/share/GuestApp'
 import { isGuest } from '@/link/guest'
 import { notify } from '@/lib/notify'
 import { container, markContainer } from '@/lib/platform'
+import { initAnimations } from '@/lib/animations'
 import { initTheme } from '@/lib/theme'
 import { trackViewport } from '@/lib/viewport'
 
 initTheme()
+initAnimations()
 trackViewport()
 markContainer()
 // The webview has no popup handler, so `window.open` (Streamdown's link-safety modal, etc.) is a silent no-op; hand it to the system browser.

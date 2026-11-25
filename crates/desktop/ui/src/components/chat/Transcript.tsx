@@ -25,6 +25,8 @@ import { ActivityIndicator } from './Indicators'
 import { window as reach } from './lookahead'
 import { type Row, buildRows } from './rows'
 import { type Anchor, step } from './scroll-anchor'
+import { motionAllowed } from '@/lib/animations'
+import { LiveRowTracker } from './entrance'
 import { ToolRunCard } from './ToolRunCard'
 import { settleOn, takeJump, useTranscriptJump } from './jump'
 import { followContent, followViewport } from './viewport-follow'
@@ -214,6 +216,9 @@ export function Transcript({ session, compact = false, next: suggest = false }: 
     () => buildRows(entries, pending, session, children, collapse, pinnedThinking, forms),
     [entries, pending, session, children, collapse, pinnedThinking, forms],
   )
+  const entrance = useRef<LiveRowTracker | null>(null)
+  if (!entrance.current) entrance.current = new LiveRowTracker()
+  entrance.current.sync(session, rows, !!running)
   // R1.2: the library's measurement memo keys on `getItemKey`'s identity — a new one means a full pass, so it changes
   // only when the rows do (and with the width, so the pass re-estimates at the new bucket). The remembered heights
   // map is hoisted: `remember` mutates it in place; a new bucket makes a new one through `width`.
@@ -521,25 +526,33 @@ export function Transcript({ session, compact = false, next: suggest = false }: 
   const ahead = next.length === aheadRef.current.length && next.every((k, i) => k === aheadRef.current[i]) ? aheadRef.current : (aheadRef.current = next)
   const deferred = useDeferredValue(ahead)
   const indexOf = useMemo(() => new Map(rows.map((r, i) => [r.key, i])), [rows])
-  const cell = (item: VirtualItem, row: Row) => (
-    <div key={item.key} data-index={item.index} ref={v.measureElement} className="absolute top-0 left-0 w-full" style={{ transform: `translateY(${item.start}px)` }}>
-      {'entry' in row ? (
-        <Message entry={row.entry} prompts={row.prompts} session={session} />
-      ) : 'run' in row ? (
-        <ToolRunCard run={row.run} prompts={row.prompts} session={session} />
-      ) : 'gap' in row ? (
-        <div className="flex items-center gap-3 py-2 text-xs text-fg-tertiary">
-          <span className="h-px flex-1 bg-border-subtle" />
-          <span className="tabular-nums">{row.gap}</span>
-          <span className="h-px flex-1 bg-border-subtle" />
-        </div>
-      ) : 'form' in row ? (
-        <FormPromptCard form={row.form} from={row.from} />
-      ) : (
-        <PromptCard prompt={row.prompt} from={row.from} />
-      )}
-    </div>
-  )
+  const cell = (item: VirtualItem, row: Row) => {
+    const entering = motionAllowed() && (entrance.current?.isEntering(row.key) ?? false)
+    const inner = 'entry' in row ? (
+      <Message entry={row.entry} prompts={row.prompts} session={session} />
+    ) : 'run' in row ? (
+      <ToolRunCard run={row.run} prompts={row.prompts} session={session} />
+    ) : 'gap' in row ? (
+      <div className="flex items-center gap-3 py-2 text-xs text-fg-tertiary">
+        <span className="h-px flex-1 bg-border-subtle" />
+        <span className="tabular-nums">{row.gap}</span>
+        <span className="h-px flex-1 bg-border-subtle" />
+      </div>
+    ) : 'form' in row ? (
+      <FormPromptCard form={row.form} from={row.from} />
+    ) : (
+      <PromptCard prompt={row.prompt} from={row.from} />
+    )
+    return (
+      <div key={item.key} data-index={item.index} ref={v.measureElement} className="absolute top-0 left-0 w-full" style={{ transform: `translateY(${item.start}px)` }}>
+        {entering ? (
+          <div className="paper-enter" onAnimationEnd={(e) => { if (e.target === e.currentTarget) entrance.current?.finish(row.key) }}>
+            {inner}
+          </div>
+        ) : inner}
+      </div>
+    )
+  }
   const measured = useMemo(() => (width ? { session, width } : null), [session, width])
   return (
     <div className="relative min-h-0 flex-1">

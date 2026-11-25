@@ -13,7 +13,7 @@ export function BackgroundCard({ title, summary, color, expanded, onExpanded, ch
   children: ReactNode
 }) {
   return (
-    <Collapsible open={expanded} onOpenChange={onExpanded} className="shrink-0 overflow-hidden rounded-xl border bg-background text-xs">
+    <Collapsible open={expanded} onOpenChange={onExpanded} className="tray-card-collapsible shrink-0 overflow-hidden rounded-xl border bg-background text-xs">
       <CollapsibleContent>
         <div className="max-h-[calc(var(--visible-band,100dvh)/3)] overflow-y-auto border-b px-3 py-2">{children}</div>
       </CollapsibleContent>

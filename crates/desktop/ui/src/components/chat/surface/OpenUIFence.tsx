@@ -8,7 +8,10 @@
  */
 import { check, library } from '@theuth/apps'
 import { AppRenderer, type AppRendererProps } from '@theuth/apps/renderer'
-import { useContext, useMemo, useState } from 'react'
+import { useContext, useMemo, useRef, useState } from 'react'
+import { cn } from '@/lib/utils'
+import { motionAllowed } from '@/lib/animations'
+import { claimSurfaceEntrance } from '../entrance'
 import { notify as toast } from '@/lib/notify'
 import type { CustomRendererProps } from 'streamdown'
 import { copyToClipboard } from '@/components/apps/openui-actions'
@@ -77,7 +80,8 @@ export function OpenUIFence(props: CustomRendererProps) {
 }
 
 function OpenUI({ code, isIncomplete }: CustomRendererProps) {
-  const { session } = useContext(FenceContext)
+  const ctx = useContext(FenceContext)
+  const { session } = ctx
   const api = useApi()
   const dark = useDark()
   // 164 D3: a channel picture: no toolbar, the requested palette.
@@ -99,8 +103,15 @@ function OpenUI({ code, isIncomplete }: CustomRendererProps) {
       setBusy(false)
     }
   }
+  const enterRef = useRef<boolean | null>(null)
+  if (enterRef.current === null) {
+    enterRef.current =
+      motionAllowed() && !bare && !snap && !ctx.readOnly && ctx.running
+        ? claimSurfaceEntrance(`ou:${ctx.session ?? ''}:${ctx.entry ?? ''}:${code.slice(0, 64)}`)
+        : false
+  }
   return (
-    <div className={bare ? 'group relative h-full overflow-auto text-sm' : 'group relative my-4 text-sm'} data-streamdown="openui" data-bare={bare || undefined}>
+    <div className={cn(bare ? 'group relative h-full overflow-auto text-sm' : 'group relative my-4 text-sm', enterRef.current && 'paper-surface-enter')} data-streamdown="openui" data-bare={bare || undefined}>
       {!snap && (
         <div className="absolute top-0 right-0 z-10 flex gap-1 rounded-lg bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           {session !== undefined && (

@@ -1,5 +1,8 @@
 import { JSONUIProvider, Renderer, type Spec } from '@json-render/react'
-import { Component, createContext, type ReactNode, useContext, useEffect, useMemo, useState } from 'react'
+import { Component, createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { cn } from '@/lib/utils'
+import { motionAllowed } from '@/lib/animations'
+import { claimSurfaceEntrance } from '../entrance'
 import type { CustomRendererProps } from 'streamdown'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { useSnapshot } from '@/lib/snapshot-mode'
@@ -82,9 +85,18 @@ class Boundary extends Component<
 
 function Surface({ spec, loading, title }: { spec: Spec; loading: boolean; title?: string }) {
   const bare = useBare()
+  const ctx = useContext(FenceContext)
+  const snap = useSnapshot()
+  const enterRef = useRef<boolean | null>(null)
+  if (enterRef.current === null) {
+    enterRef.current =
+      motionAllowed() && !bare && !snap && !ctx.readOnly && ctx.running
+        ? claimSurfaceEntrance(`jr:${ctx.session ?? ''}:${ctx.entry ?? ''}:${spec.root}`)
+        : false
+  }
   const shown = useMemo(() => (bare ? unwrapRoot(spec) : spec), [bare, spec])
   return (
-    <div className={bare ? 'flex h-full min-h-0 flex-col overflow-auto text-sm' : 'my-4 text-sm'} data-streamdown="json-render" data-bare={bare || undefined} title={title}>
+    <div className={cn(bare ? 'flex h-full min-h-0 flex-col overflow-auto text-sm' : 'my-4 text-sm', enterRef.current && 'paper-surface-enter')} data-streamdown="json-render" data-bare={bare || undefined} title={title}>
       <JSONUIProvider registry={registry}>
         <Renderer spec={shown} registry={registry} loading={loading} />
       </JSONUIProvider>

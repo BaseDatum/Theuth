@@ -3,7 +3,9 @@
 // and rendered through the 80 ms render queue so a streaming fence redraws at most every 80 ms and ends on the
 // latest source. Security as in 30 §11: `securityLevel: 'strict'`, `htmlLabels: false`.
 import type { Mermaid, MermaidConfig } from 'mermaid'
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { motionAllowed } from '@/lib/animations'
+import { claimSurfaceEntrance } from './entrance'
 import type { CustomRendererProps } from 'streamdown'
 import { fnv, LruCache } from '@/lib/diagram/elk'
 import { diagramName } from '@/lib/diagram-export'
@@ -13,7 +15,7 @@ import { type SnapshotMode, useSnapshot } from '@/lib/snapshot-mode'
 import { subscribeDark } from '@/lib/theme'
 import { DiagramFrame } from './DiagramFrame'
 import { FenceScope } from './disclosure'
-import { ErrorCard } from './surface/JsonRenderFence'
+import { ErrorCard, FenceContext } from './surface/JsonRenderFence'
 
 /** 65 §4.2. `layout` unset: ELK is 12's default; a diagram's frontmatter may still say `layout: dagre`. */
 function config(t: DiagramTokens = diagramTokens()): MermaidConfig {
@@ -139,12 +141,24 @@ function useRender(chart: string, incomplete: boolean): { svg: string | null; er
  */
 export function MermaidFence({ code, isIncomplete, fill }: CustomRendererProps & { fill?: boolean }) {
   const { svg, error } = useRender(code, isIncomplete)
+  const ctx = useContext(FenceContext)
+  const snap = useSnapshot()
+  const enterRef = useRef<boolean | null>(null)
+  if (enterRef.current === null && svg) {
+    enterRef.current =
+      motionAllowed() && !fill && !snap && !ctx.readOnly && ctx.running
+        ? claimSurfaceEntrance(`mmd:${ctx.session ?? ''}:${ctx.entry ?? ''}:${svgKey(code)}`)
+        : false
+  }
+  const frame = <DiagramFrame svg={svg} name={diagramName(code)} label="mermaid" kind="mermaid-block" title={error ?? undefined} fill={fill} />
   return (
     <FenceScope code={code}>
       {error && !svg ? (
         <ErrorCard title="Diagram unavailable" error={error} source={code} />
+      ) : enterRef.current ? (
+        <div className="paper-surface-enter">{frame}</div>
       ) : (
-        <DiagramFrame svg={svg} name={diagramName(code)} label="mermaid" kind="mermaid-block" title={error ?? undefined} fill={fill} />
+        frame
       )}
     </FenceScope>
   )

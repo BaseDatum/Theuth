@@ -397,3 +397,38 @@ test('kernels left the chat for the bar: K1 dashes after terminals, pulsing whil
   expect(useSessions.getState().sessions.s1?.kernelsExpanded).toBe(false)
   expect(panel.querySelector('[role="region"][aria-label="Kernels"]')).toBeNull()
 })
+
+test('Folded Horizon warp: animates in on open, stays mounted through warp-down exit, then unmounts', async () => {
+  const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+    x: 0, y: 0, width: 640, height: 220, top: 0, left: 0, right: 640, bottom: 220, toJSON: () => ({}),
+  })
+  try {
+    populate()
+    await mount()
+    vi.useFakeTimers()
+    expect(document.getElementById('background-s1')).toBeNull()
+
+    await act(async () => { button('Show background activity').click() })
+    const row = document.querySelector('[data-dash-row]')!
+    expect(row.getAttribute('data-open')).toBe('true')
+    const panel = document.getElementById('background-s1')!
+    expect(panel.querySelector('.horizon-stage')?.className).toContain('horizon-in')
+    expect(panel.style.height).toBe('220px')
+
+    await act(async () => { vi.advanceTimersByTime(470) })
+    expect(panel.style.height).toBe('')
+    expect(panel.querySelector('.horizon-stage')?.className).not.toContain('horizon-in')
+
+    await act(async () => { button('Hide background activity').click() })
+    expect(row.getAttribute('data-open')).toBeNull()
+    expect(panel.getAttribute('aria-hidden')).toBe('true')
+    expect(panel.querySelector('.horizon-stage')?.className).toContain('horizon-out')
+    expect(panel.style.height).toBe('0px')
+
+    await act(async () => { vi.advanceTimersByTime(350) })
+    expect(document.getElementById('background-s1')).toBeNull()
+  } finally {
+    vi.useRealTimers()
+    rect.mockRestore()
+  }
+})
