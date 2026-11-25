@@ -447,6 +447,12 @@ pub trait Tool: Send + Sync + 'static {
     /// chat thread ([`registry::SetNonOwnerThread`]). Default `false`.
     const HUMAN_ONLY: bool = false;
 
+    /// [`Tool::HUMAN_ONLY`] as the gate reads it, per call: a tool may answer from a setting
+    /// (221 D17, `send_owner_only`). Must be cheap and synchronous. Default: the constant.
+    fn human_only(&self) -> bool {
+        Self::HUMAN_ONLY
+    }
+
     /// Whether [`Tool::approval_preview`] has anything to add: only then are a call's arguments
     /// deserialised for it, so every other tool's ask costs nothing. Default `false`.
     const APPROVAL_PREVIEW: bool = false;
@@ -564,7 +570,7 @@ impl<T: Tool> ErasedTool for T {
     }
 
     fn human_only(&self) -> bool {
-        T::HUMAN_ONLY
+        Tool::human_only(self)
     }
 
     fn approval_preview(
