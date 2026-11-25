@@ -1681,7 +1681,7 @@ below is a command or a scripted RPC round-trip that exits non-zero on failure.
     `input`s in a minute give six turns and one `-32005`, each row stamped `via: plugin`.
 12. **Hot reload, CLI, TUI.**
     *Check:* edit `TURNS_LIMIT` in §13.1 → a card (env is widening), old process keeps running; add a
-    capability → card; edit `main.py` → restart without a card (read-only plugin); `theuth plugin
+    capability → card; edit `main.py` → restart without a card (read-only plugin); `t plugin
     uninstall turns` → folder in `.trash`, tools gone; TUI `/plugins` on a pty lists both examples.
 13. **Desktop slots.** `PluginSurface` with the attribution strip, `lib/plugins.ts`, sidebar row with
     cap and overflow, status strip, tile kind (+ pop-out), Settings › Plugins, install card.
