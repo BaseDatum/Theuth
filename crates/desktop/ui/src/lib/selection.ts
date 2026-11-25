@@ -1,3 +1,9 @@
+/**
+ * A host's tick boxes over the sidebar's session rows (the broadcast picker): with it, `Desks`, `SessionList` and
+ * `AgentTree` render a checkbox on every session row and a click ticks instead of opening the chat.
+ */
+export type Ticks = { ids: ReadonlySet<string>; toggle(id: string): void }
+
 export type SelectMode = 'toggle' | 'range' | 'clear'
 
 /**

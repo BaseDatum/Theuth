@@ -27,7 +27,7 @@ import { useLinger } from '@/lib/sidebar-linger'
 import { takeReveal, useSidebarReveal } from '@/lib/sidebar-reveal'
 import { cn } from '@/lib/utils'
 import { notAdvisor, notStudy, rootOf, subtrees } from '@/lib/session-tree'
-import { nextSelection, type SelectMode } from '@/lib/selection'
+import { nextSelection, type SelectMode, type Ticks } from '@/lib/selection'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessions } from '@/store/sessions'
 import { useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
@@ -367,15 +367,19 @@ export function useSidebarSessions() {
  * content is absolutely positioned, so past the viewport its virtualizer height
  * collapsed to the leftover space, the bar's static position landed right under it
  * and sticky — a one-sided constraint — let it scroll away with the list.)
+ * `tick` (the broadcast picker, with `barEl` null): the same rows, each session a checkbox (`Ticks`); the rail's
+ * reveal stays the sidebar's.
  */
 export function SessionList({
   scrollEl,
   barEl,
   active,
+  tick,
 }: {
   scrollEl: HTMLDivElement | null
   barEl: HTMLDivElement | null
   active: string | undefined
+  tick?: Ticks
 }) {
   const { sessions, subs, activeSet, recent } = useSidebarSessions()
   const api = useApi()
@@ -464,7 +468,7 @@ export function SessionList({
   // again), then scroll its header to the top. `p:` without a header row (no projects) is the plain list's first day.
   const reveal = useSidebarReveal((s) => s.key)
   useEffect(() => {
-    if (!reveal?.startsWith('h:') && !reveal?.startsWith('p:')) return
+    if (tick || (!reveal?.startsWith('h:') && !reveal?.startsWith('p:'))) return
     if (!scrollEl) return
     const project = reveal.slice(2)
     if (reveal.startsWith('p:') && collapsed.has(project)) {
@@ -480,7 +484,7 @@ export function SessionList({
       takeReveal()
     })
     return () => cancelAnimationFrame(frame)
-  }, [reveal, scrollEl, rows, collapsed, v])
+  }, [reveal, scrollEl, rows, collapsed, v, tick])
   return (
     <>
       {/* `shrink-0`: a flex item of the scroller; without it the column layout squeezes the measured height away. */}
@@ -541,9 +545,11 @@ export function SessionList({
                   selected={selected.has(row.session.id)}
                   selecting={selected.size > 0}
                   select={select}
+                  ticked={tick?.ids.has(row.session.id)}
+                  tick={tick?.toggle}
                 />
               ) : (
-                <AgentTree session={row.tree} active={active} />
+                <AgentTree session={row.tree} active={active} tick={tick} />
               )}
             </li>
           )

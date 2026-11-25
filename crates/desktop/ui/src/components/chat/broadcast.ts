@@ -4,6 +4,27 @@ import type { BroadcastReceipt } from "@/rpc/bindings/method.agent.output"
 import type { SessionActivity } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
+import { useDrafts } from '@/lib/drafts'
+
+/** What opens the broadcast dialog (`openBroadcastDialog`). */
+export type BroadcastRequest = {
+  /** Prefills the message. */
+  text?: string
+  /** Initial tick set; `running` when omitted (62 §0.2). `desks` falls back to `running` when no desk is open. */
+  preset?: 'running' | 'roots' | 'desks'
+}
+
+/** The broadcast composer's draft key (`Composer`'s `draftScope`, no session): its own, apart from every chat's. */
+export const BROADCAST_DRAFT = 'broadcast:'
+
+/**
+ * Open the broadcast dialog (62 §5.2): the sidebar action, `/broadcast` and the composer's "Send to many…" all end
+ * here. `text` replaces the broadcast draft; without it the last unsent one stays.
+ */
+export function openBroadcastDialog(req: BroadcastRequest = {}): void {
+  if (req.text !== undefined) useDrafts.getState().setText(BROADCAST_DRAFT, req.text)
+  window.dispatchEvent(new CustomEvent<BroadcastRequest>('theuth:broadcast', { detail: req }))
+}
 
 /** `list_activity` rows carry their depth from their own root: 0 is a root (62 §3.2). */
 export const isRoot = (r: AgentInfo) => r.depth === 0
@@ -26,7 +47,7 @@ export const active = (a: SessionActivity | undefined) => busy(a) || (a?.jobs ??
 
 /**
  * Per root id, how many of its descendants (child, grandchild…, walked up `parent` through `rows`) are `active`.
- * Roots with none are absent. Advisors don't count (125 §8.5), matching `groupRows`.
+ * Roots with none are absent. Advisors don't count (125 §8.5), as the sidebar's lists drop them.
  */
 export function activeDescendants(all: AgentInfo[]): Map<string, number> {
   const rows = all.filter(notAdvisor)
@@ -57,13 +78,6 @@ export function runningRoots(rows: AgentInfo[]): string[] {
 /** What `BroadcastTargets::Roots` selects. */
 export const allRoots = (rows: AgentInfo[]): string[] => rows.filter(isRoot).map((r) => r.id)
 
-/**
- * The roster name of a desk root, `undefined` for every other session. `desks` is the sidebar's set (`deskSessions` of
- * `deskList`): each active roster agent's CURRENT desk session. Not `SessionSummary.desk`: an agent's earlier desk
- * sessions keep that field, and so do the desks of agents gone from the roster; those are plain sessions here.
- */
-export const deskOf = (id: string, desks: ReadonlyMap<string, string>): string | undefined => desks.get(id)
-
 /** Stable sort key: the sidebar's Desks order (`deskList`: theuth first, then the roster's). */
 const deskOrder = (desks: ReadonlyMap<string, string>) => {
   const at = new Map([...desks.keys()].map((id, i) => [id, i]))
@@ -76,44 +90,6 @@ export function deskRoots(rows: AgentInfo[], desks: ReadonlyMap<string, string>)
     .filter((r) => isRoot(r) && desks.has(r.id))
     .map((r) => r.id)
     .sort(deskOrder(desks))
-}
-
-/** The picker's two sections: groups whose root is a current desk (the sidebar's order), then the rest in input order (D2). */
-export function splitGroups(groups: Group[], desks: ReadonlyMap<string, string>): { desks: Group[]; rest: Group[] } {
-  const by = deskOrder(desks)
-  return {
-    desks: groups.filter((g) => desks.has(g.root.id)).sort((x, y) => by(x.root.id, y.root.id)),
-    rest: groups.filter((g) => !desks.has(g.root.id)),
-  }
-}
-
-/** A section header's tri-state: every root of the section ticked, some, or none (an empty section is `none`). */
-export function sectionState(ids: ReadonlySet<string>, rootIds: readonly string[]): 'all' | 'some' | 'none' {
-  const n = rootIds.filter((id) => ids.has(id)).length
-  return n === 0 ? 'none' : n === rootIds.length ? 'all' : 'some'
-}
-
-export type Group = { root: AgentInfo; children: AgentInfo[] }
-
-/**
- * Roots in input order, each with every descendant present in `rows` (input order, own `depth` for
- * indentation). A row whose root is absent stands as its own group.
- */
-export function groupRows(all: AgentInfo[]): Group[] {
-  // 125 §8.5: an advisor is never a broadcast target.
-  const rows = all.filter(notAdvisor)
-  const byId = new Map(rows.map((r) => [r.id, r]))
-  const groups = new Map<string, Group>()
-  for (const r of rows) if (isRoot(r)) groups.set(r.id, { root: r, children: [] })
-  for (const r of rows) {
-    if (isRoot(r)) continue
-    let p = byId.get(r.parent)
-    while (p && !isRoot(p)) p = byId.get(p.parent)
-    const g = p && groups.get(p.id)
-    if (g) g.children.push(r)
-    else groups.set(r.id, { root: r, children: [] })
-  }
-  return [...groups.values()]
 }
 
 /** `2 jobs · 1 pty`; empty when nothing runs. */

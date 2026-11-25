@@ -26,7 +26,8 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/BroadcastDialog'
+import { BroadcastDialog } from '@/components/chat/BroadcastDialog'
+import { openBroadcastDialog } from '@/components/chat/broadcast'
 import { NewChatOnMenu, machineRows, openNewChat } from '@/components/chat/NewChatPane'
 import { useMesh } from '@/components/tasks/queries'
 import { createNote } from '@/components/notes/create'
@@ -448,7 +449,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       )}
     </Sidebar>
     {/* Beside, not inside: on phones the sidebar is a sheet that unmounts when closed (62 §5.2). */}
-    <Capability required={broadcastRequirements} hide><BroadcastDialog /></Capability>
+    <Capability required={broadcastRequirements} hide><BroadcastDialog active={session} /></Capability>
     </>
   )
 }

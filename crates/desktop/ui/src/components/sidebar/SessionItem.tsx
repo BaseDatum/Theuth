@@ -425,6 +425,8 @@ export const SessionItem = memo(function SessionItem({
   selected,
   selecting,
   select,
+  ticked = false,
+  tick,
 }: {
   id: string
   title: string
@@ -447,6 +449,10 @@ export const SessionItem = memo(function SessionItem({
   selected: boolean
   selecting: boolean
   select(id: string, mode: SelectMode): void
+  /** Tick mode (`Ticks`, the broadcast picker): an always-shown checkbox leads the row and a click ticks it; no link,
+   * menu, drag, swipe or pop-out. */
+  ticked?: boolean
+  tick?(id: string): void
 }) {
   const liveTags = useSessionField(id, 'tags') ?? tags
   const shown = useRowTitle(id, title, created)
@@ -460,6 +466,32 @@ export const SessionItem = memo(function SessionItem({
 
   // Touch: swipe left (right to left) archives; swipe right opens the same Delete confirmation as the menu.
   const swipe = useRowSwipe({ onSwipeLeft: () => void actions.archive(), onSwipeRight: () => setConfirming(true) })
+
+  const body = (
+    <>
+      {pinned && <PinnedGlyph />}
+      <SessionActivity id={id} here={here} running={running} />
+      <SessionPending id={id} />
+      <SessionSubagents subagents={subagents} />
+      <span className="truncate">{shown}</span>
+      {endless && (
+        <span role="img" aria-label="Fractal context" className="shrink-0 text-sm leading-4 text-fg-tertiary">
+          ∞
+        </span>
+      )}
+      {!here && <EngineChip owner={owner} epoch={epoch} className="ml-auto" />}
+    </>
+  )
+
+  if (tick)
+    return (
+      <SidebarMenuButton asChild className={cn('h-9 cursor-pointer rounded-[10px] px-2.5', archived && 'text-fg-tertiary')}>
+        <label title={tip}>
+          <input type="checkbox" className="size-4 shrink-0 accent-foreground" checked={ticked} onChange={() => tick(id)} />
+          {body}
+        </label>
+      </SidebarMenuButton>
+    )
 
   return (
     <div className="group/menu-item group/popout-row relative">
@@ -507,17 +539,7 @@ export const SessionItem = memo(function SessionItem({
                   {selected && <Check className="size-3 stroke-[3]" />}
                 </span>
               )}
-              {pinned && <PinnedGlyph />}
-              <SessionActivity id={id} here={here} running={running} />
-              <SessionPending id={id} />
-              <SessionSubagents subagents={subagents} />
-              <span className="truncate">{shown}</span>
-              {endless && (
-                <span role="img" aria-label="Fractal context" className="shrink-0 text-sm leading-4 text-fg-tertiary">
-                  ∞
-                </span>
-              )}
-              {!here && <EngineChip owner={owner} epoch={epoch} className="ml-auto" />}
+              {body}
             </Link>
           </SidebarMenuButton>
           <SidebarPopoutButton target={{ kind: 'chat', session: id }} className="top-2 right-8" />

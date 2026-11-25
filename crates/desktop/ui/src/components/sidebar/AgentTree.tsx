@@ -18,6 +18,7 @@ import type { AgentInfo } from '@/store/ui-events'
 import type { AgentState } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
+import type { Ticks } from '@/lib/selection'
 import { HarnessGlyph, shortModel } from './harnessGlyph'
 
 export const GLYPH: Record<AgentState['state'], ReactNode> = {
@@ -80,6 +81,8 @@ export const SubagentRow = memo(function SubagentRow({
   now,
   cost,
   popout = false,
+  ticked = false,
+  tick,
 }: {
   row: AgentInfo
   active: boolean
@@ -88,32 +91,32 @@ export const SubagentRow = memo(function SubagentRow({
   cost: CostBucket | undefined
   /** Sidebar-only hover chrome; the Agents page keeps its existing row layout. */
   popout?: boolean
+  /** Tick mode (`Ticks`, the broadcast picker): a checkbox leads the row and a click ticks it instead of opening. */
+  ticked?: boolean
+  tick?(id: string): void
 }) {
   const drag = useSessionDrag(row.id, row.name)
   const observed = row.observed ?? undefined
   const resting = observed && (observed.state === 'idle' || observed.state === 'pending' || observed.state === 'unknown')
-  const content = (
-    <Link
-      to="/c/$session"
-      params={{ session: row.id }}
-      {...drag}
-      className={cn(
-        'flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-fg-secondary hover:bg-sidebar-accent',
-        active && 'bg-sidebar-accent font-medium text-foreground',
-        resting && 'opacity-60',
-        popout && 'pointer-fine:pr-8',
-      )}
-      style={{ paddingLeft: 8 + row.depth * 12 }}
-      title={
-        observed
-          ? `${row.name} · watching · ${observedLabel[observed.state]} · ${modelLabel(row)}`
-          : row.state.state === 'awaiting'
-            ? `awaiting ${row.state.from}`
-            : row.state.state === 'approval'
-              ? `approval: ${row.state.tool}`
-              : row.state.state
-      }
-    >
+  const look = {
+    className: cn(
+      'flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-fg-secondary hover:bg-sidebar-accent',
+      active && 'bg-sidebar-accent font-medium text-foreground',
+      resting && 'opacity-60',
+      popout && 'pointer-fine:pr-8',
+      tick && 'cursor-pointer',
+    ),
+    style: { paddingLeft: 8 + row.depth * 12 },
+    title: observed
+      ? `${row.name} · watching · ${observedLabel[observed.state]} · ${modelLabel(row)}`
+      : row.state.state === 'awaiting'
+        ? `awaiting ${row.state.from}`
+        : row.state.state === 'approval'
+          ? `approval: ${row.state.tool}`
+          : row.state.state,
+  }
+  const body = (
+    <>
       {observed ? (
         <>
           <WatchDot state={observed.state} beat={row.beat} className="w-4" />
@@ -156,6 +159,18 @@ export const SubagentRow = memo(function SubagentRow({
         </span>
       )}
       <span className="shrink-0 tabular-nums text-fg-tertiary">{ago(agoFrom(row), now)}</span>
+    </>
+  )
+  if (tick)
+    return (
+      <label {...look}>
+        <input type="checkbox" className="size-3.5 shrink-0 accent-foreground" checked={ticked} onChange={() => tick(row.id)} />
+        {body}
+      </label>
+    )
+  const content = (
+    <Link to="/c/$session" params={{ session: row.id }} {...drag} {...look}>
+      {body}
     </Link>
   )
   return popout ? (
@@ -212,9 +227,10 @@ export function Branch({
 /**
  * A session's subtree: seeded from `list_agents` when it appears, live from events after; each parent's children as
  * a `Branch` (ranked and capped on their own, the open chat's path always visible). `liveOnly` keeps just the `live`
- * rows and their ancestors — a desk that is not the open chat shows what is working, not its history.
+ * rows and their ancestors — a desk that is not the open chat shows what is working, not its history. `tick`: every row
+ * a checkbox (the broadcast picker).
  */
-export function AgentTree({ session, active, liveOnly = false }: { session: string; active: string | undefined; liveOnly?: boolean }) {
+export function AgentTree({ session, active, liveOnly = false, tick }: { session: string; active: string | undefined; liveOnly?: boolean; tick?: Ticks }) {
   const canQuery1 = useQuerySupport(["list_sessions"])
   const canQuery1_2 = useQuerySupport(["session_cost"])
   const api = useApi()
@@ -260,7 +276,15 @@ export function AgentTree({ session, active, liveOnly = false }: { session: stri
         moreClass="flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-fg-tertiary hover:bg-sidebar-accent"
         render={(r, sub) => (
           <>
-            <SubagentRow row={r} active={r.id === active} now={now} cost={cost?.children.find((c) => c.session === r.id)?.total} popout />
+            <SubagentRow
+              row={r}
+              active={r.id === active}
+              now={now}
+              cost={cost?.children.find((c) => c.session === r.id)?.total}
+              popout={!tick}
+              ticked={tick?.ids.has(r.id)}
+              tick={tick?.toggle}
+            />
             {sub}
           </>
         )}

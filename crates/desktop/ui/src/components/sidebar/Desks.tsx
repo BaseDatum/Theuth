@@ -4,7 +4,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { Megaphone } from 'lucide-react'
 import { useMemo } from 'react'
 import { notify as toast } from '@/lib/notify'
-import { openBroadcastDialog } from '@/components/chat/BroadcastDialog'
+import { openBroadcastDialog } from '@/components/chat/broadcast'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { errorText } from '@/components/settings/shared'
 import { keys, useAgents } from '@/components/tasks/queries'
@@ -20,6 +20,7 @@ import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { AgentTree } from './AgentTree'
 import { runningSubagents } from './SessionItem'
+import type { Ticks } from '@/lib/selection'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
 
 const NONE: SessionSummary[] = []
@@ -46,9 +47,10 @@ export function useDeskList(): Desk[] {
  * opens it; one without asks the roster to open it first. Pinning has nothing to do with this group. Tiles cannot carry
  * trees, so only the active desk's subagents (any depth, from `list_sessions`) show, as one `DeskTree` below the grid —
  * the whole tree, under the one list rule (live first, most recent next, `TREE_CAP` per parent behind `Show more`). An
- * inactive desk's live subagents show as the count in its tile.
+ * inactive desk's live subagents show as the count in its tile. `tick` (the broadcast picker): each tile and tree row a
+ * checkbox (`Ticks`) — a desk with no session yet is shown but cannot be ticked — and no broadcast button.
  */
-export function Desks({ active }: { active: string | undefined }) {
+export function Desks({ active, tick }: { active: string | undefined; tick?: Ticks }) {
   const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
@@ -62,16 +64,18 @@ export function Desks({ active }: { active: string | undefined }) {
     <>
       <SidebarGroupLabel className="mt-2" data-desks>
         Desks
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="ml-auto"
-          aria-label="Broadcast to desks"
-          title="Broadcast to desks"
-          onClick={() => openBroadcastDialog({ preset: 'desks' })}
-        >
-          <Megaphone />
-        </Button>
+        {!tick && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="ml-auto"
+            aria-label="Broadcast to desks"
+            title="Broadcast to desks"
+            onClick={() => openBroadcastDialog({ preset: 'desks' })}
+          >
+            <Megaphone />
+          </Button>
+        )}
       </SidebarGroupLabel>
       <SidebarMenuItem>
         {/* Fine pointer 44 px min per column, a finger 64 px (room for the short name; see `DeskTile`). */}
@@ -83,11 +87,13 @@ export function Desks({ active }: { active: string | undefined }) {
               label={labels[i]!}
               subagents={d.id === null ? undefined : subs.get(d.id)}
               active={d === open}
+              ticked={d.id !== null && !!tick?.ids.has(d.id)}
+              tick={tick?.toggle}
             />
           ))}
         </ul>
       </SidebarMenuItem>
-      {open?.id && <DeskTree id={open.id} name={open.name} active={active} />}
+      {open?.id && <DeskTree id={open.id} name={open.name} active={active} tick={tick} />}
     </>
   )
 }
@@ -96,30 +102,40 @@ export function Desks({ active }: { active: string | undefined }) {
  * The open desk's subagents below the grid, under a line naming the desk (the tiles show letters only) with its live and
  * finished counts; clicking the name opens the desk. No line while the desk has no subagents.
  */
-function DeskTree({ id, name, active }: { id: string; name: string; active: string | undefined }) {
+function DeskTree({ id, name, active, tick }: { id: string; name: string; active: string | undefined; tick?: Ticks }) {
   const drag = useSessionDrag(id, name)
   const rows = Object.values(useSessionField(id, 'children') ?? {})
   const n = rows.filter((r) => live(r.state.state)).length
+  const header = (
+    <>
+      <span className="truncate font-semibold">{name}</span>
+      <span className="shrink-0 text-fg-tertiary">
+        {n} live · {rows.length - n} finished
+      </span>
+    </>
+  )
   return (
     <SidebarMenuItem>
-      {rows.length > 0 && (
-        <div className="group/popout-row relative">
-          <Link
-            to="/c/$session"
-            params={{ session: id }}
-            {...drag}
-            data-desk-header
-            className="mx-1 flex h-7 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-sidebar-accent pointer-fine:pr-8"
-          >
-            <span className="truncate font-semibold">{name}</span>
-            <span className="shrink-0 text-fg-tertiary">
-              {n} live · {rows.length - n} finished
-            </span>
-          </Link>
-          <SidebarPopoutButton target={{ kind: 'chat', session: id }} className="top-1 right-2" />
-        </div>
-      )}
-      <AgentTree session={id} active={active} />
+      {rows.length > 0 &&
+        (tick ? (
+          <div data-desk-header className="mx-1 flex h-7 items-center gap-1.5 px-2 text-xs">
+            {header}
+          </div>
+        ) : (
+          <div className="group/popout-row relative">
+            <Link
+              to="/c/$session"
+              params={{ session: id }}
+              {...drag}
+              data-desk-header
+              className="mx-1 flex h-7 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-sidebar-accent pointer-fine:pr-8"
+            >
+              {header}
+            </Link>
+            <SidebarPopoutButton target={{ kind: 'chat', session: id }} className="top-1 right-2" />
+          </div>
+        ))}
+      <AgentTree session={id} active={active} tick={tick} />
     </SidebarMenuItem>
   )
 }
@@ -136,6 +152,8 @@ function DeskTile({
   working,
   subagents = NONE,
   active,
+  ticked = false,
+  tick,
 }: {
   id: string | null
   name: string
@@ -143,6 +161,9 @@ function DeskTile({
   working: boolean
   subagents: readonly SessionSummary[] | undefined
   active: boolean
+  /** Tick mode: a checkbox in the top-left corner; a click ticks the desk session (none yet: not tickable). */
+  ticked?: boolean
+  tick?(id: string): void
 }) {
   const api = useApi()
   const navigate = useNavigate()
@@ -182,20 +203,32 @@ function DeskTile({
     </>
   )
   return (
-    <li className="group/popout-row relative">
+    <li className={cn('relative', !tick && 'group/popout-row')}>
       <Tooltip>
         <TooltipTrigger asChild>
           <SidebarMenuButton
             asChild
             isActive={active}
-            aria-label={`${name} desk, ${state}`}
+            aria-label={tick ? undefined : `${name} desk, ${state}`}
             className={cn(
               'relative h-9 justify-center rounded-[10px] bg-sidebar-accent/50 p-0 text-[13px] font-semibold shadow-[inset_0_0_0_1px_var(--sidebar-border)] pointer-coarse:h-11',
               'data-[active=true]:font-semibold data-[active=true]:shadow-[inset_0_0_0_1.5px_var(--sidebar-ring)]',
               open.isPending && 'animate-pulse text-success',
             )}
           >
-            {id === null ? (
+            {tick ? (
+              <label className="cursor-pointer has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60">
+                <input
+                  type="checkbox"
+                  aria-label={`${name} desk, ${state}`}
+                  className="absolute top-1.5 left-1.5 size-3 accent-foreground"
+                  checked={ticked}
+                  disabled={id === null}
+                  onChange={() => id !== null && tick(id)}
+                />
+                {body}
+              </label>
+            ) : id === null ? (
               <button type="button" disabled={open.isPending} aria-busy={open.isPending} onClick={() => open.mutate(false)}>
                 {body}
               </button>
@@ -207,10 +240,12 @@ function DeskTile({
           </SidebarMenuButton>
         </TooltipTrigger>
         <TooltipContent side="bottom">
-          {name} · {state}
+          {name} · {tick && id === null ? 'no desk session yet' : state}
         </TooltipContent>
       </Tooltip>
-      <SidebarPopoutButton target={id !== null ? { kind: 'chat', session: id } : () => { if (!open.isPending) open.mutate(true) }} className="inset-0! m-auto size-6 bg-sidebar-accent" />
+      {!tick && (
+        <SidebarPopoutButton target={id !== null ? { kind: 'chat', session: id } : () => { if (!open.isPending) open.mutate(true) }} className="inset-0! m-auto size-6 bg-sidebar-accent" />
+      )}
     </li>
   )
 }

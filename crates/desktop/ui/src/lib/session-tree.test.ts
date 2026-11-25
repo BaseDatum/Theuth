@@ -3,7 +3,6 @@ import { Fragment, createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import { Branch } from '@/components/sidebar/AgentTree'
-import { groupRows } from '@/components/chat/broadcast'
 import { buildRows } from '@/components/sidebar/SessionList'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { SessionActivity } from "@/rpc/bindings/method.agent.output"
@@ -166,8 +165,6 @@ test('125 §8.5: an advisor child is never a strip dot, a tree row, a subtree me
   expect(childrenOf([worker, adv]).get('root')?.map((r) => r.id)).toEqual(['worker'])
   const subs = subtrees([s('root'), { ...s('worker', 'root') }, { ...s('advisor', 'root'), kind: 'advisor' }])
   expect(subs.get('root')?.map((d) => d.id)).toEqual(['worker'])
-  const root = { ...row('root', 'running', 'none'), depth: 0, parent: '' }
-  expect(groupRows([root, worker, adv]).map((g) => [g.root.id, g.children.map((c) => c.id)])).toEqual([['root', ['worker']]])
   expect(buildRows([s('root'), { ...s('advisor-root'), kind: 'advisor' }], []).map((r) => r.key).filter((k) => !k.startsWith('h:'))).toEqual(['root'])
 })
 

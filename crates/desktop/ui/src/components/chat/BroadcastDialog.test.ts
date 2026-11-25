@@ -1,22 +1,40 @@
+import '../settings/test-dom'
 import { receiveComponent } from '@/rpc/bindings/receive'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createElement } from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
-import { expect, test, vi } from 'vitest'
+import { act, createElement as h, type ReactNode } from 'react'
+import { createRoot } from 'react-dom/client'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { SidebarProvider } from '@/components/ui/sidebar'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
+import { EMPTY, useDrafts } from '@/lib/drafts'
 import { useConnection } from '@/store/connection'
 import type { BroadcastReceipt } from "@/rpc/bindings/method.agent.output"
 import type { BroadcastRow } from "@/rpc/bindings/method.agent.output"
 import type { SessionActivity } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
+import { useSessions } from '@/store/sessions'
+import type { Api } from '@/rpc/bindings/client'
 import type { AgentSummary } from '@/rpc/bindings/method.roster.output'
 import { deskList, deskSessions } from '@/lib/desks'
-import { activeDescendants, allRoots, deskRoots, groupRows, outcomeLines, runningRoots, sectionState, splitGroups, summarize, title } from './broadcast'
+import { activeDescendants, allRoots, BROADCAST_DRAFT, deskRoots, openBroadcastDialog, outcomeLines, runningRoots, summarize, title } from './broadcast'
 import { Form } from './BroadcastDialog'
 
-vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
+const rpc = vi.hoisted(() => ({ api: {} as Record<string, unknown> }))
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => rpc.api }))
+vi.mock('@tanstack/react-router', async (original) => ({
+  ...(await original<object>()),
+  useNavigate: () => vi.fn(),
+  useRouterState: () => '/',
+  Link: ({ to, params, children, ...rest }: { to: string; params: { session: string }; children: ReactNode }) =>
+    h('a', { href: to.replace('$session', params.session), ...rest }, children),
+}))
+const toast = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn(), message: vi.fn() }))
+vi.mock('@/lib/notify', () => ({ notify: toast }))
+// The gate itself has its own tests: here the engine offers the Desks group.
+vi.mock('@/rpc/capabilities', async (original) => ({ ...(await original<object>()), Capability: ({ children }: { children: ReactNode }) => children }))
 
 const activity = (p: Partial<SessionActivity> = {}): SessionActivity => (receiveComponent("method.agent.output.SessionActivity", {
   state: { state: 'idle' },
@@ -86,17 +104,6 @@ test('"Running roots" ticks an idle root whose subagent works, at any depth; idl
 
 test('"All roots" ticks every root, never children', () => {
   expect(allRoots(rows)).toEqual(['A', 'B', 'C', 'D'])
-})
-
-test('rows group under their root through any depth; an orphan stands alone', () => {
-  const groups = groupRows([...rows, row('z1', 'Z', 1)])
-  expect(groups.map((g) => [g.root.id, g.children.map((c) => c.id)])).toEqual([
-    ['A', ['a1', 'a11']],
-    ['B', ['b1']],
-    ['C', []],
-    ['D', []],
-    ['z1', []],
-  ])
 })
 
 const receiptRow = (session: string, a: Partial<SessionActivity>, outcome: BroadcastRow['outcome']): BroadcastRow => ({
@@ -175,18 +182,11 @@ test('outcome lines put failures first and name rows like the picker: the list, 
 })
 
 // The roster: scout's current desk is B, theuth's is D; maya has no desk yet; ghost is only proposed. Every session
-// that ever was a desk keeps `SessionSummary.desk`: C is theuth's earlier desk, a1 carries one by mistake, and E (a
-// root added below) is the desk of seed-1, an agent gone from the roster. Only the roster's current desks count.
+// that ever was a desk keeps `SessionSummary.desk`: C is theuth's earlier desk and E (a root added below) is the desk
+// of seed-1, an agent gone from the roster. Only the roster's current desks count.
 const agent = (name: string, desk: string | null, status = 'idle') => ({ desk, status, file: { name } }) as unknown as AgentSummary
 const ROSTER = [agent('scout', 'B'), agent('theuth', 'D', 'working'), agent('maya', null), agent('ghost', 'G', 'proposed')]
 const DESKS = deskSessions(deskList(ROSTER))
-const deskSummaries = [
-  summary('B', { desk: 'scout' }),
-  summary('a1', { desk: 'stray', parent: 'A' }),
-  summary('C', { desk: 'theuth' }),
-  summary('D', { desk: 'theuth' }),
-  summary('E', { desk: 'seed-1' }),
-]
 const withStale = [...rows, row('E', 'E', 0), row('G', 'G', 0)]
 
 test('the desks are the sidebar\'s: one per active roster agent, at its current desk session, theuth first', () => {
@@ -199,51 +199,132 @@ test('"All desks" picks only current desks: an agent\'s older desk, a removed ag
   expect(deskRoots(withStale, new Map())).toEqual([])
 })
 
-test('the picker splits groups by the roster\'s desks (the sidebar\'s order); stale desk sessions list under Sessions', () => {
-  const { desks, rest } = splitGroups(groupRows(withStale), DESKS)
-  expect(desks.map((g) => [g.root.id, g.children.map((c) => c.id)])).toEqual([
-    ['D', []],
-    ['B', ['b1']],
-  ])
-  expect(rest.map((g) => g.root.id)).toEqual(['A', 'C', 'E', 'G'])
-})
+// ------------------------------------------------------------------------------------------------- the mounted view
+// What the sidebar would list: desks B (scout) and D (theuth) as tiles, chats A and C (pinned) with A's subagent a1.
+const LIST = [
+  summary('A', { title: 'Alpha' }),
+  summary('a1', { parent: 'A', name: 'worker' }),
+  summary('B', { desk: 'scout' }),
+  summary('C', { title: 'Gamma', pinned: true }),
+  summary('D', { desk: 'theuth' }),
+]
+type BroadcastArgs = Parameters<Api['broadcast']>[0]
+const broadcasts: BroadcastArgs[] = []
+const sends = () => broadcasts.filter((b) => !b.dry_run)
 
-test('the desks preset: the Desks section and "Send to N" count the roster\'s desks only, one row per agent', () => {
+beforeEach(() => {
+  broadcasts.length = 0
+  vi.clearAllMocks()
   useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' } })
-  const qc = new QueryClient()
-  qc.setQueryData(['activity'], withStale)
-  qc.setQueryData(queryKeys.sessions, deskSummaries)
-  qc.setQueryData(queryKeys.roster, ROSTER)
-  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Form, { req: { text: 'hi', preset: 'desks' }, onDone: () => {} })))
-  expect(html.match(/>Send to \d+ sessions?</g)).toEqual(['>Send to 2 sessions<'])
-  const desks = html.slice(html.indexOf('aria-label="Desks"'), html.lastIndexOf('<input', html.indexOf('aria-label="All sessions"')))
-  // Two desk rows and scout's subagent b1 under its desk.
-  expect(desks.match(/type="checkbox"/g)).toHaveLength(3)
-  expect(desks.match(/>(theuth|scout|seed-1|b1)</g)).toEqual(['>theuth<', '>scout<', '>b1<'])
-  // The Desks header reads 2 of 2; the Sessions header 0 of its roots (A, C, E, G).
-  const headers = [...html.matchAll(/tabular-nums text-fg-tertiary">(.*?)<\/span>/g)].map((m) => m[1]!.replace(/<!-- -->/g, ''))
-  expect(headers.filter((t) => / of /.test(t))).toEqual(['2 of 2', '0 of 4'])
+  useDrafts.getState().set(BROADCAST_DRAFT, EMPTY)
+  const answered: Record<string, (...a: never[]) => unknown> = {
+    list_activity: async () => rows,
+    list_sessions: async () => LIST,
+    agents_list: async () => ROSTER,
+    broadcast: async (req: BroadcastArgs) => {
+      broadcasts.push(req)
+      const ids = req.targets.kind === 'sessions' ? req.targets.ids : []
+      return receipt(ids.map((id) => receiptRow(id, {}, req.dry_run ? { outcome: 'skipped', reason: 'dry run' } : { outcome: 'started' })))
+    },
+  }
+  // Everything else the composer and the list ask for stays pending: this view's behaviour does not depend on it.
+  rpc.api = new Proxy(answered, { get: (t, k: string) => t[k] ?? (() => new Promise(() => {})) })
 })
-
-test('a section header is all / some / none by its roots alone; an empty section is none', () => {
-  expect(sectionState(new Set(['B', 'D', 'A']), ['D', 'B'])).toBe('all')
-  expect(sectionState(new Set(['B', 'A']), ['D', 'B'])).toBe('some')
-  expect(sectionState(new Set(['A']), ['D', 'B'])).toBe('none')
-  expect(sectionState(new Set(['A']), [])).toBe('none')
+afterEach(() => {
+  document.body.innerHTML = ''
 })
+// jsdom lays nothing out: give every box a height, so the chat list's virtualizer has a window to fill.
+Object.defineProperty(window.HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 800 })
 
-test('broadcast-top: message, one Send button and the preview line render above the first target row', () => {
-  useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' } })
-  const qc = new QueryClient()
+async function mount(req: Parameters<typeof Form>[0]['req'] = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
   qc.setQueryData(['activity'], rows)
-  qc.setQueryData(queryKeys.sessions, deskSummaries)
+  qc.setQueryData(queryKeys.sessions, LIST)
   qc.setQueryData(queryKeys.roster, ROSTER)
-  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Form, { req: { text: 'hi' }, onDone: () => {} })))
-  const firstRow = html.indexOf('type="checkbox"')
-  expect(firstRow).toBeGreaterThan(0)
-  expect(html.match(/>Send to \d+ sessions?</g)).toEqual(['>Send to 3 sessions<'])
-  // The untouched "running" preset ticks A, B and D; the dry run has not answered yet.
-  for (const part of ['<textarea', '>Send to 3 sessions<', '>Previewing…<']) expect(html.indexOf(part), part).toBeLessThan(firstRow)
-  expect(html.indexOf('<textarea')).toBeLessThan(html.indexOf('>Send to'))
-  expect(html.indexOf('>Send to')).toBeLessThan(html.indexOf('>Previewing…<'))
+  const onDone = vi.fn()
+  const host = document.body.appendChild(document.createElement('div'))
+  await act(async () =>
+    createRoot(host).render(
+      h(QueryClientProvider, { client: qc }, h(SidebarProvider, null, h(TooltipProvider, null, h(Form, { req, active: 'A', onDone })))),
+    ),
+  )
+  const box = (label: string) => host.querySelector<HTMLInputElement>(`label[title="${label}"] input[type="checkbox"], input[aria-label^="${label} desk"]`)
+  const ticked = () =>
+    [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked')].map((i) => i.closest('label')!.getAttribute('title') ?? i.getAttribute('aria-label')!.split(' ')[0])
+  const click = (el: Element) => act(async () => void (el as HTMLElement).click())
+  const button = (text: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === text || b.getAttribute('aria-label') === text)
+  return { host, onDone, box, ticked, click, button }
+}
+
+test('the view is the new chat\'s composer, then delivery, preview and the presets — no Send button of its own — then the list', async () => {
+  const v = await mount()
+  const text = v.host.textContent!
+  const composer = v.host.querySelector('[data-composer]')!
+  expect(composer.querySelector('textarea')).not.toBeNull()
+  expect(composer.querySelector('[aria-label="Add"]')).not.toBeNull()
+  // The only Send is the composer's.
+  expect([...v.host.querySelectorAll('button')].filter((b) => /send/i.test(`${b.textContent} ${b.getAttribute('aria-label')}`)).map((b) => b.closest('[data-composer]') !== null)).toEqual([true])
+  const at = (s: string) => text.indexOf(s)
+  for (const s of ['Steer (inside the running turn)', 'Running roots', 'All roots', 'None', 'All desks']) expect(at(s), s).toBeGreaterThan(-1)
+  const firstBox = v.host.querySelector('input[type="checkbox"]')!
+  expect(composer.compareDocumentPosition(firstBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(at('Running roots')).toBeLessThan(at('Desks'))
+})
+
+test('the list is the sidebar\'s, a checkbox on every row: desk tiles (one without a session cannot be ticked), Pinned, the open chat\'s tree', async () => {
+  const v = await mount()
+  // Desk tiles in roster order, then the chat list's sections; desk sessions are tiles only.
+  expect([...v.host.querySelectorAll('input[aria-label$="idle"], input[aria-label*="desk,"]')].map((i) => i.getAttribute('aria-label')!.split(' ')[0])).toEqual(['theuth', 'scout', 'maya'])
+  expect(v.box('maya')!.disabled).toBe(true)
+  const text = v.host.textContent!
+  expect(text.indexOf('Pinned')).toBeLessThan(text.indexOf('Gamma'))
+  expect(text.indexOf('Gamma')).toBeLessThan(text.indexOf('Alpha'))
+  expect(v.host.querySelector('label[title="Alpha"] input[type="checkbox"]')).not.toBeNull()
+  // The open chat (A) carries its agent tree as in the sidebar; its rows tick too and never link.
+  await act(async () => {
+    useSessions.getState().setChildren('A', [row('a1', 'A', 1, { state: { state: 'running' } })])
+  })
+  const sub = [...v.host.querySelectorAll('label')].find((l) => l.textContent?.includes('a1'))!
+  expect(sub.querySelector('input[type="checkbox"]')).not.toBeNull()
+  expect(v.host.querySelector('a[href]')).toBeNull()
+})
+
+test('the preset ticks its boxes; a chip replaces the ticks, a click on a row toggles it', async () => {
+  const v = await mount()
+  // Untouched "running": A, B and D (busy, PTY, awaiting).
+  expect(v.ticked().sort()).toEqual(['Alpha', 'scout', 'theuth'])
+  await v.click(v.button('None')!)
+  expect(v.ticked()).toEqual([])
+  await v.click(v.button('All desks')!)
+  expect(v.ticked().sort()).toEqual(['scout', 'theuth'])
+  await v.click(v.box('Gamma')!)
+  expect(v.ticked().sort()).toEqual(['Gamma', 'scout', 'theuth'])
+  await v.click(v.box('scout')!)
+  expect(v.ticked().sort()).toEqual(['Gamma', 'theuth'])
+  await v.click(v.button('All roots')!)
+  expect(v.ticked().sort()).toEqual(['Alpha', 'Gamma', 'scout', 'theuth'])
+})
+
+test('the composer\'s send broadcasts the message to the ticked sessions with the chosen delivery, then closes', async () => {
+  openBroadcastDialog({ text: 'wrap up' })
+  expect(useDrafts.getState().by[BROADCAST_DRAFT]?.text).toBe('wrap up')
+  const v = await mount({ preset: 'desks' })
+  await v.click(v.button('Next turn')!)
+  await v.click(v.box('Gamma')!)
+  await v.click(v.button('Send')!)
+  await vi.waitFor(() => expect(v.onDone).toHaveBeenCalled())
+  const sent = sends()
+  expect(sent).toEqual([{ targets: { kind: 'sessions', ids: ['D', 'B', 'C'] }, text: 'wrap up', files: [], delivery: 'next_turn', dry_run: false }])
+  expect(toast.success).toHaveBeenCalledWith('Sent to 3 sessions', expect.anything())
+})
+
+test('with nothing ticked the send goes nowhere and says why; the draft stays', async () => {
+  openBroadcastDialog({ text: 'hello' })
+  const v = await mount()
+  await v.click(v.button('None')!)
+  await v.click(v.button('Send')!)
+  await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith('Pick at least one session'))
+  expect(sends()).toEqual([])
+  expect(v.onDone).not.toHaveBeenCalled()
+  expect(useDrafts.getState().by[BROADCAST_DRAFT]?.text).toBe('hello')
 })

@@ -1,12 +1,17 @@
-// broadcast-top proof, dev only: `bunx vite` then open `/src/dev/broadcast-fixture.html` (`&theme=dark`, `&text=` to
-// change the prefilled message, `&text=` empty to see the autofocus). The real BroadcastDialog against no engine:
-// `list_activity` / `list_sessions` answer 40 sessions (4 desks, 14 more roots, 22 children) and `broadcast` answers
-// the dry-run receipt, so the list overflows and the preview line fills in as it does over RPC.
+// Broadcast view proof, dev only: `bunx vite` then open `/src/dev/broadcast-fixture.html` (`&theme=dark`, `&text=` to
+// change the prefilled message). The real BroadcastDialog (the new chat's Composer over the sidebar's list with
+// checkboxes) against no engine: `list_activity` / `list_sessions` answer 40 sessions (4 desks, 14 more roots, 22
+// children) and `broadcast` answers the dry-run receipt, so the list overflows and the preview line fills in as it does
+// over RPC. Legacy discovery advertises no `desk_open`, so — as in the sidebar on such an engine — no Desks group shows.
 import '@/styles.css'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/BroadcastDialog'
+import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router'
+import { BroadcastDialog } from '@/components/chat/BroadcastDialog'
+import { openBroadcastDialog } from '@/components/chat/broadcast'
+import { SidebarProvider } from '@/components/ui/sidebar'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Api } from '@/rpc/bindings/client'
 import type { BroadcastReceipt, SessionActivity, SessionSummary } from '@/rpc/bindings/method.agent.output'
 import { receiveComponent } from '@/rpc/bindings/receive'
@@ -104,21 +109,28 @@ const conn = active().connection
 conn.setState({ api, client: {} as RpcClient, state: 'open', discovery: { ...conn.getState().discovery, phase: 'legacy' } } as never)
 
 // --------------------------------------------------------------------------------------------------------- mount
-// After `BroadcastDialog` in the tree: its listener is attached by the time this effect fires.
+// After `BroadcastDialog` in the tree: its listener is attached by the time this effect fires. The router and the
+// sidebar's provider are what the composer and the sidebar's rows read in the app.
 function Fixture() {
   useEffect(() => openBroadcastDialog({ text: text || undefined }), [])
   return (
-    <p className="p-4 font-mono text-xs text-fg-tertiary">
-      broadcast fixture {'\u{00b7}'} {rows.length} sessions
-    </p>
+    <SidebarProvider>
+      <TooltipProvider>
+        <BroadcastDialog />
+        <p className="p-4 font-mono text-xs text-fg-tertiary">
+          broadcast fixture {'\u{00b7}'} {rows.length} sessions
+        </p>
+      </TooltipProvider>
+    </SidebarProvider>
   )
 }
+
+const router = createRouter({ routeTree: createRootRoute({ component: Fixture }), history: createMemoryHistory() })
 
 createRoot(document.getElementById('root') as HTMLElement).render(
   <StrictMode>
     <QueryClientProvider client={active().qc}>
-      <BroadcastDialog />
-      <Fixture />
+      <RouterProvider router={router} />
     </QueryClientProvider>
   </StrictMode>,
 )
