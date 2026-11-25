@@ -2,17 +2,11 @@
 
 [default]
 description = """
-218 §6: everything the whiteboard needs from the native Pencil layer — mount and remove the capture overlay,
-enable it, keep its viewport and tool in step with the canvas, show or hide the tool picker, acknowledge
-delivered strokes and recognise handwriting.
+218: everything the whiteboard needs from the native side — listen for Apple Pencil double-tap and
+squeeze, stop listening, and recognise handwriting.
 """
 permissions = [
-    "allow-attach",
-    "allow-detach",
-    "allow-set-enabled",
-    "allow-set-viewport",
-    "allow-set-tool",
-    "allow-set-picker-visible",
-    "allow-ack",
+    "allow-pencil-listen",
+    "allow-pencil-unlisten",
     "allow-recognize-text",
 ]

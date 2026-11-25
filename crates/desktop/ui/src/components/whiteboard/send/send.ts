@@ -17,7 +17,7 @@ export type SendDeps = {
   handle: Pick<WhiteboardCanvasHandle, 'planSend' | 'composeImage' | 'commitSend' | 'visible'>
   /** `CanvasHost.capture`: native pixels of a window rect, null where there are none. */
   capture(rect: { x: number; y: number; width: number; height: number }, maxSide: number): Promise<Blob | null>
-  /** `NativeInk.recognizeText`, when the native plugin is attached. */
+  /** On-device handwriting text of a mark's PNG (`recognizeText`: Vision in the iOS shell, null elsewhere). */
   recognize?: (png: string) => Promise<{ text: string; confidence: number } | null>
   wb: {
     blobPut(doc: DocId, key: string, mime: string, data: string): Promise<unknown>

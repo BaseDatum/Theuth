@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pencil-unlisten"
+description = "Enables the pencil_unlisten command without any pre-configured scope."
+commands.allow = ["pencil_unlisten"]
+
+[[permission]]
+identifier = "deny-pencil-unlisten"
+description = "Denies the pencil_unlisten command without any pre-configured scope."
+commands.deny = ["pencil_unlisten"]

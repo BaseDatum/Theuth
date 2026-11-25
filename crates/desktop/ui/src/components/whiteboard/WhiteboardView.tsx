@@ -1,6 +1,6 @@
 // 218 §8.8: the whiteboard — full window from the route (over sidebar and status bar), or inside a tile. Owns the view
 // store, the CanvasHost, the lazy canvas, and the shell around it: pill, cluster, composer sheet, reply bubble, card
-// sheet, outline view, the native Pencil bridge and the keyboard. Reads the document through `useBoard`, writes through
+// sheet, outline view, the Pencil gestures and the keyboard. Reads the document through `useBoard`, writes through
 // `canvas/ops` and the canvas handle; RPCs through `wbRpc`.
 
 import './glass.css'
@@ -19,7 +19,7 @@ import { usePointerCoarse } from '@/lib/mobile'
 import { notify } from '@/lib/notify'
 import { base64Blob, wbCapture } from '@/lib/wb-capture'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { useDark } from '@/lib/theme'
+import { listenPencil, recognizeText } from '@/lib/ink-native'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useConnection } from '@/store/connection'
@@ -48,7 +48,7 @@ import { clusterTimer } from './cluster-timer'
 import { createHost } from './host'
 import { briefMarkdown } from './export'
 import { type EdgeMark, FOLLOW_PAUSE_MS, edgeMarks } from './edges'
-import { type NativeConnection, connectNativeInk } from './native-ink'
+import { pencilGestures } from './pencil-gestures'
 import { sendWhiteboard, withoutImage } from './send/send'
 import { type WbTurnInfo, wbRpc } from './wire'
 
@@ -108,7 +108,6 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
   const client = useConnection((s) => s.client)
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const dark = useDark()
   const phone = useIsMobile()
   const coarse = usePointerCoarse()
   const [store] = useState(() => createWhiteboardStore())
@@ -188,25 +187,22 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
   useEffect(() => timer.keep(keepControls), [timer, keepControls])
   useEffect(() => store.subscribe((s, p) => s.penDown && !p.penDown && timer.pen()), [store, timer])
 
-  // ── Native Pencil (iPad): attach once; the handle is read lazily (the canvas is a lazy chunk).
-  const native = useRef<NativeConnection | null>(null)
-  const darkRef = useRef(dark)
-  darkRef.current = dark
+  // ── Pencil double-tap / squeeze (iPad): the plugin forwards the gesture; the store stays the only writer of the tool.
   useEffect(() => {
     if (readOnly) return
+    const gestures = pencilGestures(store, () => timer.show())
     let gone = false
-    void connectNativeInk({ store, handle: () => handle.current, dark: () => darkRef.current, showTools: () => timer.show() }).then((c) => {
-      if (gone) c?.dispose()
-      else native.current = c
+    let unlisten: (() => void) | null = null
+    void listenPencil(gestures.on).then((u) => {
+      if (gone) u()
+      else unlisten = u
     })
     return () => {
       gone = true
-      native.current?.dispose()
-      native.current = null
+      unlisten?.()
+      gestures.dispose()
     }
   }, [store, timer, readOnly])
-  // Visibility and the theme (the native picker's colour for `ink` flips with it) both re-push the plugin's state.
-  useEffect(() => native.current?.visible(!outline && !openCard), [outline, openCard, dark])
 
   // ── Composer: plan when opened, tray removals, the off-screen opt-in.
   const [text, setText] = useState('')
@@ -346,7 +342,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
         {
           handle: h,
           capture: host.capture,
-          recognize: native.current ? native.current.recognize : undefined,
+          recognize: recognizeText,
           wb: rpc,
           putAttachment: (blob, ext, s) => putAttachment(api, blob, ext, s),
           sendInput: (s, body, files, id) => api.send_input(s, body, files, null, id),
@@ -674,7 +670,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           />
         </div>
       ) : null}
-      {/* The canvas stays mounted under the outline (its handle feeds the composer and the native bridge). */}
+      {/* The canvas stays mounted under the outline (its handle feeds the composer). */}
       {/* opacity-0 as well: React Flow sets `visibility: visible` inline on measured nodes, so `invisible` alone leaves cards over the outline. */}
       <div className={outline ? 'pointer-events-none invisible absolute inset-0 opacity-0' : 'absolute inset-0'} aria-hidden={outline} onPointerDownCapture={pauseFollow}>
         <Suspense fallback={<div className="size-full bg-background" />}>
@@ -692,10 +688,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
               timer.tap()
             }}
             onPenActivity={(down) => down && timer.pen()}
-            onViewChange={(view, phase) => {
-              recomputeEdges()
-              if (phase === 'end') native.current?.viewEnd(view, handle.current?.frameRect() ?? new DOMRect())
-            }}
+            onViewChange={() => recomputeEdges()}
             onCardOpen={setOpenCard}
           />
         </Suspense>
@@ -892,7 +885,6 @@ function MoreMenu(p: {
       {toggle('Show answered marks', v.showAnswered, () => v.set({ showAnswered: !v.showAnswered }))}
       {toggle('Keep controls open', v.keepControls, () => v.set({ keepControls: !v.keepControls }))}
       {toggle('Draw with finger', v.fingerInk, () => v.set({ fingerInk: !v.fingerInk }))}
-      {toggle('Native Pencil ink', v.inkEngine === 'auto', () => v.set({ inkEngine: v.inkEngine === 'auto' ? 'pointer' : 'auto' }))}
       <button type="button" onClick={p.onCopy} className="wb-press flex min-h-11 w-full items-center rounded-xl px-3 pl-9 text-left text-sm">
         Copy outline
       </button>

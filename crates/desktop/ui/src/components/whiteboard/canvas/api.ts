@@ -48,8 +48,6 @@ export type WhiteboardCanvasHandle = {
   freeSpot(w: number, h: number): { x: number; y: number }       // near the view centre, on no card and no ink
   undo(): void; redo(): void; canUndo(): boolean; canRedo(): boolean
   inkStats(): { fresh: number; freshInView: number; inkedCards: Id[] }
-  /** Native hand-over: commit, paint, resolve with the new stroke ids (in order). */
-  commitCaptured(strokes: CapturedStroke[]): Promise<Id[]>
   /** Cluster the fresh strokes in view (plus `offScreen` ones on request) into marks; nothing is written. */
   planSend(opts?: { offScreen?: boolean }): SendPlan
   /** Fallback pixels when `host.capture` is null: stored snapshot (or a labelled box) with vector ink, long side ≤ maxSide. */

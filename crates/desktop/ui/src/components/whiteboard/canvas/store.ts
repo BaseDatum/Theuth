@@ -6,8 +6,6 @@ export type WbView = {
   mode: Mode
   tool: InkTool; colour: InkColour; width: number   // the current pen (defaults: 'pen', 'ink', 2.8)
   fingerInk: boolean        // R2: false by default; ⋯ → "Draw with finger"
-  inkEngine: 'auto' | 'pointer'   // ⋯ → Ink engine; 'auto' = native when attached
-  nativeInk: boolean        // B4 sets it while tauri-plugin-ink is attached and enabled
   follow: boolean           // [stretch P4]
   showAnswered: boolean
   keepControls: boolean
@@ -15,7 +13,7 @@ export type WbView = {
   composerOpen: boolean
   selection: Id[]           // cards, links, frames, marks
   entered: Id | null        // the card whose frame receives touches (design §4.4)
-  penDown: boolean          // B3 (pointer path) or B4 (native 'state' event) sets it
+  penDown: boolean          // the pointer path sets it while a pen is down
   scrub: Record<Id, number> // card → version shown (view state; absent = current)
 }
 export type WbStore = StoreApi<WbView & { set(patch: Partial<WbView>): void }>
@@ -27,8 +25,6 @@ export function createWhiteboardStore(init?: Partial<WbView>): WbStore {
     colour: 'ink',
     width: 2.8,
     fingerInk: false,
-    inkEngine: 'auto',
-    nativeInk: false,
     follow: false,
     showAnswered: false,
     keepControls: false,

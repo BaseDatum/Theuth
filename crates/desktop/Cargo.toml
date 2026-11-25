@@ -57,7 +57,8 @@ percent-encoding = "2"
 tokio = { workspace = true, features = ["net"] }
 
 # Mobile only: QR scanning for `/link` and the universal-link handoff (31 §8.2); haptics for the
-# voice-note gesture (89 VOICE-HOLD); the whiteboard's native Pencil layer (218 §6, iPadOS; in-tree).
+# voice-note gesture (89 VOICE-HOLD); the whiteboard's Pencil gestures and
+# handwriting recognition (218, iPadOS; in-tree).
 # Direct versions: these have no other consumer, so they are not in the
 # workspace dependency table.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]

@@ -295,40 +295,28 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "Enables the ack command without any pre-configured scope.",
+          "description": "Enables the pencil_listen command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-ack",
-          "markdownDescription": "Enables the ack command without any pre-configured scope."
+          "const": "allow-pencil-listen",
+          "markdownDescription": "Enables the pencil_listen command without any pre-configured scope."
         },
         {
-          "description": "Denies the ack command without any pre-configured scope.",
+          "description": "Denies the pencil_listen command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-ack",
-          "markdownDescription": "Denies the ack command without any pre-configured scope."
+          "const": "deny-pencil-listen",
+          "markdownDescription": "Denies the pencil_listen command without any pre-configured scope."
         },
         {
-          "description": "Enables the attach command without any pre-configured scope.",
+          "description": "Enables the pencil_unlisten command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-attach",
-          "markdownDescription": "Enables the attach command without any pre-configured scope."
+          "const": "allow-pencil-unlisten",
+          "markdownDescription": "Enables the pencil_unlisten command without any pre-configured scope."
         },
         {
-          "description": "Denies the attach command without any pre-configured scope.",
+          "description": "Denies the pencil_unlisten command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-attach",
-          "markdownDescription": "Denies the attach command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the detach command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-detach",
-          "markdownDescription": "Enables the detach command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the detach command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-detach",
-          "markdownDescription": "Denies the detach command without any pre-configured scope."
+          "const": "deny-pencil-unlisten",
+          "markdownDescription": "Denies the pencil_unlisten command without any pre-configured scope."
         },
         {
           "description": "Enables the recognize_text command without any pre-configured scope.",
@@ -343,58 +331,10 @@
           "markdownDescription": "Denies the recognize_text command without any pre-configured scope."
         },
         {
-          "description": "Enables the set_enabled command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-set-enabled",
-          "markdownDescription": "Enables the set_enabled command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the set_enabled command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-set-enabled",
-          "markdownDescription": "Denies the set_enabled command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the set_picker_visible command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-set-picker-visible",
-          "markdownDescription": "Enables the set_picker_visible command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the set_picker_visible command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-set-picker-visible",
-          "markdownDescription": "Denies the set_picker_visible command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the set_tool command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-set-tool",
-          "markdownDescription": "Enables the set_tool command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the set_tool command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-set-tool",
-          "markdownDescription": "Denies the set_tool command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the set_viewport command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-set-viewport",
-          "markdownDescription": "Enables the set_viewport command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the set_viewport command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-set-viewport",
-          "markdownDescription": "Denies the set_viewport command without any pre-configured scope."
-        },
-        {
-          "description": "218 §6: everything the whiteboard needs from the native Pencil layer — mount and remove the capture overlay,\nenable it, keep its viewport and tool in step with the canvas, show or hide the tool picker, acknowledge\ndelivered strokes and recognise handwriting.\n\n#### This default permission set includes:\n\n- `allow-attach`\n- `allow-detach`\n- `allow-set-enabled`\n- `allow-set-viewport`\n- `allow-set-tool`\n- `allow-set-picker-visible`\n- `allow-ack`\n- `allow-recognize-text`",
+          "description": "218: everything the whiteboard needs from the native side — listen for Apple Pencil double-tap and\nsqueeze, stop listening, and recognise handwriting.\n\n#### This default permission set includes:\n\n- `allow-pencil-listen`\n- `allow-pencil-unlisten`\n- `allow-recognize-text`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "218 §6: everything the whiteboard needs from the native Pencil layer — mount and remove the capture overlay,\nenable it, keep its viewport and tool in step with the canvas, show or hide the tool picker, acknowledge\ndelivered strokes and recognise handwriting.\n\n#### This default permission set includes:\n\n- `allow-attach`\n- `allow-detach`\n- `allow-set-enabled`\n- `allow-set-viewport`\n- `allow-set-tool`\n- `allow-set-picker-visible`\n- `allow-ack`\n- `allow-recognize-text`"
+          "markdownDescription": "218: everything the whiteboard needs from the native side — listen for Apple Pencil double-tap and\nsqueeze, stop listening, and recognise handwriting.\n\n#### This default permission set includes:\n\n- `allow-pencil-listen`\n- `allow-pencil-unlisten`\n- `allow-recognize-text`"
         }
       ]
     }

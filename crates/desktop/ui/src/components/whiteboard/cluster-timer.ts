@@ -13,7 +13,7 @@ export type ClusterTimer = {
   show(): void
   /** Finger or pointer input on the cluster itself: restart the 4 s. */
   activity(): void
-  /** Pen down (pointer or native): hide at once. */
+  /** Pen down: hide at once. */
   pen(): void
   hide(): void
   /** `keepControls` changed: on → no timer; off → the 4 s starts again while up. */

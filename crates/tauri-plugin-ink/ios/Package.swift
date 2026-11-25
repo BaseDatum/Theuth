@@ -1,5 +1,5 @@
 // swift-tools-version:5.9
-// 218 §6: the whiteboard's native Pencil layer. Built by `tauri-plugin`'s build script for the iOS
+// 218 §6: the whiteboard's Pencil gestures and handwriting recognition. Built by `tauri-plugin`'s build script for the iOS
 // targets and linked into the app (`init_plugin_ink`).
 
 import PackageDescription
@@ -26,7 +26,6 @@ let package = Package(
       ],
       path: "Sources",
       linkerSettings: [
-        .linkedFramework("PencilKit"),
         .linkedFramework("Vision"),
       ])
   ]

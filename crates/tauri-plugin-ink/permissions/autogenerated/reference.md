@@ -1,18 +1,12 @@
 ## Default Permission
 
-218 §6: everything the whiteboard needs from the native Pencil layer — mount and remove the capture overlay,
-enable it, keep its viewport and tool in step with the canvas, show or hide the tool picker, acknowledge
-delivered strokes and recognise handwriting.
+218: everything the whiteboard needs from the native side — listen for Apple Pencil double-tap and
+squeeze, stop listening, and recognise handwriting.
 
 #### This default permission set includes the following:
 
-- `allow-attach`
-- `allow-detach`
-- `allow-set-enabled`
-- `allow-set-viewport`
-- `allow-set-tool`
-- `allow-set-picker-visible`
-- `allow-ack`
+- `allow-pencil-listen`
+- `allow-pencil-unlisten`
 - `allow-recognize-text`
 
 ## Permission Table
@@ -27,25 +21,12 @@ delivered strokes and recognise handwriting.
 <tr>
 <td>
 
-`ink:allow-ack`
+`ink:allow-pencil-listen`
 
 </td>
 <td>
 
-Enables the ack command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:deny-ack`
-
-</td>
-<td>
-
-Denies the ack command without any pre-configured scope.
+Enables the pencil_listen command without any pre-configured scope.
 
 </td>
 </tr>
@@ -53,25 +34,12 @@ Denies the ack command without any pre-configured scope.
 <tr>
 <td>
 
-`ink:allow-attach`
+`ink:deny-pencil-listen`
 
 </td>
 <td>
 
-Enables the attach command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:deny-attach`
-
-</td>
-<td>
-
-Denies the attach command without any pre-configured scope.
+Denies the pencil_listen command without any pre-configured scope.
 
 </td>
 </tr>
@@ -79,12 +47,12 @@ Denies the attach command without any pre-configured scope.
 <tr>
 <td>
 
-`ink:allow-detach`
+`ink:allow-pencil-unlisten`
 
 </td>
 <td>
 
-Enables the detach command without any pre-configured scope.
+Enables the pencil_unlisten command without any pre-configured scope.
 
 </td>
 </tr>
@@ -92,12 +60,12 @@ Enables the detach command without any pre-configured scope.
 <tr>
 <td>
 
-`ink:deny-detach`
+`ink:deny-pencil-unlisten`
 
 </td>
 <td>
 
-Denies the detach command without any pre-configured scope.
+Denies the pencil_unlisten command without any pre-configured scope.
 
 </td>
 </tr>
@@ -124,110 +92,6 @@ Enables the recognize_text command without any pre-configured scope.
 <td>
 
 Denies the recognize_text command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:allow-set-enabled`
-
-</td>
-<td>
-
-Enables the set_enabled command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:deny-set-enabled`
-
-</td>
-<td>
-
-Denies the set_enabled command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:allow-set-picker-visible`
-
-</td>
-<td>
-
-Enables the set_picker_visible command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:deny-set-picker-visible`
-
-</td>
-<td>
-
-Denies the set_picker_visible command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:allow-set-tool`
-
-</td>
-<td>
-
-Enables the set_tool command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:deny-set-tool`
-
-</td>
-<td>
-
-Denies the set_tool command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:allow-set-viewport`
-
-</td>
-<td>
-
-Enables the set_viewport command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ink:deny-set-viewport`
-
-</td>
-<td>
-
-Denies the set_viewport command without any pre-configured scope.
 
 </td>
 </tr>

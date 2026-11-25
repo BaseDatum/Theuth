@@ -26,7 +26,7 @@ import { Ctx, type CanvasCtx } from './context'
 import { FrameNode } from './FrameNode'
 import { contains, intersects, pad, scaleOf, shownCards, strokeWorldBox, union } from './geom'
 import { FreeInk, indexInk } from './InkLayer'
-import { MultiTap, PALM_MS, pointerKind, routePointer, StrokeSamples, type PointerKind } from './input'
+import { MultiTap, PALM_MS, palmActive, pointerKind, routePointer, StrokeSamples, type PointerKind } from './input'
 import { LinkEdge } from './LinkEdge'
 import { assignLod, emptyLodState, type Lod } from './lod'
 import { beside } from './beside'
@@ -61,7 +61,8 @@ const portOf = (h: string | null | undefined): Port | undefined => {
   return p === 'top' || p === 'right' || p === 'bottom' || p === 'left' ? p : undefined
 }
 
-type Wet = { id: number; kind: PointerKind; erase: boolean; pts: Pt[]; t0: number; hasPressure: boolean; samples: StrokeSamples }
+/** The stroke in flight. `predicted`: the platform's guess ahead of the pen for the next frame, drawn, never committed. */
+type Wet = { id: number; kind: PointerKind; erase: boolean; pts: Pt[]; predicted: Pt[]; t0: number; hasPressure: boolean; samples: StrokeSamples }
 type Rubber = { id: number; x0: number; y0: number; x1: number; y1: number }
 
 /** B4's anchored nodes (the reply bubble, 262 px wide): beside a card in screen space, on the first side that stays
@@ -335,7 +336,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const inkByCard = useMemo(() => indexInk(board.ink), [board.ink])
   // A pen on an entered live page inks or erases exactly when it would anywhere else on the pointer path (§8.4).
   const pagePen = useZustand(store, (s) => {
-    const r = routePointer('pen', { mode: s.mode, fingerInk: s.fingerInk, nativeInk: s.nativeInk && s.inkEngine === 'auto', readOnly, penDown: false, palmUntil: 0, now: 0 })
+    const r = routePointer('pen', { mode: s.mode, fingerInk: s.fingerInk, readOnly, penDown: false, palmUntil: 0, now: 0 })
     return r === 'ink' || r === 'erase'
   })
   const pagePenRef = useRef(pagePen)
@@ -398,11 +399,28 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     const { tool, colour, width } = store.getState()
     const v = viewRef.current
     ctx2.setTransform(dpr, 0, 0, dpr, 0, 0)
-    const screen = w.pts.map(([x, y, p, t]) => [x * v.zoom + v.x, y * v.zoom + v.y, p, t] as Pt)
+    const pts = w.predicted.length ? w.pts.concat(w.predicted) : w.pts
+    const screen = pts.map(([x, y, p, t]) => [x * v.zoom + v.x, y * v.zoom + v.y, p, t] as Pt)
     ctx2.globalAlpha = tool === 'marker' ? 0.45 : 1
     ctx2.fillStyle = inkCss(colour, dark)
     ctx2.fill(new Path2D(pointsPath(screen, tool, width * v.zoom, w.hasPressure, false)))
   }, [dark, store])
+  /** One wet draw per animation frame, however many moves arrive (iPadOS WebKit sends each Pencil sample twice). */
+  const wetFrame = useRef(0)
+  const scheduleWet = useCallback(() => {
+    if (wetFrame.current) return
+    wetFrame.current = requestAnimationFrame(() => {
+      wetFrame.current = 0
+      drawWet()
+    })
+  }, [drawWet])
+  useEffect(() => () => cancelAnimationFrame(wetFrame.current), [])
+  /** A pen came down: a palm resting before it (a finger that passed) neither opens the mark menu nor counts as a tap. */
+  const penDownCancelsPalm = useCallback(() => {
+    clearTimeout(press.current?.timer)
+    press.current = null
+    taps.cancel()
+  }, [taps])
 
   const eraseAt = useCallback((x: number, y: number) => {
     const b = boardRef.current
@@ -463,19 +481,20 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     const pts = m.pts.map(([x, y, p, t]) => [c.x + x * scale, c.y + CARD_HEADER + y * scale, p, t] as Pt)
     if (m.phase === 'down') {
       if (wet.current) return
+      penDownCancelsPalm()
       const [x, y, p, t] = pts[0]!
       const erase = store.getState().mode === 'erase'
       const hasPressure = p > 0 && p !== 0.5
       const samples = new StrokeSamples()
       samples.take(x, y, t)
-      wet.current = { id: PAGE_PEN, kind: 'pen', erase, pts: [[x, y, hasPressure ? p : 0.5, 0]], t0: t, hasPressure, samples }
+      wet.current = { id: PAGE_PEN, kind: 'pen', erase, pts: [[x, y, hasPressure ? p : 0.5, 0]], predicted: [], t0: t, hasPressure, samples }
       store.getState().set({ penDown: true })
       onPenActivity?.(true)
       if (erase) {
         releaseErase.current?.()
         releaseErase.current = holdGroup()
         eraseAt(x, y)
-      } else requestAnimationFrame(drawWet)
+      } else scheduleWet()
       return
     }
     const w = wet.current
@@ -486,7 +505,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       else if (m.phase === 'move') w.pts.push([x, y, w.hasPressure ? p : 0.5, Math.max(0, t - w.t0)])
     }
     if (m.phase === 'move') {
-      if (!w.erase) requestAnimationFrame(drawWet)
+      if (!w.erase) scheduleWet()
       return
     }
     wet.current = null
@@ -527,7 +546,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     const stateNow = (e?: PointerEvent) => {
       const s = store.getState()
       const pan = !!e && e.pointerType === 'mouse' && (space || e.button !== 0)
-      return { mode: s.mode, fingerInk: s.fingerInk, nativeInk: s.nativeInk && s.inkEngine === 'auto', readOnly: propsRef.current.readOnly, penDown: s.penDown, palmUntil: palmUntil.current, now: performance.now(), pan }
+      return { mode: s.mode, fingerInk: s.fingerInk, readOnly: propsRef.current.readOnly, penDown: s.penDown, palmUntil: palmUntil.current, now: performance.now(), pan }
     }
     const isControl = (t: EventTarget | null) => t instanceof Element && t.closest(CONTROL) !== null
     const onPane = (t: EventTarget | null) => t instanceof Element && t.closest('.react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__nodesselection') === null
@@ -541,7 +560,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       const kind = pointerKind(e.pointerType)
       lastKind.current = kind
       suppressClick.current = false
-      if (kind === 'touch') taps.down(e.pointerId, e.clientX, e.clientY, e.timeStamp)
+      if (kind === 'pen') penDownCancelsPalm()
+      else if (kind === 'touch' && !palmActive(stateNow())) taps.down(e.pointerId, e.clientX, e.clientY, e.timeStamp)
       if (isControl(e.target) && kind !== 'touch') return
       const route = routePointer(kind, stateNow(e))
       const s = store.getState()
@@ -586,7 +606,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       e.stopPropagation()
       if (route === 'ignore' || route === 'swallow') {
         if (kind === 'pen' && route === 'swallow') {
-          // Native ink draws it; the palm rule and the cluster still follow the pen.
+          // A read-only pen: nothing is drawn, but the palm rule and the cluster still follow the pen.
           store.getState().set({ penDown: true })
           propsRef.current.onPenActivity?.(true)
         }
@@ -598,7 +618,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       const hasPressure = kind === 'pen' && e.pressure > 0 && e.pressure !== 0.5
       const samples = new StrokeSamples()
       samples.take(e.clientX, e.clientY, e.timeStamp)
-      wet.current = { id: e.pointerId, kind, erase: route === 'erase', pts: [[p.x, p.y, hasPressure ? e.pressure : 0.5, 0]], t0: e.timeStamp, hasPressure, samples }
+      wet.current = { id: e.pointerId, kind, erase: route === 'erase', pts: [[p.x, p.y, hasPressure ? e.pressure : 0.5, 0]], predicted: [], t0: e.timeStamp, hasPressure, samples }
       if (kind === 'pen') {
         store.getState().set({ penDown: true })
         propsRef.current.onPenActivity?.(true)
@@ -607,7 +627,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         releaseErase.current?.()
         releaseErase.current = holdGroup()
         eraseAt(p.x, p.y)
-      } else requestAnimationFrame(drawWet)
+      } else scheduleWet()
     }
 
     const move = (e: PointerEvent) => {
@@ -648,25 +668,24 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         else w.pts.push([p.x, p.y, w.hasPressure ? ev.pressure : 0.5, Math.max(0, ev.timeStamp - w.t0)])
       }
       if (!w.erase) {
-        // Predicted points draw ahead of the finger/pen for the frame only; they are never committed.
+        // Predicted points draw ahead of the finger/pen for the next frame only; they are never committed.
         const predicted = typeof e.getPredictedEvents === 'function' ? e.getPredictedEvents() : []
-        if (predicted.length) {
-          const keep = w.pts.length
-          for (const ev of predicted) {
-            const p = toWorld(ev.clientX, ev.clientY)
-            w.pts.push([p.x, p.y, w.hasPressure ? ev.pressure : 0.5, Math.max(0, ev.timeStamp - w.t0)])
-          }
-          drawWet()
-          w.pts.length = keep
-        } else requestAnimationFrame(drawWet)
+        w.predicted = predicted.map((ev) => {
+          const p = toWorld(ev.clientX, ev.clientY)
+          return [p.x, p.y, w.hasPressure ? ev.pressure : 0.5, Math.max(0, ev.timeStamp - w.t0)] as Pt
+        })
+        scheduleWet()
       }
     }
 
     const up = (e: PointerEvent) => {
       if (e.pointerType === 'touch') {
+        // A tap that began or ends in the palm window is a palm, not an undo.
         const n = taps.up(e.pointerId, e.timeStamp)
-        if (n === 2 && !propsRef.current.readOnly) undo.undo()
-        if (n === 3 && !propsRef.current.readOnly) undo.redo()
+        if (!propsRef.current.readOnly && !palmActive(stateNow())) {
+          if (n === 2) undo.undo()
+          if (n === 3) undo.redo()
+        }
       }
       if (press.current?.id === e.pointerId) {
         clearTimeout(press.current.timer)
@@ -772,7 +791,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       window.removeEventListener('keyup', onKey)
       window.removeEventListener('blur', release)
     }
-  }, [commit, doc, drawWet, eraseAt, markAt, store, taps, toWorld, undo])
+  }, [commit, doc, drawWet, eraseAt, markAt, penDownCancelsPalm, scheduleWet, store, taps, toWorld, undo])
 
   // Wrapper size (for LOD and the wet canvas).
   useEffect(() => {
@@ -909,12 +928,6 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       const cards = new Set<Id>()
       for (const s of f.inView) if (s.card) cards.add(s.card)
       return { fresh: f.inView.length + f.offScreen.length, freshInView: f.inView.length, inkedCards: [...cards] }
-    },
-    async commitCaptured(strokes) {
-      const ids: Id[] = []
-      for (const c of strokes) ids.push(...commit(c))
-      await nextFrame()
-      return ids
     },
     planSend: (opts) => plan(boardRef.current, { view: worldView(), offScreen: opts?.offScreen, captions, windowRect: (w) => windowRect(w) }),
     composeImage: (image, maxSide) => {

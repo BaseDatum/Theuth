@@ -1,113 +1,99 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { attachNativeInk, loader, resetNativeInkOwner } from './ink-native'
+import { type PencilEvent, listenPencil, loader, recognizeText } from './ink-native'
 
-const on = { strokes: vi.fn(), event: vi.fn() }
 const real = { ...loader }
 afterEach(() => {
   Object.assign(loader, real)
-  resetNativeInkOwner()
 })
 
 class FakeChannel<T> {
   onmessage: (m: T) => void = () => {}
 }
 
-describe('attachNativeInk', () => {
-  it('is null outside Tauri', async () => {
-    loader.tauri = () => false
-    await expect(attachNativeInk(on)).resolves.toBeNull()
-  })
+/** A Tauri core whose `invoke` answers per command; every call is recorded. */
+function shell(answer: (cmd: string, args: Record<string, unknown>) => unknown) {
+  const calls: [string, Record<string, unknown>][] = []
+  loader.tauri = () => true
+  loader.core = async () =>
+    ({
+      Channel: FakeChannel,
+      invoke: async (cmd: string, args: Record<string, unknown>) => {
+        calls.push([cmd, args])
+        return answer(cmd, args)
+      },
+    }) as never
+  return calls
+}
 
-  it('is null when the plugin module cannot load', async () => {
+describe('recognizeText', () => {
+  it('is null outside Tauri and when the core cannot load', async () => {
+    loader.tauri = () => false
+    await expect(recognizeText('png')).resolves.toBeNull()
     loader.tauri = () => true
     loader.core = async () => null
-    await expect(attachNativeInk(on)).resolves.toBeNull()
+    await expect(recognizeText('png')).resolves.toBeNull()
   })
 
-  it('is null, never throws, when the plugin is missing (invoke rejects)', async () => {
-    loader.tauri = () => true
-    loader.core = async () => ({ invoke: () => Promise.reject(new Error('plugin ink not found')), Channel: FakeChannel }) as never
-    await expect(attachNativeInk(on)).resolves.toBeNull()
-  })
-
-  it('is null when the plugin says native: false (desktop stub, older iPad)', async () => {
-    loader.tauri = () => true
-    loader.core = async () => ({ invoke: async () => ({ native: false, reason: 'desktop' }), Channel: FakeChannel }) as never
-    await expect(attachNativeInk(on)).resolves.toBeNull()
-  })
-
-  it('is null when the loader itself throws', async () => {
+  it('is null when the plugin is missing or fails; never throws', async () => {
+    shell(() => {
+      throw new Error('plugin ink not found')
+    })
+    await expect(recognizeText('png')).resolves.toBeNull()
     loader.tauri = () => {
       throw new Error('no window')
     }
-    await expect(attachNativeInk(on)).resolves.toBeNull()
+    await expect(recognizeText('png')).resolves.toBeNull()
   })
 
-  it('attached: commands go to plugin:ink, failures are swallowed, recognize failure is null', async () => {
-    const invoke = vi.fn(async (cmd: string) => {
-      if (cmd === 'plugin:ink|attach') return { native: true, route: 'A' }
-      throw new Error('boom')
-    })
-    loader.tauri = () => true
-    loader.core = async () => ({ invoke, Channel: FakeChannel }) as never
-    const ink = await attachNativeInk(on)
-    expect(ink?.result).toEqual({ native: true, route: 'A' })
-    ink?.setEnabled(false)
-    ink?.ack([1, 2])
-    ink?.ack([])
-    await new Promise((r) => setTimeout(r, 0))
-    await expect(ink?.recognizeText('AAAA')).resolves.toBeNull()
-    await ink?.detach()
-    ink?.setEnabled(true)
-    expect(invoke.mock.calls.map((c) => c[0])).toEqual(['plugin:ink|attach', 'plugin:ink|set_enabled', 'plugin:ink|ack', 'plugin:ink|recognize_text', 'plugin:ink|detach'])
+  it('calls plugin:ink|recognize_text alone, with no listener or attach first', async () => {
+    const calls = shell(() => ({ text: 'no third tab', confidence: 0.8 }))
+    await expect(recognizeText('AAAA')).resolves.toEqual({ text: 'no third tab', confidence: 0.8 })
+    expect(calls).toEqual([['plugin:ink|recognize_text', { png: 'AAAA' }]])
   })
 })
 
-describe('overlay ownership (218 review M3)', () => {
-  const rig = (block = false) => {
-    const calls: string[] = []
-    let release: (() => void) | null = null
-    const invoke = vi.fn(async (cmd: string) => {
-      calls.push(cmd.replace('plugin:ink|', ''))
-      if (cmd === 'plugin:ink|attach') {
-        if (block && calls.filter((c) => c === 'attach').length === 1) await new Promise<void>((r) => (release = r))
-        return { native: true }
-      }
-      return null
+describe('listenPencil', () => {
+  it('outside Tauri, or with the plugin missing, resolves to a no-op', async () => {
+    loader.tauri = () => false
+    const off = await listenPencil(() => {})
+    expect(() => off()).not.toThrow()
+    const calls = shell(() => {
+      throw new Error('plugin ink not found')
     })
-    loader.tauri = () => true
-    loader.core = async () => ({ invoke, Channel: FakeChannel }) as never
-    return { calls, release: () => release?.() }
-  }
-
-  it('a late detach from an unmounted view does not remove the next view’s overlay', async () => {
-    const { calls, release } = rig(true)
-    const first = attachNativeInk(on)          // view A: attach still pending
-    while (!calls.includes('attach')) await new Promise((r) => setTimeout(r, 0))
-    const second = attachNativeInk(on)         // view B mounts before A’s attach resolved
-    release()
-    const a = await first
-    const b = await second
-    expect(a).toBeNull()                       // superseded: A gets nothing to detach
-    expect(b).not.toBeNull()
-    b?.setEnabled(true)
-    await new Promise((r) => setTimeout(r, 0))
-    expect(calls).toEqual(['attach', 'attach', 'set_enabled'])
+    ;(await listenPencil(() => {}))()
+    expect(calls.map((c) => c[0])).toEqual(['plugin:ink|pencil_listen'])
   })
 
-  it('the old owner is told it lost the overlay; its commands and detach are dropped', async () => {
-    rig()
-    const lost = vi.fn()
-    const a = await attachNativeInk({ ...on, lost })
-    const { calls } = rig()
-    const b = await attachNativeInk(on)
-    expect(lost).toHaveBeenCalledTimes(1)
-    a?.setEnabled(true)
-    await a?.detach()
-    b?.setTool({ tool: 'pen', colour: '#000000', width: 2 })
-    await new Promise((r) => setTimeout(r, 0))
-    expect(calls).toEqual(['attach', 'set_tool'])
-    await b?.detach()
-    expect(calls.at(-1)).toBe('detach')
+  it('ok: false (desktop, iPhone, iPadOS < 17.5) never unlistens', async () => {
+    const calls = shell(() => ({ ok: false }))
+    ;(await listenPencil(() => {}))()
+    expect(calls.map((c) => c[0])).toEqual(['plugin:ink|pencil_listen'])
+  })
+
+  it('forwards pencil events from the channel, drops others, and unlistens once', async () => {
+    let channel: FakeChannel<unknown> | null = null
+    const calls = shell((cmd, args) => {
+      if (cmd === 'plugin:ink|pencil_listen') channel = args.onEvent as FakeChannel<unknown>
+      return { ok: true }
+    })
+    const on = vi.fn()
+    const off = await listenPencil(on)
+    const tap: PencilEvent = { kind: 'pencil', gesture: 'tap', action: 'switchEraser' }
+    channel!.onmessage(tap)
+    channel!.onmessage({ kind: 'error', message: 'x' })
+    expect(on.mock.calls).toEqual([[tap]])
+    off()
+    off()
+    expect(calls.map((c) => c[0])).toEqual(['plugin:ink|pencil_listen', 'plugin:ink|pencil_unlisten'])
+  })
+
+  it('a superseded listener does not unlisten the newer one (the plugin keeps one)', async () => {
+    const calls = shell(() => ({ ok: true }))
+    const first = await listenPencil(() => {})
+    const second = await listenPencil(() => {})
+    first()
+    expect(calls.map((c) => c[0])).toEqual(['plugin:ink|pencil_listen', 'plugin:ink|pencil_listen'])
+    second()
+    expect(calls.at(-1)?.[0]).toBe('plugin:ink|pencil_unlisten')
   })
 })
