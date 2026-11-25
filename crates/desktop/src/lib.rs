@@ -120,7 +120,7 @@ mod mobile {
             .plugin(tauri_plugin_barcode_scanner::init())
             .plugin(tauri_plugin_deep_link::init())
             .plugin(tauri_plugin_haptics::init())
-            // 218 §6: the whiteboard's native Pencil layer (iPadOS 26; elsewhere `attach` says why not).
+            // 218: Pencil double-tap/squeeze and handwriting recognition for the web whiteboard (iPadOS 17.5+).
             .plugin(tauri_plugin_ink::init())
             .invoke_handler(tauri::generate_handler![
                 commands::connection,

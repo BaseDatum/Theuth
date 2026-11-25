@@ -3,7 +3,7 @@ name = "tauri-plugin-ink"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "218 §6: native Apple Pencil capture for the whiteboard on iPadOS (PencilKit overlay, tool picker, Pencil taps, Vision handwriting); a stub on desktop"
+description = "218: Apple Pencil double-tap/squeeze and Vision handwriting recognition for the web whiteboard on iPadOS; a stub on desktop"
 links = "tauri-plugin-ink"
 exclude = ["/guest-js"]
 
