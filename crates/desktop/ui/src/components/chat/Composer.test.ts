@@ -59,7 +59,7 @@ test('183 §12.1 / mock panel 3: a chat owned elsewhere says where the message r
   expect(placeholderFor({ ...idle, runsOn: 'cloud-1' })).toBe('Message — runs on cloud-\u20601')
   expect(placeholderFor({ ...idle, running: true, runsOn: 'cloud-1' })).toBe('Message — runs on cloud-\u20601')
   expect(placeholderFor({ ...idle, runsOn: "Sky's MacBook", short: true })).toBe("Runs on Sky's\u00a0MacBook")
-  expect(placeholderFor(idle)).toBe('Ask anything')
+  expect(placeholderFor(idle)).toBe('…')
   expect(placeholderFor({ ...idle, running: true })).toBe('Send to steer…')
   expect(placeholderFor({ running: true, exports: true, runsOn: 'cloud-1' })).toBe('Send privately…')
   expect(placeholderFor({ ...idle, skill: 'pdf', runsOn: 'cloud-1' })).toBe('Words for pdf (optional)')

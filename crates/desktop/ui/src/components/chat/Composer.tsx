@@ -146,7 +146,7 @@ export function placeholderFor(o: { readOnly?: boolean; running: boolean; export
   if (o.readOnly) return 'Talking — speak, or stop the talk to type'
   if (o.running) return o.exports ? 'Send privately…' : remote || 'Send to steer…'
   if (o.skill) return `Words for ${o.skill} (optional)`
-  return remote || 'Ask anything'
+  return remote || '…'
 }
 
 const NONE = EMPTY.pastes
