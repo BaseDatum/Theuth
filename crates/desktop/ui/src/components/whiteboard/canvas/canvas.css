@@ -202,6 +202,15 @@
   .wb-canvas .react-flow__handle.wb-handle::after { content: ''; position: absolute; inset: -14px; border-radius: 50%; }
 }
 
+/* Card and frame resize handles: 11 px squares (React Flow scales them up when zoomed out) with a 31 px hit area for the
+ * mouse; a finger or the Pencil gets a 16 px handle and a 44 px hit area. */
+.wb-canvas .react-flow__resize-control.handle { width: 11px; height: 11px; border-radius: 4px; }
+.wb-canvas .react-flow__resize-control.handle::after { content: ''; position: absolute; inset: -10px; }
+@media (pointer: coarse) {
+  .wb-canvas .react-flow__resize-control.handle { width: 16px; height: 16px; border-radius: 5px; }
+  .wb-canvas .react-flow__resize-control.handle::after { inset: -14px; }
+}
+
 /* The cursor follows the latched ink tool (Canvas sets `data-cursor` while no Space pan is held): over the pane, cards and
  * frame titles alike, since the mouse inks over all of them. A pan drag still shows React Flow's grabbing hand. */
 .wb-canvas[data-cursor='ink'] .react-flow__pane:not(.dragging)::before,

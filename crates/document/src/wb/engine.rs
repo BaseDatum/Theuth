@@ -1448,7 +1448,8 @@ fn place_card(w: &mut W, session: uuid::Uuid, a: super::tools::WbPlaceArgs) -> R
         .clone()
         .or_else(|| frame.as_ref().and_then(|f| f.preset.clone()));
     let (dw, dh) = place::default_size(a.kind, device.as_deref());
-    let (cw, ch) = (a.w.unwrap_or(dw).clamp(40.0, 4000.0), a.h.unwrap_or(dh).clamp(40.0, 4000.0));
+    // A minimum only: the owner resizes cards freely, so the agent may place them at any size too.
+    let (cw, ch) = (a.w.unwrap_or(dw).max(40.0), a.h.unwrap_or(dh).max(40.0));
     let spot = place::place(
         &w.snap,
         &place::Want {

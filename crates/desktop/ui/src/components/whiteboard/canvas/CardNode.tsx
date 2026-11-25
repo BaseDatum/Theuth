@@ -11,6 +11,7 @@ import { archive, dim, patchCard, restore } from './ops'
 import { IN_PLACE } from './ops'
 import { CardInk } from './InkLayer'
 import { toAbsolute, type CardNodeData } from './binding'
+import { useResizeEnd } from './resize'
 
 export type CardNodeType = Node<CardNodeData, 'card'>
 
@@ -128,6 +129,11 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
     entered && 'entered',
     spot === card.id && 'spot',
   ].filter(Boolean).join(' ')
+  const onResizeEnd = useResizeEnd((_, p) => {
+    const at = toAbsolute(board, card.id, { x: p.x, y: p.y })
+    patchCard(doc, card.id, { x: Math.round(at.x), y: Math.round(at.y), w: Math.round(p.width), h: Math.round(p.height) })
+    stopCapturing()
+  })
 
   return (
     <>
@@ -136,13 +142,8 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
           minWidth={80}
           minHeight={60}
           color="var(--fg-accent)"
-          handleStyle={{ width: 11, height: 11, borderRadius: 4 }}
           lineStyle={{ borderColor: 'transparent' }}
-          onResizeEnd={(_, p) => {
-            const at = toAbsolute(board, card.id, { x: p.x, y: p.y })
-            patchCard(doc, card.id, { x: Math.round(at.x), y: Math.round(at.y), w: Math.round(p.width), h: Math.round(p.height) })
-            stopCapturing()
-          }}
+          onResizeEnd={onResizeEnd}
         />
       )}
       {selected && !entered && (

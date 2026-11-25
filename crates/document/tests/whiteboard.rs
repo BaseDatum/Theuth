@@ -687,3 +687,26 @@ fn reads_the_yjs_fixture() {
     assert_eq!(m.region.as_ref().map(|r| r.label.as_str()), Some("tab bar, item 3"));
     assert_eq!(snap.aliases.get("01KAR3ZC4M0000000000000008").map(String::as_str), Some("m4"));
 }
+
+/// 218 owner report: cards have no upper size. `wb_place` keeps a size far past the old 4000 px cap and only raises one
+/// below the 40 px minimum.
+#[tokio::test]
+async fn place_keeps_any_size_above_the_minimum() {
+    let _g = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (actor, _) = start(dir.path()).await;
+    let wb = create(&actor, "Big").await;
+    let w = Whiteboards::new(actor.clone());
+    let s = uuid::Uuid::now_v7();
+    let doc = wb.doc.to_string();
+    let big = call(&WbPlaceTool(w.clone()), json!({"whiteboard": doc, "kind": "diagram", "title": "Wall", "w": 9000.0, "h": 6500.0,
+        "source": {"t": "diagram", "lang": "mermaid", "code": "flowchart LR\n  A --> B"}}), s).await;
+    assert_eq!((ok(&big)["w"].as_f64(), ok(&big)["h"].as_f64()), (Some(9000.0), Some(6500.0)));
+    let tiny = call(&WbPlaceTool(w.clone()), json!({"kind": "sticky", "title": "Dot", "w": 5.0, "h": 5.0,
+        "source": {"t": "sticky", "text": "."}}), s).await;
+    assert_eq!((ok(&tiny)["w"].as_f64(), ok(&tiny)["h"].as_f64()), (Some(40.0), Some(40.0)));
+    let snap = snapshot(&actor, &wb.doc).await;
+    let wall = snap.cards.iter().find(|c| c.title == "Wall").unwrap();
+    assert_eq!((wall.w, wall.h), (9000.0, 6500.0));
+    stop(actor).await;
+}

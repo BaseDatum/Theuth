@@ -6,6 +6,7 @@ import { useCanvas } from './context'
 import type { FrameNodeData } from './binding'
 import { PRESETS, type FrameColour } from './model'
 import { patchFrame, removeFrame } from './ops'
+import { useResizeEnd } from './resize'
 
 export type FrameNodeType = Node<FrameNodeData, 'frame'>
 
@@ -19,6 +20,10 @@ export const FrameNode = memo(function FrameNode({ data, selected }: NodeProps<F
   const { doc, readOnly, stopCapturing } = useCanvas()
   const [title, setTitle] = useState<string | null>(null)
   const preset = frame.preset ? ` · ${frame.preset} ${PRESETS[frame.preset][0]}×${PRESETS[frame.preset][1]}` : ''
+  const onResizeEnd = useResizeEnd((_, p) => {
+    patchFrame(doc, frame.id, { x: Math.round(p.x), y: Math.round(p.y), w: Math.round(p.width), h: Math.round(p.height) })
+    stopCapturing()
+  })
   return (
     <>
       {selected && !readOnly && (
@@ -28,10 +33,7 @@ export const FrameNode = memo(function FrameNode({ data, selected }: NodeProps<F
             minHeight={120}
             color="var(--fg-accent)"
             lineStyle={{ borderColor: 'transparent' }}
-            onResizeEnd={(_, p) => {
-              patchFrame(doc, frame.id, { x: Math.round(p.x), y: Math.round(p.y), w: Math.round(p.width), h: Math.round(p.height) })
-              stopCapturing()
-            }}
+            onResizeEnd={onResizeEnd}
           />
           <NodeToolbar position={Position.Top} align="start" offset={18}>
             <div className="wb-tools nodrag nopan" role="toolbar" aria-label={`Frame ${frame.title} actions`}>
