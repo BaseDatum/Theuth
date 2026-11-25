@@ -1,6 +1,6 @@
 # 216 — External plugins: any language, no compile step
 
-Status: design · 2026-11-24 · revised after review · not built. Extends `docs/plugins.md` (native
+Status: design · 2026-11-24 · revised after review · owner amendments 2026-11-25 (§17 decided; Settings › Plugins, agent tools and SDKs in v1; the CLI is `t`; §3, §12, §14, §17, §20) · not built · build contract `docs/design/216-contract.md`. Extends `docs/plugins.md` (native
 plugins), 00 §3–§4 and §7 ("Owner-declared event bridge"), 46 (apps / OpenUI), 30 (surfaces /
 json-render), 40 (sensors), 04 and 187 (MCP loader). On *external* plugins this doc wins; on
 everything a native plugin does, `docs/plugins.md` still wins. The two example plugins in §13 live in
@@ -241,8 +241,7 @@ and time out for a plugin that is merely busy — review F6).
 dot, badge; opens a popover or the plugin's tile), `status`, `tile` and `command` placements;
 `subscribe`, `emit`, `notify`, `call`, `input` and static tools. `header`, composer icons, `card`,
 `tray`, `settings` pages, the `html` format, the `mcp:` attach, `sessions: focused`, the `open`
-capability, per-event `exposure: private`, the dev tile and Inject, git-URL install, SDKs, `--lang
-ts|go` and `when: event` routines are §20, briefly specified, with their manifest keys reserved so a v1
+capability, per-event `exposure: private`, the dev tile and Inject, git-URL install, and `when: event` routines are §20 (SDKs moved into v1 on 2026-11-25, §14), briefly specified, with their manifest keys reserved so a v1
 manifest stays valid when they land. Rejected: shipping the full surface at once (about twice what a
 v1 needs, each slot with its own lifecycle and competition rules — review §4).
 
@@ -320,6 +319,7 @@ plugins:
   dir: plugins             # under the data dir
   watch: true              # hot-load plugin.yaml changes (300 ms debounce, as mcp/)
   dev: false               # author mode: no code hash in grants (§10.2), restart on any file change
+  remote_sessions: false   # also deliver events of sessions owned by another engine of the mesh (§17 Q2)
   restart_first_ms: 1000   # first restart delay after a crash; doubles per crash
   restart_cap_ms: 300000   # 5 min
   crash_loop: 5            # this many crashes within crash_window_s → state `failed` until edited or restarted
@@ -333,7 +333,6 @@ plugins:
   input_per_min: 6         # `input` requests per plugin; excess answered -32005 (§10.3)
   request_timeout_ms: 10000   # host → plugin `action`/`query`/`command`/`render`/`tools/call` without a reply → error to the caller
   string_cap: 65536        # strings longer than this inside an event are cut with "…[+N bytes]" before delivery
-  sidebar_icons: 5         # plugin icons shown in the sidebar row; the rest go to its overflow menu (§9.1)
   log_max_bytes: 10485760  # per plugin per day; past it, lines are counted and dropped until midnight
 ```
 
@@ -474,7 +473,7 @@ stateDiagram-v2
   running --> running: manifest widened or code changed (old process keeps old grant; card filed)
 ```
 
-- **Install.** Three ways, one result: drop a folder into `plugins/`; `theuth plugin install <path>`;
+- **Install.** Three ways, one result: drop a folder into `plugins/`; `t plugin install <path>`;
   the model writes the folder with `write_file` (it is a file like any other). The watcher sees a new
   `plugin.yaml`; the host validates it and files the install card (§10.2) in its attention `Source`
   and in Settings › Plugins. Nothing runs before a human press. Any file-writing tool can therefore
@@ -1019,7 +1018,7 @@ placements (`header`, composer icons, `card`) are §20 with the lifecycle they n
 - **Order.** Sidebar icons and status-strip items are ordered by install time (the grant's
   `approved_at`), oldest first; the owner can drag to reorder in Settings › Plugins (stored in
   `grants.yaml`, not MAC'd — order is not a power).
-- **Cap.** At most `sidebar_icons` (5) plugin icons show in the sidebar row; the rest are in a "⋯"
+- **Cap.** At most 5 plugin icons show in the sidebar row; the rest are in a "⋯"
   overflow menu at the end of the row, each with its dot. Status-strip items cap at 3 with the same
   overflow. A dot of `warn` or `error` in the overflow lights the "⋯".
 - **Hide.** Every placement has a "Hide" toggle in Settings › Plugins and in its icon's context menu
@@ -1193,7 +1192,7 @@ authenticated, not a guest, not the internal peer — `crates/cells/src/cells_gu
 carries that proof into the actor's `Approve`. The double never answers it (it is not an approval
 row), a channel thread user cannot (channels do not render install cards; the inbox item says "open
 theuth to review"), and the model's tools, the MCP console, the ACP half and the TUI's in-process
-connection cannot (they are the internal peer). The CLI's `theuth plugin approve` connects as an
+connection cannot (they are the internal peer). The CLI's `t plugin approve` connects as an
 external peer and asks y/N on its own terminal; it is a press in the same sense as the desktop's and
 has the same residual (§10.4). `tools.policy` and `tools.approvals: false` are not consulted: nothing
 here is a tool call.
@@ -1303,28 +1302,55 @@ the card says "the saved approval for turns could not be verified" so an owner w
 knows why. Nothing is in `sessions.sqlite`; nothing replicates (D9). The headless plugin session is an
 ordinary session row.
 
-## 12. Commands, RPC, CLI, TUI
+## 12. Commands, RPC, CLI, TUI, Settings, agent tools
+
+Amended 2026-11-25 (owner): the binary is `t`; `t plugin approve` is a human press (Q3); Settings ›
+Plugins and agent tools are v1. Exact signatures, serde shapes and owners: `docs/design/216-contract.md`
+(§6 RPC, §7 tools/CLI/TUI, §8 the press), which wins on names.
 
 **RPC** (`crates/plugins/src/rpc.rs`, one domain module, merged in `rpc_composition`
-`crates/theuth/src/main.rs#L2030-L2055`; each a lookup + one `ask`):
-`plugin_list`, `plugin_get`, `plugin_check(path)`, `plugin_install(path)`, `plugin_approve(name,
-manifest_sha256, code_sha256)` (human press only, D14), `plugin_set_enabled(name, on)`,
-`plugin_set_hidden(name, placement, hidden)`, `plugin_restart`, `plugin_uninstall(name, keep_data)`,
-`plugin_action(name, placement, action, args, session?, activation?)` (`with_extensions`: the `RpcPeer`
-decides `client`, and an activation from a non-owner peer is refused, as `app_call_tool` does —
-`docs/plugins.md#L247`), `plugin_query(...)`, `plugin_command(...)`, `plugin_surfaces()`,
-`plugin_surface(name, placement)` → `{format, source, text, revision}`, `plugin_catalog`,
-`plugin_logs(name, tail)`. Events: `plugins.events`, `plugins.ui` via `subscribe_topics`.
+`crates/theuth/src/main.rs#L2030-L2055`; each a lookup + one `ask`; owner-only, guests refused):
+`plugin_list`, `plugin_get(name)`, `plugin_check(path)`, `plugin_install(path)`, `plugin_new(name,
+lang?, raw?)`, `plugin_approve(name, manifest_sha256, code_sha256)` (human press only, D14),
+`plugin_set_enabled(name, on)`, `plugin_set_hidden(name, placement, hidden)`, `plugin_set_order(order)`,
+`plugin_restart(name)`, `plugin_uninstall(name, keep_data?)`, `plugin_action(name, placement, action,
+args, session?, activation?, form?)` (`with_extensions`: the `RpcPeer` decides `client`, and an
+activation from the internal peer is refused, as `app_call_tool` does — `docs/plugins.md#L247`),
+`plugin_query(name, placement, query, args, session?)`, `plugin_command(name, command, args, session?)`,
+`plugin_surfaces()`, `plugin_surface(name, placement, session?)` → `{revision, state, format, source,
+text, bindings}`, `plugin_catalog(topic?)`, `plugin_logs(name, tail?)`. Events: `plugins.events`,
+`plugins.ui` via `subscribe_topics`.
 
-**CLI** (`clap` subcommands beside the existing ones, `crates/theuth/src/main.rs#L155-L159`; each
-connects to the running engine like the others): `theuth plugin new <name> --lang py|sh`, `list`,
-`install <path>`, `approve <name>` (prints the card's lines, asks y/N on its terminal), `check <path>`,
-`logs [-f] <name>`, `restart <name>`, `enable|disable <name>`, `uninstall <name>`, `catalog [<topic>]`.
+**CLI** (`t plugin …`, `crates/theuth/src/plugin_cli.rs`, dispatched from `run()` before `cmd_67`):
+`list`, `new <name> [--lang py|js|sh|go|rb|rs] [--raw]` (works without an engine), `install <path>`,
+`approve <name>`, `enable|disable|restart <name>`, `logs <name> [-n N] [-f]` (reads the log file, no
+engine needed), `uninstall <name> [--keep-data]`, `check <path> [--sync]` (offline when no engine
+runs), `catalog [<topic>]`. **`t plugin approve` counts as a human press** (owner, Q3): it connects
+with the data dir's token as a non-internal, non-guest peer, prints the card's lines, and approves only
+on a typed `y` with stdin and stdout on a terminal (no `--yes`). Forwarded calls from another engine
+are not a press: a plugin is approved on the engine whose disk holds it.
+
+**Settings › Plugins** (owner amendment): a 13th settings category `plugins` (the Tools category is
+full). One row per plugin: state chip, enable switch, Approve (the pending card's lines, then
+`plugin_approve`), Restart, Logs, Uninstall (confirmed, optional keep-data), per-placement Hide,
+up/down order, the granted subscriptions, tools and capabilities (read-only in v1), Open folder
+(desktop only), and **New plugin** (name + language, scaffolds with `plugin_new`). The install card's
+Review button opens this page focused on the plugin.
+
+**Agent tools** (owner amendment; `crates/plugins/src/atools.rs`): agents manage plugins for the user
+but can never approve one. `plugin_list`, `plugin_status`, `plugin_logs` (`read_only`);
+`plugin_enable`, `plugin_disable`, `plugin_restart`, `plugin_new`, `plugin_install` (`mutating` —
+enable/restart only start code a human approved for exactly its hashes, new/install only write files
+and file a card); `plugin_uninstall` (`destructive` — it throws away an approval only a human can give
+back); `plugin_approve_request` (`read_only` — it re-files the install card in the owner's inbox and
+says that the owner must press Approve or run `t plugin approve`). None is `HUMAN_ONLY` and none can
+produce the press proof `plugin_approve` needs. They are listed in `crates/theuth/harness.md`.
 
 **TUI:** `/plugins` menu (list with state dots; ⏎ shows a plugin's `text` fallbacks and json-render
-content; `r` restart, `d` disable, `l` log tail — no approve: the TUI shares the internal connection,
-which is not a human press, so it says "approve in the desktop app or with `theuth plugin approve`");
-`status` placements in the status line; plugin `command`s in `COMMANDS`.
+content; `r` restart, `d` disable/enable, `l` log tail — no approve: the TUI shares the internal
+connection, which is not a human press, so it says "approve in the theuth app or with `t plugin
+approve <name>`"); `status` placements in the status line; plugin `command`s as dynamic slash entries
+(built-ins win).
 
 ## 13. Two example plugins
 
@@ -1552,19 +1578,33 @@ the TUI as the status segment `● ping 0.07 ms`.
 
 ## 14. Developer experience
 
-- **`theuth plugin new <name> --lang py|sh`** writes `plugins/<name>/plugin.yaml` (one `sidebar`
-  popover placement, one subscription to `agent.events#TurnFinished`, no capabilities) and one file:
-  `main.py` (§13.1's shape) or `run.sh` (§13.2's shape). Because the folder is new, it is awaiting
-  approval: the command prints the card's lines and points at `theuth plugin approve <name>`.
-- **Logs:** `~/.theuth/logs/plugins/<name>.log.<date>`; `theuth plugin logs -f <name>`; every line in
-  and out is logged at `debug` when the plugin's log level is raised in Settings › Plugins.
+Amended 2026-11-25 (owner): **SDKs are v1** (moved out of §20). They are specified in
+`/tmp/theuth-216/research-sdk.md` and built under `sdk/`; scaffolding is `docs/design/216-contract.md` §10.2.
+
+- **`t plugin new <name> [--lang py|js|sh|go|rb|rs] [--raw]`** writes `plugins/<name>/`: `plugin.yaml`
+  and the SDK hello world (at most 15 lines) for the language, with the one-file SDK
+  (`theuth_plugin.py`, `theuth-plugin.js`, `theuth-plugin.sh`, `theuth.go`, `theuth_plugin.rb`, or a
+  small `theuth-plugin` crate) **vendored into the folder**, so the code hash covers the SDK the plugin
+  actually runs. Default `py` with the SDK; `--raw` (py, sh) writes the no-SDK templates of §13's
+  shape. Help highlights py, js and sh (no compile step); go and rs compile with their own toolchains,
+  theuth still compiles nothing. No network, no package manager, no `THEUTH_SDK` import path; the SDK
+  files are embedded in `t`, and `new` works without a running engine. Because the folder is new, it
+  is awaiting approval: the command points at `t plugin approve <name>`.
+- **SDKs are untyped** (dicts, `map[string]any`, `serde_json::Value`): plugins must ignore unknown
+  fields anyway (§7.5). `sdk/catalog.md`, generated from `bindings/openrpc.json` by `sdk/gen/catalog.py`
+  and checked for drift, lists every subscribable event with its version and card sentence.
+- **Yaml wins.** Every SDK accepts `--theuth-manifest`: it prints the YAML its registrations imply and
+  exits 0 without reading stdin. `t plugin check --sync <path>` diffs that against `plugin.yaml` and
+  warns on drift; it never gates. The manifest stays the contract the install card is drawn from (D7).
+- **Logs:** `~/.theuth/logs/plugins/<name>.log.<date>`; `t plugin logs -f <name>` (no engine needed);
+  Settings › Plugins › Logs.
 - **Restart on edit:** `plugins.dev: true` restarts on any file change in the folder (300 ms debounce)
   and leaves code hashes out of grants (§10.2).
-- **Check without the engine:** `theuth plugin check <path>` validates the manifest and every OpenUI /
-  json-render `ui` the plugin prints at start, and with `--events file.jsonl` replays those lines into
-  the plugin and prints what it wrote. `216-examples/check.sh` is the same idea in 100 lines of bash.
+- **Check without the engine:** `t plugin check <path>` validates the manifest offline (secrets and
+  topics are checked too when an engine runs). `216-examples/check.sh` and `sdk/conformance/` drive
+  plugins through a scripted host. Replaying an events file (`--events file.jsonl`) is §20.
 
-The dev tile with live trace and Inject, the SDKs and `--lang ts|go` are §20.
+The dev tile with live trace and Inject is §20.
 
 ## 15. Implementation steps, each with a runnable check
 
@@ -1701,20 +1741,22 @@ rule if it ever does); non-owner channel text stays public (§7.3); bumped versi
 (§7.5); placements are not persisted (§9.2); a mesh peer's placements are not shown elsewhere (D9);
 Windows is unsupported in v1 (§9.5); the card phrase is the schema's doc sentence (§7.1).
 
-New questions raised by this revision:
+The three questions of the revision were decided by the owner on 2026-11-25:
 
-1. **Meeting sessions after the meeting.** The meeting session stays a session the owner can keep
-   chatting in after the recording ends; §7.3 withholds its `agent.events` text for its whole life.
-   Should the owner's own later messages in that session become public again once the meeting is
-   `Summarized` (only the transcript batches stay withheld), at the cost of a per-input rule instead
-   of a per-session one?
-2. **Relayed frames.** Frames another engine relays (D3) reach local plugins today. Should
-   `WireFrame` gain an origin so a plugin can be limited to this engine's events, and should that be
-   the default?
-3. **Who may run `theuth plugin approve`.** The CLI is a human press only as much as any local
-   WebSocket client is (§10.2, §10.4). Should approve require the desktop app's own window (a
-   signed-in, focused UI) instead, accepting that a headless engine then cannot install plugins
-   without one?
+1. **Meeting sessions after the meeting: No.** A meeting session's `agent.events` text stays withheld
+   for the session's whole life (§7.3), including the owner's own later messages; the rule stays per
+   session, not per input.
+2. **Relayed frames: closed, no origin in v1.** The owner's rule was "only if easy", and it is not:
+   there are two relay paths, and a followed session's `AgentEvent`s are republished as plain local
+   events with no engine field. The cheap mitigation ships instead: the router remembers the sessions
+   it has seen `agent.events#SessionOwnerChanged { here: false }` for (and forgets them on
+   `here: true`) and drops their frames, unless `plugins.remote_sessions: true` (§3). An origin on
+   `WireFrame` stays §20.
+3. **`t plugin approve`: Yes, it counts as a human press**, like the app's Approve button (§10.2, §12).
+   It must run on a terminal and takes a typed `y`. Plugins are also managed from the CLI and the TUI
+   (the TUI cannot approve: it is the internal connection).
+
+No open questions remain.
 
 ## 18. Checklist against `docs/plugins.md` §2
 
@@ -1784,8 +1826,12 @@ to this doc before it is built.
 | Opening own surfaces | capability `open` | `open {placement}` → clients open that tile. Must say which client opens it (the most recently active desktop window of the owner, never a phone) and rate-limit it. |
 | Private plugin events | `emits.<name>.exposure: private` | Only native consumers and the owner's clients see the event. An error in v1 so an author does not believe it applies. |
 | Dev tile and Inject | — (`plugins.dev`) | A `plugin-dev` tile with a live two-column trace (`plugins.trace`, Internal, collected only under a lease) and an "Inject event" field (`plugin_inject`, allowed only when `plugins.dev: true`, events marked `"injected": true`). |
-| Git-URL install | — | `theuth plugin install <git url>` (`git clone --depth 1`). The install card must then show the commit, and a pull is a code change (§10.2). |
-| SDKs and more templates | — | `theuth_plugin.py`, `@theuth/plugin`, a Go module (≤ 150 lines each, types from `plugin_catalog`); `theuth plugin new --lang ts\|go`. |
+| Git-URL install | — | `t plugin install <git url>` (`git clone --depth 1`). The install card must then show the commit, and a pull is a code change (§10.2). |
+| Origin on relayed frames | — | `WireFrame` gains the originating engine so a plugin can be limited to this engine's events (§17 Q2 closed without it; v1 drops remote-owned sessions by default, `plugins.remote_sessions`). |
+| Typed SDK stubs | — | `t plugin types --lang …` writes generated types beside a plugin; needs `catalog` to inline resolved schemas first. (The SDKs themselves are v1, §14.) |
+| Grant narrowing in Settings | — | Untick lines in Settings › Plugins to narrow a grant at once (§10.3); v1 shows granted lines read-only. |
+| Plugin notifications to channels | — | `notify` also through `message_user` when the owner turns it on (§9.5); v1 is inbox + OS notification. |
+| Events replay | — | `t plugin check --events file.jsonl` replays lines into the plugin and prints what it wrote. |
 | Event-triggered routines | — (schedule's `when:`) | `when: event turns.limit_reached` / `when: event agent.events#TurnFinished stop_reason=error`, reading the feed through `WireFrame::external_view()` so routines see what plugins see. Belongs in the schedule doc; `when:` names a sensor file today (`crates/schedule/src/lib.rs#L505-L508`). |
 | Containment | top-level `isolation:` (e.g. `isolation: vm` \| `macos-sandbox`) | Run the plugin in a sandbox VM (79) with the pipe forwarded, or under a macOS sandbox profile denying `~/.theuth`. An error in v1 (§4.2). Decide when the first third-party plugin is proposed. |
 | Windows | `run: {windows: […], default: […]}` | §9.5. |
