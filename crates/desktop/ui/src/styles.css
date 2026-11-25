@@ -1110,6 +1110,17 @@ html .bn-root .theuth-cite-pulse {
   .inbox-dismiss-line::after { animation: none; left: 35%; }
 }
 
+/* Trellis gives every panel, group and surface a permanent `will-change: transform`: one full-pane GPU layer each, two
+   per chat pane (~9 MB apiece at 2x on an iPad), held while nothing moves. Under that memory pressure iOS WebKit drops
+   paint tiles: buttons, typed text, the right edge of a pane left blank until something repaints. At rest the panes are
+   plain painted boxes (their static `translate` needs no layer); the hint comes back only while Trellis moves them. */
+.trellis :is([data-trellis-part='panel'], [data-trellis-part='group'], [data-trellis-part='surface']) {
+  will-change: auto;
+}
+.trellis:is([data-dragging], [data-resizing], [data-gesture]) :is([data-trellis-part='panel'], [data-trellis-part='group'], [data-trellis-part='surface']) {
+  will-change: transform;
+}
+
 /* Trellis panes (`components/chat/Panes.tsx`): every chrome token from the theuth palette, so light and dark follow
    `.dark` like the rest of the app and none of Trellis's stock colours show. Panes sit edge to edge on a hairline, as
    the split view always did; tab bars appear only for a panel holding several views (`tabbar: "auto"`). */
