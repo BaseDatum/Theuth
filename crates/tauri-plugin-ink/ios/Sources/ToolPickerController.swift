@@ -2,6 +2,12 @@
 // finger-drawing toggle: fingers always navigate, R2). Attached to the web view through its
 // `pencilKitResponderState` (iPadOS 26), so the web view stays first responder and the keyboard keeps
 // working. Selection changes go to JS as `tool` events.
+//
+// Never the deprecated `selectedTool` setter: on a picker built with `init(toolItems:)` it looks the tool
+// up among the items and, when none matches (another colour or width), PencilKit raises NSRangeException
+// (NSNotFound index) — an ObjC exception Swift cannot catch, which killed the app on whiteboard open
+// (iPadOS 27.2.1). Items are immutable, so a colour or width change rebuilds the picker's items, and
+// selection only ever names one of the picker's own items, by identifier.
 
 import PencilKit
 import UIKit
@@ -11,39 +17,66 @@ import UIKit
 final class ToolPickerController: NSObject, PKToolPickerObserver {
   var onChange: ((ToolState) -> Void)?
 
-  private let picker: PKToolPicker
+  private var picker: PKToolPicker
   private weak var host: UIResponder?
   /// While JS is selecting (`set_tool`), the picker's change is JS's own echo: not reported.
   private var selecting = false
+  private var visible = true
+  /// Observers besides `self` (the route A canvas), re-added to a rebuilt picker.
+  private let observers = NSHashTable<AnyObject>.weakObjects()
+  /// What the current items were built with: one colour for all inking items, a width per tool.
+  private var colour: String
+  private var widths: [InkTool: Double] = [.monoline: 2.4, .pen: 2.8, .marker: 6]
 
-  private static func id(_ tool: InkTool) -> String { "ink.\(tool.rawValue)" }
+  static func id(_ tool: InkTool) -> String { "ink.\(tool.rawValue)" }
 
-  init(webview: UIResponder, initial: ToolState) {
-    let colour = UIColor(inkHex: initial.colour)
-    picker = PKToolPicker(toolItems: [
+  static func makePicker(colour hex: String, widths: [InkTool: Double]) -> PKToolPicker {
+    let colour = UIColor(inkHex: hex)
+    func width(_ tool: InkTool) -> CGFloat { CGFloat(widths[tool] ?? 2.8) }
+    return PKToolPicker(toolItems: [
       PKToolPickerInkingItem(
-        type: .monoline, color: colour, width: 2.4, identifier: Self.id(.monoline)),
-      PKToolPickerInkingItem(type: .pen, color: colour, width: 2.8, identifier: Self.id(.pen)),
-      PKToolPickerInkingItem(type: .marker, color: colour, width: 6, identifier: Self.id(.marker)),
+        type: .monoline, color: colour, width: width(.monoline), identifier: id(.monoline)),
+      PKToolPickerInkingItem(type: .pen, color: colour, width: width(.pen), identifier: id(.pen)),
+      PKToolPickerInkingItem(
+        type: .marker, color: colour, width: width(.marker), identifier: id(.marker)),
       PKToolPickerEraserItem(type: .vector),
     ])
+  }
+
+  init(webview: UIResponder, initial: ToolState) {
+    colour = initial.colour
+    if initial.tool != .eraser, initial.width.isFinite, initial.width > 0 {
+      widths[initial.tool] = initial.width
+    }
+    picker = Self.makePicker(colour: colour, widths: widths)
     super.init()
+    configure(picker)
+    host = webview
+    webview.pencilKitResponderState.activeToolPicker = picker
+    webview.pencilKitResponderState.toolPickerVisibility = .visible
+    select(initial)
+  }
+
+  private func configure(_ picker: PKToolPicker) {
     picker.showsDrawingPolicyControls = false
     // Colours are the page's, already resolved for its theme.
     picker.colorUserInterfaceStyle = .light
     picker.addObserver(self)
-    webview.pencilKitResponderState.activeToolPicker = picker
-    webview.pencilKitResponderState.toolPickerVisibility = .visible
-    host = webview
-    select(initial)
+    for observer in observers.allObjects {
+      if let observer = observer as? PKToolPickerObserver { picker.addObserver(observer) }
+    }
   }
 
   func addObserver(_ observer: PKToolPickerObserver) {
+    observers.add(observer)
     picker.addObserver(observer)
   }
 
   func detach() {
     picker.removeObserver(self)
+    for observer in observers.allObjects {
+      if let observer = observer as? PKToolPickerObserver { picker.removeObserver(observer) }
+    }
     if let host = host {
       host.pencilKitResponderState.toolPickerVisibility = .inactive
       host.pencilKitResponderState.activeToolPicker = nil
@@ -52,26 +85,43 @@ final class ToolPickerController: NSObject, PKToolPickerObserver {
   }
 
   func setVisible(_ visible: Bool) {
+    self.visible = visible
     host?.pencilKitResponderState.toolPickerVisibility = visible ? .visible : .hidden
   }
 
-  /// Select `state`'s item (always one of the picker's own items: a foreign item is not the picker's to
-  /// select), then its colour and width through `selectedTool` (deprecated in favour of items, which have
-  /// no setter for either; it updates the selected item).
+  /// Select `state`'s item. A colour or width the items were not built with rebuilds them first (items
+  /// have no setters). Selection names only an identifier the picker has; anything else is a no-op.
   func select(_ state: ToolState) {
     selecting = true
     defer { selecting = false }
-    if state.tool == .eraser {
-      if let eraser = picker.toolItems.first(where: { $0 is PKToolPickerEraserItem }) {
-        picker.selectedToolItem = eraser
-      }
-      return
+    if state.tool != .eraser, state.width.isFinite, state.width > 0,
+      state.colour.lowercased() != colour.lowercased() || widths[state.tool] != state.width
+    {
+      colour = state.colour
+      widths[state.tool] = state.width
+      rebuild()
     }
-    if let item = picker.toolItems.first(where: { $0.identifier == Self.id(state.tool) }) {
-      picker.selectedToolItem = item
+    let item = picker.toolItems.first { candidate in
+      state.tool == .eraser
+        ? candidate is PKToolPickerEraserItem : candidate.identifier == Self.id(state.tool)
     }
-    picker.selectedTool = PKInkingTool(
-      inkType(state.tool), color: UIColor(inkHex: state.colour), width: CGFloat(state.width))
+    guard let item = item, picker.selectedToolItem !== item else { return }
+    picker.selectedToolItem = item
+  }
+
+  /// A new picker with the current colour and widths, swapped in on the responder with the same
+  /// observers and visibility.
+  private func rebuild() {
+    let old = picker
+    old.removeObserver(self)
+    for observer in observers.allObjects {
+      if let observer = observer as? PKToolPickerObserver { old.removeObserver(observer) }
+    }
+    picker = Self.makePicker(colour: colour, widths: widths)
+    configure(picker)
+    guard let host = host else { return }
+    host.pencilKitResponderState.activeToolPicker = picker
+    host.pencilKitResponderState.toolPickerVisibility = visible ? .visible : .hidden
   }
 
   /// What the picker has selected now.

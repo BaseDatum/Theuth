@@ -18,6 +18,8 @@ export type ClusterTimer = {
   hide(): void
   /** `keepControls` changed: on → no timer; off → the 4 s starts again while up. */
   keep(on: boolean): void
+  /** A cluster popover is open (on) or closed (off): no auto-hide while one is open; closing restarts the 4 s. */
+  hold(on: boolean): void
   isOpen(): boolean
   dispose(): void
 }
@@ -25,6 +27,7 @@ export type ClusterTimer = {
 export function clusterTimer(o: { onChange(open: boolean): void; keep?: boolean; hideMs?: number }): ClusterTimer {
   let open = false
   let keep = o.keep ?? false
+  let held = false
   let timer: ReturnType<typeof setTimeout> | null = null
   const ms = o.hideMs ?? HIDE_MS
   const disarm = () => {
@@ -33,7 +36,7 @@ export function clusterTimer(o: { onChange(open: boolean): void; keep?: boolean;
   }
   const arm = () => {
     disarm()
-    if (open && !keep) timer = setTimeout(() => set(false), ms)
+    if (open && !keep && !held) timer = setTimeout(() => set(false), ms)
   }
   const set = (next: boolean) => {
     if (next === open) {
@@ -55,6 +58,10 @@ export function clusterTimer(o: { onChange(open: boolean): void; keep?: boolean;
     hide: () => set(false),
     keep: (on) => {
       keep = on
+      arm()
+    },
+    hold: (on) => {
+      held = on
       arm()
     },
     isOpen: () => open,

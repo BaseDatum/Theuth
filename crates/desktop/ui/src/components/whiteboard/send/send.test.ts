@@ -128,6 +128,36 @@ describe('sendWhiteboard', () => {
     expect(commitSend).toHaveBeenCalledWith(PLAN, expect.objectContaining({ to: 'NEW-SESSION' }))
   })
 
+  it('a first send with a model pick creates the session with it, binds it and sends into it', async () => {
+    const createSession = vi.fn(async () => 'PICKED')
+    const { deps, calls, commitSend } = rig({ createSession })
+    const sendInput = vi.fn(async () => 'PICKED')
+    deps.sendInput = sendInput
+    const pick = { model: 'anthropic/claude-x', effort: 'high' }
+    const r = await sendWhiteboard(deps, input({ session: null, pick }))
+    expect(createSession).toHaveBeenCalledWith(pick)
+    expect(calls.slice(-3)).toEqual(['bind', 'sendContext', 'commitSend'])
+    expect(deps.wb.sendContext).toHaveBeenCalledWith('PICKED', DOC, expect.anything())
+    expect(sendInput).toHaveBeenCalledWith('PICKED', expect.any(String), expect.any(Array), 'cid')
+    expect(r.session).toBe('PICKED')
+    expect(commitSend).toHaveBeenCalledWith(PLAN, expect.objectContaining({ to: 'PICKED' }))
+  })
+
+  it('no pick (engine defaults) or a bound session: no create_session', async () => {
+    const createSession = vi.fn(async () => 'X')
+    await sendWhiteboard(rig({ createSession }).deps, input({ session: null, pick: { model: null, effort: null } }))
+    await sendWhiteboard(rig({ createSession }).deps, input({ session: 'S', pick: { model: 'm', effort: null } }))
+    expect(createSession).not.toHaveBeenCalled()
+  })
+
+  it('a failure before the send step creates no session (nothing left empty)', async () => {
+    const createSession = vi.fn(async () => 'X')
+    const { deps } = rig({ createSession })
+    deps.wb.blobPut = () => Promise.reject(new Error('blob failed'))
+    await expect(sendWhiteboard(deps, input({ session: null, pick: { model: 'm', effort: null } }))).rejects.toThrow('blob failed')
+    expect(createSession).not.toHaveBeenCalled()
+  })
+
   it('the marker leads the text and says "1 card" in the singular', () => {
     expect(sendBody(DOC, 'Inbox', 1, '  hi  ')).toBe(`[attached whiteboard ${DOC} "Inbox" · 1 card]\nhi`)
   })

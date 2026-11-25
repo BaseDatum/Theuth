@@ -1,4 +1,5 @@
 // §8.4 input routing, as one pure table plus the palm window and the multi-finger tap recogniser.
+import type { InkTool } from './model'
 import type { Mode } from './store'
 
 export const PALM_MS = 500
@@ -25,6 +26,16 @@ export type RouteState = {
   /** ms until which touches are ignored (last pen-up + 500 ms) */
   palmUntil: number
   now: number
+  /** A mouse pan gesture: Space held or a non-primary button. The mouse cannot drag-pan while it inks. */
+  pan?: boolean
+}
+
+/**
+ * The cluster's ink tool pick: choosing a pen arms `draw` (so a mouse or, with fingerInk, a finger inks; a Pencil inks
+ * in every mode anyway); choosing the armed pen again disarms it back to `idle` (drag pans again).
+ */
+export function pickInkTool(mode: Mode, current: InkTool, picked: InkTool): { tool: InkTool; mode: Mode } {
+  return { tool: picked, mode: mode === 'draw' && current === picked ? 'idle' : 'draw' }
 }
 
 export const palmActive = (s: Pick<RouteState, 'penDown' | 'palmUntil' | 'now'>) => s.penDown || s.now < s.palmUntil
@@ -43,8 +54,10 @@ export function routePointer(kind: PointerKind, s: RouteState): Route {
       if (!s.readOnly && s.fingerInk && s.mode === 'erase') return 'erase'
       return 'pass'
     case 'mouse':
-      if (!s.readOnly && s.mode === 'draw') return 'ink'
-      if (!s.readOnly && s.mode === 'erase') return 'erase'
+      // Desktop has no Pencil: the mouse is the pen whenever an ink tool is chosen (R2 only gates fingers).
+      if (s.pan || s.readOnly) return 'pass'
+      if (s.mode === 'draw') return 'ink'
+      if (s.mode === 'erase') return 'erase'
       return 'pass'
   }
 }

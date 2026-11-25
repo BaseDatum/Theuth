@@ -1,6 +1,7 @@
 // 218 §8.8 "Expanded sheet" / design §4.3: the pill grown upward. A text field (Scribble and dictation work in it), the
 // tray — one thumbnail per image the send will carry, each removable, "+ N marks off screen" as an opt-in — the session
-// chip, the model picker of the bound session (A2), Send, and a chevron that opens the session in chat.
+// chip, the model picker (A2: the bound session's; unbound, the pick the first send creates its session with, R1 — the
+// new-chat draft's pick, as on the new-chat page), Send, and a chevron that opens the session in chat.
 
 import { ArrowUp, ChevronUp, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -86,7 +87,7 @@ export function Sheet(p: SheetProps) {
       <div className="flex items-center justify-between gap-2">
         <SessionChip p={p.pick} />
         <div className="flex min-w-0 items-center gap-1">
-          {p.pick.session && <ComposerModel session={p.pick.session} own />}
+          {p.pick.session ? <ComposerModel session={p.pick.session} own /> : <ComposerModel session={null} slash={false} />}
           <button type="button" aria-label="Collapse" onClick={p.onClose} className="wb-press grid size-8 place-items-center rounded-full">
             <X className="size-4" />
           </button>
