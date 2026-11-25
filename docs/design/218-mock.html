@@ -1,113 +1,155 @@
-<!doctype html><html><head><meta charset="utf-8"><style>
-:root{--paper:#f6f3ec;--ink:#1f6feb;--red:#d9480f}
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>218 — Whiteboard, rev 2 mock</title><style>
+:root{--paper:#f6f3ec;--ink:#1f6feb;--red:#d9480f;--acc:#1f6feb;--ok:#2f9e44}
 *{box-sizing:border-box}
 body{margin:0;font-family:var(--font-sans,-apple-system,system-ui,sans-serif);color:var(--foreground,#1a1612);background:transparent}
-.state{margin:0 0 28px}
-.cap{display:flex;gap:10px;align-items:baseline;margin:0 0 8px}
-.cap b{font-size:14px}.cap span{font-size:12.5px;color:color-mix(in srgb,var(--foreground,#1a1612) 60%,transparent)}
-.dev{position:relative;width:100%;aspect-ratio:4/3;border-radius:22px;background:#111;padding:10px;box-shadow:0 1px 0 rgba(0,0,0,.08)}
-.scr{position:relative;width:100%;height:100%;border-radius:14px;overflow:hidden;background:var(--paper);
- background-image:radial-gradient(#d9d3c6 1px,transparent 1px);background-size:22px 22px}
+.intro{font-size:12.5px;line-height:1.5;margin:0 0 18px;color:color-mix(in srgb,var(--foreground,#1a1612) 70%,transparent)}
+.state{margin:0 0 30px}
+.cap{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin:0 0 8px}
+.cap b{font-size:14px}.cap span{font-size:12.5px;line-height:1.45;color:color-mix(in srgb,var(--foreground,#1a1612) 66%,transparent)}
+.dev{border-radius:22px;background:#111;padding:10px;box-shadow:0 1px 0 rgba(0,0,0,.08)}
+.scr{position:relative;width:100%;aspect-ratio:4/3;border-radius:14px;overflow:hidden;background:var(--paper);
+ background-image:radial-gradient(#d9d3c6 1px,transparent 1px);background-size:22px 22px;color:#1a1612}
 .stage{position:absolute;left:0;top:0;width:1000px;height:750px;transform-origin:0 0}
-.card{position:absolute;background:#fff;border:1px solid #e3ddd0;border-radius:12px;box-shadow:0 2px 10px rgba(40,30,10,.07);overflow:hidden}
-.card .h{font:600 12px/1 var(--font-sans,system-ui);padding:9px 11px;border-bottom:1px solid #eee7da;display:flex;justify-content:space-between;color:#3b352b}
-.card .h i{font-style:normal;font-weight:500;color:#9a907e}
-.phone{margin:12px auto;width:150px;height:270px;border:2px solid #2b2b2b;border-radius:22px;padding:14px 10px;background:#fbfaf7}
+.frame{position:absolute;border:1.5px dashed #cfc7b6;border-radius:18px}
+.frame>span{position:absolute;left:14px;top:-9px;background:var(--paper);padding:0 7px;font:600 11px/16px system-ui;color:#7d7464}
+.card{position:absolute;background:#fff;border:1px solid #e3ddd0;border-radius:12px;box-shadow:0 2px 10px rgba(40,30,10,.07)}
+.card.stack{box-shadow:5px -5px 0 -1px #fbfaf7,5px -5px 0 0 #d8d2c4,0 2px 10px rgba(40,30,10,.07)}
+.card .h{font:600 11.5px/1 system-ui;padding:9px 10px;border-bottom:1px solid #eee7da;display:flex;justify-content:space-between;color:#3b352b;white-space:nowrap}
+.card .h i{font-style:normal;font-weight:500;color:#8a816f}
+.phone{margin:10px auto 0;width:140px;height:262px;border:2px solid #2b2b2b;border-radius:20px;padding:12px 9px;background:#fbfaf7;overflow:hidden}
 .ph-h{height:22px;border-radius:6px;background:#2b2b2b;margin-bottom:8px}
-.ph-tabs{display:flex;gap:4px;margin-bottom:8px}.ph-tabs div{flex:1;height:12px;border-radius:4px;background:#d8d2c4}
+.ph-h.thin{height:16px;background:#6a6a6a}
+.ph-tabs{display:flex;gap:4px;margin-bottom:8px}.ph-tabs div{flex:1;height:12px;border-radius:4px;background:#d8d2c4}.ph-tabs .on{background:#9db9ee}
+.chips{display:flex;gap:3px;margin:0 0 4px}.chips div{height:13px;border-radius:7px;background:#cfe0fb}
 .grp{font:600 8px system-ui;color:#8a816f;margin:6px 0 3px}
-.row{height:17px;border-radius:5px;background:#ece7dc;margin-bottom:4px}
-.row.s{width:78%}
+.row{height:17px;border-radius:5px;background:#ece7dc;margin-bottom:4px}.row.s{width:78%}
+.scrub{position:absolute;left:50%;bottom:5px;transform:translateX(-50%);font:600 10.5px/1 system-ui;color:#3b352b;background:#f1ede4;border:1px solid #e3ddd0;border-radius:10px;padding:4px 8px;white-space:nowrap}
+.scrub em{font-style:normal;color:#a39a88;padding:0 3px}
 .sticky{background:#fff6b8;border-color:#eadc85}
-.sticky ul{margin:8px 0 0;padding:0 14px 10px 26px;font-size:12px;line-height:1.5;color:#4a4224}
-.dim{opacity:.38;filter:grayscale(.7)}
-.tag{position:absolute;font:500 11px system-ui;background:#fff;border:1px solid #e3ddd0;color:#6b6252;border-radius:8px;padding:5px 8px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.sticky ul{margin:8px 0 0;padding:0 12px 10px 26px;font-size:12px;line-height:18px;color:#4a4224}
+.dim{opacity:.4;filter:grayscale(.7)}
+.tag{position:absolute;font:500 10.5px/1.35 system-ui;background:#fff;border:1px solid #e3ddd0;color:#5f5748;border-radius:8px;padding:5px 8px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
 svg.layer{position:absolute;left:0;top:0;width:1000px;height:750px;pointer-events:none;overflow:visible}
-.glass{background:rgba(255,255,255,.52);backdrop-filter:blur(18px) saturate(1.5);-webkit-backdrop-filter:blur(18px) saturate(1.5);
- border:1px solid rgba(255,255,255,.7);box-shadow:0 8px 30px rgba(30,20,0,.14),inset 0 1px 0 rgba(255,255,255,.8)}
-.pill{position:absolute;right:22px;bottom:22px;width:330px;height:46px;border-radius:23px;display:flex;align-items:center;gap:10px;padding:0 8px 0 12px}
-.chip{display:flex;align-items:center;gap:6px;font:600 11.5px system-ui;color:#3b352b;background:rgba(255,255,255,.6);border-radius:14px;padding:5px 9px}
-.dot{width:7px;height:7px;border-radius:50%;background:#2f9e44}
-.ph{flex:1;font:14px system-ui;color:#857b69}
-.mic{width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.07);display:grid;place-items:center;font-size:14px}
-.cluster{position:absolute;right:22px;bottom:80px;width:58px;border-radius:22px;padding:8px 0;display:flex;flex-direction:column;align-items:center;gap:4px}
-.cb{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;font-size:17px;color:#3b352b;position:relative}
-.cb.on{background:rgba(31,111,235,.14);color:#1f6feb}
-.cb small{position:absolute;right:52px;white-space:nowrap;font:500 11px system-ui;background:rgba(30,26,20,.78);color:#fff;padding:4px 7px;border-radius:7px}
-.sep{width:30px;height:1px;background:rgba(0,0,0,.1);margin:2px 0}
+.glass{background:rgba(255,255,255,.66);backdrop-filter:blur(18px) saturate(1.5);-webkit-backdrop-filter:blur(18px) saturate(1.5);
+ border:1px solid rgba(255,255,255,.75);box-shadow:0 8px 30px rgba(30,20,0,.14),inset 0 1px 0 rgba(255,255,255,.8)}
+.pill{position:absolute;right:24px;bottom:24px;width:330px;height:46px;border-radius:23px;display:flex;align-items:center;gap:9px;padding:0 7px 0 10px}
+.grab{width:5px;height:20px;border-radius:3px;background:rgba(40,34,24,.34);flex:none}
+.chip{display:flex;align-items:center;gap:6px;font:600 11.5px system-ui;color:#3b352b;background:rgba(255,255,255,.7);border-radius:14px;padding:5px 9px;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+.dot.busy{animation:pulse 1.1s ease-in-out infinite}
+.ph{flex:1;font:14px system-ui;color:#5a5346;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mic{width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.08);display:grid;place-items:center;flex:none}
+.cluster{position:absolute;right:24px;bottom:80px;width:58px;border-radius:22px;padding:6px 0;display:flex;flex-direction:column;align-items:center;gap:2px}
+.cb{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;color:#3b352b}
+.cb.on{background:rgba(31,111,235,.14);color:var(--acc)}
+.cb svg,.mic svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.mic svg{width:17px;height:17px}
+.sep{width:30px;height:1px;background:rgba(0,0,0,.12);margin:2px 0}
 .touch{position:absolute;width:46px;height:46px;border-radius:50%;background:rgba(31,111,235,.18);border:2px solid rgba(31,111,235,.55)}
-.handle{position:absolute;width:12px;height:12px;border-radius:50%;background:#fff;border:2.5px solid #1f6feb}
-.sel{outline:2.5px solid #1f6feb;outline-offset:3px}
-.sheet{position:absolute;right:22px;bottom:22px;width:380px;border-radius:24px;padding:14px}
+.handle{position:absolute;width:13px;height:13px;border-radius:50%;background:#fff;border:2.5px solid var(--acc)}
+.sel{outline:2.5px solid var(--acc);outline-offset:3px}
+.target{outline:2.5px dashed var(--acc);outline-offset:3px}
+.sheet{position:absolute;right:24px;bottom:24px;width:380px;border-radius:24px;padding:14px}
 .sheet .txt{font:14.5px/1.45 system-ui;color:#2a251d;min-height:44px}
-.thumbs{display:flex;gap:8px;margin:10px 0}
-.th{width:74px;height:56px;border-radius:10px;background:#fff;border:1px solid #e3ddd0;position:relative;overflow:hidden}
-.th:after{content:"×";position:absolute;right:3px;top:0;font-size:12px;color:#9a907e}
-.srow{display:flex;justify-content:space-between;align-items:center}
-.send{background:#1f6feb;color:#fff;font:600 13px system-ui;border-radius:16px;padding:8px 14px}
-.bubble{position:absolute;right:22px;bottom:80px;width:330px;border-radius:18px;padding:11px 13px;font:13px/1.45 system-ui;color:#2a251d}
-.chev{position:absolute;right:10px;top:50%;width:26px;height:46px;margin-top:-23px;border-radius:13px;display:grid;place-items:center;font-size:15px;color:#3b352b}
-.new{box-shadow:0 0 0 3px rgba(47,158,68,.35),0 8px 24px rgba(0,0,0,.1)}
+.meta{font:12px system-ui;color:#5a5346}
+.thumbs{display:flex;gap:8px;margin:10px 0;align-items:center}
+.th{width:62px;height:84px;border-radius:9px;background:#fff;border:1px solid #e3ddd0;position:relative;overflow:hidden;flex:none}
+.th b{position:absolute;left:0;right:0;bottom:0;font:600 8.5px/15px system-ui;text-align:center;background:#f1ede4;color:#3b352b}
+.th:after{content:"×";position:absolute;right:4px;top:0;font-size:12px;color:#8a816f}
+.srow{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.send{background:var(--acc);color:#fff;font:600 13px system-ui;border-radius:16px;padding:8px 14px}
+.bubble{position:absolute;width:262px;border-radius:16px;padding:10px 12px;font:12.5px/1.45 system-ui;color:#2a251d}
+.bubble .acts{display:flex;gap:8px;margin-top:8px}
+.btn{font:600 11px system-ui;border-radius:10px;padding:5px 9px;background:rgba(0,0,0,.07);color:#2a251d}
+.build{position:absolute;left:0;right:0;top:31px;bottom:0;border-radius:0 0 12px 12px;display:grid;place-items:center;font:600 12px system-ui;color:#3b352b;
+ background:linear-gradient(100deg,rgba(255,255,255,.72) 30%,rgba(214,228,252,.9) 50%,rgba(255,255,255,.72) 70%);background-size:220% 100%;animation:shim 1.6s linear infinite}
+.holder{border:1.5px dashed #b9c9e8;background:rgba(255,255,255,.55);box-shadow:none}
+.holder .build{top:31px;background:linear-gradient(100deg,rgba(255,255,255,0) 30%,rgba(214,228,252,.9) 50%,rgba(255,255,255,0) 70%);background-size:220% 100%}
+@keyframes shim{from{background-position:120% 0}to{background-position:-100% 0}}
+@keyframes pulse{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.build,.dot.busy{animation:none}}
 </style></head><body>
+<p class="intro">Design 218 rev 2 — one iPad screen in seven moments. Ink: <b style="color:#d9480f">full strength = fresh</b>, 30 % = sent, hidden = answered. A refinement pushes a version onto its card; a new direction gets a new card.</p>
 <div id="root"></div>
 <script>
-const phoneA=`<div class="phone"><div class="ph-h"></div><div class="grp">GITHUB</div><div class="row"></div><div class="row s"></div><div class="grp">SLACK</div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="grp">SCHEDULES</div><div class="row"></div><div class="row s"></div></div>`;
-const phoneB=`<div class="phone"><div class="ph-h" style="background:#5c5c5c;height:16px"></div><div class="ph-tabs"><div></div><div></div><div></div></div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="row"></div><div class="row"></div></div>`;
-const phoneC=`<div class="phone"><div class="ph-h"></div><div class="ph-tabs" style="margin-bottom:4px"><div style="background:#1f6feb55"></div><div></div></div><div style="display:flex;gap:3px;margin-bottom:7px"><div style="height:10px;width:30px;border-radius:5px;background:#cfe0fb"></div><div style="height:10px;width:24px;border-radius:5px;background:#e6e1d6"></div><div style="height:10px;width:34px;border-radius:5px;background:#e6e1d6"></div></div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="row"></div></div>`;
-function base(o={}){return `
-<div class="card ${o.dimA?'dim':''}" style="left:40px;top:70px;width:200px;height:340px"><div class="h">Mock A — grouped <i>page</i></div>${phoneA}</div>
-${o.dimA?`<div class="tag" style="left:40px;top:420px;width:200px">header kept · grouping rejected — too many sections on phone</div>`:''}
-<div class="card ${o.selB?'sel':''}" style="left:300px;top:70px;width:200px;height:340px"><div class="h">Mock B — flat list <i>page</i></div>${phoneB}</div>
-<div class="card sticky ${o.selS?'sel':''}" style="left:40px;top:500px;width:230px;height:150px"><div class="h" style="border-color:#eadc85">Requirements <i>sticky</i></div><ul><li>Triage in one thumb</li><li>Never lose a decision</li><li>Group only when &gt; 20 items</li></ul></div>
-<div class="card" style="left:330px;top:500px;width:250px;height:170px"><div class="h">Item lifecycle <i>diagram</i></div>
-<svg width="250" height="130" viewBox="0 0 250 130"><g font-family="system-ui" font-size="10" fill="#3b352b">
-<rect x="12" y="20" width="62" height="26" rx="7" fill="none" stroke="#9a907e"/><text x="27" y="37">new</text>
-<rect x="96" y="20" width="62" height="26" rx="7" fill="none" stroke="#1f6feb"/><text x="104" y="37">seen</text>
-<rect x="180" y="20" width="62" height="26" rx="7" fill="none" stroke="#2f9e44"/><text x="190" y="37">done</text>
-<rect x="96" y="84" width="62" height="26" rx="7" fill="none" stroke="#d9480f"/><text x="102" y="101">snoozed</text>
-<path d="M74 33h20M158 33h20M127 46v36" stroke="#9a907e" fill="none" marker-end="url(#a)"/></g>
-<defs><marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="#9a907e"/></marker></defs></svg></div>
-${o.c?`<div class="card new" style="left:580px;top:70px;width:200px;height:340px"><div class="h">Mock C — v3 <i>page · agent</i></div>${phoneC}</div>`:''}
-<svg class="layer"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7d7464"/></marker></defs>
-<path d="M240 240 C 262 240, 278 240, 298 240" stroke="#7d7464" stroke-width="2" fill="none" marker-end="url(#m)"/>
-<text x="244" y="230" font-family="system-ui" font-size="11" fill="#7d7464">v2</text>
-${o.c?`<path d="M500 240 C 530 240, 550 240, 578 240" stroke="#2f9e44" stroke-width="2.2" fill="none" marker-end="url(#m)"/><text x="503" y="230" font-family="system-ui" font-size="11" fill="#2f9e44">v3: A header + filters</text>`:''}
+const I={pen:'M4 20l1-4L16 5l3 3L8 19z',add:'M12 5v14M5 12h14',link:'M6 18C13 18 10 7 18 7M15 4l3 3-3 3',frame:'M5 6h14v12H5zM5 10h7',
+ lasso:'M12 5c4.6 0 8 2.3 8 5.4s-3.4 5.4-8 5.4-8-2.3-8-5.4S7.4 5 12 5zM9 15.6c.4 2.2-.8 3.6-3 4.4',fit:'M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5',
+ outline:'M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01',follow:'M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0M12 3v3M12 18v3M3 12h3M18 12h3',
+ undo:'M8 8l-4 4 4 4M4 12h10a4 4 0 0 1 0 8h-3',redo:'M16 8l4 4-4 4M20 12H10a4 4 0 0 0 0 8h3',more:'M6 12h.01M12 12h.01M18 12h.01',
+ mic:'M12 4a3 3 0 0 1 3 3v4a3 3 0 0 1-6 0V7a3 3 0 0 1 3-3zM6 11a6 6 0 0 0 12 0M12 17v3'};
+const ic=(n,w)=>`<svg viewBox="0 0 24 24" aria-hidden="true"${w?` style="stroke-width:${w}"`:''}><path d="${I[n]}"/></svg>`;
+const rows=(n)=>Array.from({length:n},(_,i)=>`<div class="row${i%3==2?' s':''}"></div>`).join('');
+const pToday=`<div class="phone"><div class="ph-h thin" style="background:#9a9a9a"></div>${rows(10)}</div>`;
+const pA=`<div class="phone"><div class="ph-h"></div><div class="grp">GITHUB</div>${rows(2)}<div class="grp">SLACK</div>${rows(3)}<div class="grp">SCHEDULES</div>${rows(2)}</div>`;
+const pB1=`<div class="phone"><div class="ph-h thin"></div><div class="ph-tabs"><div class="on"></div><div></div><div></div></div>${rows(8)}</div>`;
+const pB2=`<div class="phone"><div class="ph-h"></div><div class="ph-tabs"><div class="on"></div><div></div></div>${rows(5)}<div class="chips"><div style="width:34px"></div><div style="width:26px;background:#e6e1d6"></div><div style="width:38px;background:#e6e1d6"></div></div>${rows(2)}</div>`;
+const card=(x,title,kind,body,cls='',extra='')=>`<div class="card ${cls}" style="left:${x}px;top:80px;width:180px;height:330px"><div class="h">${title} <i>${kind}</i></div>${body}${extra}</div>`;
+const scrub=(a,b)=>`<div class="scrub"><em>‹</em>v${a} of ${b}<em>›</em></div>`;
+function base(o={}){const fw=o.c?854:610;return `
+<div class="frame" style="left:36px;top:48px;width:${fw}px;height:424px"><span>Variants · phone 390 × 844</span></div>
+${card(50,'Today','image',pToday)}
+${card(250,'Mock A — grouped','page',pA,o.dimA?'dim':'')}
+${o.dimA?`<div class="tag" style="left:250px;top:418px;width:180px">header kept · grouping rejected — too many sections on a phone</div>`:''}
+${card(450,'Mock B — flat list','page',o.b==2?pB2:pB1,(o.stack?'stack ':'')+(o.selB?'target':''),(o.building?`<div class="build">v2 · building…</div>`:'')+(o.stack?scrub(o.b==2?2:1,2):''))}
+${o.c?`<div class="card holder" style="left:690px;top:80px;width:180px;height:330px"><div class="h">Mock C — timeline <i>page</i></div><div class="build">building…</div></div>`:''}
+<div class="card sticky ${o.selS?'sel':''}" style="left:50px;top:494px;width:220px;height:150px"><div class="h" style="border-color:#eadc85">Requirements <i>sticky</i></div><ul><li>Triage with one thumb</li><li>Never lose a decision</li><li>Group only when &gt; 20 items</li></ul></div>
+<div class="card" style="left:330px;top:494px;width:250px;height:170px"><div class="h">Item lifecycle <i>diagram</i></div>
+<svg width="250" height="130" viewBox="0 0 250 130"><defs><marker id="a${o.k||0}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="#9a907e"/></marker></defs><g font-family="system-ui" font-size="10" fill="#3b352b">
+<rect x="12" y="20" width="62" height="26" rx="7" fill="none" stroke="#9a907e"/><text x="32" y="37">new</text>
+<rect x="96" y="20" width="62" height="26" rx="7" fill="none" stroke="#1f6feb"/><text x="115" y="37">seen</text>
+<rect x="180" y="20" width="62" height="26" rx="7" fill="none" stroke="#2f9e44"/><text x="198" y="37">done</text>
+<rect x="96" y="84" width="62" height="26" rx="7" fill="none" stroke="#d9480f"/><text x="107" y="101">snoozed</text>
+<path d="M74 33h20M158 33h20M127 46v36" stroke="#9a907e" fill="none" marker-end="url(#a${o.k||0})"/></g></svg></div>
+<svg class="layer"><defs><marker id="m${o.k||0}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7d7464"/></marker></defs>
+<path d="M270 570 L 328 570" stroke="#7d7464" stroke-width="2" fill="none" marker-end="url(#m${o.k||0})"/>
+<text x="282" y="562" font-family="system-ui" font-size="10.5" fill="#7d7464">drives</text>
+${o.linkSB?`<path d="M160 494 C 160 462, 500 486, 530 412" stroke="#7d7464" stroke-width="2" fill="none" marker-end="url(#m${o.k||0})"/>`:''}
+${o.c?`<path d="M630 245 L 688 245" stroke="#7d7464" stroke-width="2" fill="none" marker-end="url(#m${o.k||0})"/><text x="637" y="237" font-family="system-ui" font-size="10.5" fill="#7d7464">timeline</text>`:''}
 </svg>`}
-function ink(){return `<svg class="layer">
-<path d="M86 104 C 64 106, 60 136, 92 141 C 140 147, 210 146, 214 120 C 218 98, 160 96, 108 98 C 96 99, 88 101, 84 106" stroke="var(--red)" stroke-width="3.2" fill="none" stroke-linecap="round"/>
-<path d="M330 140 L 470 138 L 472 168 L 331 170 Z" stroke="var(--ink)" stroke-width="2.8" fill="none" stroke-linejoin="round" stroke-dasharray="0" />
-<path d="M452 112 L 476 128 M 476 110 L 450 129" stroke="var(--red)" stroke-width="3.2" stroke-linecap="round"/>
-<path d="M480 156 C 520 150, 535 165, 548 180" stroke="var(--ink)" stroke-width="2.4" fill="none" stroke-linecap="round"/>
-<text x="552" y="194" font-family="'Bradley Hand','Segoe Print',cursive" font-size="17" fill="var(--ink)">filters?</text>
+/* ink: a = circle on Mock A's header, b = box low on Mock B + cross on its third tab. op = strength. */
+function ink(a,b,pinned){return `<svg class="layer">
+${a?`<path opacity="${a}" d="M286 132 C 262 136, 262 160, 296 164 C 340 169, 404 166, 410 148 C 414 130, 372 126, 320 127 C 304 127, 292 129, 284 134" stroke="var(--red)" stroke-width="3.2" fill="none" stroke-linecap="round"/>`:''}
+${b?`<g opacity="${b}"><path d="M478 283 L 603 281 L 605 325 L 477 327 Z" stroke="var(--ink)" stroke-width="2.8" fill="none" stroke-linejoin="round"/>
+<path d="M566 155 L 596 176 M 596 154 L 566 177" stroke="var(--red)" stroke-width="3.2" stroke-linecap="round"/></g>`:''}
+${pinned?`<path d="M78 566 C 110 570, 160 562, 214 567" stroke="#8a5a00" stroke-width="2.6" fill="none" stroke-linecap="round"/><text x="222" y="570" font-family="system-ui" font-size="9.5" font-weight="600" fill="#8a5a00">pinned</text>`:''}
 </svg>`}
-const pill=(t='Ask…',s='Attention inbox')=>`<div class="pill glass"><div class="chip"><span class="dot"></span>${s}</div><div class="ph">${t}</div><div class="mic">🎙</div></div>`;
+const pill=(t='Ask…',busy=false)=>`<div class="pill glass" role="group" aria-label="Composer"><div class="grab" title="Tap: controls"></div><div class="chip"><span class="dot${busy?' busy':''}"></span>Attention inbox</div><div class="ph">${t}</div><div class="mic" title="Hold to talk">${ic('mic')}</div></div>`;
+const cb=(n,l,on)=>`<div class="cb${on?' on':''}" role="button" aria-label="${l}" title="${l}">${ic(n,n=='more'?3:0)}</div>`;
+const cluster=`<div class="cluster glass" role="toolbar" aria-label="Whiteboard controls">${cb('pen','Ink tools',1)}${cb('add','Add card')}${cb('link','Link')}${cb('frame','Frame')}${cb('lasso','Select')}<div class="sep"></div>${cb('fit','Fit')}${cb('outline','Outline view')}${cb('follow','Follow agent')}${cb('undo','Undo')}${cb('redo','Redo')}${cb('more','More')}</div>`;
+const thumb=(name,inner)=>`<div class="th"><svg viewBox="0 0 62 70" width="62" height="70"><rect x="14" y="5" width="34" height="60" rx="6" fill="#fbfaf7" stroke="#2b2b2b" stroke-width="1.4"/>${inner}</svg><b>${name}</b></div>`;
 const states=[
- {t:'1 · Idle — full screen',d:'Only the translucent composer pill is visible. Pencil ink (red/blue) was just drawn; nothing has been sent.',
-  b:()=>base()+ink()+pill()},
- {t:'2 · Finger tap on empty canvas → controls',d:'The glass cluster rises above the pill; hides after 4 s, on any Pencil touch, or a second tap.',
-  b:()=>base()+ink()+`<div class="touch" style="left:700px;top:520px"></div>
-  <div class="cluster glass">
-   <div class="cb on">✎<small>Pencil tools</small></div><div class="cb">＋<small>Add card</small></div><div class="cb">⤳<small>Link</small></div><div class="cb">▢<small>Frame</small></div><div class="cb">⬚<small>Select</small></div>
-   <div class="sep"></div><div class="cb">⤢<small>Fit</small></div><div class="cb">◎<small>Follow agent</small></div><div class="cb">↶<small>Undo</small></div><div class="cb">⋯</div></div>`+pill()},
- {t:'3 · Linking is explicit',d:'Select a card → four handles. Drag from a handle (finger or Pencil) to another card. A hand-drawn line stays ink.',
-  b:()=>base({selS:true})+`<div class="handle" style="left:149px;top:488px"></div><div class="handle" style="left:149px;top:654px"></div><div class="handle" style="left:274px;top:569px"></div><div class="handle" style="left:28px;top:569px"></div>
-  <svg class="layer"><path d="M280 575 C 330 575, 330 420, 400 414" stroke="#1f6feb" stroke-width="2.4" stroke-dasharray="6 5" fill="none"/></svg>
-  <div class="touch" style="left:378px;top:392px"></div>
-  <div class="tag" style="left:420px;top:430px;color:#1f6feb;border-color:#bcd3f8">release on “Mock B” to link</div>`+pill()},
- {t:'4 · Send with ink → agent places v3',d:'The sheet shows the 3 fresh ink crops it will send with your words. The agent answers by placing Mock C, linking B → C and dimming A with the reason.',
-  b:()=>base({dimA:true,c:true})+ink()+`<div class="bubble glass">Placed <b>Mock C</b>: A’s header, filter chips where you drew the box, third tab dropped. Dimmed A — kept its header only.</div>
-  <div class="sheet glass" style="bottom:22px;transform:translateY(0)">
-   <div class="srow"><div class="chip"><span class="dot"></span>Attention inbox ▾</div><span style="font:12px system-ui;color:#857b69">3 marks · 2 cards changed</span></div>
+ {t:'1 · Idle — full screen',d:'The translucent composer pill, bottom-right, is the only control. Sky has just marked up two mocks with the Pencil: fresh ink is the only full-strength ink. Nothing was sent, no chrome appeared.',
+  b:()=>base({k:1})+ink(1,1)+pill()},
+ {t:'2 · Finger tap → controls',d:'A finger tap on empty canvas (or on the grabber at the pill’s left edge, when a card fills the screen) raises the cluster above the composer. 44 pt targets, no text labels. It hides after 4 s, on any Pencil stroke, or a second tap.',
+  b:()=>base({k:2})+ink(1,1)+`<div class="touch" style="left:716px;top:520px"></div>`+cluster+pill()},
+ {t:'3 · Linking is explicit',d:'Select a card → four handles. Drag from a handle with a finger to another card. A hand-drawn line is never read as a link; outside link mode the Pencil is always ink.',
+  b:()=>base({k:3,selS:true,selB:true})+ink(1,1)+`<div class="handle" style="left:153px;top:487px"></div><div class="handle" style="left:153px;top:637px"></div><div class="handle" style="left:263px;top:562px"></div><div class="handle" style="left:43px;top:562px"></div>
+  <svg class="layer"><path d="M160 486 C 160 440, 480 476, 520 432" stroke="#1f6feb" stroke-width="2.4" stroke-dasharray="6 5" fill="none"/></svg>
+  <div class="touch" style="left:500px;top:404px"></div>
+  <div class="tag" style="left:556px;top:432px;color:#1f6feb;border-color:#bcd3f8">release on “Mock B” to link</div>`+pill()},
+ {t:'4 · Composing — what will be sent',d:'The sheet shows one image per inked card (the whole card with its marks), inside a pixel budget — not a screenshot. Sky’s words carry what the ink means.',
+  b:()=>base({k:4,linkSB:true})+ink(1,1)+`
+  <div class="sheet glass">
+   <div class="srow"><div class="chip"><span class="dot"></span>Attention inbox ▾</div><span class="meta">2 cards with marks · 0.5 MP</span></div>
    <div class="thumbs">
-    <div class="th"><svg viewBox="0 0 74 56"><rect x="8" y="10" width="58" height="10" rx="3" fill="#2b2b2b"/><ellipse cx="37" cy="15" rx="33" ry="11" stroke="#d9480f" stroke-width="2" fill="none"/></svg></div>
-    <div class="th"><svg viewBox="0 0 74 56"><rect x="8" y="12" width="58" height="7" rx="3" fill="#ece7dc"/><rect x="10" y="24" width="54" height="14" stroke="#1f6feb" stroke-width="2" fill="none"/><rect x="8" y="42" width="58" height="7" rx="3" fill="#ece7dc"/></svg></div>
-    <div class="th"><svg viewBox="0 0 74 56"><rect x="6" y="22" width="18" height="10" rx="3" fill="#d8d2c4"/><rect x="28" y="22" width="18" height="10" rx="3" fill="#d8d2c4"/><rect x="50" y="22" width="18" height="10" rx="3" fill="#d8d2c4"/><path d="M50 18l18 18M68 18L50 36" stroke="#d9480f" stroke-width="2.4"/></svg></div>
+    ${thumb('Mock A',`<rect x="18" y="10" width="26" height="6" rx="2" fill="#2b2b2b"/><ellipse cx="31" cy="13" rx="17" ry="6.5" stroke="#d9480f" stroke-width="1.6" fill="none"/><rect x="18" y="22" width="26" height="4" rx="2" fill="#ece7dc"/><rect x="18" y="30" width="26" height="4" rx="2" fill="#ece7dc"/><rect x="18" y="38" width="26" height="4" rx="2" fill="#ece7dc"/>`)}
+    ${thumb('Mock B',`<rect x="18" y="10" width="26" height="4" rx="2" fill="#6a6a6a"/><rect x="18" y="17" width="7" height="3" rx="1" fill="#9db9ee"/><rect x="27" y="17" width="7" height="3" rx="1" fill="#d8d2c4"/><rect x="36" y="17" width="7" height="3" rx="1" fill="#d8d2c4"/><path d="M35 15l9 7M44 15l-9 7" stroke="#d9480f" stroke-width="1.6"/><rect x="18" y="26" width="26" height="4" rx="2" fill="#ece7dc"/><rect x="18" y="34" width="26" height="4" rx="2" fill="#ece7dc"/><rect x="17" y="43" width="28" height="11" stroke="#1f6feb" stroke-width="1.6" fill="none"/>`)}
+    <span class="meta" style="margin-left:4px">+ 0 marks off screen</span>
    </div>
    <div class="txt">Keep A’s header. Filters go where I drew the box. Drop that tab.</div>
-   <div class="srow" style="margin-top:8px"><span style="font:12px system-ui;color:#857b69">🎙 hold to talk · ⌃ open session</span><span class="send">Send</span></div></div>`},
+   <div class="srow" style="margin-top:8px"><span class="meta">hold mic to talk · ⌃ open session</span><span class="send" role="button">Send</span></div></div>`},
+ {t:'5 · Sent — the agent is working',d:'The marks drop to 30 % the moment they are sent. A refinement of B is being pushed onto B itself: the card shows where the result will land. The viewport did not move.',
+  b:()=>base({k:5,linkSB:true,building:true})+ink(.3,.3)+pill('pushing v2 onto Mock B…',true)},
+ {t:'6 · Answered — a new version, not a new card',d:'Mock B is now “v2 of 2” on a stack. The marks it answered are gone with v1; A is dimmed with the reason. The reply stays, pinned to the card it is about, until the next send — with Undo this turn.',
+  b:()=>base({k:6,linkSB:true,dimA:true,b:2,stack:true})+`
+  <svg class="layer"><path d="M632 150 L 652 150" stroke="#b9b2a2" stroke-width="2"/></svg>
+  <div class="bubble glass" style="left:652px;top:100px">Pushed <b>v2</b> onto <b>Mock B</b>: A’s header, filter chips where you drew the box, third tab dropped. Dimmed A — kept its header only.
+   <div class="acts"><span class="btn" role="button">Undo this turn</span><span class="btn" role="button">Dismiss</span></div></div>`+pill()},
+ {t:'7 · History on demand, and a new direction',d:'Scrubbing B back to v1 shows the ink that marked v1, at 30 %. One mark on the sticky was pinned as a lasting annotation. “Try a timeline” is a new direction, so it gets a new card: a placeholder appears at once, linked from B.',
+  b:()=>base({k:7,linkSB:true,dimA:true,b:1,stack:true,c:true})+ink(0,.3,true)+pill('placing Mock C…',true)},
 ];
 const root=document.getElementById('root');
-root.innerHTML=states.map((s,i)=>`<div class="state"><div class="cap"><b>${s.t}</b><span>${s.d}</span></div><div class="dev"><div class="scr"><div class="stage">${s.b()}</div></div></div></div>`).join('');
+root.innerHTML=states.map((s)=>`<section class="state"><div class="cap"><b>${s.t}</b><span>${s.d}</span></div><div class="dev"><div class="scr"><div class="stage">${s.b()}</div></div></div></section>`).join('');
 function fit(){document.querySelectorAll('.scr').forEach(sc=>{const st=sc.querySelector('.stage');st.style.transform=`scale(${sc.clientWidth/1000})`;});}
 new ResizeObserver(fit).observe(document.body);fit();
 </script></body></html>
