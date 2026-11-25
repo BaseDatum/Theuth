@@ -39,7 +39,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DictionarySuggestion } from '@/components/ui/DictionarySuggestion'
 import * as dictation from '@/lib/dictation'
-import { extFor, putAttachment } from '@/lib/files'
+import { extFor, putAttachment, seedFile } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
 import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRef } from '@/lib/attach'
 import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-picker'
@@ -86,6 +86,7 @@ import { MicButton } from './MicButton'
 import { StopButton } from './StopButton'
 import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
+import { type Uploaded, uploadWait, useUploads } from './uploads'
 import { McpMenu } from './McpMenu'
 import { ApprovalShield, ComposerMeta, useComposerMeta } from './ComposerMeta'
 import { ComposerModel } from './ModelMenu'
@@ -805,28 +806,41 @@ export function Composer({
   /** The list is for the draft as it stands: a send or a recall (programmatic text) leaves no stale rows. */
   const pathOpen = path !== null && picking === null && pathTrigger(text, path.end, pathWindows.current)?.start === path.start
 
-  // Uploads `blobs` through `put_attachment` (31 §9) — or `put_session_attachment` for a private tree — then attaches the engine paths; image dims for the first image.
-  const addBlobs = async (blobs: (File | Blob)[]) => {
+  // One file through `put_attachment` (31 §9), or `put_session_attachment` for a private tree, and an image's size read
+  // alongside. The landed bytes seed the thumbnail cache, so the held strip shows them without fetching them back.
+  const sendFile = useRef<(file: Blob) => Promise<Uploaded>>(null!)
+  sendFile.current = async (file) => {
+    const owner = priv && session ? session : undefined
+    const size = file.type.startsWith('image/')
+      ? createImageBitmap(file).then(
+          (b): [number, number] => {
+            const dims: [number, number] = [b.width, b.height]
+            b.close()
+            return dims
+          },
+          () => undefined,
+        )
+      : undefined
+    const [path, dims] = await Promise.all([putAttachment(api, file, extFor(file), owner), size])
+    seedFile(path, file, owner)
+    return { path, dims }
+  }
+  const landed = useRef<(u: Uploaded) => void>(null!)
+  landed.current = (u) => addFiles([u.path], u.dims)
+  // Each file holds a tile in the strip from the moment it is chosen (`uploads.ts`); Send waits while any is uploading.
+  const [uploads, uploader] = useUploads(
+    (f) => sendFile.current(f),
+    (u) => landed.current(u),
+  )
+  useEffect(() => () => uploader.clear(), [uploader])
+  const uploading = uploadWait(uploads)
+  const addBlobs = (blobs: (File | Blob)[]) => {
     if (blobs.length === 0) return
     if (noUpload) {
       toast.error('Send the first message of a private session before attaching files')
       return
     }
-    try {
-      let dims: [number, number] | undefined
-      const first = blobs[0]
-      if (first?.type.startsWith('image/')) {
-        const bitmap = await createImageBitmap(first)
-        dims = [bitmap.width, bitmap.height]
-        bitmap.close()
-      }
-      addFiles(
-        await Promise.all(blobs.map((b) => putAttachment(api, b, extFor(b), priv && session ? session : undefined))),
-        dims,
-      )
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
+    uploader.start(blobs)
   }
 
   // 66 §7.8: a dragged row (`application/x-theuth-attach`) attaches; anything else is files. OS drops arrive here as
@@ -843,14 +857,14 @@ export function Composer({
       }
       return
     }
-    void addBlobs([...e.dataTransfer.files])
+    addBlobs([...e.dataTransfer.files])
   }
 
   const onPaste = async (e: ClipboardEvent<HTMLTextAreaElement>) => {
     const image = [...e.clipboardData.items].find((i) => i.type.startsWith('image/'))?.getAsFile()
     if (image) {
       e.preventDefault()
-      await addBlobs([image])
+      addBlobs([image])
       return
     }
     // 165: a rich paste with links becomes markdown; anything else is the plain text, as before.
@@ -893,7 +907,7 @@ export function Composer({
   const submit = async (spoken?: string, interject = false, typed?: string) => {
     const pick = typed !== undefined
     const line = spoken ?? typed ?? text.trim()
-    if ((!line && !skills.length && !held) || busy || starting) return
+    if ((!line && !skills.length && !held) || busy || starting || uploading) return
     // 153 §6.1: the typed box after a dictation is what was actually sent — the engine learns single-word edits from it.
     if (spoken === undefined && typed === undefined && lastDictation.current) dictation.correction(api, lastDictation.current, line, me.current)
     lastDictation.current = null
@@ -1394,7 +1408,7 @@ export function Composer({
         multiple
         className="hidden"
         onChange={(e) => {
-          void addBlobs([...(e.target.files ?? [])])
+          addBlobs([...(e.target.files ?? [])])
           e.target.value = ''
         }}
       />
@@ -1441,6 +1455,9 @@ export function Composer({
             edit(untoken(text, i)) // a text block: its token goes and `reconcileHeld` shelves the block for a redo
             setPastes((held) => drop(i, held)) // a file or reference chip has no token
           }}
+          uploads={uploads}
+          onCancelUpload={uploader.cancel}
+          onRetryUpload={uploader.retry}
         />
         {/* 215 C2: row 1, the text region at the box's full width. */}
         <div className="relative min-w-0">
@@ -1688,31 +1705,24 @@ export function Composer({
                       <Button
                         className={cn(
                           'size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover select-none touch-none',
-                          (!filled || busy || dictating || readOnly) && 'opacity-50',
+                          (!filled || busy || dictating || readOnly || uploading) && 'opacity-50',
                         )}
                         aria-label="Steer"
-                        aria-disabled={!filled || busy || dictating || readOnly}
+                        aria-disabled={!filled || busy || dictating || readOnly || !!uploading}
                         {...steerPress}
                       >
                         <ArrowUp className="size-5" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      {touch() ? 'Steer · hold to interrupt' : `Steer (${chordLabel(keys.send)}) · hold or ${chordLabel(keys.interject)} to interrupt`}
+                      {uploading ?? (touch() ? 'Steer · hold to interrupt' : `Steer (${chordLabel(keys.send)}) · hold or ${chordLabel(keys.interject)} to interrupt`)}
                     </TooltipContent>
                   </Tooltip>
                 )}
                 <StopButton count={descendants} ring={ring} onStop={stop} />
               </>
             ) : (
-              <Button
-                className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
-                aria-label="Send"
-                disabled={!filled || busy || dictating || readOnly || !!starting}
-                onClick={() => gesture('press')}
-              >
-                <ArrowUp className="size-5" />
-              </Button>
+              <SendButton disabled={!filled || busy || dictating || readOnly || !!starting} waiting={uploading} onSend={() => gesture('press')} />
             ))}
         </div>
       </div>
@@ -1758,5 +1768,33 @@ function DictatedText({
       {trail}
       {after}
     </div>
+  )
+}
+
+/**
+ * The idle Send. `waiting` (an attachment still uploading, `uploadWait`) disables it and says why in a tooltip: a
+ * disabled button gets no pointer events, so the tooltip hangs on a focusable wrapper.
+ */
+export function SendButton({ disabled, waiting, onSend }: { disabled: boolean; waiting: string | null; onSend(): void }) {
+  const button = (
+    <Button
+      className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
+      aria-label="Send"
+      disabled={disabled || waiting !== null}
+      onClick={onSend}
+    >
+      <ArrowUp className="size-5" />
+    </Button>
+  )
+  if (waiting === null) return button
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span data-send-waiting="" tabIndex={0} aria-label={waiting} className="shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+          {button}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{waiting}</TooltipContent>
+    </Tooltip>
   )
 }

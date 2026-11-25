@@ -126,6 +126,12 @@ export function resolveFile(api: Api, path: string, active: string, session?: st
     lru.delete(path)
     held.delete(path)
   })
+  remember(path, p)
+  return p
+}
+
+/** Enter `path` at the newest position; past `LRU_MAX` the oldest goes (held while pinned, else revoked). */
+function remember(path: string, p: Promise<string>): void {
   lru.set(path, { p, refs: 0 })
   if (lru.size > LRU_MAX) {
     const [oldest, e] = lru.entries().next().value as [string, Entry]
@@ -133,7 +139,17 @@ export function resolveFile(api: Api, path: string, active: string, session?: st
     if (e.refs > 0) held.set(oldest, e)
     else void e.p.then(URL.revokeObjectURL, () => {})
   }
-  return p
+}
+
+/**
+ * `path` was just uploaded from `file`: its blob URL is the local bytes, so the held strip's thumbnail shows at once
+ * instead of fetching back over `get_attachment` what the client already has (on a phone, a second photo-sized round
+ * trip). No-op when cached.
+ */
+export function seedFile(path: string, file: Blob, session?: string): void {
+  if (lru.has(path) || held.has(path) || typeof URL.createObjectURL !== 'function') return
+  ownerOf(path, session)
+  remember(path, Promise.resolve(URL.createObjectURL(file)))
 }
 
 /**
