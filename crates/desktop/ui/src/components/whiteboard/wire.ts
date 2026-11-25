@@ -1,34 +1,35 @@
-// 218-TEMP(wire): hand-written until `just ts-desktop` runs after B1/B2 land. Do not add logic here.
+// 218 §4.4: the whiteboard RPCs and event, typed by the generated bindings (`just ts-desktop`). Do not add logic here.
+import type { MethodMap } from '@/rpc/bindings/client'
+import type { DocKind } from '@/rpc/bindings/event.document_2echanged.output'
 import type { RpcClient } from '@/rpc/client'
 
-export type DocId = string
-export type SessionId = string
-export const WHITEBOARD_KIND = 'whiteboard' // 218-TEMP(wire): cast to DocKind / AttachKind at use sites
+export type { DocId, SessionId } from '@/rpc/bindings/event.cells_2eevents.output'
+export type { WbBlob, WbBlobData, WbSkipped, WbTurnInfo, WbUndoResult, WhiteboardCreated } from '@/rpc/bindings/method.document.output'
+export type { WhiteboardSession } from '@/rpc/bindings/method.agent.output'
+export type { WbSendContext, WbSentImage } from '@/rpc/bindings/method.agent.input'
+export type { WhiteboardViewOpened } from '@/rpc/bindings/event.artifact_2ewhiteboard_2dview_2dopened.output'
 
-export type WhiteboardCreated = { doc: DocId; title: string }
-export type WbBlob = { key: string; bytes: number }
-export type WbBlobData = { key: string; mime: string; data: string }
-export type WbTurnInfo = { turn: number; cards: string[]; links: string[]; frames: string[]; writes: number; undone: boolean; ended: boolean }
-export type WbSkipped = { id: string; alias: string | null; why: string }
-export type WbUndoResult = { turn: number; undone: number; skipped: WbSkipped[] }
-export type WhiteboardSession = { session: SessionId; title: string; bound_ms: number }
-export type WbSentImage = { card: string | null; marks: string[] }
-export type WbSendContext = { in_view?: string[]; selected?: string[]; images?: WbSentImage[]; omitted?: number; omitted_why?: 'no vision' | 'budget' | null }
-export type WhiteboardViewOpened = { type: 'WhiteboardViewOpened'; session: SessionId; call_id: string; doc: DocId; title: string }
+export const WHITEBOARD_KIND = 'whiteboard' satisfies DocKind
 export const WHITEBOARD_VIEW_OPENED = 'artifact.whiteboard-view-opened@1'
 
 export const WB_METHODS = ['whiteboard_create', 'wb_blob_put', 'wb_blob_get', 'whiteboard_turn', 'whiteboard_undo_turn',
-  'whiteboard_bind', 'whiteboard_unbind', 'whiteboard_sessions', 'session_whiteboards', 'whiteboard_send_context'] as const
+  'whiteboard_bind', 'whiteboard_unbind', 'whiteboard_sessions', 'session_whiteboards', 'whiteboard_send_context'] as const satisfies readonly (keyof MethodMap)[]
 
-export const wbRpc = (c: RpcClient) => ({
-  create: (title: string | null) => c.call<WhiteboardCreated>('whiteboard_create', [title]),
-  blobPut: (doc: DocId, key: string, mime: string, data: string) => c.call<WbBlob>('wb_blob_put', [doc, key, mime, data]),
-  blobGet: (doc: DocId, key: string) => c.call<WbBlobData | null>('wb_blob_get', [doc, key]),
-  turn: (doc: DocId, session: SessionId) => c.call<WbTurnInfo | null>('whiteboard_turn', [doc, session]),
-  undoTurn: (doc: DocId, session: SessionId, turn: number | null) => c.call<WbUndoResult>('whiteboard_undo_turn', [doc, session, turn]),
-  bind: (session: SessionId, whiteboard: DocId) => c.call<null>('whiteboard_bind', [session, whiteboard]),
-  unbind: (session: SessionId, whiteboard: DocId) => c.call<null>('whiteboard_unbind', [session, whiteboard]),
-  sessions: (whiteboard: DocId) => c.call<WhiteboardSession[]>('whiteboard_sessions', [whiteboard]),
-  ofSession: (session: SessionId) => c.call<DocId[]>('session_whiteboards', [session]),
-  sendContext: (session: SessionId | null, whiteboard: DocId, context: WbSendContext) => c.call<null>('whiteboard_send_context', [session, whiteboard, context]),
-})
+type WbMethod = (typeof WB_METHODS)[number]
+type P<M extends WbMethod> = MethodMap[M]['params']
+
+export const wbRpc = (c: RpcClient) => {
+  const call = <M extends WbMethod>(m: M, params: P<M>) => c.call<MethodMap[M]['result']>(m, params)
+  return {
+    create: (title: string | null) => call('whiteboard_create', [title]),
+    blobPut: (...p: P<'wb_blob_put'>) => call('wb_blob_put', p),
+    blobGet: (...p: P<'wb_blob_get'>) => call('wb_blob_get', p),
+    turn: (...p: P<'whiteboard_turn'>) => call('whiteboard_turn', p),
+    undoTurn: (...p: P<'whiteboard_undo_turn'>) => call('whiteboard_undo_turn', p),
+    bind: (...p: P<'whiteboard_bind'>) => call('whiteboard_bind', p),
+    unbind: (...p: P<'whiteboard_unbind'>) => call('whiteboard_unbind', p),
+    sessions: (...p: P<'whiteboard_sessions'>) => call('whiteboard_sessions', p),
+    ofSession: (...p: P<'session_whiteboards'>) => call('session_whiteboards', p),
+    sendContext: (...p: P<'whiteboard_send_context'>) => call('whiteboard_send_context', p),
+  }
+}

@@ -24,7 +24,7 @@ import { chatLeaves, closeWeb, resetPanes, usePanes } from '@/lib/panes'
 import { closeAllWebViews, installWebViewEvents, useWebViews } from '@/lib/web-views'
 import { webViewOpened } from '@/lib/web-arrival'
 import { diffViewOpened, fileViewOpened, noteViewOpened, ptyViewOpened, whiteboardViewOpened } from '@/lib/tile-arrival'
-import { WHITEBOARD_VIEW_OPENED, type WhiteboardViewOpened } from '@/components/whiteboard/wire' // 218-TEMP(wire)
+import { WHITEBOARD_VIEW_OPENED } from '@/components/whiteboard/wire'
 import { closeAllTiles, closeSessionTiles } from '@/lib/tiles'
 import { AgentTileBanner } from '@/components/chat/AgentTileBanner'
 import { forgetArtifact } from '@/components/chat/ArtifactPanel'
@@ -599,7 +599,7 @@ function useEventSideEffects(st: Stores): void {
       // screen and the layout tiles; elsewhere (a phone, a hidden chat) its transcript card is the way in.
       on("artifact.pty-view-opened@1", 'PtyViewOpened', (e) => ptyViewOpened(e, visible(e.session))),
       on("artifact.note-view-opened@1", 'NoteViewOpened', (e) => noteViewOpened(e, visible(e.session))),
-      (on as unknown as (topic: string, type: string, cb: (e: WhiteboardViewOpened) => void) => () => void)(WHITEBOARD_VIEW_OPENED, 'WhiteboardViewOpened', (e) => whiteboardViewOpened(e, visible(e.session), (to) => router.history.push(to))), // 218-TEMP(wire)
+      on(WHITEBOARD_VIEW_OPENED, 'WhiteboardViewOpened', (e) => whiteboardViewOpened(e, visible(e.session), (to) => router.history.push(to))),
       // 212 §4: a `show_file` file or `show_diff` diff likewise; shown again, an open tile or card re-reads it.
       on("artifact.file-view-opened@1", 'FileViewOpened', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.fileView(e.session, e.path) })

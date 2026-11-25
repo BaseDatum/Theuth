@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect } from 'react'
 import { useQuerySupport } from '@/rpc/capabilities'
-import type { DocKind } from '@/rpc/bindings/method.agent.output'
 import { useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
@@ -19,7 +18,7 @@ export function useWhiteboards(limit = 500) {
     enabled: canQuery,
     queryKey: [...whiteboardsKey, limit],
     queryFn: async () =>
-      (await api.doc_list(WHITEBOARD_KIND as DocKind /* 218-TEMP(wire) */, limit)).sort((a, b) => Number(b.updated_ms - a.updated_ms)),
+      (await api.doc_list(WHITEBOARD_KIND, limit)).sort((a, b) => Number(b.updated_ms - a.updated_ms)),
   })
 }
 

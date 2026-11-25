@@ -1,4 +1,3 @@
-import type { MethodMap } from '@/rpc/bindings/client'
 import type { Requirements } from '@/rpc/discovery'
 import { WB_METHODS } from './wire'
 
@@ -13,7 +12,7 @@ export const requirements = {
     'doc_subscribe',
     'send_input',
     'steer',
-    ...(WB_METHODS as unknown as readonly (keyof MethodMap)[]), // 218-TEMP(wire)
+    ...WB_METHODS,
   ],
   topics: ['document.changed@1'],
 } as const satisfies Requirements

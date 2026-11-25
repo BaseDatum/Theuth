@@ -218,7 +218,7 @@ function Attachments({ task: t }: { task: Task }) {
   })
   return (
     <Section title={t.attachments.length ? `Attachments ${t.attachments.length}` : 'Attachments'}>
-      <AttachmentsEditor value={t.attachments} onChange={(next) => patch.mutate(next as typeof t.attachments /* 218-TEMP(wire) */)} disabled={patch.isPending} />
+      <AttachmentsEditor value={t.attachments} onChange={(next) => patch.mutate(next)} disabled={patch.isPending} />
     </Section>
   )
 }

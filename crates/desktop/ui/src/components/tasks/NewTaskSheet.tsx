@@ -75,7 +75,7 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
         where: where || null,
         harness: harness || null,
         external: [],
-        attachments: attachments as Task['attachments'], // 218-TEMP(wire)
+        attachments,
       })
       if (blockedBy.length) await api.task_update(t.id, { blockers: blockedBy.map((b) => b.id) })
       for (const b of blocks) await api.task_update(b.id, { blockers: [...b.blockers, t.id] })
