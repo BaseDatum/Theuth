@@ -1352,6 +1352,193 @@ Same desktop pane over `LinkTransport` (37 §6). Unlock from a phone is allowed:
 Noise-encrypted end to end. Adding a Bitwarden connection from a phone is allowed. Adding an AWS
 connection from a phone lists the *engine's* profiles, which is correct.
 
+### 9.6 Bitwarden SSO login
+
+For organisations that sign their members in with SSO and still give each member a master password
+("SSO + master password"). Status: contract, spike done 2026-11-25, not built. The numbering is
+§9.6 because §9.5 is taken (phones).
+
+**What the spike found.**
+- *Bitwarden's own CLI* (`clients@main:apps/cli/src/auth/commands/login.command.ts`,
+  `makeSsoPromptData` / `openSsoPrompt`):
+  - `state` and `code_verifier` are 64-character alphanumeric strings. `code_challenge` is
+    base64url(SHA-256(verifier)), unpadded.
+  - It listens on `localhost`, trying ports 8065–8070 in turn, and opens the web vault at
+    `<web vault>/#/sso?clientId=cli&redirectUri=http%3A%2F%2Flocalhost%3A<port>&state=…&codeChallenge=…&identifier=<org>`.
+  - The web vault's `SsoComponent` (`libs/auth/src/angular/sso/sso.component.ts`, `submitSso` /
+    `buildAuthorizeUrl`) calls `GET <identity>/sso/prevalidate?domainHint=<org>`, which answers
+    `{ "token": "<ssoToken>" }`. It then sends the browser to:
+
+    ```
+    <identity>/connect/authorize?client_id=cli&redirect_uri=http://localhost:<port>
+      &response_type=code&scope=api offline_access&state=<state>_identifier=<org>
+      &code_challenge=<c>&code_challenge_method=S256&response_mode=query
+      &domain_hint=<org>&ssoToken=<ssoToken>
+    ```
+
+    The `_identifier=<org>` suffix rides in `state`. Clients compare only the part before it.
+  - The browser comes back to `http://localhost:<port>/?code=…&state=…`. Vaultwarden also appends
+    `&scope=…&iss=…`.
+  - Token request, `POST <identity>/connect/token`, form-encoded (`SsoTokenRequest` + `TokenRequest`):
+    `grant_type=authorization_code`, `code`, `code_verifier`, `redirect_uri` (byte-identical to the
+    one in the authorize URL), `scope=api offline_access`, `client_id=cli`, `deviceType`,
+    `deviceIdentifier`, `deviceName`. For 2FA it adds `twoFactorToken`, `twoFactorProvider` and
+    `twoFactorRemember`.
+- *Server* (`server@main`):
+  - The `cli` client allows the redirect URIs `http://localhost:8065` … `:8070` and nothing else
+    (`StaticClientStore.LocalhostPortUris`). The host must be `localhost`, not `127.0.0.1`.
+  - `/sso/prevalidate` proxies the SSO service's `PreValidate`, which checks that the org
+    identifier exists and has SSO on.
+  - **2FA applies to SSO logins.** `RequiresTwoFactorAsync` exempts only `client_credentials` and
+    `webauthn`, so `NeedTwoFactor` can follow an SSO code.
+  - **New-device verification does not apply.** `DeviceValidator` enforces it for
+    `GrantType.ResourceOwnerPassword` only.
+  - The authorization code is not consumed on validation (`AuthorizationCodeStore.RemoveAuthorizationCodeAsync`
+    is a no-op), so the same code may be sent again with the 2FA token while it is still valid.
+    The code lifetime is IdentityServer's default, 300 s.
+- *Decryption options.* The token response's `UserDecryptionOptions` (`server@main:src/Core/Auth/Models/Api/Response/UserDecryptionOptions.cs`;
+  serde must accept both PascalCase and camelCase keys, as the SDK's
+  `identity_success_response.rs` does) carries the following. Bitwarden's CLI accepts
+  master password or Key Connector and refuses the rest (`validateSsoUserHasCliSupportedDecryptionPath`).
+  - `HasMasterPassword` (obsolete but still sent) and `MasterPasswordUnlock` (KDF, salt and the
+    master-key-wrapped user key when a master password exists).
+  - `TrustedDeviceOption`, `KeyConnectorOption` and `WebAuthnPrfOption`, each absent when unused.
+- *SDK `sdk@2b06afa`.* There is no SSO login: no `authorization_code` grant, no prevalidate, no PKCE.
+  Only the response models (`bitwarden-auth/src/login/api/response/*user_decryption_option*`) exist.
+  theuth therefore uses raw HTTP through the SDK client's own `reqwest`, exactly like the password
+  login (G7, `password.rs`). After the token exchange it reuses `unlock_with_tokens` with
+  `UserLoginMethod::Username { client_id: "cli", … }`, so renewal is refresh-token based. This is
+  the existing password-connection restart path unchanged: refresh token stored, master password on
+  the unlock card.
+- *Vaultwarden 1.37.5* has SSO (`SSO_ENABLED`, one OIDC provider for the whole server).
+  - `/identity/sso/prevalidate` answers a token and ignores `domainHint`. Any identifier works.
+  - `cli` is accepted with `http://localhost:8065…8070` only (`src/sso.rs` `authorize_url`).
+  - 2FA runs after SSO (`_sso_login` → `twofactor_auth`).
+  - The token response carries `UserDecryptionOptions.HasMasterPassword` /
+    `MasterPasswordUnlock`.
+  - `/connect/authorize` sets a `VW_SSO_BINDING` cookie that `/connect/oidc-signin` checks, so the
+    authorize URL must be opened by the same browser (or cookie jar) that finishes the IdP login.
+    The engine never fetches it itself.
+  - Verified end to end in the spike: a cookie-jar HTTP client walked authorize → Keycloak login form
+    → `http://localhost:8065/?code=…&state=…`, and the token exchange answered 200. A user created
+    by SSO had `HasMasterPassword: false`, `MasterPasswordUnlock: null` and no `PrivateKey`. That is
+    the "no master password" case below.
+
+**Test recipe (Keycloak + Vaultwarden, one network namespace so one issuer URL works for both the
+container and the test).**
+
+```sh
+docker run -d --rm --name sso-kc -p 127.0.0.1:8081:8081 -p 127.0.0.1:18232:18232 \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin -e KC_HTTP_PORT=8081 \
+  quay.io/keycloak/keycloak:26.6.2 start-dev
+# when http://127.0.0.1:8081/realms/master answers:
+docker exec sso-kc bash -c 'export PATH=/opt/keycloak/bin:$PATH
+  kcadm.sh config credentials --server http://127.0.0.1:8081 --realm master --user admin --password admin --client admin-cli
+  kcadm.sh create realms -s realm=test -s enabled=true
+  kcadm.sh create clients -r test -s clientId=warden -s secret=warden -s "redirectUris=[\"http://127.0.0.1:18232/*\"]"
+  U=$(kcadm.sh create users -r test -s username=sso1 -s email=sso1@example.org -s emailVerified=true -s enabled=true -s firstName=s -s lastName=s -i)
+  kcadm.sh update users/$U/reset-password -r test -s type=password -s value=idp-pass -n'
+docker run -d --rm --name sso-vw --network container:sso-kc \
+  -e ROCKET_PORT=18232 -e DOMAIN=http://127.0.0.1:18232 -e I_REALLY_WANT_VOLATILE_STORAGE=true \
+  -e SIGNUPS_ALLOWED=true -e SSO_ENABLED=true -e SSO_AUTHORITY=http://127.0.0.1:8081/realms/test \
+  -e SSO_CLIENT_ID=warden -e SSO_CLIENT_SECRET=warden -e SSO_SIGNUPS_MATCH_EMAIL=true \
+  vaultwarden/server:1.37.5
+# BW_VAULTWARDEN_URL=http://127.0.0.1:18232 … ; afterwards: docker stop sso-vw sso-kc
+```
+
+- The test drives the IdP login with a cookie-jar client: follow redirects, POST the Keycloak form
+  (`username`, `password`), and stop at the `http://localhost:806x` redirect.
+- Keycloak's cookies are `Secure`, so over plain http the client must send them anyway.
+- For the master-password case, register `sso1@example.org` with a master password first (the
+  suite's `register_full`). `SSO_SIGNUPS_MATCH_EMAIL` then links the SSO identity to it.
+- For 2FA after SSO, turn on authenticator 2FA for that account, as
+  `password_totp_login_then_restart_unlocks_without_2fa` does.
+
+**Engine.**
+- Config: `login: sso` with `org_identifier: <identifier>` on the connection (`BwLogin::Sso { org_identifier }`
+  in `ConnConfig::Bw`; `LoginKind::Sso` in `secrets-bitwarden`). `email` stays required, because
+  prelogin (KDF) and the unlock card need it.
+- Two owner RPCs, audience owner, `with_extensions`, refused unless `human_press(ext)`. Note that
+  `connection_login` is not press-gated today; the SSO pair is stricter by design, since it opens an
+  account login.
+
+  ```rust
+  #[method(name = "connection_sso_begin", with_extensions)]
+  async fn connection_sso_begin(&self, conn: String, org_identifier: Option<String>, redirect_port: Option<u16>) -> RpcResult<SsoBegin>;
+  #[method(name = "connection_sso_complete", with_extensions)]
+  async fn connection_sso_complete(&self, conn: String, state: String, code_or_redirect_url: String, two_factor: Option<(String, String)>) -> RpcResult<LoginStep>;
+  ```
+
+  - `SsoBegin` = `{ authorize_url, state, redirect_port }`.
+  - Change from the first sketch: `redirect_port` is an input. The loopback listener runs where the
+    browser runs (the desktop shell, possibly not on the engine's machine), so the shell binds a
+    free port in 8065–8070 first and passes it. `None` (TUI) means 8065. Anything outside 8065–8070
+    is refused.
+  - `org_identifier: None` uses the connection's configured one. A given one replaces it in config.
+  - `begin` makes the 64-character `state` and verifier and builds `code_challenge`. It calls
+    `<identity>/sso/prevalidate?domainHint=<org>` itself. A non-200 becomes
+    `ExtError::Denied("<server message> (SSO identifier <org>)")`.
+  - `begin` returns the identity server's authorize URL (above), not the web vault's `#/sso` page.
+    That saves a hop and does not depend on the web vault. The web vault's page only does this
+    same prevalidate-then-redirect.
+  - `begin` keeps `{ conn, verifier, redirect_uri, created }` in memory under `state`, with a
+    10-minute TTL. Expired entries are swept on each `begin`. There is at most one pending entry
+    per connection: a new `begin` replaces the old one.
+  - `complete` accepts the bare code, or the full pasted redirect URL. For a URL it takes `code`
+    and `state` from the query. A query `state` that differs from the RPC's `state` →
+    `Denied("the SSO answer belongs to another login attempt")`. A query `error` /
+    `error_description` → `Denied(<description>)`.
+  - `complete` compares `state` in constant time and keeps the pending entry until `Done`, an error
+    other than `NeedTwoFactor`, or the TTL. That lets `NeedTwoFactor` be answered by calling
+    `complete` again with `two_factor` and the same code (the server allows the reuse within the
+    code's life).
+  - `complete` exchanges the code (form above; `deviceType` = the password login's CLI type for
+    this OS, the per-connection device id from `meta`, `deviceName` "theuth"). It parses the answer with the
+    password login's `parse_token_response` and `supported_factors`. Duo and WebAuthn are refused as
+    for password login. `NeedNewDeviceOtp` cannot occur.
+  - Then the decryption options are checked **before anything is stored**:
+    - `TrustedDeviceOption` or `KeyConnectorOption` present, and no master password → `Unsupported("this account unlocks with trusted devices / Key Connector, which theuth doesn't support yet")`.
+    - No master password and neither option (JIT-provisioned, never set one) →
+      `Unsupported("this account has no master password yet; log in once in the Bitwarden web vault to set one")`.
+    - `WebAuthnPrfOption` alone counts as no master password.
+  - On success, `complete` stores the refresh token (`ext/bw/<conn>/refresh_token`, as for password
+    login) and returns `Done`. The connection is then `Locked`.
+  - The token answer's key material is not used to unlock: unlock needs the master password anyway,
+    and the existing unlock path (`open_refresh` → `unlock_with_tokens`, `UserLoginMethod::Username
+    { client_id: "cli" }`) re-reads it from `/sync`.
+- After login: the existing unlock card (§9.4) asks for the master password. Restarts and an
+  expired refresh token behave as for password login. `invalid_grant` gives `LoggedOut` and the
+  hint "log in again with SSO".
+- Values over the wire: the code is a one-time credential, inbound only, like `connection_login`.
+  `authorize_url` carries no secret (the verifier stays in the engine). No audit line holds the
+  code, the URL's query or the verifier.
+
+**Desktop.**
+- The shell (Tauri command, `crates/desktop/src`) binds a one-shot loopback listener for
+  `localhost` on the first free port of 8065..=8070, on 127.0.0.1 and on ::1 (the browser may
+  resolve `localhost` to either). It calls
+  `connection_sso_begin` with that port and opens the system browser at `authorize_url`.
+- The listener takes the first `GET /?code=…&state=…`. It answers a small "you can close this tab"
+  page (or an error page for `error=`), hands the full URL to `connection_sso_complete` and closes.
+- The flow times out after 5 minutes, with a Cancel button. Both close the listener.
+  `NeedTwoFactor` continues on the same login card with the code field.
+
+**TUI.**
+- `/secrets connect bw` with SSO, or `l` on an SSO connection: prints `authorize_url` and asks the
+  user to open it, sign in, then paste the address the browser lands on.
+- That page fails to load (nothing listens on `localhost:8065`), which is expected: the code is in
+  its address.
+- The TUI then calls `connection_sso_complete` with the pasted text, and asks for the 2FA code on
+  `NeedTwoFactor`.
+
+**Both surfaces.**
+- The connect flows show the hint "organisation requires SSO? use Login with SSO or API key" under
+  the password option.
+- A password login refused with `sso_required` is reworded to the same hint.
+
+**Out of scope.** Trusted-device encryption, Key Connector, passkey (PRF) unlock, SSO-initiated
+account linking (`user_identifier`), and setting a first master password.
+
 ## 10. Mesh and replication
 
 | Thing | Where | Replicates? | Why |
