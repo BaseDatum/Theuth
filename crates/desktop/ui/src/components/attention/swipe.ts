@@ -6,24 +6,34 @@ import { snoozeUntil } from '@/components/hud/model'
 import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
 import { useAttentionBulk } from './queries'
 
-/** Travel before the action fires on release. */
-export const SWIPE_THRESHOLD = 88
+/** Movement before a gesture commits to an axis. Horizontal intent wins a 3:2 tie, so a diagonal swipe does not turn into a scroll. */
+export function swipeAxis(dx: number, dy: number): 'x' | 'y' | null {
+  const x = Math.abs(dx)
+  const y = Math.abs(dy)
+  if (x <= 12 && y <= 12) return null
+  return x * 1.5 >= y ? 'x' : 'y'
+}
+
+/** A deliberate action must travel the whole card, not a fixed fraction of it. */
+export function isFullSwipe(distance: number, width: number): boolean {
+  return width > 0 && Math.abs(distance) >= width
+}
 
 export function useCardSwipe(item: AttentionItem, enabled: boolean) {
   const bulk = useAttentionBulk()
-  const start = useRef<{ x: number; y: number; axis: 'x' | 'y' | null } | null>(null)
+  const start = useRef<{ x: number; y: number; width: number; axis: 'x' | 'y' | null } | null>(null)
   const [dx, setDx] = useState(0)
 
   const down = (e: PointerEvent) => {
     if (!enabled || e.pointerType !== 'touch' || !e.isPrimary) return
-    start.current = { x: e.clientX, y: e.clientY, axis: null }
+    start.current = { x: e.clientX, y: e.clientY, width: e.currentTarget.clientWidth, axis: null }
   }
   const move = (e: PointerEvent) => {
     const s = start.current
     if (!s) return
     const ddx = e.clientX - s.x
     const ddy = e.clientY - s.y
-    if (s.axis === null && (Math.abs(ddx) > 12 || Math.abs(ddy) > 12)) s.axis = Math.abs(ddx) > Math.abs(ddy) ? 'x' : 'y'
+    if (s.axis === null) s.axis = swipeAxis(ddx, ddy)
     if (s.axis === 'y') {
       start.current = null
       setDx(0)
@@ -38,9 +48,15 @@ export function useCardSwipe(item: AttentionItem, enabled: boolean) {
     const d = dx
     setDx(0)
     if (s.axis !== 'x') return
-    if (d > SWIPE_THRESHOLD) void bulk.dismiss([item.id])
-    else if (d < -SWIPE_THRESHOLD) void bulk.snooze([item.id], snoozeUntil('hour'))
+    if (!isFullSwipe(d, s.width)) return
+    if (d > 0) void bulk.dismiss([item.id])
+    else void bulk.snooze([item.id], snoozeUntil('hour'))
   }
 
-  return { handlers: { onPointerDown: down, onPointerMove: move, onPointerUp: up, onPointerCancel: up }, dx }
+  const cancel = () => {
+    start.current = null
+    setDx(0)
+  }
+
+  return { handlers: { onPointerDown: down, onPointerMove: move, onPointerUp: up, onPointerCancel: cancel }, dx }
 }
