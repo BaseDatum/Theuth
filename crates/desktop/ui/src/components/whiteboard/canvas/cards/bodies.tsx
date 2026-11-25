@@ -1,0 +1,204 @@
+// §8.5 renderers by kind (live LOD). Each fills the card's body; the chrome (title bar, shield, ink, scrubber) is
+// CardNode's. Heavy live views (pages) are budgeted by lod.ts; terminals and web views never run live on the canvas.
+import { AppWindow, FileCode2, FileDiff, FileText, Globe, Image as ImageIcon, MessageSquare, Shapes, StickyNote, Terminal as TerminalIcon, type LucideIcon } from 'lucide-react'
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
+import type { CustomRendererProps } from 'streamdown'
+import { useSessions } from '@/store/sessions'
+import { useCanvas } from '../context'
+import type { Card, CardKind, Source } from '../model'
+import { STICKY_MAX, setSticky } from '../ops'
+import { EXCERPT_PAD, EXCERPT_ROW } from '../send'
+import { PageCard } from './PageCard'
+
+const MermaidFence = lazy(() => import('@/components/chat/Mermaid').then((m) => ({ default: m.MermaidFence })))
+const JsonRenderFence = lazy(() => import('@/components/chat/surface/JsonRenderFence').then((m) => ({ default: m.JsonRenderFence })))
+const OpenUIFence = lazy(() => import('@/components/chat/surface/OpenUIFence').then((m) => ({ default: m.OpenUIFence })))
+const DiffBody = lazy(() => import('@/components/code/DiffBody').then((m) => ({ default: m.DiffBody })))
+const NoteView = lazy(() => import('@/components/notes/NotePage').then((m) => ({ default: m.NoteView })))
+
+export const KIND_ICON: Record<CardKind, LucideIcon> = {
+  page: AppWindow, diagram: Shapes, note: FileText, excerpt: FileCode2, diff: FileDiff, terminal: TerminalIcon,
+  web: Globe, image: ImageIcon, sticky: StickyNote, session: MessageSquare,
+}
+export const KIND_NAME: Record<CardKind, string> = {
+  page: 'page', diagram: 'diagram', note: 'note', excerpt: 'excerpt', diff: 'diff', terminal: 'terminal',
+  web: 'web', image: 'image', sticky: 'sticky', session: 'session',
+}
+
+const fence = (code: string, language: string) => ({ code, isIncomplete: false, language }) as unknown as CustomRendererProps
+const Pending = () => <div className="absolute inset-0 animate-pulse bg-layer-2/60" />
+
+function Info({ icon: Icon, lines, children }: { icon: LucideIcon; lines: string[]; children?: ReactNode }) {
+  return (
+    <div className="wb-chip">
+      <Icon className="size-6 opacity-70" aria-hidden />
+      {lines.map((l, i) => (
+        <span key={i} className={i === 0 ? 'max-w-full truncate text-xs font-medium' : 'max-w-full truncate text-[11px] text-fg-tertiary'}>
+          {l}
+        </span>
+      ))}
+      {children}
+    </div>
+  )
+}
+
+function Sticky({ card, text, editing }: { card: Card; text: string; editing: boolean }) {
+  const { doc, readOnly, enter, stopCapturing } = useCanvas()
+  const [draft, setDraft] = useState(text)
+  useEffect(() => setDraft(text), [text])
+  if (editing && !readOnly) {
+    return (
+      <div className="wb-sticky-text nodrag nopan nowheel">
+        <textarea
+          aria-label={`${card.title || 'Sticky'} text`}
+          autoFocus
+          maxLength={STICKY_MAX}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            if (draft !== text) {
+              setSticky(doc, card.id, draft)
+              stopCapturing()
+            }
+            enter(null)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') (e.target as HTMLTextAreaElement).blur()
+            e.stopPropagation()
+          }}
+        />
+      </div>
+    )
+  }
+  return <div className="wb-sticky-text">{text}</div>
+}
+
+function Excerpt({ s }: { s: Extract<Source, { t: 'excerpt' }> }) {
+  const lines = s.text.split('\n')
+  const width = String(s.start + lines.length).length
+  return (
+    <pre className="absolute inset-0 m-0 overflow-hidden font-mono text-[12px] text-fg-primary" style={{ padding: `${EXCERPT_PAD}px 0`, lineHeight: `${EXCERPT_ROW}px` }}>
+      {lines.map((l, i) => (
+        <div key={i} className="flex whitespace-pre" style={{ height: EXCERPT_ROW }}>
+          <span className="select-none pr-3 pl-3 text-right text-fg-tertiary" style={{ minWidth: `${width + 3}ch` }}>
+            {s.start + i}
+          </span>
+          <span>{l}</span>
+        </div>
+      ))}
+    </pre>
+  )
+}
+
+function ImageBody({ s, title }: { s: Extract<Source, { t: 'image' }>; title: string }) {
+  const { host } = useCanvas()
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    if (s.blob) void host.blobUrl(s.blob).then((u) => alive && setUrl(u))
+    return () => {
+      alive = false
+    }
+  }, [s.blob, host])
+  if (url) return <img src={url} alt={title} className="absolute inset-0 size-full object-contain" draggable={false} />
+  return <Info icon={ImageIcon} lines={[title || 'Image', s.path ?? (s.call_id ? 'artifact image — open to view' : '')]} />
+}
+
+function SessionBody({ id }: { id: string }) {
+  const s = useSessions((st) => st.sessions[id])
+  const title = (s as { title?: string } | undefined)?.title
+  return <Info icon={MessageSquare} lines={[title || 'Session', 'open to read its turns']} />
+}
+
+/** The live body of a card, by its version's source. */
+export function LiveBody({ card, source, editing }: { card: Card; source: Source | undefined; editing: boolean }) {
+  if (!source) return <Info icon={KIND_ICON[card.kind]} lines={[card.title || KIND_NAME[card.kind], 'no content']} />
+  switch (source.t) {
+    case 'sticky':
+      return <Sticky card={card} text={source.text} editing={editing} />
+    case 'page':
+      return <PageCard card={card} callId={source.call_id} session={source.session} live />
+    case 'diagram':
+      return (
+        <div className="absolute inset-0 overflow-hidden p-2 [&_svg]:max-h-full [&_svg]:max-w-full">
+          <Suspense fallback={<Pending />}>
+            {source.lang === 'mermaid' ? (
+              <MermaidFence {...fence(source.code, 'mermaid')} fill />
+            ) : source.lang === 'openui' ? (
+              <OpenUIFence {...fence(source.code, 'openui')} />
+            ) : (
+              <JsonRenderFence {...fence(source.code, 'json-render')} />
+            )}
+          </Suspense>
+        </div>
+      )
+    case 'excerpt':
+      return <Excerpt s={source} />
+    case 'diff':
+      return (
+        <div className="absolute inset-0 overflow-hidden">
+          <Suspense fallback={<Pending />}>
+            {/* 218-TEMP(wire): the diff spec is opaque JSON in the whiteboard schema */}
+            <DiffBody session={source.frozen?.session ?? source.session} spec={source.spec as never} />
+          </Suspense>
+          {source.as_of !== undefined && (
+            <span className="absolute right-2 bottom-2 rounded bg-layer-1 px-1.5 text-[10px] text-fg-tertiary">
+              as of {new Date(source.as_of).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+        </div>
+      )
+    case 'note':
+      return (
+        <div className="absolute inset-0 overflow-hidden">
+          <Suspense fallback={<Pending />}>
+            <NoteView id={source.doc} embedded hidePopout />
+          </Suspense>
+        </div>
+      )
+    case 'terminal':
+      return <Info icon={TerminalIcon} lines={[card.title || 'Terminal', `job ${source.job}`, 'open to watch it live']} />
+    case 'web':
+      return <Info icon={Globe} lines={[card.title || 'Web', hostOf(source.url)]} />
+    case 'image':
+      return <ImageBody s={source} title={card.title} />
+    case 'session':
+      return <SessionBody id={source.session} />
+  }
+}
+
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
+}
+
+/** Kind icon + title: below 60 px on screen, or when nothing better exists yet. */
+export function Chip({ card }: { card: Card }) {
+  const Icon = KIND_ICON[card.kind]
+  return (
+    <div className="wb-chip" aria-hidden>
+      <Icon className="size-[28%] max-h-16 min-h-4 opacity-60" />
+      <span className="max-w-full truncate text-[max(11px,8%)] font-semibold">{card.title || KIND_NAME[card.kind]}</span>
+    </div>
+  )
+}
+
+/** A stored snapshot `snap/<card>/<v>`. */
+export function Snapshot({ card }: { card: Card }) {
+  const { host } = useCanvas()
+  const [url, setUrl] = useState<string | null>(null)
+  const key = card.snap ? `snap/${card.id}/${card.snap.v}` : null
+  useEffect(() => {
+    let alive = true
+    setUrl(null)
+    if (key) void host.blobUrl(key).then((u) => alive && setUrl(u))
+    return () => {
+      alive = false
+    }
+  }, [key, host])
+  if (!url) return <Chip card={card} />
+  return <img src={url} alt="" className="absolute inset-0 size-full object-cover object-top" draggable={false} />
+}

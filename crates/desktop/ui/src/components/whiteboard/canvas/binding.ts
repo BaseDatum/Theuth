@@ -52,7 +52,7 @@ export function edgesOf(board: Board, selection: readonly Id[]): FlowEdge[] {
     .map((l) => ({
       id: l.id, source: l.from, target: l.to, type: 'link' as const, data: { link: l }, selected: sel.has(l.id),
       ...(l.from_port ? { sourceHandle: `s-${l.from_port}` } : {}),
-      ...(l.to_port ? { targetHandle: `t-${l.to_port}` } : {}),
+      ...(l.to_port ? { targetHandle: `s-${l.to_port}` } : {}),
     }))
 }
 
