@@ -64,7 +64,8 @@ type Wet = { id: number; kind: PointerKind; erase: boolean; pts: Pt[]; t0: numbe
 type Rubber = { id: number; x0: number; y0: number; x1: number; y1: number }
 
 /** B4's anchored nodes (the reply bubble): at a card's right-top in screen space, flipped left when clipped. */
-function Anchored({ items, board, width }: { items: NonNullable<WhiteboardCanvasProps['anchored']>; board: Board; width: number }) {
+/** `reserve`: px kept free at the right edge (the bubble, plus the control cluster while it is up). */
+function Anchored({ items, board, width, reserve }: { items: NonNullable<WhiteboardCanvasProps['anchored']>; board: Board; width: number; reserve: number }) {
   const { x, y, zoom } = useViewport()
   return (
     <>
@@ -73,7 +74,7 @@ function Anchored({ items, board, width }: { items: NonNullable<WhiteboardCanvas
         if (!c || c.state === 'archived') return null
         const right = (c.x + c.w) * zoom + x
         const top = c.y * zoom + y
-        const flip = right + 300 > width
+        const flip = right + reserve > width
         const left = flip ? c.x * zoom + x - 12 : right + 12
         return (
           <div key={a.key} className="absolute z-10" style={{ left, top, transform: flip ? 'translateX(-100%)' : undefined }}>
@@ -1039,7 +1040,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
               </a>
             </Panel>
           )}
-          {anchored && anchored.length > 0 && <Anchored items={anchored} board={board} width={size.w} />}
+          {anchored && anchored.length > 0 && <Anchored items={anchored} board={board} width={size.w} reserve={clusterOpen ? 380 : 300} />}
         </ReactFlow>
         <canvas ref={wetCanvas} className="wb-wet" aria-hidden />
         {rubber && <RubberBand r={rubber} />}
