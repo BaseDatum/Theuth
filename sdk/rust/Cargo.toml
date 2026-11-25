@@ -1,0 +1,15 @@
+[package]
+name = "theuth-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "theuth plugin SDK (design 216): vendor src/lib.rs into a plugin as src/theuth.rs"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+
+# Standalone: not a member of the repo workspace.
+[workspace]

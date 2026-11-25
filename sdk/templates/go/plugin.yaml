@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../../sdk/manifest.schema.json
+name: presses
+version: 0.1.0
+description: Counts button presses.
+protocol: 1
+run: [go, run, .]
+watch: ["*.go", go.mod]   # restart on edit; the code hash covers the SDK file too
+placements:
+  - id: presses
+    kind: sidebar
+    open: popover
+    icon: circle
+    label: Presses
+    status: true
+    format: openui
+tools:
+  - name: presses
+    description: How many times the button was pressed.
+    input_schema: {type: object, properties: {}}
+    annotations: {readOnlyHint: true}

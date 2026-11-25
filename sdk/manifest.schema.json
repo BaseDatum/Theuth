@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://theuth.dev/schemas/plugin.yaml/v1.json",
+  "title": "theuth plugin.yaml (protocol 1)",
+  "description": "The manifest of a theuth external plugin (design 216 §4). The host reads it before any process starts; it is what the install card shows and the grant covers. Unknown top-level keys are warnings, so they are allowed here.",
+  "type": "object",
+  "required": ["name", "version", "protocol", "run"],
+  "properties": {
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$", "description": "Must equal the folder name."},
+    "version": {"type": ["string", "number"], "description": "Free text shown on the install card."},
+    "description": {"type": "string"},
+    "protocol": {"const": 1, "description": "The wire protocol major (§6)."},
+    "run": {
+      "description": "argv list, or a string split by shell words (no shell is run). run[0] must resolve on PATH or in the folder.",
+      "oneOf": [
+        {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        {"type": "string", "minLength": 1}
+      ]
+    },
+    "cwd": {"type": "string", "description": "Relative to the folder."},
+    "env": {
+      "type": "object",
+      "description": "Values expand {{secret:NAME}}, $VAR and $(cmd). Secret names appear on the install card, values never.",
+      "additionalProperties": {"type": ["string", "number", "boolean"]}
+    },
+    "restart": {"enum": ["on-failure", "always", "never"], "default": "on-failure"},
+    "watch": {"type": "array", "items": {"type": "string"}, "description": "Globs: restart on change; the code hash covers them (§10.2)."},
+    "subscribe": {
+      "type": "array",
+      "description": "Nothing is delivered that is not listed here. Names: sdk/catalog.md.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["topic"],
+            "properties": {
+              "topic": {"type": "string", "description": "A wire topic from the catalog, e.g. agent.events."},
+              "types": {"type": "array", "items": {"type": "string"}, "description": "Narrow to these `type` tags."},
+              "version": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+              "deltas": {"type": "boolean", "description": "Opt in to delta-class types (TextDelta, ReasoningDelta, ToolCallProgress, VisionProgress)."},
+              "sessions": {"description": "Reserved (§20); ignored with a warning in v1."}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["event"],
+            "properties": {
+              "event": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}\\.([a-z][a-z0-9_]{0,47}|\\*)$", "description": "A plugin event: <plugin>.<event> or <plugin>.*"},
+              "version": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "emits": {
+      "type": "object",
+      "description": "The only events this plugin may emit.",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,47}$"},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "description": {"type": "string"},
+          "version": {"type": "integer", "minimum": 1, "default": 1},
+          "scope": {"enum": ["global", "session"], "default": "global"},
+          "schema": {"type": "object", "description": "JSON Schema published in the catalog; v1 only checks that data is an object."},
+          "exposure": {"not": {}, "description": "Reserved (§20): an error in v1."}
+        },
+        "additionalProperties": false
+      }
+    },
+    "placements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+          "kind": {
+            "enum": ["sidebar", "status", "tile", "command", "header", "composer", "card", "tray", "settings", "view"],
+            "description": "v1: sidebar | status | tile | command. header, composer, card, tray, settings, view are reserved: skipped with a warning."
+          },
+          "open": {"enum": ["popover", "tile"], "default": "popover", "description": "sidebar only."},
+          "icon": {"type": "string", "description": "A lucide icon name, or a path to an SVG in the folder."},
+          "label": {"type": "string"},
+          "status": {"type": "boolean", "description": "Draw a status dot (+ badge) fed by `status` messages."},
+          "size": {
+            "type": "object",
+            "properties": {"width": {"type": "integer", "minimum": 1}, "height": {"type": "integer", "minimum": 1}},
+            "additionalProperties": false
+          },
+          "format": {"enum": ["openui", "json-render", "markdown", "html"], "description": "html is reserved (§20): the placement is skipped with a warning."},
+          "fallback": {"enum": ["text", "hide"], "default": "text"},
+          "name": {"type": "string", "description": "command only: /<plugin> when equal to the plugin name, else /<plugin>:<name>."},
+          "args": {"type": "string", "description": "command only: argument hint."},
+          "file": {"description": "Reserved (§20)."},
+          "scope": {"description": "Reserved (§20)."}
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "description": "Static tools in MCP's Tool shape (§8). There is no tools/list.",
+      "items": {
+        "type": "object",
+        "required": ["name", "input_schema"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"},
+          "description": {"type": "string"},
+          "input_schema": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {"type": {"const": "object"}}
+          },
+          "output_schema": {"type": "object"},
+          "annotations": {
+            "type": "object",
+            "properties": {
+              "title": {"type": "string"},
+              "readOnlyHint": {"type": "boolean"},
+              "destructiveHint": {"type": "boolean"},
+              "idempotentHint": {"type": "boolean"},
+              "openWorldHint": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "description": "Each is a line on the install card (§10).",
+      "items": {
+        "oneOf": [
+          {"enum": ["notify", "input"]},
+          {"const": "open", "description": "Reserved (§20); ignored with a warning."},
+          {
+            "type": "object",
+            "required": ["call"],
+            "properties": {
+              "call": {
+                "type": "object",
+                "required": ["tools"],
+                "properties": {
+                  "tools": {"type": "array", "items": {"type": "string"}},
+                  "max_risk": {"enum": ["read_only", "mutating", "destructive"], "default": "read_only"}
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["open"],
+            "properties": {"open": {"description": "Reserved (§20); ignored with a warning."}}
+          }
+        ]
+      }
+    },
+    "mcp": {"description": "Reserved (§20); ignored with a warning in v1."},
+    "isolation": {"not": {}, "description": "Reserved (§20): an error in v1 (containment was asked for and v1 cannot give it)."}
+  }
+}
