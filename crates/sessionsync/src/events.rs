@@ -1302,6 +1302,7 @@ mod tests {
                 args: serde_json::json!({ "command": "cargo test" }),
                 risk: tools::Risk::Mutating,
                 human_only: false,
+                always_ask: false,
             })
             .await;
         let got = tokio::time::timeout(Duration::from_secs(5), tapped.recv())
@@ -1350,6 +1351,7 @@ mod tests {
                 args: serde_json::json!({}),
                 risk: tools::Risk::Mutating,
                 human_only: false,
+                always_ask: false,
             })
             .await;
         tokio::time::timeout(Duration::from_secs(5), tapped.recv())
@@ -1698,6 +1700,7 @@ mod tests {
                 args: serde_json::json!({}),
                 risk: tools::Risk::Mutating,
                 human_only: false,
+                always_ask: false,
             })
             .await;
         let card = tokio::time::timeout(Duration::from_secs(5), rtapped.recv())
@@ -1731,6 +1734,7 @@ mod tests {
                     args: serde_json::json!({}),
                     risk: tools::Risk::Mutating,
                     call_id: None,
+                    always_ask: false,
                 })
                 .await
         });
@@ -1763,6 +1767,7 @@ mod tests {
                 args: serde_json::json!({}),
                 risk: tools::Risk::Mutating,
                 human_only: false,
+                always_ask: false,
             })
             .await;
         let live = tokio::time::timeout(Duration::from_secs(5), tapped.recv())

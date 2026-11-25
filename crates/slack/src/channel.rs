@@ -3552,6 +3552,7 @@ pub(crate) mod tests {
             args: json!({ "command": "rm -rf target/" }),
             risk: tools::Risk::Destructive,
             human_only: false,
+            always_ask: false,
         }
     }
 

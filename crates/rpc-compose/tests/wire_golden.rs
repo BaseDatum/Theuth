@@ -349,6 +349,7 @@ async fn pending_snapshot(rt: &Runtime, methods: &jsonrpsee::Methods, live: &mut
                     args: serde_json::json!({"command": "rm sample"}),
                     risk: tools::Risk::Destructive,
                     call_id: None,
+                    always_ask: false,
                 })
                 .await
                 .unwrap()

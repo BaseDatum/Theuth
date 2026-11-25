@@ -1206,6 +1206,7 @@ mod tests {
             args: serde_json::json!({ "command": "ls" }),
             risk: tools::Risk::Mutating,
             human_only: false,
+            always_ask: false,
         };
         let code = p.insert(&req, "+15550002222");
         assert_eq!(
