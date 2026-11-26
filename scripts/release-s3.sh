@@ -599,6 +599,13 @@ printf '%s\n' "$MANIFEST" >"$DIST/$MANIFEST_NAME"
 jq . "$DIST/$MANIFEST_NAME"
 s3_cp "$DIST/$MANIFEST_NAME" "s3://${BUCKET}/${PREFIX}/${MANIFEST_NAME}"
 
+# ── Wasabi S3 mirror (when credentials are present and not skipped) ──────────
+if [[ "$SKIP_S3" != "1" && "$DRY_RUN" != "1" && "${THEUTH_SKIP_WASABI:-0}" != "1" \
+      && -n "${WASABI_ACCESS_KEY_ID:-}" && -n "${WASABI_SECRET_ACCESS_KEY:-}" ]]; then
+  THEUTH_VERSION="$VERSION" THEUTH_DIST_DIR="$DIST" THEUTH_RELEASE_PRERELEASE="$PRERELEASE" \
+    "$ROOT/scripts/mirror-wasabi.sh"
+fi
+
 # ── staging cleanup ──────────────────────────────────────────────────────────
 if [[ "$SKIP_S3" == "1" ]]; then
   echo "==> staging cleanup skipped (THEUTH_SKIP_S3=1)"
