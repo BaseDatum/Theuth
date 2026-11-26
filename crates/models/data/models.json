@@ -617,7 +617,7 @@
         "name": "Claude Sonnet 4.6",
         "limit": {
           "context": 1000000,
-          "output": 64000
+          "output": 128000
         },
         "cost": {
           "input": 3.0,
@@ -654,7 +654,7 @@
         "name": "Claude Sonnet 4.6 Thinking",
         "limit": {
           "context": 1000000,
-          "output": 64000
+          "output": 128000
         },
         "cost": {
           "input": 3.0,
@@ -1344,7 +1344,7 @@
         "id": "gemini-2.5-flash-image",
         "name": "Nano Banana",
         "limit": {
-          "context": 32768,
+          "context": 65536,
           "output": 32768
         },
         "cost": {
@@ -2729,10 +2729,10 @@
       },
       "grok-4-fast-non-reasoning": {
         "id": "grok-4-fast-non-reasoning",
-        "name": "X-Ai/Grok-4-Fast-Non-Reasoning",
+        "name": "Grok 4 Fast (Non-Reasoning)",
         "limit": {
           "context": 2000000,
-          "output": 2000000
+          "output": 30000
         },
         "cost": {
           "input": 0.2,
@@ -2941,8 +2941,8 @@
         "id": "hy4-preview",
         "name": "Hy4 preview",
         "limit": {
-          "context": 1024000,
-          "output": 64000
+          "context": 1048576,
+          "output": 65536
         },
         "cost": {
           "input": 0.845,
@@ -3928,7 +3928,7 @@
         "name": "Qwen3.7 Plus",
         "limit": {
           "context": 991000,
-          "output": 64000
+          "output": 131072
         },
         "cost": {
           "input": 0.282,
@@ -4374,7 +4374,7 @@
         "cost": {
           "input": 0.44,
           "output": 1.32,
-          "cache_read": 0.088
+          "cache_read": 0.044
         },
         "reasoning": true,
         "tool_call": true,
@@ -4426,6 +4426,34 @@
         "protocol": "openai_chat",
         "canonical": "zhipuai/glm-5.2"
       },
+      "glm-5.3-prime": {
+        "id": "glm-5.3-prime",
+        "name": "GLM-5.3 Prime",
+        "limit": {
+          "context": 1000000,
+          "output": 131072
+        },
+        "cost": {
+          "input": 2.8,
+          "output": 8.8,
+          "cache_read": 0.56
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "zhipuai/glm-5.3"
+      },
       "kimi-k3": {
         "id": "kimi-k3",
         "name": "Kimi K3",
@@ -4457,22 +4485,69 @@
         "protocol": "openai_chat",
         "canonical": "moonshotai/kimi-k3"
       },
-      "qvq-max": {
-        "id": "qvq-max",
-        "name": "QVQ Max",
+      "kimi-k3.1-pro": {
+        "id": "kimi-k3.1-pro",
+        "name": "Kimi K3.1 Pro",
         "limit": {
-          "context": 131072,
-          "output": 8192
+          "context": 1048576,
+          "output": 1048576
         },
         "cost": {
-          "input": 1.2,
-          "output": 4.8
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.2
         },
         "reasoning": true,
         "tool_call": true,
         "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
+      },
+      "kimi-k3.1-pro-prime": {
+        "id": "kimi-k3.1-pro-prime",
+        "name": "Kimi K3.1 Pro Prime",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 4.0,
+          "output": 20.0,
+          "cache_read": 0.2
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
       },
       "qwen-flash": {
         "id": "qwen-flash",
@@ -4510,7 +4585,8 @@
         },
         "cost": {
           "input": 1.6,
-          "output": 6.4
+          "output": 6.4,
+          "cache_read": 0.32
         },
         "reasoning": false,
         "tool_call": true,
@@ -4532,57 +4608,6 @@
         "reasoning": false,
         "tool_call": false,
         "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen-mt-turbo": {
-        "id": "qwen-mt-turbo",
-        "name": "Qwen-MT Turbo",
-        "limit": {
-          "context": 16384,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.16,
-          "output": 0.49
-        },
-        "reasoning": false,
-        "tool_call": false,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen-omni-turbo": {
-        "id": "qwen-omni-turbo",
-        "name": "Qwen-Omni Turbo",
-        "limit": {
-          "context": 32768,
-          "output": 2048
-        },
-        "cost": {
-          "input": 0.07,
-          "output": 0.27
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen-omni-turbo-realtime": {
-        "id": "qwen-omni-turbo-realtime",
-        "name": "Qwen-Omni Turbo Realtime",
-        "limit": {
-          "context": 32768,
-          "output": 2048
-        },
-        "cost": {
-          "input": 0.27,
-          "output": 1.07
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
@@ -4622,7 +4647,8 @@
         },
         "cost": {
           "input": 0.5,
-          "output": 1.4
+          "output": 1.4,
+          "cache_read": 0.1
         },
         "reasoning": false,
         "tool_call": false,
@@ -4630,54 +4656,12 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "qwen-turbo": {
-        "id": "qwen-turbo",
-        "name": "Qwen Turbo",
-        "limit": {
-          "context": 1000000,
-          "output": 16384
-        },
-        "cost": {
-          "input": 0.05,
-          "output": 0.2
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen-vl-max": {
-        "id": "qwen-vl-max",
-        "name": "Qwen-VL Max",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.8,
-          "output": 3.2
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
       "qwen-vl-ocr": {
         "id": "qwen-vl-ocr",
         "name": "Qwen-VL OCR",
         "limit": {
-          "context": 34096,
-          "output": 4096
+          "context": 38192,
+          "output": 8192
         },
         "cost": {
           "input": 0.07,
@@ -4689,140 +4673,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "qwen-vl-plus": {
-        "id": "qwen-vl-plus",
-        "name": "Qwen-VL Plus",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.21,
-          "output": 0.63
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen2-5-omni-7b": {
-        "id": "qwen2-5-omni-7b",
-        "name": "Qwen2.5-Omni 7B",
-        "limit": {
-          "context": 32768,
-          "output": 2048
-        },
-        "cost": {
-          "input": 0.1,
-          "output": 0.4
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-14b": {
-        "id": "qwen3-14b",
-        "name": "Qwen3 14B",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.35,
-          "output": 1.4
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen3-235b-a22b": {
-        "id": "qwen3-235b-a22b",
-        "name": "Qwen3 235B-A22B",
-        "limit": {
-          "context": 131072,
-          "output": 16384
-        },
-        "cost": {
-          "input": 0.7,
-          "output": 2.8
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen3-32b": {
-        "id": "qwen3-32b",
-        "name": "Qwen3 32B",
-        "limit": {
-          "context": 131072,
-          "output": 16384
-        },
-        "cost": {
-          "input": 0.7,
-          "output": 2.8
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen3-8b": {
-        "id": "qwen3-8b",
-        "name": "Qwen3 8B",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.18,
-          "output": 0.7
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0
-          }
-        ],
-        "protocol": "openai_chat"
-      },
       "qwen3-asr-flash": {
         "id": "qwen3-asr-flash",
         "name": "Qwen3-ASR Flash",
@@ -4832,40 +4682,6 @@
         },
         "reasoning": false,
         "tool_call": false,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-coder-30b-a3b-instruct": {
-        "id": "qwen3-coder-30b-a3b-instruct",
-        "name": "Qwen3-Coder 30B-A3B Instruct",
-        "limit": {
-          "context": 262144,
-          "output": 65536
-        },
-        "cost": {
-          "input": 0.45,
-          "output": 2.25
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-coder-480b-a35b-instruct": {
-        "id": "qwen3-coder-480b-a35b-instruct",
-        "name": "Qwen3-Coder 480B-A35B Instruct",
-        "limit": {
-          "context": 262144,
-          "output": 65536
-        },
-        "cost": {
-          "input": 1.5,
-          "output": 7.5
-        },
-        "reasoning": false,
-        "tool_call": true,
         "image": false,
         "reasoning_options": [],
         "protocol": "openai_chat"
@@ -4889,96 +4705,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "qwen3-coder-plus": {
-        "id": "qwen3-coder-plus",
-        "name": "Qwen3 Coder Plus",
-        "limit": {
-          "context": 1048576,
-          "output": 65536
-        },
-        "cost": {
-          "input": 1.0,
-          "output": 5.0
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-livetranslate-flash-realtime": {
-        "id": "qwen3-livetranslate-flash-realtime",
-        "name": "Qwen3-LiveTranslate Flash Realtime",
-        "limit": {
-          "context": 53248,
-          "output": 4096
-        },
-        "cost": {
-          "input": 10.0,
-          "output": 10.0
-        },
-        "reasoning": false,
-        "tool_call": false,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-max": {
-        "id": "qwen3-max",
-        "name": "Qwen3 Max",
-        "limit": {
-          "context": 262144,
-          "output": 65536
-        },
-        "cost": {
-          "input": 1.2,
-          "output": 6.0
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-next-80b-a3b-instruct": {
-        "id": "qwen3-next-80b-a3b-instruct",
-        "name": "Qwen3-Next 80B-A3B Instruct",
-        "limit": {
-          "context": 131072,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.5,
-          "output": 2.0
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-next-80b-a3b-thinking": {
-        "id": "qwen3-next-80b-a3b-thinking",
-        "name": "Qwen3-Next 80B-A3B (Thinking)",
-        "limit": {
-          "context": 131072,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.5,
-          "output": 6.0
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "budget_tokens",
-            "min": 0
-          }
-        ],
-        "protocol": "openai_chat"
-      },
       "qwen3-omni-flash": {
         "id": "qwen3-omni-flash",
         "name": "Qwen3-Omni Flash",
@@ -4996,45 +4722,6 @@
         "reasoning_options": [
           {
             "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen3-omni-flash-realtime": {
-        "id": "qwen3-omni-flash-realtime",
-        "name": "Qwen3-Omni Flash Realtime",
-        "limit": {
-          "context": 65536,
-          "output": 16384
-        },
-        "cost": {
-          "input": 0.52,
-          "output": 1.99
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-vl-235b-a22b": {
-        "id": "qwen3-vl-235b-a22b",
-        "name": "Qwen3-VL 235B-A22B",
-        "limit": {
-          "context": 131072,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.7,
-          "output": 2.8
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "budget_tokens",
-            "min": 0
           }
         ],
         "protocol": "openai_chat"
@@ -5229,7 +4916,8 @@
         },
         "cost": {
           "input": 0.4,
-          "output": 2.4
+          "output": 2.4,
+          "cache_write": 0.5
         },
         "reasoning": true,
         "tool_call": true,
@@ -5311,33 +4999,6 @@
         "reasoning": true,
         "tool_call": true,
         "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen3.6-max-preview": {
-        "id": "qwen3.6-max-preview",
-        "name": "Qwen3.6 Max Preview",
-        "limit": {
-          "context": 262144,
-          "output": 65536
-        },
-        "cost": {
-          "input": 1.3,
-          "output": 7.8,
-          "cache_read": 0.13,
-          "cache_write": 1.625
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
         "reasoning_options": [
           {
             "type": "toggle"
@@ -5562,22 +5223,40 @@
         "protocol": "openai_chat",
         "canonical": "alibaba/qwen3.8-omni-flash"
       },
-      "qwq-plus": {
-        "id": "qwq-plus",
-        "name": "QwQ Plus",
+      "qwen4-max": {
+        "id": "qwen4-max",
+        "name": "Qwen4 Max",
         "limit": {
-          "context": 131072,
-          "output": 8192
+          "context": 1000000,
+          "output": 262144
         },
         "cost": {
-          "input": 0.8,
-          "output": 2.4
+          "input": 1.5,
+          "output": 4.5,
+          "cache_read": 0.075,
+          "cache_write": 1.875
         },
         "reasoning": true,
         "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "high",
+              "xhigh"
+            ]
+          },
+          {
+            "type": "budget_tokens",
+            "min": 1,
+            "max": 262144
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen4-max"
       }
     }
   },
@@ -5811,6 +5490,28 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
+      "deepseek-v3.2": {
+        "id": "deepseek-v3.2",
+        "name": "DeepSeek V3.2",
+        "limit": {
+          "context": 131072,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.299433,
+          "output": 0.449149
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "deepseek/deepseek-v3.2"
+      },
       "deepseek-v4-flash": {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
@@ -5840,6 +5541,36 @@
         ],
         "protocol": "openai_chat",
         "canonical": "deepseek/deepseek-v4-flash"
+      },
+      "deepseek-v4-flash-0731": {
+        "id": "deepseek-v4-flash-0731",
+        "name": "DeepSeek V4 Flash 0731",
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "cost": {
+          "input": 0.449149,
+          "output": 1.347447
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "deepseek/deepseek-v4-flash-0731"
       },
       "deepseek-v4-pro": {
         "id": "deepseek-v4-pro",
@@ -6015,6 +5746,33 @@
         "protocol": "openai_chat",
         "canonical": "zhipuai/glm-5.3"
       },
+      "glm-5.3-prime": {
+        "id": "glm-5.3-prime",
+        "name": "GLM-5.3 Prime",
+        "limit": {
+          "context": 1000000,
+          "output": 131072
+        },
+        "cost": {
+          "input": 2.395461,
+          "output": 8.384113
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "zhipuai/glm-5.3"
+      },
       "kimi-k2-thinking": {
         "id": "kimi-k2-thinking",
         "name": "Moonshot Kimi K2 Thinking",
@@ -6124,6 +5882,70 @@
         "protocol": "openai_chat",
         "canonical": "moonshotai/kimi-k3"
       },
+      "kimi-k3.1-pro": {
+        "id": "kimi-k3.1-pro",
+        "name": "Kimi K3.1 Pro",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 1.946312,
+          "output": 10.180709,
+          "cache_read": 0.194631
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
+      },
+      "kimi-k3.1-pro-prime": {
+        "id": "kimi-k3.1-pro-prime",
+        "name": "Kimi K3.1 Pro Prime",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 3.892624,
+          "output": 20.361418,
+          "cache_read": 0.194631
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
+      },
       "kimi/kimi-k2.5": {
         "id": "kimi/kimi-k2.5",
         "name": "kimi/kimi-k2.5",
@@ -6160,23 +5982,6 @@
         "reasoning": false,
         "tool_call": true,
         "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qvq-max": {
-        "id": "qvq-max",
-        "name": "QVQ Max",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "cost": {
-          "input": 1.147,
-          "output": 4.588
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
@@ -6259,23 +6064,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "qwen-math-plus": {
-        "id": "qwen-math-plus",
-        "name": "Qwen Math Plus",
-        "limit": {
-          "context": 4096,
-          "output": 3072
-        },
-        "cost": {
-          "input": 0.574,
-          "output": 1.721
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
       "qwen-math-turbo": {
         "id": "qwen-math-turbo",
         "name": "Qwen Math Turbo",
@@ -6327,57 +6115,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "qwen-mt-turbo": {
-        "id": "qwen-mt-turbo",
-        "name": "Qwen-MT Turbo",
-        "limit": {
-          "context": 16384,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.101,
-          "output": 0.28
-        },
-        "reasoning": false,
-        "tool_call": false,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen-omni-turbo": {
-        "id": "qwen-omni-turbo",
-        "name": "Qwen-Omni Turbo",
-        "limit": {
-          "context": 32768,
-          "output": 2048
-        },
-        "cost": {
-          "input": 0.058,
-          "output": 0.23
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen-omni-turbo-realtime": {
-        "id": "qwen-omni-turbo-realtime",
-        "name": "Qwen-Omni Turbo Realtime",
-        "limit": {
-          "context": 32768,
-          "output": 2048
-        },
-        "cost": {
-          "input": 0.23,
-          "output": 0.918
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
       "qwen-plus": {
         "id": "qwen-plus",
         "name": "Qwen Plus",
@@ -6423,49 +6160,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "qwen-turbo": {
-        "id": "qwen-turbo",
-        "name": "Qwen Turbo",
-        "limit": {
-          "context": 1000000,
-          "output": 16384
-        },
-        "cost": {
-          "input": 0.044,
-          "output": 0.087
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0,
-            "max": 38912
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen-vl-max": {
-        "id": "qwen-vl-max",
-        "name": "Qwen-VL Max",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.23,
-          "output": 0.574
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
       "qwen-vl-ocr": {
         "id": "qwen-vl-ocr",
         "name": "Qwen-VL OCR",
@@ -6483,144 +6177,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "qwen-vl-plus": {
-        "id": "qwen-vl-plus",
-        "name": "Qwen-VL Plus",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.115,
-          "output": 0.287
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen2-5-omni-7b": {
-        "id": "qwen2-5-omni-7b",
-        "name": "Qwen2.5-Omni 7B",
-        "limit": {
-          "context": 32768,
-          "output": 2048
-        },
-        "cost": {
-          "input": 0.087,
-          "output": 0.345
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-14b": {
-        "id": "qwen3-14b",
-        "name": "Qwen3 14B",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.144,
-          "output": 0.574
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0,
-            "max": 38912
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen3-235b-a22b": {
-        "id": "qwen3-235b-a22b",
-        "name": "Qwen3 235B-A22B",
-        "limit": {
-          "context": 131072,
-          "output": 16384
-        },
-        "cost": {
-          "input": 0.287,
-          "output": 1.147
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0,
-            "max": 38912
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen3-32b": {
-        "id": "qwen3-32b",
-        "name": "Qwen3 32B",
-        "limit": {
-          "context": 131072,
-          "output": 16384
-        },
-        "cost": {
-          "input": 0.287,
-          "output": 1.147
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0,
-            "max": 38912
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen3-8b": {
-        "id": "qwen3-8b",
-        "name": "Qwen3 8B",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "cost": {
-          "input": 0.072,
-          "output": 0.287
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0,
-            "max": 38912
-          }
-        ],
-        "protocol": "openai_chat"
-      },
       "qwen3-asr-flash": {
         "id": "qwen3-asr-flash",
         "name": "Qwen3-ASR Flash",
@@ -6630,40 +6186,6 @@
         },
         "reasoning": false,
         "tool_call": false,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-coder-30b-a3b-instruct": {
-        "id": "qwen3-coder-30b-a3b-instruct",
-        "name": "Qwen3-Coder 30B-A3B Instruct",
-        "limit": {
-          "context": 262144,
-          "output": 65536
-        },
-        "cost": {
-          "input": 0.216,
-          "output": 0.861
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-coder-480b-a35b-instruct": {
-        "id": "qwen3-coder-480b-a35b-instruct",
-        "name": "Qwen3-Coder 480B-A35B Instruct",
-        "limit": {
-          "context": 262144,
-          "output": 65536
-        },
-        "cost": {
-          "input": 0.861,
-          "output": 3.441
-        },
-        "reasoning": false,
-        "tool_call": true,
         "image": false,
         "reasoning_options": [],
         "protocol": "openai_chat"
@@ -6687,88 +6209,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "qwen3-coder-plus": {
-        "id": "qwen3-coder-plus",
-        "name": "Qwen3 Coder Plus",
-        "limit": {
-          "context": 1048576,
-          "output": 65536
-        },
-        "cost": {
-          "input": 0.574,
-          "output": 2.296
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-max": {
-        "id": "qwen3-max",
-        "name": "Qwen3 Max",
-        "limit": {
-          "context": 262144,
-          "output": 65536
-        },
-        "cost": {
-          "input": 0.359,
-          "output": 1.434
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0,
-            "max": 81920
-          }
-        ],
-        "protocol": "openai_chat"
-      },
-      "qwen3-next-80b-a3b-instruct": {
-        "id": "qwen3-next-80b-a3b-instruct",
-        "name": "Qwen3-Next 80B-A3B Instruct",
-        "limit": {
-          "context": 131072,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.144,
-          "output": 0.574
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-next-80b-a3b-thinking": {
-        "id": "qwen3-next-80b-a3b-thinking",
-        "name": "Qwen3-Next 80B-A3B (Thinking)",
-        "limit": {
-          "context": 131072,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.144,
-          "output": 1.434
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "budget_tokens",
-            "min": 0
-          }
-        ],
-        "protocol": "openai_chat"
-      },
       "qwen3-omni-flash": {
         "id": "qwen3-omni-flash",
         "name": "Qwen3-Omni Flash",
@@ -6788,40 +6228,6 @@
             "type": "toggle"
           }
         ],
-        "protocol": "openai_chat"
-      },
-      "qwen3-omni-flash-realtime": {
-        "id": "qwen3-omni-flash-realtime",
-        "name": "Qwen3-Omni Flash Realtime",
-        "limit": {
-          "context": 65536,
-          "output": 16384
-        },
-        "cost": {
-          "input": 0.23,
-          "output": 0.918
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "qwen3-vl-235b-a22b": {
-        "id": "qwen3-vl-235b-a22b",
-        "name": "Qwen3-VL 235B-A22B",
-        "limit": {
-          "context": 131072,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.286705,
-          "output": 1.14682
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
         "protocol": "openai_chat"
       },
       "qwen3-vl-30b-a3b": {
@@ -6868,6 +6274,87 @@
           }
         ],
         "protocol": "openai_chat"
+      },
+      "qwen3.5-122b-a10b": {
+        "id": "qwen3.5-122b-a10b",
+        "name": "Qwen3.5 122B-A10B",
+        "limit": {
+          "context": 262144,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.119773,
+          "output": 0.958184
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "budget_tokens",
+            "min": 0,
+            "max": 81920
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen3.5-122b-a10b"
+      },
+      "qwen3.5-27b": {
+        "id": "qwen3.5-27b",
+        "name": "Qwen3.5 27B",
+        "limit": {
+          "context": 262144,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.08983,
+          "output": 0.718638
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "budget_tokens",
+            "min": 0,
+            "max": 81920
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen3.5-27b"
+      },
+      "qwen3.5-35b-a3b": {
+        "id": "qwen3.5-35b-a3b",
+        "name": "Qwen3.5 35B-A3B",
+        "limit": {
+          "context": 262144,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.059887,
+          "output": 0.479092
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "budget_tokens",
+            "min": 0,
+            "max": 81920
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen3.5-35b-a3b"
       },
       "qwen3.5-397b-a17b": {
         "id": "qwen3.5-397b-a17b",
@@ -6947,6 +6434,59 @@
         ],
         "protocol": "openai_chat"
       },
+      "qwen3.6-27b": {
+        "id": "qwen3.6-27b",
+        "name": "Qwen3.6 27B",
+        "limit": {
+          "context": 262144,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.449149,
+          "output": 2.694894
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "budget_tokens",
+            "min": 0
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen3.6-27b"
+      },
+      "qwen3.6-35b-a3b": {
+        "id": "qwen3.6-35b-a3b",
+        "name": "Qwen3.6 35B-A3B",
+        "limit": {
+          "context": 262144,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.269489,
+          "output": 1.616936
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "budget_tokens",
+            "min": 0,
+            "max": 131072
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen3.6-35b-a3b"
+      },
       "qwen3.6-flash": {
         "id": "qwen3.6-flash",
         "name": "Qwen3.6 Flash",
@@ -6975,33 +6515,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "alibaba/qwen3.6-flash"
-      },
-      "qwen3.6-max-preview": {
-        "id": "qwen3.6-max-preview",
-        "name": "Qwen3.6 Max Preview",
-        "limit": {
-          "context": 245800,
-          "output": 65536
-        },
-        "cost": {
-          "input": 1.32,
-          "output": 7.9,
-          "cache_read": 0.132
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 0,
-            "max": 131072
-          }
-        ],
-        "protocol": "openai_chat"
       },
       "qwen3.6-plus": {
         "id": "qwen3.6-plus",
@@ -7094,7 +6607,7 @@
         "name": "Qwen3.7 Plus",
         "limit": {
           "context": 1000000,
-          "output": 64000
+          "output": 131072
         },
         "cost": {
           "input": 0.276,
@@ -7221,22 +6734,40 @@
         "protocol": "openai_chat",
         "canonical": "alibaba/qwen3.8-omni-flash"
       },
-      "qwq-plus": {
-        "id": "qwq-plus",
-        "name": "QwQ Plus",
+      "qwen4-max": {
+        "id": "qwen4-max",
+        "name": "Qwen4 Max",
         "limit": {
-          "context": 131072,
-          "output": 8192
+          "context": 1000000,
+          "output": 262144
         },
         "cost": {
-          "input": 0.23,
-          "output": 0.574
+          "input": 1.497163,
+          "output": 4.491489,
+          "cache_read": 0.074858,
+          "cache_write": 1.871454
         },
         "reasoning": true,
         "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "high",
+              "xhigh"
+            ]
+          },
+          {
+            "type": "budget_tokens",
+            "min": 1,
+            "max": 262144
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen4-max"
       },
       "siliconflow/deepseek-r1-0528": {
         "id": "siliconflow/deepseek-r1-0528",
@@ -8014,34 +7545,6 @@
         "protocol": "openai_chat",
         "canonical": "amazon/nova-pro"
       },
-      "apac.anthropic.claude-sonnet-4-20250514-v1:0": {
-        "id": "apac.anthropic.claude-sonnet-4-20250514-v1:0",
-        "name": "Claude Sonnet 4 (APAC)",
-        "limit": {
-          "context": 200000,
-          "output": 64000
-        },
-        "cost": {
-          "input": 3.0,
-          "output": 15.0,
-          "cache_read": 0.3,
-          "cache_write": 3.75
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 1024
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "anthropic/claude-sonnet-4-20250514"
-      },
       "au.anthropic.claude-haiku-4-5-20251001-v1:0": {
         "id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
         "name": "Claude Haiku 4.5 (AU)",
@@ -8424,6 +7927,71 @@
         "protocol": "openai_chat",
         "canonical": "amazon/nova-lite"
       },
+      "ca.anthropic.claude-haiku-5-5": {
+        "id": "ca.anthropic.claude-haiku-5-5",
+        "name": "Claude Haiku 5.5 (Canada)",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 0.11,
+          "output": 0.55,
+          "cache_read": 0.011,
+          "cache_write": 0.1375
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "anthropic/claude-haiku-5-5"
+      },
+      "ca.anthropic.claude-sonnet-5-5": {
+        "id": "ca.anthropic.claude-sonnet-5-5",
+        "name": "Claude Sonnet 5.5 (Canada)",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2.2,
+          "output": 11.0,
+          "cache_read": 0.11,
+          "cache_write": 2.75
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "anthropic/claude-sonnet-5-5"
+      },
       "deepseek.r1-v1:0": {
         "id": "deepseek.r1-v1:0",
         "name": "DeepSeek-R1",
@@ -8577,37 +8145,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat",
         "canonical": "amazon/nova-pro"
-      },
-      "eu.anthropic.claude-fable-5": {
-        "id": "eu.anthropic.claude-fable-5",
-        "name": "Claude Fable 5 (EU)",
-        "limit": {
-          "context": 1000000,
-          "output": 128000
-        },
-        "cost": {
-          "input": 11.0,
-          "output": 55.0,
-          "cache_read": 1.1,
-          "cache_write": 13.75
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "anthropic/claude-fable-5"
       },
       "eu.anthropic.claude-haiku-4-5-20251001-v1:0": {
         "id": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -8876,34 +8413,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-opus-5-5"
-      },
-      "eu.anthropic.claude-sonnet-4-20250514-v1:0": {
-        "id": "eu.anthropic.claude-sonnet-4-20250514-v1:0",
-        "name": "Claude Sonnet 4 (EU)",
-        "limit": {
-          "context": 200000,
-          "output": 64000
-        },
-        "cost": {
-          "input": 3.0,
-          "output": 15.0,
-          "cache_read": 0.3,
-          "cache_write": 3.75
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 1024
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "anthropic/claude-sonnet-4-20250514"
       },
       "eu.anthropic.claude-sonnet-4-5-20250929-v1:0": {
         "id": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -9445,34 +8954,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-opus-5-5"
-      },
-      "global.anthropic.claude-sonnet-4-20250514-v1:0": {
-        "id": "global.anthropic.claude-sonnet-4-20250514-v1:0",
-        "name": "Claude Sonnet 4 (Global)",
-        "limit": {
-          "context": 200000,
-          "output": 64000
-        },
-        "cost": {
-          "input": 3.0,
-          "output": 15.0,
-          "cache_read": 0.3,
-          "cache_write": 3.75
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 1024
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "anthropic/claude-sonnet-4-20250514"
       },
       "global.anthropic.claude-sonnet-4-5-20250929-v1:0": {
         "id": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -10289,6 +9770,58 @@
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-sonnet-5"
       },
+      "in.moonshotai.kimi-k3": {
+        "id": "in.moonshotai.kimi-k3",
+        "name": "Kimi K3 (India)",
+        "limit": {
+          "context": 1048576,
+          "output": 128000
+        },
+        "cost": {
+          "input": 3.3,
+          "output": 16.5,
+          "cache_read": 0.33,
+          "cache_write": 4.125
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3"
+      },
+      "in.moonshotai.kimi-k3.1": {
+        "id": "in.moonshotai.kimi-k3.1",
+        "name": "Kimi K3.1 Pro Highspeed (India)",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 4.4,
+          "output": 22.0,
+          "cache_read": 0.22,
+          "cache_write": 5.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
+      },
       "in.openai.gpt-5.6-luna": {
         "id": "in.openai.gpt-5.6-luna",
         "name": "GPT-5.6 Luna (India)",
@@ -10515,40 +10048,6 @@
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-opus-4-8"
       },
-      "jp.anthropic.claude-opus-5": {
-        "id": "jp.anthropic.claude-opus-5",
-        "name": "Claude Opus 5 (JP)",
-        "limit": {
-          "context": 1000000,
-          "output": 128000
-        },
-        "cost": {
-          "input": 5.5,
-          "output": 27.5,
-          "cache_read": 0.55,
-          "cache_write": 6.875
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "anthropic/claude-opus-5"
-      },
       "jp.anthropic.claude-opus-5-5": {
         "id": "jp.anthropic.claude-opus-5-5",
         "name": "Claude Opus 5.5 (JP)",
@@ -10644,40 +10143,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-sonnet-4-6"
-      },
-      "jp.anthropic.claude-sonnet-5": {
-        "id": "jp.anthropic.claude-sonnet-5",
-        "name": "Claude Sonnet 5 (JP)",
-        "limit": {
-          "context": 1000000,
-          "output": 128000
-        },
-        "cost": {
-          "input": 2.2,
-          "output": 11.0,
-          "cache_read": 0.22,
-          "cache_write": 2.75
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "anthropic/claude-sonnet-5"
       },
       "meta.llama3-1-70b-instruct-v1:0": {
         "id": "meta.llama3-1-70b-instruct-v1:0",
@@ -11101,7 +10566,7 @@
         "id": "openai.gpt-5.4",
         "name": "GPT-5.4",
         "limit": {
-          "context": 1000000,
+          "context": 1050000,
           "output": 128000
         },
         "cost": {
@@ -11131,7 +10596,7 @@
         "id": "openai.gpt-5.5",
         "name": "GPT-5.5",
         "limit": {
-          "context": 1000000,
+          "context": 1050000,
           "output": 128000
         },
         "cost": {
@@ -11891,26 +11356,6 @@
         "protocol": "openai_chat",
         "canonical": "amazon/nova-micro"
       },
-      "us.amazon.nova-premier-v1:0": {
-        "id": "us.amazon.nova-premier-v1:0",
-        "name": "Nova Premier (US)",
-        "limit": {
-          "context": 1000000,
-          "output": 10000
-        },
-        "cost": {
-          "input": 2.5,
-          "output": 12.5,
-          "cache_read": 0.625,
-          "cache_write": 2.5
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "amazon/nova-premier"
-      },
       "us.amazon.nova-pro-v1:0": {
         "id": "us.amazon.nova-pro-v1:0",
         "name": "Nova Pro (US)",
@@ -12319,34 +11764,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-opus-5-5"
-      },
-      "us.anthropic.claude-sonnet-4-20250514-v1:0": {
-        "id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-        "name": "Claude Sonnet 4 (US)",
-        "limit": {
-          "context": 200000,
-          "output": 64000
-        },
-        "cost": {
-          "input": 3.0,
-          "output": 15.0,
-          "cache_read": 0.3,
-          "cache_write": 3.75
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "budget_tokens",
-            "min": 1024
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "anthropic/claude-sonnet-4-20250514"
       },
       "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {
         "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -13925,8 +13342,8 @@
           "output": 64000
         },
         "cost": {
-          "input": 2.5,
-          "output": 10.0
+          "input": 0.0,
+          "output": 0.0
         },
         "reasoning": true,
         "tool_call": true,
@@ -14103,8 +13520,52 @@
         "protocol": "openai_chat",
         "canonical": "cohere/north-mini-code-1-0"
       },
+      "north-mini-code-1.0": {
+        "id": "north-mini-code-1.0",
+        "name": "North Mini Code",
+        "limit": {
+          "context": 256000,
+          "output": 64000
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "high"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "cohere/north-mini-code-1-0"
+      },
       "north-small-translate-09-2026": {
         "id": "north-small-translate-09-2026",
+        "name": "North Small Translate",
+        "limit": {
+          "context": 32768,
+          "output": 16000
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0
+        },
+        "reasoning": false,
+        "tool_call": false,
+        "image": false,
+        "reasoning_options": [],
+        "protocol": "openai_chat",
+        "canonical": "cohere/north-small-translate-1-0"
+      },
+      "north-small-translate-1.0": {
+        "id": "north-small-translate-1.0",
         "name": "North Small Translate",
         "limit": {
           "context": 32768,
@@ -14323,7 +13784,7 @@
         "id": "accounts/fireworks/models/deepseek-v4p1-flash",
         "name": "DeepSeek V4.1 Flash",
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 384000
         },
         "cost": {
@@ -14354,7 +13815,7 @@
         "id": "accounts/fireworks/models/deepseek-v4p1-flash-1017",
         "name": "DeepSeek V4.1 Flash 1017",
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 384000
         },
         "cost": {
@@ -14469,6 +13930,68 @@
         "protocol": "openai_chat",
         "canonical": "zhipuai/glm-5.3-flash"
       },
+      "accounts/fireworks/models/hy4-flash": {
+        "id": "accounts/fireworks/models/hy4-flash",
+        "name": "Hy4 flash",
+        "limit": {
+          "context": 524288,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.07,
+          "output": 0.281,
+          "cache_read": 0.003
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "high"
+            ]
+          },
+          {
+            "type": "budget_tokens",
+            "min": 0
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "tencent/hy4-flash"
+      },
+      "accounts/fireworks/models/inkling-2-mini": {
+        "id": "accounts/fireworks/models/inkling-2-mini",
+        "name": "Inkling 2 Mini",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.5,
+          "cache_read": 0.015
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "thinkingmachines/inkling-2-mini"
+      },
       "accounts/fireworks/models/kimi-k3": {
         "id": "accounts/fireworks/models/kimi-k3",
         "name": "Kimi K3",
@@ -14565,7 +14088,7 @@
         "id": "accounts/fireworks/models/minimax-m3p1-flash",
         "name": "MiniMax-M3.1-Flash",
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 512000
         },
         "cost": {
@@ -14678,6 +14201,63 @@
         "protocol": "openai_chat",
         "canonical": "alibaba/qwen3.8-max"
       },
+      "accounts/fireworks/models/qwen4-max": {
+        "id": "accounts/fireworks/models/qwen4-max",
+        "name": "Qwen4 Max",
+        "limit": {
+          "context": 262144,
+          "output": 262144
+        },
+        "cost": {
+          "input": 1.5,
+          "output": 4.5,
+          "cache_read": 0.075
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen4-max"
+      },
+      "accounts/fireworks/models/ultramarine-1-flash-us": {
+        "id": "accounts/fireworks/models/ultramarine-1-flash-us",
+        "name": "Ultramarine 1 Flash",
+        "limit": {
+          "context": 1048576,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.5,
+          "cache_read": 0.03
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "paperinstruments/ultramarine-1-flash"
+      },
       "accounts/fireworks/routers/deepseek-flash-latest": {
         "id": "accounts/fireworks/routers/deepseek-flash-latest",
         "name": "DeepSeek Flash Latest",
@@ -14689,6 +14269,37 @@
           "input": 0.3,
           "output": 1.2,
           "cache_read": 0.006
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "deepseek/deepseek-v4.1-flash-1017"
+      },
+      "accounts/fireworks/routers/deepseek-v4p1-flash-1017-flex": {
+        "id": "accounts/fireworks/routers/deepseek-v4p1-flash-1017-flex",
+        "name": "DeepSeek V4.1 Flash 1017 Flex",
+        "limit": {
+          "context": 1048576,
+          "output": 384000
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.003
         },
         "reasoning": true,
         "tool_call": true,
@@ -14771,6 +14382,37 @@
         "protocol": "openai_chat",
         "canonical": "deepseek/deepseek-v4.1-flash-1017"
       },
+      "accounts/fireworks/routers/deepseek-v4p1-flash-1017-us": {
+        "id": "accounts/fireworks/routers/deepseek-v4p1-flash-1017-us",
+        "name": "DeepSeek V4.1 Flash 1017 (US)",
+        "limit": {
+          "context": 1048576,
+          "output": 384000
+        },
+        "cost": {
+          "input": 0.45,
+          "output": 1.8,
+          "cache_read": 0.009
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "deepseek/deepseek-v4.1-flash-1017"
+      },
       "accounts/fireworks/routers/deepseek-v4p1-flash-spot": {
         "id": "accounts/fireworks/routers/deepseek-v4p1-flash-spot",
         "name": "DeepSeek V4.1 Flash Spot",
@@ -14782,6 +14424,37 @@
           "input": 0.15,
           "output": 0.6,
           "cache_read": 0.003
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "deepseek/deepseek-v4.1-flash"
+      },
+      "accounts/fireworks/routers/deepseek-v4p1-flash-us": {
+        "id": "accounts/fireworks/routers/deepseek-v4p1-flash-us",
+        "name": "DeepSeek V4.1 Flash (US)",
+        "limit": {
+          "context": 1048576,
+          "output": 384000
+        },
+        "cost": {
+          "input": 0.45,
+          "output": 1.8,
+          "cache_read": 0.009
         },
         "reasoning": true,
         "tool_call": true,
@@ -14830,6 +14503,62 @@
         "protocol": "openai_chat",
         "canonical": "zhipuai/glm-5.3"
       },
+      "accounts/fireworks/routers/glm-5p3-flash-flex": {
+        "id": "accounts/fireworks/routers/glm-5p3-flash-flex",
+        "name": "GLM 5.3 Flash Flex",
+        "limit": {
+          "context": 1048573,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.075,
+          "output": 0.25,
+          "cache_read": 0.015
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "zhipuai/glm-5.3-flash"
+      },
+      "accounts/fireworks/routers/glm-5p3-flex": {
+        "id": "accounts/fireworks/routers/glm-5p3-flex",
+        "name": "GLM 5.3 Flex",
+        "limit": {
+          "context": 1048573,
+          "output": 262144
+        },
+        "cost": {
+          "input": 0.7,
+          "output": 2.2,
+          "cache_read": 0.13
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "zhipuai/glm-5.3"
+      },
       "accounts/fireworks/routers/glm-5p3-spot": {
         "id": "accounts/fireworks/routers/glm-5p3-spot",
         "name": "GLM 5.3 Spot",
@@ -14841,6 +14570,34 @@
           "input": 0.7,
           "output": 2.2,
           "cache_read": 0.13
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "zhipuai/glm-5.3"
+      },
+      "accounts/fireworks/routers/glm-5p3-us": {
+        "id": "accounts/fireworks/routers/glm-5p3-us",
+        "name": "GLM 5.3 (US)",
+        "limit": {
+          "context": 1048573,
+          "output": 262144
+        },
+        "cost": {
+          "input": 2.1,
+          "output": 6.6,
+          "cache_read": 0.39
         },
         "reasoning": true,
         "tool_call": true,
@@ -15006,17 +14763,17 @@
         "protocol": "openai_chat",
         "canonical": "moonshotai/kimi-k3"
       },
-      "accounts/fireworks/routers/kimi-k3-spot": {
-        "id": "accounts/fireworks/routers/kimi-k3-spot",
-        "name": "Kimi K3 Spot",
+      "accounts/fireworks/routers/kimi-k3-us": {
+        "id": "accounts/fireworks/routers/kimi-k3-us",
+        "name": "Kimi K3 (US)",
         "limit": {
           "context": 1048576,
           "output": 1048576
         },
         "cost": {
-          "input": 2.1,
-          "output": 10.5,
-          "cache_read": 0.21
+          "input": 4.5,
+          "output": 22.5,
+          "cache_read": 0.45
         },
         "reasoning": true,
         "tool_call": true,
@@ -15038,9 +14795,73 @@
         "protocol": "openai_chat",
         "canonical": "moonshotai/kimi-k3"
       },
+      "accounts/fireworks/routers/kimi-k3p1-pro-ultrafast": {
+        "id": "accounts/fireworks/routers/kimi-k3p1-pro-ultrafast",
+        "name": "Kimi K3.1 Pro Ultra-fast",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 5.0,
+          "output": 25.0,
+          "cache_read": 0.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
+      },
+      "accounts/fireworks/routers/kimi-k3p1-pro-us": {
+        "id": "accounts/fireworks/routers/kimi-k3p1-pro-us",
+        "name": "Kimi K3.1 Pro (US)",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 2.5,
+          "output": 12.5,
+          "cache_read": 0.25
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
+      },
       "accounts/fireworks/routers/kimi-latest": {
         "id": "accounts/fireworks/routers/kimi-latest",
-        "name": "Kimi Latest",
+        "name": "Kimi Latest (Kimi K3.1 Pro)",
         "limit": {
           "context": 1048576,
           "output": 1048576
@@ -15068,7 +14889,7 @@
           }
         ],
         "protocol": "openai_chat",
-        "canonical": "moonshotai/kimi-k3"
+        "canonical": "moonshotai/kimi-k3.1-pro"
       },
       "accounts/fireworks/routers/minimax-latest": {
         "id": "accounts/fireworks/routers/minimax-latest",
@@ -15286,37 +15107,6 @@
         "protocol": "anthropic",
         "canonical": "anthropic/claude-haiku-5-5"
       },
-      "claude-opus-4.7": {
-        "id": "claude-opus-4.7",
-        "name": "Claude Opus 4.7",
-        "limit": {
-          "context": 200000,
-          "output": 32000
-        },
-        "cost": {
-          "input": 5.0,
-          "output": 25.0,
-          "cache_read": 0.5,
-          "cache_write": 6.25
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "anthropic",
-        "canonical": "anthropic/claude-opus-4-7"
-      },
       "claude-opus-4.8": {
         "id": "claude-opus-4.8",
         "name": "Claude Opus 4.8",
@@ -15347,37 +15137,6 @@
         ],
         "protocol": "anthropic",
         "canonical": "anthropic/claude-opus-4-8"
-      },
-      "claude-opus-5": {
-        "id": "claude-opus-5",
-        "name": "Claude Opus 5",
-        "limit": {
-          "context": 1000000,
-          "output": 64000
-        },
-        "cost": {
-          "input": 5.0,
-          "output": 25.0,
-          "cache_read": 0.5,
-          "cache_write": 6.25
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "anthropic",
-        "canonical": "anthropic/claude-opus-5"
       },
       "claude-opus-5.5": {
         "id": "claude-opus-5.5",
@@ -15506,102 +15265,6 @@
         ],
         "protocol": "anthropic",
         "canonical": "anthropic/claude-sonnet-5-5"
-      },
-      "gemini-3.5-flash": {
-        "id": "gemini-3.5-flash",
-        "name": "Gemini 3.5 Flash",
-        "limit": {
-          "context": 200000,
-          "output": 64000
-        },
-        "cost": {
-          "input": 1.5,
-          "output": 9.0,
-          "cache_read": 0.15
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "minimal",
-              "low",
-              "medium",
-              "high"
-            ]
-          },
-          {
-            "type": "budget_tokens",
-            "min": 256,
-            "max": 24000
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "google/gemini-3.5-flash"
-      },
-      "gemini-3.6-flash": {
-        "id": "gemini-3.6-flash",
-        "name": "Gemini 3.6 Flash",
-        "limit": {
-          "context": 1000000,
-          "output": 64000
-        },
-        "cost": {
-          "input": 0.75,
-          "output": 3.75,
-          "cache_read": 0.075
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "minimal",
-              "low",
-              "medium",
-              "high"
-            ]
-          },
-          {
-            "type": "budget_tokens",
-            "min": 256,
-            "max": 32000
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "google/gemini-3.6-flash"
-      },
-      "gemini-3.7-flash": {
-        "id": "gemini-3.7-flash",
-        "name": "Gemini 3.7 Flash",
-        "limit": {
-          "context": 1000000,
-          "output": 64000
-        },
-        "cost": {
-          "input": 0.75,
-          "output": 3.75,
-          "cache_read": 0.075
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "google/gemini-3.7-flash"
       },
       "gemini-3.8-flash": {
         "id": "gemini-3.8-flash",
@@ -15745,34 +15408,6 @@
         "protocol": "openai_chat",
         "canonical": "google/gemini-4-neon"
       },
-      "gpt-5-mini": {
-        "id": "gpt-5-mini",
-        "name": "GPT-5 Mini",
-        "limit": {
-          "context": 264000,
-          "output": 64000
-        },
-        "cost": {
-          "input": 0.25,
-          "output": 2.0,
-          "cache_read": 0.025
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "openai/gpt-5-mini"
-      },
       "gpt-5.3-codex": {
         "id": "gpt-5.3-codex",
         "name": "GPT-5.3 Codex",
@@ -15801,66 +15436,6 @@
         ],
         "protocol": "openai_responses",
         "canonical": "openai/gpt-5.3-codex"
-      },
-      "gpt-5.4": {
-        "id": "gpt-5.4",
-        "name": "GPT-5.4",
-        "limit": {
-          "context": 1050000,
-          "output": 128000
-        },
-        "cost": {
-          "input": 2.5,
-          "output": 15.0,
-          "cache_read": 0.25
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "none",
-              "low",
-              "medium",
-              "high",
-              "xhigh"
-            ]
-          }
-        ],
-        "protocol": "openai_responses",
-        "canonical": "openai/gpt-5.4"
-      },
-      "gpt-5.4-mini": {
-        "id": "gpt-5.4-mini",
-        "name": "GPT-5.4 mini",
-        "limit": {
-          "context": 400000,
-          "output": 128000
-        },
-        "cost": {
-          "input": 0.75,
-          "output": 4.5,
-          "cache_read": 0.075
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "none",
-              "low",
-              "medium",
-              "high",
-              "xhigh"
-            ]
-          }
-        ],
-        "protocol": "openai_responses",
-        "canonical": "openai/gpt-5.4-mini"
       },
       "gpt-5.4-nano": {
         "id": "gpt-5.4-nano",
@@ -15891,36 +15466,6 @@
         ],
         "protocol": "openai_responses",
         "canonical": "openai/gpt-5.4-nano"
-      },
-      "gpt-5.5": {
-        "id": "gpt-5.5",
-        "name": "GPT-5.5",
-        "limit": {
-          "context": 1050000,
-          "output": 128000
-        },
-        "cost": {
-          "input": 5.0,
-          "output": 30.0,
-          "cache_read": 0.5
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "none",
-              "low",
-              "medium",
-              "high",
-              "xhigh"
-            ]
-          }
-        ],
-        "protocol": "openai_responses",
-        "canonical": "openai/gpt-5.5"
       },
       "gpt-5.6-luna": {
         "id": "gpt-5.6-luna",
@@ -15985,38 +15530,6 @@
         ],
         "protocol": "openai_responses",
         "canonical": "openai/gpt-5.6-sol"
-      },
-      "gpt-5.6-terra": {
-        "id": "gpt-5.6-terra",
-        "name": "GPT-5.6 Terra",
-        "limit": {
-          "context": 1050000,
-          "output": 128000
-        },
-        "cost": {
-          "input": 2.0,
-          "output": 12.0,
-          "cache_read": 0.2,
-          "cache_write": 2.5
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "none",
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "openai_responses",
-        "canonical": "openai/gpt-5.6-terra"
       },
       "gpt-6-astra": {
         "id": "gpt-6-astra",
@@ -16324,25 +15837,6 @@
         "protocol": "openai_responses",
         "canonical": "xai/grok-4.7"
       },
-      "kimi-k2.7-code": {
-        "id": "kimi-k2.7-code",
-        "name": "Kimi K2.7 Code",
-        "limit": {
-          "context": 256000,
-          "output": 32000
-        },
-        "cost": {
-          "input": 0.95,
-          "output": 4.0,
-          "cache_read": 0.19
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "moonshotai/kimi-k2.7-code"
-      },
       "kimi-k3": {
         "id": "kimi-k3",
         "name": "Kimi K3",
@@ -16540,13 +16034,12 @@
         "id": "gemini-2.5-flash-image",
         "name": "Nano Banana",
         "limit": {
-          "context": 32768,
+          "context": 65536,
           "output": 32768
         },
         "cost": {
           "input": 0.3,
-          "output": 2.5,
-          "cache_read": 0.075
+          "output": 2.5
         },
         "reasoning": false,
         "tool_call": false,
@@ -17313,12 +16806,8 @@
         "id": "lyria-3-clip-preview",
         "name": "Lyria 3 Clip Preview",
         "limit": {
-          "context": 1048576,
+          "context": 131072,
           "output": 65536
-        },
-        "cost": {
-          "input": 0.0,
-          "output": 0.0
         },
         "reasoning": false,
         "tool_call": false,
@@ -17331,12 +16820,8 @@
         "id": "lyria-3-pro-preview",
         "name": "Lyria 3 Pro Preview",
         "limit": {
-          "context": 1048576,
+          "context": 131072,
           "output": 65536
-        },
-        "cost": {
-          "input": 0.0,
-          "output": 0.0
         },
         "reasoning": false,
         "tool_call": false,
@@ -17991,7 +17476,7 @@
         "id": "gemini-2.5-flash-image",
         "name": "Nano Banana",
         "limit": {
-          "context": 32768,
+          "context": 65536,
           "output": 32768
         },
         "cost": {
@@ -20398,6 +19883,35 @@
         "protocol": "openai_chat",
         "canonical": "deepseek/deepseek-v4.1-flash-1017"
       },
+      "deepseek-ai/DeepSeek-V4.1-Flash-1017-fast": {
+        "id": "deepseek-ai/DeepSeek-V4.1-Flash-1017-fast",
+        "name": "DeepSeek V4.1 Flash 1017 (fast)",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 0.6,
+          "output": 2.4,
+          "cache_read": 0.012
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "deepseek/deepseek-v4.1-flash-1017"
+      },
       "google/gemma-3-27b-it": {
         "id": "google/gemma-3-27b-it",
         "name": "Gemma-3-27b-it",
@@ -22246,6 +21760,36 @@
         "protocol": "openai_responses",
         "canonical": "openai/gpt-6-astra"
       },
+      "gpt-6-astra-healthcare": {
+        "id": "gpt-6-astra-healthcare",
+        "name": "GPT-6 Astra Healthcare",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 10.0,
+          "output": 50.0,
+          "cache_read": 1.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_responses",
+        "canonical": "openai/gpt-6-astra-healthcare"
+      },
       "gpt-6-luna": {
         "id": "gpt-6-luna",
         "name": "GPT-6 Luna",
@@ -22341,6 +21885,36 @@
         "protocol": "openai_responses",
         "canonical": "openai/gpt-6.1-sol"
       },
+      "gpt-6.1-sol-healthcare": {
+        "id": "gpt-6.1-sol-healthcare",
+        "name": "GPT-6.1 Sol Healthcare",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_responses",
+        "canonical": "openai/gpt-6.1-sol-healthcare"
+      },
       "gpt-6.1-terra": {
         "id": "gpt-6.1-terra",
         "name": "GPT-6.1 Terra",
@@ -22404,6 +21978,37 @@
         "protocol": "openai_responses",
         "canonical": "openai/gpt-6.2-astra"
       },
+      "gpt-6.2-astra-healthcare": {
+        "id": "gpt-6.2-astra-healthcare",
+        "name": "GPT-6.2 Astra Healthcare",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.4,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_responses",
+        "canonical": "openai/gpt-6.2-astra-healthcare"
+      },
       "gpt-6.2-sol": {
         "id": "gpt-6.2-sol",
         "name": "GPT-6.2 Sol",
@@ -22434,6 +22039,37 @@
         ],
         "protocol": "openai_responses",
         "canonical": "openai/gpt-6.2-sol"
+      },
+      "gpt-6.2-sol-healthcare": {
+        "id": "gpt-6.2-sol-healthcare",
+        "name": "GPT-6.2 Sol Healthcare",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1,
+          "cache_write": 2.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_responses",
+        "canonical": "openai/gpt-6.2-sol-healthcare"
       },
       "gpt-daybreak-blue-latest": {
         "id": "gpt-daybreak-blue-latest",
@@ -22544,36 +22180,6 @@
         "reasoning_options": [],
         "protocol": "openai_responses",
         "canonical": "openai/gpt-image-2"
-      },
-      "gpt-realtime-2.1": {
-        "id": "gpt-realtime-2.1",
-        "name": "GPT-Realtime-2.1",
-        "limit": {
-          "context": 128000,
-          "output": 32000
-        },
-        "cost": {
-          "input": 4.0,
-          "output": 24.0,
-          "cache_read": 0.4
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "minimal",
-              "low",
-              "medium",
-              "high",
-              "xhigh"
-            ]
-          }
-        ],
-        "protocol": "openai_responses",
-        "canonical": "openai/gpt-realtime-2.1"
       },
       "o3": {
         "id": "o3",
@@ -23209,7 +22815,7 @@
         "name": "Claude Sonnet 4.6",
         "limit": {
           "context": 1000000,
-          "output": 64000
+          "output": 128000
         },
         "cost": {
           "input": 3.0,
@@ -25370,6 +24976,35 @@
         "protocol": "openai_chat",
         "canonical": "moonshotai/kimi-k3"
       },
+      "kimi-k3.1-pro": {
+        "id": "kimi-k3.1-pro",
+        "name": "Kimi K3.1 Pro",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.2,
+          "cache_write": 2.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
+      },
       "laguna-s-2.1-free": {
         "id": "laguna-s-2.1-free",
         "name": "Laguna S 2.1 Free",
@@ -26448,6 +26083,36 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
+      "seaglass-alpha-free": {
+        "id": "seaglass-alpha-free",
+        "name": "Seaglass Alpha Free",
+        "limit": {
+          "context": 1048576,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0,
+          "cache_read": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
+      },
       "space-bunny-free": {
         "id": "space-bunny-free",
         "name": "Space Bunny Free",
@@ -27000,6 +26665,24 @@
         "protocol": "openai_responses",
         "canonical": "xai/grok-4.7"
       },
+      "hungerg-free": {
+        "id": "hungerg-free",
+        "name": "HungerG Free",
+        "limit": {
+          "context": 1000000,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0,
+          "cache_read": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [],
+        "protocol": "openai_chat"
+      },
       "hy3": {
         "id": "hy3",
         "name": "Hy3",
@@ -27086,8 +26769,8 @@
         "id": "hy4-preview",
         "name": "Hy4 preview",
         "limit": {
-          "context": 1024000,
-          "output": 64000
+          "context": 1048576,
+          "output": 65536
         },
         "cost": {
           "input": 0.834,
@@ -28545,7 +28228,7 @@
         "name": "Seed 2.1 Turbo",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 256000
         },
         "cost": {
           "input": 0.5,
@@ -28792,7 +28475,7 @@
         "name": "DeepSeek V3.1",
         "limit": {
           "context": 163840,
-          "output": 147456
+          "output": 32768
         },
         "cost": {
           "input": 0.25,
@@ -28854,7 +28537,7 @@
         "name": "DeepSeek V3.2",
         "limit": {
           "context": 163840,
-          "output": 147456
+          "output": 64000
         },
         "cost": {
           "input": 0.26,
@@ -28926,10 +28609,10 @@
         "name": "DeepSeek V4 Flash 0731",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 384000
         },
         "cost": {
-          "input": 0.0434,
+          "input": 0.047,
           "output": 0.3,
           "cache_read": 0.035
         },
@@ -28955,12 +28638,12 @@
         "name": "DeepSeek V4 Flash Vision Exp",
         "limit": {
           "context": 1048576,
-          "output": 262144
+          "output": 393216
         },
         "cost": {
-          "input": 0.2156,
-          "output": 0.6468,
-          "cache_read": 0.00686
+          "input": 0.44,
+          "output": 1.32,
+          "cache_read": 0.028
         },
         "reasoning": true,
         "tool_call": true,
@@ -28987,8 +28670,8 @@
           "output": 393216
         },
         "cost": {
-          "input": 0.9,
-          "output": 1.5,
+          "input": 0.888188,
+          "output": 1.5082,
           "cache_read": 0.2
         },
         "reasoning": true,
@@ -29012,12 +28695,12 @@
         "name": "DeepSeek V4 Pro 0813",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 384000
         },
         "cost": {
-          "input": 1.32,
-          "output": 3.96,
-          "cache_read": 0.044
+          "input": 0.111,
+          "output": 4.44,
+          "cache_read": 0.097
         },
         "reasoning": true,
         "tool_call": true,
@@ -29044,9 +28727,9 @@
           "output": 393216
         },
         "cost": {
-          "input": 0.0498,
-          "output": 0.1992,
-          "cache_read": 0.000996
+          "input": 0.14,
+          "output": 0.42,
+          "cache_read": 0.0042
         },
         "reasoning": true,
         "tool_call": true,
@@ -29073,9 +28756,9 @@
           "output": 393216
         },
         "cost": {
-          "input": 0.03,
-          "output": 0.2,
-          "cache_read": 0.001
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.003
         },
         "reasoning": true,
         "tool_call": true,
@@ -29093,27 +28776,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "deepseek/deepseek-v4.1-flash-1017"
-      },
-      "dots-studio/dots-3-note-preview:free": {
-        "id": "dots-studio/dots-3-note-preview:free",
-        "name": "Dots3-Note Preview (free)",
-        "limit": {
-          "context": 512000,
-          "output": 460800
-        },
-        "cost": {
-          "input": 0.0,
-          "output": 0.0
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat"
       },
       "elorian/glimpse": {
         "id": "elorian/glimpse",
@@ -29142,7 +28804,7 @@
         "name": "Ember-1",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 3.0,
@@ -29389,7 +29051,7 @@
         "name": "Nano Banana 2 Preview",
         "limit": {
           "context": 65536,
-          "output": 58982
+          "output": 65536
         },
         "cost": {
           "input": 0.5,
@@ -29447,7 +29109,7 @@
         "name": "Nano Banana 2 Lite",
         "limit": {
           "context": 65536,
-          "output": 58982
+          "output": 4096
         },
         "cost": {
           "input": 0.25,
@@ -29711,7 +29373,7 @@
         "name": "Gemini 4 Argon",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 65536
         },
         "cost": {
           "input": 2.0,
@@ -29740,7 +29402,7 @@
         "name": "Gemini 4 Carbon",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 65536
         },
         "cost": {
           "input": 2.0,
@@ -29769,7 +29431,7 @@
         "name": "Gemini 4 Hydrogen",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 65536
         },
         "cost": {
           "input": 1.5,
@@ -29799,7 +29461,7 @@
         "name": "Gemini 4 Neon",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 65536
         },
         "cost": {
           "input": 3.0,
@@ -29829,7 +29491,7 @@
         "name": "Nano Banana 2.1",
         "limit": {
           "context": 65536,
-          "output": 58982
+          "output": 32768
         },
         "cost": {
           "input": 1.5,
@@ -29944,11 +29606,12 @@
         "name": "Gemma 3 27B IT",
         "limit": {
           "context": 131072,
-          "output": 16384
+          "output": 131072
         },
         "cost": {
           "input": 0.08,
-          "output": 0.16
+          "output": 0.45,
+          "cache_read": 0.04
         },
         "reasoning": false,
         "tool_call": true,
@@ -29962,7 +29625,7 @@
         "name": "Gemma 3 4B IT",
         "limit": {
           "context": 131072,
-          "output": 117964
+          "output": 131072
         },
         "cost": {
           "input": 0.04,
@@ -29981,7 +29644,7 @@
         "name": "Gemma 4 26B A4B IT",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 32768
         },
         "cost": {
           "input": 0.09,
@@ -30106,7 +29769,7 @@
         "name": "MythoMax L2 13B",
         "limit": {
           "context": 8192,
-          "output": 7372
+          "output": 3200
         },
         "cost": {
           "input": 0.3,
@@ -30224,9 +29887,9 @@
           "output": 262144
         },
         "cost": {
-          "input": 0.06,
-          "output": 0.18,
-          "cache_read": 0.012
+          "input": 0.075,
+          "output": 0.225,
+          "cache_read": 0.015
         },
         "reasoning": true,
         "tool_call": true,
@@ -30415,11 +30078,12 @@
         "name": "Llama-3.1-8B-Instruct",
         "limit": {
           "context": 131072,
-          "output": 16384
+          "output": 4096
         },
         "cost": {
-          "input": 0.02,
-          "output": 0.04
+          "input": 0.05,
+          "output": 0.08,
+          "cache_read": 0.025
         },
         "reasoning": false,
         "tool_call": true,
@@ -30433,7 +30097,7 @@
         "name": "Llama 3.2 3B Instruct",
         "limit": {
           "context": 131072,
-          "output": 117964
+          "output": 131072
         },
         "cost": {
           "input": 0.05,
@@ -30451,7 +30115,7 @@
         "name": "Llama-3.3-70B-Instruct",
         "limit": {
           "context": 131072,
-          "output": 115200
+          "output": 4096
         },
         "cost": {
           "input": 0.71,
@@ -30525,7 +30189,7 @@
         "name": "Muse Ember",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 524288
         },
         "cost": {
           "input": 0.1,
@@ -30549,14 +30213,15 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "meta/muse-ember-1.0"
       },
       "meta/muse-glimmer-30b": {
         "id": "meta/muse-glimmer-30b",
         "name": "Muse Glimmer 30B",
         "limit": {
           "context": 131072,
-          "output": 117964
+          "output": 131072
         },
         "cost": {
           "input": 0.35,
@@ -30585,7 +30250,7 @@
         "name": "Muse Spark 1.1",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 1.25,
@@ -30615,7 +30280,7 @@
         "name": "Muse Spark 1.2",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 1.25,
@@ -30674,7 +30339,7 @@
         "name": "Muse Spark 1.3",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 1.25,
@@ -30735,7 +30400,7 @@
         "name": "Muse Spark Open",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 1.25,
@@ -30764,7 +30429,7 @@
         "name": "Muse Wonder",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 4.0,
@@ -30787,7 +30452,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "meta/muse-wonder-1.0"
       },
       "microsoft/phi-4": {
         "id": "microsoft/phi-4",
@@ -30810,13 +30476,13 @@
         "id": "minimax/minimax-m2.5",
         "name": "MiniMax-M2.5",
         "limit": {
-          "context": 198000,
-          "output": 32768
+          "context": 65536,
+          "output": 65536
         },
         "cost": {
-          "input": 0.27,
-          "output": 0.95,
-          "cache_read": 0.03
+          "input": 0.3,
+          "output": 1.2,
+          "cache_read": 0.06
         },
         "reasoning": true,
         "tool_call": true,
@@ -30848,7 +30514,7 @@
         "name": "MiniMax-M3",
         "limit": {
           "context": 1048576,
-          "output": 235929
+          "output": 262144
         },
         "cost": {
           "input": 0.23,
@@ -30871,12 +30537,12 @@
         "name": "MiniMax-M3.1-Flash",
         "limit": {
           "context": 1048576,
-          "output": 512000
+          "output": 131072
         },
         "cost": {
-          "input": 0.135,
-          "output": 0.54,
-          "cache_read": 0.0135
+          "input": 0.075,
+          "output": 0.3,
+          "cache_read": 0.0075
         },
         "reasoning": true,
         "tool_call": true,
@@ -31076,25 +30742,6 @@
         "protocol": "openai_chat",
         "canonical": "mistral/mistral-large-4"
       },
-      "mistralai/mistral-medium-3": {
-        "id": "mistralai/mistral-medium-3",
-        "name": "Mistral Medium 3",
-        "limit": {
-          "context": 131072,
-          "output": 104857
-        },
-        "cost": {
-          "input": 0.44,
-          "output": 2.2,
-          "cache_read": 0.044
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "mistral/mistral-medium-3"
-      },
       "mistralai/mistral-medium-3-5": {
         "id": "mistralai/mistral-medium-3-5",
         "name": "Mistral Medium 3.5",
@@ -31120,25 +30767,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "mistral/mistral-medium-3-5"
-      },
-      "mistralai/mistral-medium-3.1": {
-        "id": "mistralai/mistral-medium-3.1",
-        "name": "Mistral Medium 3.1",
-        "limit": {
-          "context": 131072,
-          "output": 104857
-        },
-        "cost": {
-          "input": 0.44,
-          "output": 2.2,
-          "cache_read": 0.044
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "mistral/mistral-medium-3.1"
       },
       "mistralai/mistral-nemo": {
         "id": "mistralai/mistral-nemo",
@@ -31356,67 +30984,12 @@
         ],
         "protocol": "openai_chat"
       },
-      "moonshotai/kimi-k2": {
-        "id": "moonshotai/kimi-k2",
-        "name": "Kimi K2 0711",
-        "limit": {
-          "context": 131072,
-          "output": 98304
-        },
-        "cost": {
-          "input": 0.57,
-          "output": 2.3
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "moonshotai/kimi-k2"
-      },
-      "moonshotai/kimi-k2-0905": {
-        "id": "moonshotai/kimi-k2-0905",
-        "name": "Kimi K2 Instruct 0905",
-        "limit": {
-          "context": 262144,
-          "output": 98304
-        },
-        "cost": {
-          "input": 0.6,
-          "output": 2.5
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "moonshotai/kimi-k2-0905"
-      },
-      "moonshotai/kimi-k2-thinking": {
-        "id": "moonshotai/kimi-k2-thinking",
-        "name": "Kimi K2 Thinking",
-        "limit": {
-          "context": 262144,
-          "output": 98304
-        },
-        "cost": {
-          "input": 0.6,
-          "output": 2.5,
-          "cache_read": 0.15
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "moonshotai/kimi-k2-thinking"
-      },
       "moonshotai/kimi-k2.5": {
         "id": "moonshotai/kimi-k2.5",
         "name": "Kimi K2.5",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 262144
         },
         "cost": {
           "input": 0.5,
@@ -31439,7 +31012,7 @@
         "name": "Kimi K2.6",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 262144
         },
         "cost": {
           "input": 0.65,
@@ -31462,7 +31035,7 @@
         "name": "Kimi K2.7 Code",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 262144
         },
         "cost": {
           "input": 0.6,
@@ -31481,7 +31054,7 @@
         "name": "Kimi K3",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 1048576
         },
         "cost": {
           "input": 0.192,
@@ -31510,7 +31083,7 @@
         "name": "Kimi K3.1 Pro",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 1048576
         },
         "cost": {
           "input": 0.2403,
@@ -31700,7 +31273,7 @@
         "name": "Nemotron 3 Nano 30B A3B",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 262144
         },
         "cost": {
           "input": 0.06,
@@ -31843,7 +31416,7 @@
         "name": "Nemotron 3.5 Content Safety",
         "limit": {
           "context": 131072,
-          "output": 117964
+          "output": 8192
         },
         "cost": {
           "input": 0.2,
@@ -31865,7 +31438,7 @@
         "name": "Nemotron 3.5 Lightning 30B A3B",
         "limit": {
           "context": 1048576,
-          "output": 235929
+          "output": 262144
         },
         "cost": {
           "input": 0.07,
@@ -31910,7 +31483,7 @@
         "name": "Nemotron 3.5 Super VL",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 8192
         },
         "cost": {
           "input": 0.15,
@@ -32045,7 +31618,7 @@
         "name": "GPT-4.1 nano",
         "limit": {
           "context": 1047576,
-          "output": 942818
+          "output": 32768
         },
         "cost": {
           "input": 0.1,
@@ -33007,7 +32580,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "openai/gpt-6-astra"
       },
       "openai/gpt-6-luna": {
         "id": "openai/gpt-6-luna",
@@ -33070,7 +32644,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "openai/gpt-6-luna"
       },
       "openai/gpt-6-sol": {
         "id": "openai/gpt-6-sol",
@@ -33133,7 +32708,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "openai/gpt-6-sol"
       },
       "openai/gpt-6.1-sol": {
         "id": "openai/gpt-6.1-sol",
@@ -33194,7 +32770,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "openai/gpt-6.1-sol"
       },
       "openai/gpt-6.1-terra": {
         "id": "openai/gpt-6.1-terra",
@@ -33256,7 +32833,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "openai/gpt-6.1-terra"
       },
       "openai/gpt-6.2-astra": {
         "id": "openai/gpt-6.2-astra",
@@ -33317,7 +32895,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "openai/gpt-6.2-astra"
       },
       "openai/gpt-6.2-sol": {
         "id": "openai/gpt-6.2-sol",
@@ -33378,7 +32957,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "openai/gpt-6.2-sol"
       },
       "openai/gpt-audio": {
         "id": "openai/gpt-audio",
@@ -33439,7 +33019,7 @@
         "name": "GPT OSS 120B",
         "limit": {
           "context": 131072,
-          "output": 117964
+          "output": 131072
         },
         "cost": {
           "input": 0.05,
@@ -33467,7 +33047,7 @@
         "name": "GPT OSS 20B",
         "limit": {
           "context": 131072,
-          "output": 117964
+          "output": 131072
         },
         "cost": {
           "input": 0.03,
@@ -33907,7 +33487,7 @@
         "name": "Qwen2.5-Coder-32B-Instruct",
         "limit": {
           "context": 32768,
-          "output": 29491
+          "output": 8192
         },
         "cost": {
           "input": 0.66,
@@ -33945,7 +33525,7 @@
         "name": "Qwen2.5-VL 72B Instruct",
         "limit": {
           "context": 128000,
-          "output": 115200
+          "output": 8192
         },
         "cost": {
           "input": 0.8,
@@ -33985,7 +33565,7 @@
         "name": "Qwen3 235B A22B Instruct 2507",
         "limit": {
           "context": 262144,
-          "output": 117964
+          "output": 16384
         },
         "cost": {
           "input": 0.14,
@@ -34044,7 +33624,7 @@
         "name": "Qwen3 30B-A3B Instruct 2507",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 16384
         },
         "cost": {
           "input": 0.1,
@@ -34104,7 +33684,7 @@
         "name": "Qwen3-Coder 30B-A3B Instruct",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 65536
         },
         "cost": {
           "input": 0.07,
@@ -34142,7 +33722,7 @@
         "name": "Qwen3 Coder Next",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 65536
         },
         "cost": {
           "input": 0.12,
@@ -34161,7 +33741,7 @@
         "name": "Qwen3-Next 80B-A3B Instruct",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 32768
         },
         "cost": {
           "input": 0.1,
@@ -34302,12 +33882,12 @@
         "name": "Qwen3.5 397B-A17B",
         "limit": {
           "context": 262144,
-          "output": 81920
+          "output": 65536
         },
         "cost": {
-          "input": 0.45,
-          "output": 3.0,
-          "cache_read": 0.22
+          "input": 0.5,
+          "output": 3.6,
+          "cache_read": 0.3
         },
         "reasoning": true,
         "tool_call": true,
@@ -34325,10 +33905,10 @@
         "name": "Qwen3.5 9B",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 65536
         },
         "cost": {
-          "input": 0.17,
+          "input": 0.1,
           "output": 0.25
         },
         "reasoning": true,
@@ -34433,12 +34013,12 @@
         "name": "Qwen3.6 35B-A3B",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 65536
         },
         "cost": {
-          "input": 0.05,
-          "output": 0.7,
-          "cache_read": 0.025
+          "input": 0.1,
+          "output": 0.89,
+          "cache_read": 0.035
         },
         "reasoning": true,
         "tool_call": true,
@@ -34606,12 +34186,12 @@
         "name": "Qwen3.8 27B",
         "limit": {
           "context": 1024000,
-          "output": 131072
+          "output": 32768
         },
         "cost": {
-          "input": 0.035,
-          "output": 1.5,
-          "cache_read": 0.0175
+          "input": 0.06,
+          "output": 1.96,
+          "cache_read": 0.059
         },
         "reasoning": true,
         "tool_call": true,
@@ -34827,9 +34407,9 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.25,
+          "input": 0.3,
           "output": 1.0,
-          "cache_read": 0.05
+          "cache_read": 0.04
         },
         "reasoning": true,
         "tool_call": true,
@@ -35128,8 +34708,8 @@
         "id": "stepfun/step-3.7-flash",
         "name": "Step 3.7 Flash",
         "limit": {
-          "context": 262144,
-          "output": 230400
+          "context": 256000,
+          "output": 256000
         },
         "cost": {
           "input": 0.2,
@@ -35239,12 +34819,12 @@
         "name": "Hy3",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 128000
         },
         "cost": {
-          "input": 0.14,
-          "output": 0.58,
-          "cache_read": 0.035
+          "input": 0.132,
+          "output": 0.528,
+          "cache_read": 0.033
         },
         "reasoning": true,
         "tool_call": true,
@@ -35321,9 +34901,9 @@
           "output": 64000
         },
         "cost": {
-          "input": 0.7506,
-          "output": 2.2509,
-          "cache_read": 0.0378
+          "input": 0.834,
+          "output": 2.501,
+          "cache_read": 0.042
         },
         "reasoning": true,
         "tool_call": true,
@@ -35402,7 +34982,7 @@
         "name": "Inkling",
         "limit": {
           "context": 1048576,
-          "output": 471859
+          "output": 524288
         },
         "cost": {
           "input": 1.0,
@@ -35464,7 +35044,7 @@
         "name": "Inkling 2 Small",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 0.3,
@@ -35520,57 +35100,21 @@
         "protocol": "openai_chat",
         "canonical": "thinkingmachines/inkling-small"
       },
-      "unbiased/pareto-26.10": {
-        "id": "unbiased/pareto-26.10",
-        "name": "Pareto 26.10",
+      "tngtech/deepseek-r1t2-chimera": {
+        "id": "tngtech/deepseek-r1t2-chimera",
+        "name": "DeepSeek R1T2 Chimera",
         "limit": {
-          "context": 1048576,
-          "output": 131072
+          "context": 131072,
+          "output": 32768
         },
         "cost": {
-          "input": 0.8,
-          "output": 3.2,
-          "cache_read": 0.03
+          "input": 1.0,
+          "output": 2.625,
+          "cache_read": 0.02
         },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "unbiased/pareto-26.10-preview": {
-        "id": "unbiased/pareto-26.10-preview",
-        "name": "Pareto 26.10 Preview",
-        "limit": {
-          "context": 1048576,
-          "output": 131072
-        },
-        "cost": {
-          "input": 0.8,
-          "output": 3.2,
-          "cache_read": 0.03
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
-      "unbiased/pareto-26.9": {
-        "id": "unbiased/pareto-26.9",
-        "name": "Pareto 26.9",
-        "limit": {
-          "context": 262144,
-          "output": 131072
-        },
-        "cost": {
-          "input": 2.5,
-          "output": 7.5,
-          "cache_read": 0.25
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
+        "reasoning": true,
+        "tool_call": false,
+        "image": false,
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
@@ -35592,6 +35136,37 @@
         "reasoning_options": [],
         "protocol": "openai_chat",
         "canonical": "undi95/remm-slerp-l2-13b"
+      },
+      "upstage/solar-mini-4-5": {
+        "id": "upstage/solar-mini-4-5",
+        "name": "Solar Mini 4.5 (Preview)",
+        "limit": {
+          "context": 524288,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.01,
+          "output": 0.04,
+          "cache_read": 0.001
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
       },
       "upstage/solar-mini4": {
         "id": "upstage/solar-mini4",
@@ -35624,6 +35199,37 @@
         ],
         "protocol": "openai_chat",
         "canonical": "upstage/solar-mini4"
+      },
+      "upstage/solar-pro-4-contributor": {
+        "id": "upstage/solar-pro-4-contributor",
+        "name": "Solar Pro 4 Contributor",
+        "limit": {
+          "context": 524288,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.09,
+          "output": 0.36,
+          "cache_read": 0.018
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
       },
       "upstage/solar-pro4": {
         "id": "upstage/solar-pro4",
@@ -35730,7 +35336,7 @@
         "name": "Grok 4.3",
         "limit": {
           "context": 1000000,
-          "output": 900000
+          "output": 30000
         },
         "cost": {
           "input": 1.25,
@@ -35759,7 +35365,7 @@
         "name": "Grok 4.5",
         "limit": {
           "context": 500000,
-          "output": 450000
+          "output": 500000
         },
         "cost": {
           "input": 2.0,
@@ -35787,7 +35393,7 @@
         "name": "Grok 4.6",
         "limit": {
           "context": 500000,
-          "output": 450000
+          "output": 500000
         },
         "cost": {
           "input": 2.0,
@@ -35816,7 +35422,7 @@
         "name": "Grok 4.7",
         "limit": {
           "context": 500000,
-          "output": 450000
+          "output": 500000
         },
         "cost": {
           "input": 2.0,
@@ -35840,52 +35446,6 @@
         "protocol": "openai_chat",
         "canonical": "xai/grok-4.7"
       },
-      "xiaomi/mimo-v2.5": {
-        "id": "xiaomi/mimo-v2.5",
-        "name": "MiMo-V2.5",
-        "limit": {
-          "context": 1000000,
-          "output": 65536
-        },
-        "cost": {
-          "input": 0.4,
-          "output": 2.0,
-          "cache_read": 0.08
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "xiaomi/mimo-v2.5"
-      },
-      "xiaomi/mimo-v2.5-pro": {
-        "id": "xiaomi/mimo-v2.5-pro",
-        "name": "MiMo-V2.5-Pro",
-        "limit": {
-          "context": 262144,
-          "output": 235929
-        },
-        "cost": {
-          "input": 0.48,
-          "output": 1.8,
-          "cache_read": 0.096
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "xiaomi/mimo-v2.5-pro"
-      },
       "xiaomi/mimo-v2.6-flash": {
         "id": "xiaomi/mimo-v2.6-flash",
         "name": "MiMo-V2.6-Flash",
@@ -35908,6 +35468,28 @@
         ],
         "protocol": "openai_chat",
         "canonical": "xiaomi/mimo-v2.6-flash"
+      },
+      "xiaomi/mimo-v2.6-flash-mopd": {
+        "id": "xiaomi/mimo-v2.6-flash-mopd",
+        "name": "MiMo-V2.6-Flash-MOPD",
+        "limit": {
+          "context": 1048576,
+          "output": 32768
+        },
+        "cost": {
+          "input": 0.5,
+          "output": 1.0,
+          "cache_read": 0.05
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "protocol": "openai_chat"
       },
       "xiaomi/mimo-v2.6-pro": {
         "id": "xiaomi/mimo-v2.6-pro",
@@ -35986,9 +35568,9 @@
           "output": 98304
         },
         "cost": {
-          "input": 0.13,
-          "output": 0.85,
-          "cache_read": 0.025
+          "input": 0.2,
+          "output": 1.1,
+          "cache_read": 0.03
         },
         "reasoning": true,
         "tool_call": true,
@@ -36057,7 +35639,7 @@
         "cost": {
           "input": 0.3,
           "output": 0.9,
-          "cache_read": 0.055
+          "cache_read": 0.05
         },
         "reasoning": true,
         "tool_call": true,
@@ -36097,8 +35679,8 @@
         "id": "z-ai/glm-4.7-flash",
         "name": "GLM-4.7-Flash",
         "limit": {
-          "context": 200000,
-          "output": 117964
+          "context": 131072,
+          "output": 131072
         },
         "cost": {
           "input": 0.0605,
@@ -36189,7 +35771,7 @@
         "name": "GLM-5.2",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 0.62,
@@ -36217,7 +35799,7 @@
         "name": "GLM-5.3",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 0.0699,
@@ -36248,8 +35830,8 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.0399,
-          "output": 0.074,
+          "input": 0.15,
+          "output": 0.5,
           "cache_read": 0.03
         },
         "reasoning": true,
@@ -36297,7 +35879,7 @@
       },
       "z-ai/glm-5.3-flashx-legal": {
         "id": "z-ai/glm-5.3-flashx-legal",
-        "name": "GLM 5.3 FlashX Legal",
+        "name": "GLM-5.3-FlashX-Legal",
         "limit": {
           "context": 1048576,
           "output": 131072
@@ -36320,7 +35902,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "zhipuai/glm-5.3-flashx-legal"
       },
       "z-ai/glm-5.3-prime": {
         "id": "z-ai/glm-5.3-prime",
@@ -36498,12 +36081,12 @@
         "name": "DeepSeek Flash Latest",
         "limit": {
           "context": 1048576,
-          "output": 393216
+          "output": 943718
         },
         "cost": {
-          "input": 0.03,
-          "output": 0.2,
-          "cache_read": 0.001
+          "input": 0.036,
+          "output": 0.5,
+          "cache_read": 0.01
         },
         "reasoning": true,
         "tool_call": true,
@@ -36526,12 +36109,12 @@
         "name": "DeepSeek Pro Latest",
         "limit": {
           "context": 1048576,
-          "output": 393216
+          "output": 943718
         },
         "cost": {
-          "input": 0.0999,
-          "output": 5.0,
-          "cache_read": 0.0999
+          "input": 0.111,
+          "output": 4.44,
+          "cache_read": 0.097
         },
         "reasoning": true,
         "tool_call": true,
@@ -36557,7 +36140,7 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.0434,
+          "input": 0.047,
           "output": 0.3,
           "cache_read": 0.035
         },
@@ -36813,24 +36396,6 @@
         ],
         "protocol": "openai_chat"
       },
-      "~unbiased/pareto-latest": {
-        "id": "~unbiased/pareto-latest",
-        "name": "Pareto Latest",
-        "limit": {
-          "context": 1048576,
-          "output": 131072
-        },
-        "cost": {
-          "input": 0.8,
-          "output": 3.2,
-          "cache_read": 0.03
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
-      },
       "~x-ai/grok-latest": {
         "id": "~x-ai/grok-latest",
         "name": "Grok Latest",
@@ -36868,8 +36433,8 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.0399,
-          "output": 0.074,
+          "input": 0.0356,
+          "output": 0.0815,
           "cache_read": 0.03
         },
         "reasoning": true,
@@ -36923,85 +36488,6 @@
       "TOGETHER_API_KEY"
     ],
     "models": {
-      "LiquidAI/LFM2-24B-A2B": {
-        "id": "LiquidAI/LFM2-24B-A2B",
-        "name": "LFM2-24B-A2B",
-        "limit": {
-          "context": 32768,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.03,
-          "output": 0.12
-        },
-        "reasoning": false,
-        "tool_call": false,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "liquid/lfm2-24b-a2b"
-      },
-      "MiniMaxAI/MiniMax-M2.5": {
-        "id": "MiniMaxAI/MiniMax-M2.5",
-        "name": "MiniMax-M2.5",
-        "limit": {
-          "context": 204800,
-          "output": 131072
-        },
-        "cost": {
-          "input": 0.3,
-          "output": 1.2,
-          "cache_read": 0.06
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "minimax/MiniMax-M2.5"
-      },
-      "MiniMaxAI/MiniMax-M2.7": {
-        "id": "MiniMaxAI/MiniMax-M2.7",
-        "name": "MiniMax-M2.7",
-        "limit": {
-          "context": 196608,
-          "output": 131072
-        },
-        "cost": {
-          "input": 0.3,
-          "output": 1.2,
-          "cache_read": 0.06
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "minimax/MiniMax-M2.7"
-      },
-      "MiniMaxAI/MiniMax-M3": {
-        "id": "MiniMaxAI/MiniMax-M3",
-        "name": "MiniMax-M3",
-        "limit": {
-          "context": 524288,
-          "output": 524288
-        },
-        "cost": {
-          "input": 0.3,
-          "output": 1.2,
-          "cache_read": 0.06
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "minimax/MiniMax-M3"
-      },
       "MiniMaxAI/MiniMax-M3.1-Flash": {
         "id": "MiniMaxAI/MiniMax-M3.1-Flash",
         "name": "MiniMax-M3.1-Flash",
@@ -37032,89 +36518,16 @@
         "protocol": "openai_chat",
         "canonical": "minimax/MiniMax-M3.1-Flash"
       },
-      "Qwen/Qwen2.5-7B-Instruct-Turbo": {
-        "id": "Qwen/Qwen2.5-7B-Instruct-Turbo",
-        "name": "Qwen 2.5 7B Instruct Turbo",
-        "limit": {
-          "context": 32768,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.3,
-          "output": 0.3
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "alibaba/qwen2.5-7b-instruct"
-      },
-      "Qwen/Qwen3-235B-A22B-Instruct-2507-tput": {
-        "id": "Qwen/Qwen3-235B-A22B-Instruct-2507-tput",
-        "name": "Qwen3 235B A22B Instruct 2507 FP8",
+      "Prism-ML/Ternary-Bonsai-27B": {
+        "id": "Prism-ML/Ternary-Bonsai-27B",
+        "name": "Ternary Bonsai 27B",
         "limit": {
           "context": 262144,
-          "output": 262144
+          "output": 65536
         },
         "cost": {
-          "input": 0.2,
-          "output": 0.6
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "alibaba/qwen3-235b-a22b-instruct-2507"
-      },
-      "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": {
-        "id": "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
-        "name": "Qwen3 Coder 480B A35B Instruct",
-        "limit": {
-          "context": 262144,
-          "output": 262144
-        },
-        "cost": {
-          "input": 2.0,
-          "output": 2.0
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "alibaba/qwen3-coder-480b-a35b-instruct"
-      },
-      "Qwen/Qwen3-Coder-Next-FP8": {
-        "id": "Qwen/Qwen3-Coder-Next-FP8",
-        "name": "Qwen3 Coder Next FP8",
-        "limit": {
-          "context": 262144,
-          "output": 262144
-        },
-        "cost": {
-          "input": 0.5,
-          "output": 1.2
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "alibaba/qwen3-coder-next"
-      },
-      "Qwen/Qwen3.5-397B-A17B": {
-        "id": "Qwen/Qwen3.5-397B-A17B",
-        "name": "Qwen3.5 397B A17B",
-        "limit": {
-          "context": 262144,
-          "output": 130000
-        },
-        "cost": {
-          "input": 0.6,
-          "output": 3.6,
-          "cache_read": 0.35
+          "input": 0.0,
+          "output": 0.0
         },
         "reasoning": true,
         "tool_call": true,
@@ -37125,7 +36538,7 @@
           }
         ],
         "protocol": "openai_chat",
-        "canonical": "alibaba/qwen3.5-397b-a17b"
+        "canonical": "prism-ml/ternary-bonsai-27b"
       },
       "Qwen/Qwen3.5-9B": {
         "id": "Qwen/Qwen3.5-9B",
@@ -37190,6 +36603,58 @@
         "protocol": "openai_chat",
         "canonical": "alibaba/qwen3.7-max"
       },
+      "Qwen/Qwen3.7-Plus": {
+        "id": "Qwen/Qwen3.7-Plus",
+        "name": "Qwen3.7 Plus",
+        "limit": {
+          "context": 1000000,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.32,
+          "output": 1.28
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen3.7-plus"
+      },
+      "Qwen/Qwen3.8-Flash": {
+        "id": "Qwen/Qwen3.8-Flash",
+        "name": "Qwen3.8 Flash",
+        "limit": {
+          "context": 1000000,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.47
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "xhigh"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "alibaba/qwen3.8-flash"
+      },
       "Qwen/Qwen4-Max": {
         "id": "Qwen/Qwen4-Max",
         "name": "Qwen4 Max",
@@ -37198,9 +36663,9 @@
           "output": 262144
         },
         "cost": {
-          "input": 1.05,
-          "output": 3.15,
-          "cache_read": 0.0525
+          "input": 1.5,
+          "output": 4.5,
+          "cache_read": 0.075
         },
         "reasoning": true,
         "tool_call": true,
@@ -37208,94 +36673,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat",
         "canonical": "alibaba/qwen4-max"
-      },
-      "deepseek-ai/DeepSeek-R1": {
-        "id": "deepseek-ai/DeepSeek-R1",
-        "name": "DeepSeek-R1",
-        "limit": {
-          "context": 163839,
-          "output": 163839
-        },
-        "cost": {
-          "input": 3.0,
-          "output": 7.0
-        },
-        "reasoning": true,
-        "tool_call": false,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-r1"
-      },
-      "deepseek-ai/DeepSeek-V3": {
-        "id": "deepseek-ai/DeepSeek-V3",
-        "name": "DeepSeek-V3",
-        "limit": {
-          "context": 131072,
-          "output": 131072
-        },
-        "cost": {
-          "input": 1.25,
-          "output": 1.25
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-v3"
-      },
-      "deepseek-ai/DeepSeek-V3-1": {
-        "id": "deepseek-ai/DeepSeek-V3-1",
-        "name": "DeepSeek V3.1",
-        "limit": {
-          "context": 131072,
-          "output": 131072
-        },
-        "cost": {
-          "input": 0.6,
-          "output": 1.7
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-v3.1"
-      },
-      "deepseek-ai/DeepSeek-V4-Flash-0731": {
-        "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-        "name": "DeepSeek V4 Flash 0731",
-        "limit": {
-          "context": 1048576,
-          "output": 384000
-        },
-        "cost": {
-          "input": 0.14,
-          "output": 0.28,
-          "cache_read": 0.03
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "effort",
-            "values": [
-              "high",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-v4-flash-0731"
       },
       "deepseek-ai/DeepSeek-V4-Pro-0813": {
         "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
@@ -37385,41 +36762,63 @@
         "protocol": "openai_chat",
         "canonical": "deepseek/deepseek-v4.1-flash-1017"
       },
-      "essentialai/Rnj-1-Instruct": {
-        "id": "essentialai/Rnj-1-Instruct",
-        "name": "Rnj-1 Instruct",
+      "deepseek-ai/DeepSeek-V4.1-Flash-1017-fast": {
+        "id": "deepseek-ai/DeepSeek-V4.1-Flash-1017-fast",
+        "name": "DeepSeek V4.1 Flash 1017 Fast",
         "limit": {
-          "context": 32768,
-          "output": 32768
+          "context": 1048576,
+          "output": 384000
         },
         "cost": {
-          "input": 0.15,
-          "output": 0.15
+          "input": 0.6,
+          "output": 2.4,
+          "cache_read": 0.012
         },
-        "reasoning": false,
+        "reasoning": true,
         "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
         "protocol": "openai_chat",
-        "canonical": "essentialai/rnj-1-instruct"
+        "canonical": "deepseek/deepseek-v4.1-flash-1017"
       },
-      "meta-llama/Llama-3.3-70B-Instruct-Turbo": {
-        "id": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        "name": "Llama 3.3 70B",
+      "elorian-labs/glimpse-1.0": {
+        "id": "elorian-labs/glimpse-1.0",
+        "name": "Glimpse 1.0",
         "limit": {
-          "context": 131072,
-          "output": 131072
+          "context": 262144,
+          "output": 256000
         },
         "cost": {
-          "input": 1.04,
-          "output": 1.04
+          "input": 0.6,
+          "output": 3.0,
+          "cache_read": 0.06
         },
-        "reasoning": false,
+        "reasoning": true,
         "tool_call": true,
-        "image": false,
-        "reasoning_options": [],
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "xhigh"
+            ]
+          }
+        ],
         "protocol": "openai_chat",
-        "canonical": "meta/llama-3.3-70b-instruct"
+        "canonical": "elorian-labs/glimpse-1.0"
       },
       "meta-models/Muse-Glimmer-30B": {
         "id": "meta-models/Muse-Glimmer-30B",
@@ -37562,29 +36961,6 @@
         "protocol": "openai_chat",
         "canonical": "nvidia/nemotron-3.5-super-vl-120b-a12b"
       },
-      "nvidia/nemotron-3-ultra-550b-a55b": {
-        "id": "nvidia/nemotron-3-ultra-550b-a55b",
-        "name": "Nemotron 3 Ultra 550B A55B",
-        "limit": {
-          "context": 512300,
-          "output": 512300
-        },
-        "cost": {
-          "input": 0.6,
-          "output": 3.6,
-          "cache_read": 0.2
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "nvidia/nemotron-3-ultra-550b-a55b"
-      },
       "openai/gpt-oss-120b": {
         "id": "openai/gpt-oss-120b",
         "name": "GPT OSS 120B",
@@ -37642,6 +37018,25 @@
         ],
         "protocol": "openai_chat",
         "canonical": "reflection/beam-1.0-501b-a23b"
+      },
+      "ricursive-ai/Ripple-65B-Preview": {
+        "id": "ricursive-ai/Ripple-65B-Preview",
+        "name": "Ripple 65B Preview",
+        "limit": {
+          "context": 131072,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.2,
+          "output": 0.6,
+          "cache_read": 0.02
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [],
+        "protocol": "openai_chat",
+        "canonical": "ricursiveai/ripple-65b-preview"
       },
       "tencent/Hy4": {
         "id": "tencent/Hy4",
@@ -37731,51 +37126,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "thinkingmachines/inkling-2-small"
-      },
-      "zai-org/GLM-5": {
-        "id": "zai-org/GLM-5",
-        "name": "GLM-5",
-        "limit": {
-          "context": 202752,
-          "output": 131072
-        },
-        "cost": {
-          "input": 1.0,
-          "output": 3.2
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "zhipuai/glm-5"
-      },
-      "zai-org/GLM-5.1": {
-        "id": "zai-org/GLM-5.1",
-        "name": "GLM-5.1",
-        "limit": {
-          "context": 202752,
-          "output": 131072
-        },
-        "cost": {
-          "input": 1.4,
-          "output": 4.4,
-          "cache_read": 0.26
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat",
-        "canonical": "zhipuai/glm-5.1"
       },
       "zai-org/GLM-5.2": {
         "id": "zai-org/GLM-5.2",
@@ -38116,6 +37466,24 @@
       "ZHIPU_API_KEY"
     ],
     "models": {
+      "glm-4-32b-0414-128k": {
+        "id": "glm-4-32b-0414-128k",
+        "name": "GLM-4-32B-0414-128K",
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.1
+        },
+        "reasoning": false,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [],
+        "protocol": "openai_chat",
+        "canonical": "zhipuai/glm-4-32b-0414-128k"
+      },
       "glm-4.5": {
         "id": "glm-4.5",
         "name": "GLM-4.5",
@@ -38545,6 +37913,35 @@
         ],
         "protocol": "openai_chat",
         "canonical": "zhipuai/glm-5.3-flash"
+      },
+      "glm-5.3-flashx-legal": {
+        "id": "glm-5.3-flashx-legal",
+        "name": "GLM-5.3-FlashX-Legal",
+        "limit": {
+          "context": 1000000,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.37,
+          "output": 1.25,
+          "cache_read": 0.075,
+          "cache_write": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "zhipuai/glm-5.3-flashx-legal"
       },
       "glm-5v-turbo": {
         "id": "glm-5v-turbo",
