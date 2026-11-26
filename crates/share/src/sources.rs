@@ -269,17 +269,22 @@ pub struct DirPin {
 
 /// [`check_root`], then pin the directory it names.
 pub fn pin_root(root: &str, data_dir: &Path, home: Option<&Path>) -> Result<DirPin, DirRefused> {
-    use std::os::unix::fs::MetadataExt as _;
     let canon = check_root(root, data_dir, home)?;
     let meta = std::fs::symlink_metadata(&canon)
         .ok()
-        .filter(std::fs::Metadata::is_dir)
+        .filter(|m| !m.file_type().is_symlink() && m.is_dir())
         .ok_or_else(|| DirRefused::NotDir(root.to_owned()))?;
-    Ok(DirPin {
-        canon,
-        dev: meta.dev(),
-        ino: meta.ino(),
-    })
+    #[cfg(unix)]
+    let (dev, ino) = {
+        use std::os::unix::fs::MetadataExt as _;
+        (meta.dev(), meta.ino())
+    };
+    #[cfg(not(unix))]
+    let (dev, ino) = {
+        let _ = meta;
+        (0u64, 0u64)
+    };
+    Ok(DirPin { canon, dev, ino })
 }
 
 impl DirPin {
@@ -300,6 +305,7 @@ impl DirPin {
 
     /// Open the canonical root without following links (every component on macOS, the last
     /// elsewhere) and require the pinned device and inode.
+    #[cfg(unix)]
     pub fn check(&self) -> io::Result<()> {
         use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
         let d = std::fs::OpenOptions::new()
@@ -308,6 +314,20 @@ impl DirPin {
             .open(&self.canon)?;
         let m = d.metadata()?;
         if m.dev() != self.dev || m.ino() != self.ino || !m.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the shared folder was replaced after approval",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Verify the canonical root is still a real directory at the same canonical path (not
+    /// replaced by a symlink or junction) on non-Unix platforms.
+    #[cfg(not(unix))]
+    pub fn check(&self) -> io::Result<()> {
+        let m = std::fs::symlink_metadata(&self.canon)?;
+        if m.file_type().is_symlink() || !m.is_dir() || std::fs::canonicalize(&self.canon)? != self.canon {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "the shared folder was replaced after approval",
@@ -329,7 +349,7 @@ impl DirPin {
 
 #[cfg(target_os = "macos")]
 const NOFOLLOW: i32 = libc::O_NOFOLLOW_ANY; // with O_NOFOLLOW the kernel answers EINVAL
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 const NOFOLLOW: i32 = libc::O_NOFOLLOW;
 
 /// Per-request resolution of a URL path below a canonical root (F-m8). `None` → 404.
@@ -361,6 +381,7 @@ pub fn resolve(root: &Path, url_path: &str) -> Option<PathBuf> {
 /// (macOS `O_NOFOLLOW_ANY`), else `O_NOFOLLOW` on the last; then `fstat` must equal the
 /// canonical path's device and inode, so a link swapped in after [`resolve`] fails.
 // TODO(210-M1): Linux `openat2(RESOLVE_NO_SYMLINKS)`; today Linux has the O_NOFOLLOW + fstat path.
+#[cfg(unix)]
 pub fn open_nofollow(canon: &Path) -> io::Result<File> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     let f = std::fs::OpenOptions::new()
@@ -370,6 +391,30 @@ pub fn open_nofollow(canon: &Path) -> io::Result<File> {
     let opened = f.metadata()?;
     let named = std::fs::symlink_metadata(canon)?;
     if opened.dev() != named.dev() || opened.ino() != named.ino() || !opened.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "path changed under the share",
+        ));
+    }
+    Ok(f)
+}
+
+/// Open a canonical path without following reparse points on Windows (`FILE_FLAG_OPEN_REPARSE_POINT`).
+#[cfg(windows)]
+pub fn open_nofollow(canon: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(canon)?;
+    let opened = f.metadata()?;
+    let named = std::fs::symlink_metadata(canon)?;
+    if opened.file_type().is_symlink()
+        || named.file_type().is_symlink()
+        || !opened.is_file()
+        || std::fs::canonicalize(canon)? != canon
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "path changed under the share",
@@ -399,6 +444,7 @@ fn percent_decode(s: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn dir_containment_refuses_symlink_escape_and_dots() {
         let tmp = tempfile::Builder::new().prefix("share").tempdir().unwrap();
@@ -436,6 +482,7 @@ mod tests {
 
     /// FIX4 #17: a link inside the root that leads to a dot entry of the same root (`env` →
     /// `.env`, `git` → `.git/`) is refused on its canonical path, not only on the URL's spelling.
+    #[cfg(unix)]
     #[test]
     fn link_to_a_dot_entry_inside_the_root_is_refused() {
         let tmp = tempfile::Builder::new().prefix("share").tempdir().unwrap();
@@ -526,6 +573,7 @@ mod tests {
 
     /// M1: the approved folder replaced by a link (or another directory) serves nothing, and a
     /// root whose canonical path passes through a dot directory is refused at publish.
+    #[cfg(unix)]
     #[test]
     fn swapped_root_is_refused() {
         let tmp = tempfile::Builder::new().prefix("share").tempdir().unwrap();

@@ -186,6 +186,7 @@ jobs:
         with:
           shared-key: ts-bindings-linux-x86_64
           cache-all-crates: true
+          cache-on-failure: true
 
       - name: Cache Bun packages
         uses: actions/cache@v4
@@ -256,6 +257,7 @@ jobs:
         with:
           shared-key: release-macos-aarch64
           cache-all-crates: true
+          cache-on-failure: true
 
       - name: Cache microsandbox and ONNX Runtime artifacts
         uses: actions/cache@v4
@@ -333,6 +335,26 @@ jobs:
             echo "::error::APPLE_NOTARY_KEY_P8 secret is required for non-prerelease macOS notarization"
             exit 1
           fi
+
+      - name: Install JS workspace dependencies
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile --cwd packages/apps
+          bun install --frozen-lockfile --cwd crates/desktop/ui
+
+      - name: Pre-resolve SwiftPM companion dependencies (with retry)
+        run: |
+          set -euo pipefail
+          SP_DIR="$PWD/crates/desktop/companion/.build/xcode/SourcePackages"
+          mkdir -p "$SP_DIR"
+          for attempt in 1 2 3; do
+            if (cd crates/desktop/companion && xcodebuild -resolvePackageDependencies -clonedSourcePackagesDirPath "$SP_DIR"); then
+              exit 0
+            fi
+            echo "::warning::SwiftPM resolve attempt $attempt failed; retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
       - name: Package macOS app and DMG
         env:
@@ -435,6 +457,7 @@ jobs:
         with:
           shared-key: release-linux-${{ matrix.arch }}
           cache-all-crates: true
+          cache-on-failure: true
 
       - name: Cache microsandbox runtime artifacts
         uses: actions/cache@v4
@@ -455,6 +478,12 @@ jobs:
         with:
           name: ts-bindings
           path: crates/desktop/ui/src/rpc/bindings
+
+      - name: Install JS workspace dependencies
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile --cwd packages/apps
+          bun install --frozen-lockfile --cwd crates/desktop/ui
 
       - name: Build Linux desktop bundles and CLI tarball
         env:
@@ -638,6 +667,7 @@ jobs:
         with:
           shared-key: release-windows-${{ matrix.arch }}
           cache-all-crates: true
+          cache-on-failure: true
 
       - name: Cache microsandbox and ONNX Runtime artifacts
         uses: actions/cache@v4
@@ -661,6 +691,20 @@ jobs:
         with:
           name: ts-bindings
           path: crates/desktop/ui/src/rpc/bindings
+
+      - name: Install JS workspace dependencies
+        shell: pwsh
+        run: |
+          bun install --frozen-lockfile --cwd packages/apps
+          bun install --frozen-lockfile --cwd crates/desktop/ui
+
+      - name: Configure BoringSSL CMake toolchain for Windows ARM64
+        if: matrix.arch == 'aarch64'
+        shell: pwsh
+        run: |
+          $tc = Join-Path $env:RUNNER_TEMP 'win-arm64-toolchain.cmake'
+          Set-Content -Path $tc -Value 'set(OPENSSL_NO_ASM ON CACHE BOOL "Disable GAS ASM under MSVC ARM64" FORCE)' -Encoding ascii
+          "CMAKE_TOOLCHAIN_FILE_aarch64-pc-windows-msvc=$tc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Package Windows NSIS installer and CLI zip
         shell: pwsh
@@ -855,7 +899,7 @@ jobs:
       matrix:
         include:
           - name: relay
-            image: ghcr.io/basedatum/theuth/relay
+            image: ghcr.io/basedatum/theuth-relay
             file: deploy/relay/Dockerfile
             context: .
             target: ''
