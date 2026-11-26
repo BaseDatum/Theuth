@@ -2,7 +2,7 @@
 // from the right over 60 % of the whiteboard (the whole screen on a phone). The canvas stays where it was.
 
 import { useQuery } from '@tanstack/react-query'
-import { ExternalLink, MessageSquare, X } from 'lucide-react'
+import { MessageSquare, X } from 'lucide-react'
 import { lazy, Suspense, useEffect, useState } from 'react'
 import type { CustomRendererProps } from 'streamdown'
 import { useText } from '@/components/chat/ArtifactCard'
@@ -21,7 +21,7 @@ import { useSessions } from '@/store/sessions'
 import type { Card, Source } from './canvas/model'
 import { versionOf } from './canvas/model'
 import { KIND_LABEL } from './OutlineView'
-import { webUrl } from './add'
+import { WebSheetBody } from './canvas/cards/WebCard'
 
 // Lazy: it pulls the route tree, which holds the whiteboard route itself.
 const ViewCard = lazy(() => import('./canvas/cards/ViewCard'))
@@ -84,21 +84,10 @@ function Body({ card, source, blobUrl, onSession }: { card: Card; source: Source
       return <DiffBody session={source.frozen?.session ?? source.session} spec={source.spec as DiffSpec} className="p-2" />
     case 'terminal':
       return <Terminal session={source.session} job={source.job} label={card.title} className="h-full" />
-    case 'web': {
-      // 218 review B1: a web card's URL is agent-writable. Only http(s) with a dotted host is shown, in an opaque-origin
-      // sandbox (no allow-same-origin, no popups, no referrer) so it can never act as an app origin inside the main
-      // webview. The native WebFrame (§12.6) needs an engine web view this card does not have; the link opens the browser.
-      const url = webUrl(source.url)
-      if (!url) return <p className="p-6 text-sm text-fg-secondary">This card's address is not a web page (only http and https are shown).</p>
-      return (
-        <div className="flex h-full flex-col">
-          <a href={url} target="_blank" rel="noreferrer noopener" className="flex items-center gap-1.5 px-4 py-2 text-sm text-fg-accent">
-            <ExternalLink className="size-4" /> {url}
-          </a>
-          <iframe title={card.title} src={url} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" className="min-h-0 flex-1 border-0 bg-white" />
-        </div>
-      )
-    }
+    case 'web':
+      // 218 review B1: a web card's URL is agent-writable; `WebSheetBody` shows only http(s) with a dotted host. Most
+      // sites refuse framing and the app's CSP `frame-src` admits no http origin, so the page runs in a native web view.
+      return <WebSheetBody card={card} url={source.url} />
     case 'image':
       return <ImageBody source={source} blobUrl={blobUrl} />
     case 'sticky':

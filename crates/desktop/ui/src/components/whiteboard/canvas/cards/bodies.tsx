@@ -1,5 +1,6 @@
 // §8.5 renderers by kind (live LOD). Each fills the card's body; the chrome (title bar, shield, ink, scrubber) is
-// CardNode's. Heavy live views (pages) are budgeted by lod.ts; terminals and web views never run live on the canvas.
+// CardNode's. Heavy live views (pages) are budgeted by lod.ts; terminals never run live on the canvas, and a web card
+// only while entered (a native view over it, WebCard.tsx); otherwise it shows its stored snapshot.
 import { AppWindow, FileCode2, FileDiff, FileText, Globe, Image as ImageIcon, LayoutDashboard, MessageSquare, Shapes, StickyNote, Terminal as TerminalIcon, type LucideIcon } from 'lucide-react'
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -17,6 +18,7 @@ import { STICKY_MAX, setSticky } from '../ops'
 import { EXCERPT_PAD, EXCERPT_ROW } from '../send'
 import { lastTurns } from '../turns'
 import { PageCard, useArtifact } from './PageCard'
+import { WebCanvasLive } from './WebCard'
 
 const MermaidFence = lazy(() => import('@/components/chat/Mermaid').then((m) => ({ default: m.MermaidFence })))
 const JsonRenderFence = lazy(() => import('@/components/chat/surface/JsonRenderFence').then((m) => ({ default: m.JsonRenderFence })))
@@ -246,8 +248,11 @@ export function LiveBody({ card, source, editing }: { card: Card; source: Source
       )
     case 'terminal':
       return <Info icon={TerminalIcon} lines={[card.title || 'Terminal', `job ${source.job}`, 'open to watch it live']} />
-    case 'web':
-      return <Info icon={Globe} lines={[card.title || 'Web', hostOf(source.url)]} />
+    case 'web': {
+      const face = card.snap ? <Snapshot card={card} /> : <Info icon={Globe} lines={[card.title || 'Web', hostOf(source.url)]} />
+      // The page itself only while entered: a native view over the card (WebCard.tsx); the canvas shows its snapshot.
+      return editing ? <WebCanvasLive card={card} url={source.url} face={face} /> : face
+    }
     case 'image':
       return <ImageBody s={source} title={card.title} />
     case 'session':
@@ -286,6 +291,7 @@ export function Snapshot({ card }: { card: Card }) {
   const { host } = useCanvas()
   const [url, setUrl] = useState<string | null>(null)
   const key = card.snap ? `snap/${card.id}/${card.snap.v}` : null
+  const at = card.snap?.at
   useEffect(() => {
     let alive = true
     setUrl(null)
@@ -293,7 +299,7 @@ export function Snapshot({ card }: { card: Card }) {
     return () => {
       alive = false
     }
-  }, [key, host])
+  }, [key, at, host])
   if (!url) return <Chip card={card} />
   return <img src={url} alt="" className="absolute inset-0 size-full object-cover object-top" draggable={false} />
 }

@@ -2,11 +2,12 @@
 // shimmer, selected outline + four handles, entered border; a shield over every live body until the card is entered.
 import { Handle, NodeResizer, NodeToolbar, Position, type Node, type NodeProps } from '@xyflow/react'
 import { useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, ChevronRight, ExternalLink, EyeOff, Eye, Archive, PanelRight, Pin, PinOff } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ExternalLink, EyeOff, Eye, Archive, PanelRight, Pin, PinOff, RefreshCw } from 'lucide-react'
 import { memo, useRef, useState } from 'react'
 import { openViewFromCard } from '@/components/tiles/open'
 import { useStore as useZustand } from 'zustand'
-import { CardBoundary, Chip, KIND_NAME, LiveBody, Snapshot } from './cards/bodies'
+import { CardBoundary, Chip, hostOf, KIND_NAME, LiveBody, Snapshot } from './cards/bodies'
+import { useWebPreview, WebFavicon } from './cards/WebCard'
 import { useCanvas } from './context'
 import { versionOf, type Card } from './model'
 import { archive, dim, patchCard, restore } from './ops'
@@ -61,7 +62,7 @@ function OpenInPane({ path, title }: { path: string; title: string }) {
   )
 }
 
-function Toolbar({ card }: { card: Card }) {
+function Toolbar({ card, refreshPreview }: { card: Card; refreshPreview: (() => void) | null }) {
   const { doc, open, stopCapturing, readOnly } = useCanvas()
   const [tagging, setTagging] = useState(false)
   const [tag, setTag] = useState('')
@@ -93,6 +94,11 @@ function Toolbar({ card }: { card: Card }) {
         <ExternalLink className="size-4" /> Open
       </button>
       {viewPath && <OpenInPane path={viewPath} title={card.title} />}
+      {refreshPreview && (
+        <button type="button" aria-label="Refresh preview" onClick={refreshPreview}>
+          <RefreshCw className="size-4" />
+        </button>
+      )}
       {!readOnly && (
         <>
           <span className="sep" />
@@ -131,6 +137,8 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
   const scrub = useZustand(store, (s) => s.scrub[card.id])
   const level = lod[card.id] ?? 'chip'
   const source = versionOf(card, scrub)?.source
+  const web = source?.t === 'web' ? source.url : null
+  const refreshPreview = useWebPreview(card)
   const lastTap = useRef(0)
   const versioned = !IN_PLACE.includes(card.kind)
   const stacked = versioned && card.versions.length > 1
@@ -168,7 +176,7 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
       )}
       {selected && !entered && (
         <NodeToolbar position={Position.Top} offset={14}>
-          <Toolbar card={card} />
+          <Toolbar card={card} refreshPreview={refreshPreview} />
         </NodeToolbar>
       )}
       <div className={cls} data-card={card.id} aria-label={`${KIND_NAME[card.kind]}: ${card.title}`}>
@@ -176,9 +184,10 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
           card.title && <div className="wb-caption">{card.title}</div>
         ) : (
           <div className="wb-head">
+            {web !== null && <WebFavicon url={web} />}
             <span className="wb-title">{card.title || 'Untitled'}</span>
             <span className="wb-kind">
-              {KIND_NAME[card.kind]}
+              {web !== null ? hostOf(web) : KIND_NAME[card.kind]}
               {versioned && card.versions.length > 0 ? ` · v${scrub ?? card.versions.length}` : ''}
             </span>
           </div>
