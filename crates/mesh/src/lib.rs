@@ -14,8 +14,6 @@
 //! vault-key frames, keyring and rotation hooks in `keys.rs`; `net.rs` and this file only
 //! call into them.
 
-/// Provider-owned helpers used by RPC method owners.
-pub mod rpc_support;
 pub mod config;
 pub mod identity;
 mod keys;
@@ -23,6 +21,8 @@ pub mod lease;
 pub mod nearby;
 pub mod net;
 pub mod pairing;
+/// Provider-owned helpers used by RPC method owners.
+pub mod rpc_support;
 pub mod share;
 pub mod stats;
 pub mod store;
@@ -172,6 +172,18 @@ pub fn reannounce_on_connect(
     filter: &'static str,
     columns: Option<&'static [&'static str]>,
 ) {
+    reannounce_on_connect_with(rt, handle, table, filter, String::new(), columns);
+}
+
+/// [`reannounce_on_connect`] with `filter`'s `?` bound to `arg`.
+fn reannounce_on_connect_with(
+    rt: &Runtime,
+    handle: replica::ReplicaHandle,
+    table: &'static str,
+    filter: &'static str,
+    arg: String,
+    columns: Option<&'static [&'static str]>,
+) {
     let rt = rt.clone();
     tokio::spawn(async move {
         let Some(mesh) = rt.lookup_when::<Mesh>(MESH_ACTOR).await else {
@@ -192,7 +204,7 @@ pub fn reannounce_on_connect(
                         continue;
                     }
                     last.insert(p.0, now);
-                    match handle.reannounce(table, filter, "", columns).await {
+                    match handle.reannounce(table, filter, &arg, columns).await {
                         Ok(n) => tracing::debug!(table, n, "182: rows re-announced on connect"),
                         Err(e) => tracing::warn!(table, "182: re-announce: {e:#}"),
                     }
@@ -1436,6 +1448,7 @@ impl runtime::Plugin for MeshPlugin {
                 c.rt.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR),
             )
             .await;
+            let mut handle = None;
             if matches!(replica, Ok(Some(_))) {
                 match replica::attach(
                     c.store.pool(),
@@ -1443,8 +1456,11 @@ impl runtime::Plugin for MeshPlugin {
                 )
                 .await
                 {
-                    Ok(_) => {
-                        tracing::info!("mesh: peers/engine_stats/availability/mesh_meta replicated")
+                    Ok(h) => {
+                        tracing::info!(
+                            "mesh: peers/engine_stats/availability/mesh_meta replicated"
+                        );
+                        handle = Some(h);
                     }
                     Err(e) => tracing::info!("mesh: replication unavailable ({e}); local only"),
                 }
@@ -1453,6 +1469,18 @@ impl runtime::Plugin for MeshPlugin {
                 tracing::warn!("mesh: mesh_meta name: {e:#}");
             }
             c.write_stats(stats).await;
+            // Our own stats row, whole, to peers that dropped columns of it as
+            // unknown on an older build and recorded the batch anyway (sync
+            // never re-sends it; an unchanged rewrite logs nothing): once at
+            // start under a fresh stamp, then on each connect under its clocks
+            // (a no-op where it already landed).
+            if let Some(h) = handle {
+                let id = c.net.id.0.clone();
+                if let Err(e) = h.restamp("engine_stats", &id).await {
+                    tracing::warn!("mesh: engine_stats restamp: {e:#}");
+                }
+                reannounce_on_connect_with(&c.rt, h, "engine_stats", "id = ?", id, None);
+            }
         });
 
         // The transport, to the replica plugin whenever it comes up.

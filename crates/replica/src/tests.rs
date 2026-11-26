@@ -799,6 +799,77 @@ async fn a_column_a_peer_attached_late_arrives_on_reannounce() {
     assert_eq!(home(b.pool.clone(), "t1").await.as_deref(), Some("eng-b"));
 }
 
+/// The engine_stats case: B ran an older schema when A wrote `home`, skipped
+/// it and recorded the batch. A restamping its own unchanged row ships every
+/// column under a fresh clock, so B converges.
+#[tokio::test]
+async fn a_restamped_row_reaches_a_peer_that_dropped_its_columns() {
+    let a = side_with(
+        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, home TEXT, hlc TEXT)",
+        &["tasks"],
+    )
+    .await;
+    let b = side_with(
+        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, hlc TEXT)",
+        &["tasks"],
+    )
+    .await;
+    exec(
+        &a.pool,
+        "INSERT INTO tasks (id, title, home) VALUES ('me', 'x', 'eng-a')",
+    )
+    .await;
+    exchange(&a, &b).await;
+    exec(&b.pool, "ALTER TABLE tasks ADD COLUMN home TEXT").await;
+    let Side { pool, dir, .. } = b;
+    let engine = Engine::open(&dir.path().join("replica.sqlite"))
+        .await
+        .unwrap();
+    let handle = engine.attach(&pool, &["tasks"]).await.unwrap();
+    let b = Side {
+        engine,
+        pool,
+        handle,
+        dir,
+    };
+    // An unchanged rewrite logs nothing: B stays empty.
+    exec(&a.pool, "UPDATE tasks SET home = 'eng-a' WHERE id = 'me'").await;
+    exchange(&a, &b).await;
+    let row = |pool: SqlitePool| async move {
+        sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT title, home FROM tasks WHERE id = 'me'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    assert_eq!(row(b.pool.clone()).await, (Some("x".into()), None));
+
+    let mut feed = a.handle.subscribe();
+    assert!(a.handle.restamp("tasks", "me").await.unwrap());
+    let batch = feed.recv().await.unwrap();
+    let stamp: String = sqlx::query_scalar("SELECT hlc FROM tasks WHERE id = 'me'")
+        .fetch_one(&a.pool)
+        .await
+        .unwrap();
+    let mut cols: Vec<_> = batch
+        .changes
+        .iter()
+        .map(|c| {
+            assert_eq!(c.hlc.to_text(), stamp, "one fresh stamp, also the row's");
+            c.column.clone().unwrap()
+        })
+        .collect();
+    cols.sort();
+    assert_eq!(cols, ["home", "title"], "every column, changed or not");
+    exchange(&a, &b).await;
+    assert_eq!(
+        row(b.pool.clone()).await,
+        (Some("x".into()), Some("eng-a".into()))
+    );
+    assert!(!a.handle.restamp("tasks", "nobody").await.unwrap());
+}
+
 /// 182: batches that arrive before a table's plugin attached (tasks attaches
 /// after the replica at boot) are parked, not skipped: at `attach` the row,
 /// its later state change and the wake all land, in order.

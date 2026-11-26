@@ -845,6 +845,50 @@ impl ReplicaHandle {
         Ok(pks.len() as u64)
     }
 
+    /// Announce row `pk` of `table` again as a fresh write of this origin:
+    /// every column under one new stamp (also written to the row's `hlc`),
+    /// changed or not. For a row only this engine writes (its own
+    /// `engine_stats`): a peer that dropped columns it did not know yet (an
+    /// older build) recorded the batch anyway, so sync never ships it again
+    /// and the update trigger logs only changed columns. Returns `false`
+    /// when the row is absent.
+    pub async fn restamp(&self, table: &str, pk: &str) -> anyhow::Result<bool> {
+        let _guard = self.engine.write_lock.lock().await;
+        let attached = self.engine.tables.lock().get(table).cloned();
+        let Some(attached) = attached else {
+            anyhow::bail!("table {table}: not attached");
+        };
+        // Pending log rows first: captured after this they would replace the
+        // fresh shadow clocks with their older stamps.
+        self.engine
+            .capture_locked(&attached.pool, &[table.to_owned()])
+            .await?;
+        let stamp = self.engine.clock.tick(now_ms());
+        // `hlc` is no replicated column: the trigger logs nothing for this.
+        let hit = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE {} SET \"hlc\" = ? WHERE {} = ?",
+            quote(table),
+            quote(&attached.info.pk)
+        )))
+        .bind(stamp.to_text())
+        .bind(pk)
+        .execute(&attached.pool)
+        .await?
+        .rows_affected();
+        if hit == 0 {
+            return Ok(false);
+        }
+        let mut changes = self
+            .engine
+            .row_as_changes(&attached, table, pk, &stamp)
+            .await?;
+        for c in &mut changes {
+            c.hlc = stamp.clone();
+        }
+        self.engine.emit_locked(changes).await?;
+        Ok(true)
+    }
+
     /// The tables this handle replicates.
     pub fn tables(&self) -> &[String] {
         &self.tables
