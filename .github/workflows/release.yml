@@ -885,12 +885,16 @@ jobs:
               gh release edit "$TAG" --prerelease=false
             fi
           else
-            EXTRA_ARGS=()
-            [[ "$IS_PRERELEASE" == "true" ]] && EXTRA_ARGS+=(--prerelease)
-            gh release create "$TAG" "${ASSETS[@]}" \
-              --title "theuth ${TAG}" \
-              --generate-notes \
-              "${EXTRA_ARGS[@]}"
+            if [[ "$IS_PRERELEASE" == "true" ]]; then
+              gh release create "$TAG" "${ASSETS[@]}" \
+                --title "theuth ${TAG}" \
+                --generate-notes \
+                --prerelease
+            else
+              gh release create "$TAG" "${ASSETS[@]}" \
+                --title "theuth ${TAG}" \
+                --generate-notes
+            fi
           fi
 
       - name: Clean up Homebrew tap credentials
