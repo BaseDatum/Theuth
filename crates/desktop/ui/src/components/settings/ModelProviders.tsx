@@ -279,7 +279,7 @@ function ProviderList() {
   )
 
   return (
-    <Section title="Providers" actions={custom.length + local.length > 0 && <CopyProviders />}>
+    <Section title="Providers" actions={<CopyProviders />}>
       {rows.filter((p) => p.builtin).map(row)}
       {paired.alone.map((l) => (
         <Row
@@ -322,8 +322,9 @@ export function CopyProviders() {
   const machines = machineRows(useMesh().data).filter((m): m is MachineRow & { id: string } => m.id !== null)
   const [open, setOpen] = useState(false)
   const [withKeys, setWithKeys] = useState(false)
+  const [withFavorites, setWithFavorites] = useState(true)
   const [report, setReport] = useState<{ name: string; report: ProviderSyncReport } | null>(null)
-  const copy = useAction((m: { id: string; name: string }) => api.sync_providers(m.id, null, withKeys), {
+  const copy = useAction((m: { id: string; name: string }) => api.sync_providers(m.id, null, withKeys, withFavorites), {
     onSuccess: (r, m) => setReport({ name: m.name, report: r }),
   })
   if (!canSync || machines.length === 0) return null
@@ -381,6 +382,13 @@ export function CopyProviders() {
               <span>
                 Include API keys
                 <span className="block text-[13px] text-fg-tertiary">Keys normally reach every engine through the vault; send them only if the target lacks them.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={withFavorites} onChange={(e) => setWithFavorites(e.currentTarget.checked)} />
+              <span>
+                Copy favorite models
+                <span className="block text-[13px] text-fg-tertiary">Replaces the other engine's starred models with this engine's.</span>
               </span>
             </label>
           </>
