@@ -1147,6 +1147,13 @@ pub(crate) fn check_source(kind: CardKind, mut s: Source, session: uuid::Uuid) -
             return Err("sticky text is over the 280-character limit; use a note card for more".into());
         }
         Source::View { path } => *path = view_path(path)?,
+        Source::Task { task } => {
+            let id = task.trim();
+            if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
+                return Err(format!("a task card takes a task id (task_list lists them); {} is not one", outline::quote(id, 80)));
+            }
+            *task = id.to_owned();
+        }
         _ => {}
     }
     Ok(s)
@@ -1831,6 +1838,16 @@ mod tests {
         }
         for bad in ["/whiteboards/01J0", "/c/abc", "/new", "tasks", "https://x.y/tasks", "/tasks/../c/x", "/tasks/a/b", "/projects/a/b", ""] {
             assert!(view(bad).expect_err(bad).contains("app view path"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn task_cards_take_a_task_id() {
+        let task = |t: &str| check_source(CardKind::Task, Source::Task { task: t.into() }, uuid::Uuid::nil());
+        assert!(matches!(task(" 0192f0c4-7d1e-7abc-9def-0123456789ab "), Ok(Source::Task { task }) if task == "0192f0c4-7d1e-7abc-9def-0123456789ab"));
+        let long = "x".repeat(65);
+        for bad in ["", "  ", "a b", "/tasks/x", long.as_str()] {
+            assert!(task(bad).expect_err(bad).contains("task id"), "{bad}");
         }
     }
 }

@@ -18,6 +18,7 @@ export const KIND_LABEL: Record<Card['kind'], string> = {
   sticky: 'sticky',
   session: 'session',
   view: 'app view',
+  task: 'task',
 }
 
 const VERSIONED = new Set<Card['kind']>(['page', 'excerpt', 'diff', 'terminal', 'web', 'image', 'session', 'view'])

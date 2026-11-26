@@ -22,6 +22,7 @@ import type { Card, Source } from './canvas/model'
 import { versionOf } from './canvas/model'
 import { KIND_LABEL } from './OutlineView'
 import { WebSheetBody } from './canvas/cards/WebCard'
+import { taskPath } from './task-cards'
 
 // Lazy: it pulls the route tree, which holds the whiteboard route itself.
 const ViewCard = lazy(() => import('./canvas/cards/ViewCard'))
@@ -105,6 +106,15 @@ function Body({ card, source, blobUrl, onSession }: { card: Card; source: Source
         <div className="relative h-full">
           <Suspense fallback={null}>
             <ViewCard path={source.path} interactive />
+          </Suspense>
+        </div>
+      )
+    case 'task':
+      // The task's own detail page, live and interactive (the sheet is the phone's and the outline's Open).
+      return (
+        <div className="relative h-full">
+          <Suspense fallback={null}>
+            <ViewCard path={taskPath(source.task)} interactive />
           </Suspense>
         </div>
       )

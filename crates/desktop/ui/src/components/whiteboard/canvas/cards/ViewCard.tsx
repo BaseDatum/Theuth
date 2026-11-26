@@ -2,7 +2,7 @@
 // memory router (as the `view` tile does) under `InsideTileProvider`, so the root renders only the routed page. It
 // reads the app's shared query cache, so it stays live as data changes. Inner navigation stays in the card (Back in
 // the header) except chats (to the workspace), whiteboards (to a pane) and, on the canvas, a task's detail: that opens
-// as its own card beside this one, linked from it, so the task sits next to the graph it came from.
+// as its own `task` card beside this one (the task's live card), linked from it, so it sits next to the graph.
 
 import { type QueryClient, useQueryClient } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter, useNavigate } from '@tanstack/react-router'
@@ -13,7 +13,8 @@ import { openViewFromCard } from '@/components/tiles/open'
 import { InsideTileProvider } from '@/components/tiles/tile-context'
 import { usePanes } from '@/lib/panes'
 import { routeTree } from '@/routeTree.gen'
-import { leavesCard, openTaskBeside, viewCardPath, viewCardTitle } from '../../view-card'
+import { openTaskBeside } from '../../task-cards'
+import { leavesCard, viewCardPath, viewCardTitle } from '../../view-card'
 import { useCanvas } from '../context'
 import type { Card } from '../model'
 

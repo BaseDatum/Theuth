@@ -12,7 +12,7 @@ import { ZOOM_SURFACE } from './scroll'
 export const FIT_MIN = { w: 240, h: 160 } as const
 export const FIT_MAX = { w: 1600, h: 1200 } as const
 /** Kinds sized to their content (the engine's `CardKind::fits_content`). */
-export const FIT_KINDS: readonly CardKind[] = ['page', 'diagram', 'note', 'excerpt', 'image']
+export const FIT_KINDS: readonly CardKind[] = ['page', 'diagram', 'note', 'excerpt', 'image', 'task']
 /** Clearance kept from other cards when a grown card has to move (place.rs `GAP`). */
 export const FIT_GAP = 24
 

@@ -187,7 +187,7 @@ pub struct WbPlaceArgs {
     /// Whiteboard id (default: the current one).
     #[serde(default)]
     pub whiteboard: Option<String>,
-    /// page | diagram | note | excerpt | diff | terminal | web | image | sticky | session | view.
+    /// page | diagram | note | excerpt | diff | terminal | web | image | sticky | session | view | task.
     pub kind: CardKind,
     /// Card title (≤ 120 chars).
     pub title: String,
