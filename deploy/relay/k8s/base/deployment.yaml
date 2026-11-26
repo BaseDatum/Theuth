@@ -1,5 +1,8 @@
 # In-memory uplink table — replicas share nothing. Ingress must hash on URI
 # path so every socket for /h/<id> lands on one pod (design doc 31 §5.5).
+# 2026-11-26: with 2 replicas a device was seen parked on one pod while its
+# mesh uplink sat on the other (iPad offline); run ONE replica until the
+# relays share their uplink table.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,7 +12,7 @@ metadata:
     app.kubernetes.io/component: relay
     app.kubernetes.io/part-of: theuth
 spec:
-  replicas: 2
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
