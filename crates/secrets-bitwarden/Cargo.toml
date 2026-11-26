@@ -30,6 +30,8 @@ base64 = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
+# `net`: the mock identity server of `lib.rs`'s header test.
+tokio = { workspace = true, features = ["net"] }
 
 [lints]
 workspace = true

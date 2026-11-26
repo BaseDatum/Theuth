@@ -86,12 +86,9 @@ pub async fn callback(
             let (status, page) = if !target.contains('?') {
                 ("404 Not Found", Cow::Borrowed(""))
             } else if target.contains("error=") {
-                (
-                    "400 Bad Request",
-                    Cow::Owned(PAGE.replace("{state}", "err")),
-                )
+                ("400 Bad Request", Cow::Owned(callback_page(false)))
             } else {
-                ("200 OK", Cow::Owned(PAGE.replace("{state}", "ok")))
+                ("200 OK", Cow::Owned(callback_page(true)))
             };
             let resp = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
@@ -108,6 +105,13 @@ pub async fn callback(
 
 /// Completion page served on the loopback redirect; `{state}` is `ok` or `err`.
 const PAGE: &str = include_str!("callback.html");
+
+/// The page a browser login's loopback redirect answers: "Logged in", or "Login failed" with
+/// the redirect's `error` / `error_description` (read by the page's script). It also removes the
+/// query (the code) from the address bar.
+pub fn callback_page(ok: bool) -> String {
+    PAGE.replace("{state}", if ok { "ok" } else { "err" })
+}
 
 /// Open `url` in the user's browser; best effort, never fails the login.
 pub fn open_browser(url: &str) {

@@ -2,7 +2,8 @@
 //! binds `localhost` (127.0.0.1 and ::1: the browser may resolve either) on the first free port of
 //! [`PORTS`], the only redirect URIs Bitwarden's `cli` client allows; the webview passes that port to
 //! `connection_sso_begin` and opens `authorize_url`. [`sso_wait`] takes the first
-//! `GET /?code=…&state=…` (or `?error=…`), answers a "close this tab" page and returns the whole
+//! `GET /?code=…&state=…` (or `?error=…`), answers oauth's callback page ("Logged in" / "Login
+//! failed") and returns the whole
 //! redirect URL for `connection_sso_complete`. Any other path or method is refused and the wait goes
 //! on (a browser asks for `/favicon.ico` too). [`TIMEOUT`] or [`sso_cancel`] ends it. The code and the
 //! query never reach `tracing`.
@@ -28,9 +29,6 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The largest request head read.
 const MAX_HEAD: usize = 16 * 1024;
-
-const DONE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>theuth</title><body style=\"font:16px system-ui;margin:3em\"><p>You can close this tab and return to theuth.</p>";
-const ERROR_PAGE: &str = "<!doctype html><meta charset=utf-8><title>theuth</title><body style=\"font:16px system-ui;margin:3em\"><p>Sign-in did not finish. Return to theuth for the details.</p>";
 
 /// The bound sockets of one login and the port they share.
 pub struct Bound {
@@ -116,10 +114,10 @@ async fn answer(mut stream: TcpStream, port: u16, tx: mpsc::Sender<String>) {
     let (status, body, url) = match classify(&head) {
         Verdict::Redirect { target, error } => (
             "200 OK",
-            if error { ERROR_PAGE } else { DONE_PAGE },
+            oauth::callback_page(!error),
             Some(format!("http://localhost:{port}{target}")),
         ),
-        Verdict::Refused(status) => (status, "", None),
+        Verdict::Refused(status) => (status, String::new(), None),
     };
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{body}",
@@ -300,6 +298,7 @@ mod tests {
         )
         .await;
         assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+        assert!(ok.contains(r#"data-state="ok""#), "{ok}");
         assert!(ok.contains("close this tab"));
         assert_eq!(
             wait.await.unwrap().unwrap(),
@@ -317,7 +316,8 @@ mod tests {
             Arc::new(Notify::new()),
         ));
         let page = send(port, "GET /?error=access_denied&state=s HTTP/1.1\r\n\r\n").await;
-        assert!(page.contains("did not finish"));
+        assert!(page.contains(r#"data-state="err""#), "{page}");
+        assert!(page.contains("Login failed"));
         assert!(
             wait.await
                 .unwrap()
