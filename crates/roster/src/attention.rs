@@ -3106,6 +3106,7 @@ mod tests {
             blockers: blockers.iter().map(|s| (*s).to_owned()).collect(),
             blocks: vec![],
             parent: None,
+            accent: None,
             project: None,
             where_: None,
             harness: None,

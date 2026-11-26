@@ -3977,6 +3977,7 @@
             blockers: vec![],
             blocks: vec![],
             parent: None,
+            accent: None,
             project: Some("sre".into()),
             where_: None,
             harness: None,
