@@ -29,6 +29,8 @@ import { type BrowserTarget, BrowserButton, hostOf, openTarget, targetLabel, use
 import { browserRequirements, terminalRequirements } from './requirements'
 import { CategoryMark } from './CategoryMark'
 import { TerminalLink } from './SubagentStrip'
+import { usePayloadDrag } from './Panes'
+import { artifactDrag, browserDrag, codemapDrag, type TrayDrag, terminalsDrag, vmDrag, whiteboardDrag } from './tray-drag'
 import { TerminalButton, useHasTerminals, useTerminals } from './TerminalViewer'
 import { useOpenWhiteboard } from './WhiteboardViewCard'
 import { type SessionWhiteboard, useSessionWhiteboards } from '@/components/whiteboard/useSessionWhiteboards'
@@ -107,9 +109,11 @@ export const trayHasItems = (t: Tray): boolean => t.terminals || !!t.browsers.le
 /** The artifacts, newest first: one opens on a click, several list first (the header's `▣ N` dropdown). */
 export function ArtifactsButton({ session, artifacts, className, children }: { session: string; artifacts: Artifact[]; className?: string; children: ReactNode }) {
   const only = artifacts.length === 1 ? artifacts[0] : undefined
+  const drag = only ? artifactDrag(session, only.call_id, only.title) : null
+  const dragProps = usePayloadDrag(drag?.payload ?? null, drag?.title ?? '')
   if (only) {
     return (
-      <button type="button" className={className} title={`Open ${only.title}`} onClick={() => showArtifact(session, only.call_id)}>
+      <button type="button" className={className} title={`Open ${only.title}`} onClick={() => showArtifact(session, only.call_id)} {...dragProps}>
         {children}
       </button>
     )
@@ -139,9 +143,11 @@ export function ArtifactsButton({ session, artifacts, className, children }: { s
 /** The whiteboards: one opens on a click, several list first (like the artifacts). */
 function WhiteboardsButton({ tray, className, children }: { tray: Tray; className?: string; children: ReactNode }) {
   const only = tray.whiteboards.length === 1 ? tray.whiteboards[0] : undefined
+  const drag = only ? whiteboardDrag(tray.session, only) : null
+  const dragProps = usePayloadDrag(drag?.payload ?? null, drag?.title ?? '')
   if (only) {
     return (
-      <button type="button" className={className} title={`Open ${only.title}`} onClick={() => tray.openWhiteboard(only)}>
+      <button type="button" className={className} title={`Open ${only.title}`} onClick={() => tray.openWhiteboard(only)} {...dragProps}>
         {children}
       </button>
     )
@@ -179,6 +185,16 @@ function TileBody({ color, name, detail, count }: { color: string; name: string;
   )
 }
 
+/** A plain tile button that also drags its item into a pane (`usePayloadDrag`). */
+function DragTile({ label, onClick, drag, children }: { label: string; onClick(): void; drag: TrayDrag; children: ReactNode }) {
+  const props = usePayloadDrag(drag.payload, drag.title, drag.prepare)
+  return (
+    <button type="button" className={TILE} aria-label={label} onClick={onClick} {...props}>
+      {children}
+    </button>
+  )
+}
+
 /**
  * Mounted only in the opened tray (`useTerminals` polls): one terminal opens on a tap (its pop-out, or in-page on iOS);
  * several open the viewer, which lists them.
@@ -189,10 +205,12 @@ function TerminalsTile({ session, running }: { session: string; running: string[
   const count = listed.length || running.length
   const one = listed.length === 1 ? { session: listed[0]!.session, job: listed[0]!.id } : !listed.length && running.length === 1 ? { session, job: running[0]! } : null
   const body = <TileBody color={backgroundColors.terminals.bg} name="Terminals" detail={listed.map((t) => t.name ?? t.command).join(' · ') || `${count} running`} count={count} />
+  const drag = terminalsDrag(session)
+  const dragProps = usePayloadDrag(one ? null : drag.payload, drag.title)
   return one ? (
-    <TerminalLink session={one.session} job={one.job} label="Open terminal" className={TILE}>{body}</TerminalLink>
+    <TerminalLink session={one.session} job={one.job} label="Open terminal" name={listed[0]?.name ?? listed[0]?.command ?? 'Terminal'} className={TILE}>{body}</TerminalLink>
   ) : (
-    <TerminalButton session={session} className={TILE} onOpen={() => (host === null ? window.dispatchEvent(new CustomEvent('theuth:terminals', { detail: { session } })) : void openTerminalsTile(host))}>{body}</TerminalButton>
+    <TerminalButton session={session} className={TILE} drag={dragProps} onOpen={() => (host === null ? window.dispatchEvent(new CustomEvent('theuth:terminals', { detail: { session } })) : void openTerminalsTile(host))}>{body}</TerminalButton>
   )
 }
 
@@ -211,7 +229,7 @@ export function TrayTiles({ tray }: { tray: Tray }) {
   if (tray.terminals || running.length) tiles.push(<TerminalsTile key="terminals" session={session} running={running} />)
   if (tray.browsers.length) {
     tiles.push(
-      <BrowserButton key="browser" targets={tray.browsers} busy={tray.browserBusy} onOpen={tray.openBrowser} className={TILE}>
+      <BrowserButton key="browser" targets={tray.browsers} busy={tray.browserBusy} onOpen={tray.openBrowser} className={TILE} drag={tray.browsers.length === 1 ? browserDrag(session, tray.browsers[0]!) : undefined}>
         <TileBody color={backgroundColors.browser.bg} name="Browser" detail={tray.browsers.map((t) => (t.kind === 'web' ? hostOf(t.url) || t.title : targetLabel(t))).join(' · ')} count={tray.browsers.length} />
       </BrowserButton>,
     )
@@ -232,15 +250,16 @@ export function TrayTiles({ tray }: { tray: Tray }) {
   }
   if (tray.vm) {
     tiles.push(
-      <button key="desktop" type="button" className={TILE} aria-label={`Desktop of ${tray.vm.name}`} onClick={tray.vm.open}>
+      <DragTile key="desktop" label={`Desktop of ${tray.vm.name}`} onClick={tray.vm.open} drag={vmDrag(session, tray.vm.name)}>
         <TileBody color={backgroundColors.desktop.bg} name="Desktop" detail={tray.vm.name} count={1} />
-      </button>,
+      </DragTile>,
     )
   }
   if (tray.codemap) {
     const roots = codemap?.roots ?? []
+    const root = codemap?.last?.root ?? roots.at(-1)
     tiles.push(
-      <CodeMapButton key="codemap" session={session} className={TILE}>
+      <CodeMapButton key="codemap" session={session} className={TILE} drag={root === undefined ? undefined : codemapDrag(session, root)}>
         <TileBody color={backgroundColors.codemap.bg} name="Code map" detail={roots.map((r) => r.split('/').filter(Boolean).at(-1) ?? r).join(' · ')} count={roots.length} />
       </CodeMapButton>,
     )

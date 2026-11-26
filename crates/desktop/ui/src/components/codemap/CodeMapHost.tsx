@@ -17,6 +17,8 @@ import { PX_STEP } from '@/lib/resize-drag'
 import { closeTile, tileId, useTileOpen } from '@/lib/tiles'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { CodeMapPanel } from './CodeMapPanel'
+import { usePayloadDrag } from '@/components/chat/Panes'
+import type { TrayDrag } from '@/components/chat/tray-drag'
 
 const WIDTH_KEY = 'codemap-panel-width'
 const MIN_W = 360
@@ -33,8 +35,9 @@ export const useCodemapAvailable = (session: string | null): boolean =>
  * root — the tile when the chat sits in a pane, else the docked pane / phone Sheet (`codemapPanel`); a dot while a call
  * arrived that the CodeMap has not shown.
  */
-export function CodeMapButton({ session, className, children }: { session: string; className?: string; children: ReactNode }) {
+export function CodeMapButton({ session, className, drag, children }: { session: string; className?: string; drag?: TrayDrag; children: ReactNode }) {
   const host = useTileHost()
+  const dragProps = usePayloadDrag(drag?.payload ?? null, drag?.title ?? '')
   const codemap = useSessionField(session, 'codemap')
   const panel = useSessionField(session, 'codemapPanel') ?? null
   const id = tileId('codemap', session)
@@ -52,7 +55,7 @@ export function CodeMapButton({ session, className, children }: { session: strin
     } else useSessions.getState().setCodemapPanel(session, open ? null : root)
   }
   return (
-    <button type="button" className={cn('relative', className)} aria-label={open ? 'Close CodeMap' : 'CodeMap'} aria-pressed={open} onClick={toggle}>
+    <button type="button" className={cn('relative', className)} aria-label={open ? 'Close CodeMap' : 'CodeMap'} aria-pressed={open} onClick={toggle} {...dragProps}>
       {children}
       {dot && <span aria-hidden className="absolute right-2.5 bottom-2.5 size-1.5 rounded-full bg-fg-accent" />}
     </button>

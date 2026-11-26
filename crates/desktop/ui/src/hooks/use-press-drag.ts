@@ -125,6 +125,9 @@ export function usePressDrag(cb: PressDrag) {
   }
 }
 
+/** What `usePressDrag` spreads on its source element. */
+export type PressDragProps = ReturnType<typeof usePressDrag>['props']
+
 /**
  * Edge auto-scroll while a drag is live: how far (px, per frame) a scroller spanning `left..right` moves for a pointer
  * at `x`. Zero away from the edges; ramps to `speed` as the pointer reaches an edge, so a target column that is
