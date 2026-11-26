@@ -20,6 +20,7 @@ import { useSessionField, useSessions } from '@/store/sessions'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
 import type { Ticks } from '@/lib/selection'
 import { HarnessGlyph, shortModel } from './harnessGlyph'
+import { MachineChip } from './SessionItem'
 
 export const GLYPH: Record<AgentState['state'], ReactNode> = {
   running: '●',
@@ -83,6 +84,7 @@ export const SubagentRow = memo(function SubagentRow({
   popout = false,
   ticked = false,
   tick,
+  machine,
 }: {
   row: AgentInfo
   active: boolean
@@ -94,6 +96,8 @@ export const SubagentRow = memo(function SubagentRow({
   /** Tick mode (`Ticks`, the broadcast picker): a checkbox leads the row and a click ticks it instead of opening. */
   ticked?: boolean
   tick?(id: string): void
+  /** Sidebar-only: the session's engine for the machine badge (`MachineChip`); the Agents page passes none. */
+  machine?: { owner: string; epoch: number; here: boolean }
 }) {
   const drag = useSessionDrag(row.id, row.name)
   const observed = row.observed ?? undefined
@@ -158,6 +162,7 @@ export const SubagentRow = memo(function SubagentRow({
           {shortModel(row.model)}
         </span>
       )}
+      {machine && <MachineChip {...machine} />}
       <span className="shrink-0 tabular-nums text-fg-tertiary">{ago(agoFrom(row), now)}</span>
     </>
   )
@@ -271,6 +276,8 @@ export function AgentTree({ session, active, liveOnly = false, tick }: { session
   // The sidebar keeps `list_sessions` warm; it lends `updated_at`/`created_at` to the ranking.
   const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const tree = useMemo(() => descendantKey(sessions, session), [sessions, session])
+  // Each row's engine for its machine badge: its own `list_sessions` row, else the root's (a child runs where it was spawned).
+  const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions])
   // The last fetch: a new session seeds at once, a changed subtree refetches after 300 ms of quiet.
   const fetched = useRef<{ api: typeof api; session: string; tree: string } | null>(null)
   useEffect(() => {
@@ -332,6 +339,7 @@ export function AgentTree({ session, active, liveOnly = false, tick }: { session
               popout={!tick}
               ticked={tick?.ids.has(r.id)}
               tick={tick?.toggle}
+              machine={byId.get(r.id) ?? byId.get(session)}
             />
             {sub}
           </>

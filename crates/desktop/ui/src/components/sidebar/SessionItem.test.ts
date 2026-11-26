@@ -27,23 +27,26 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@/lib/meeting-link', () => ({ useMeetingForSession: () => null, openMeeting: vi.fn() }))
 vi.mock('@/lib/popout', async (original) => ({ ...(await original<typeof Popout>()), canPopout: vi.fn(() => true), openPopout: vi.fn(async () => {}) }))
+const mesh = vi.hoisted(() => ({ current: undefined as unknown }))
+vi.mock('@/components/tasks/queries', async (original) => ({ ...(await original<object>()), useMesh: () => ({ data: mesh.current }) }))
 
 const child = receiveComponent('method.agent.output.SessionSummary', { id: 'child', title: 'child', model: 'm', parent: 'root', running: true, created_at: '2026-11-16T12:00:00Z', updated_at: '2026-11-16T12:00:00Z' })
 const glyph = (label: string) => document.querySelector(`[role="img"][aria-label="${label}"]`)!
 let unmount = async () => {}
 let client: QueryClient
-async function mount(subagents: SessionSummary[] = [child], endless = false, pinned = false) {
+async function mount(subagents: SessionSummary[] = [child], endless = false, pinned = false, at: { owner?: string; here?: boolean } = {}) {
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
   client = new QueryClient()
   await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(SidebarProvider, null, createElement('div', { onClick: rowClick, onPointerDown: rowPointerDown, onMouseDown: rowMouseDown }, createElement(SessionItem, {
-    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned, archived: false, project: null, owner: '', epoch: 1, here: true, running: true, endless, subagents, active: false, selected: false, selecting: false, select,
+    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned, archived: false, project: null, owner: at.owner ?? '', epoch: 1, here: at.here ?? true, running: true, endless, subagents, active: false, selected: false, selecting: false, select,
   }))) })))
   unmount = async () => { await act(async () => root.unmount()) }
 }
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(canPopout).mockReturnValue(true)
+  mesh.current = undefined
   usePanes.setState({ focused: null, drag: null })
   useSessions.setState({ sessions: {
     root: { ...empty('root'), activity: 'thinking', running: true, jobs: new Set(['j1', 'j2']), ptys: new Set(['pty1']), reminders: new Set(['r1']) },
@@ -172,4 +175,23 @@ test('a pinned chat shows a muted pin leftmost in its row, before the title; an 
   document.body.innerHTML = ''
   await mount()
   expect(document.querySelector('[aria-label="Pinned"]')).toBeNull()
+})
+
+const peer = (id: string, name: string) => ({ id, name, reachable: true, last_seen_ms: 0, path: 'lan' })
+const badge = () => document.querySelector<HTMLElement>('span[title^="runs on"]')?.textContent ?? null
+
+test('a lone engine labels no row with its machine', async () => {
+  mesh.current = { self_id: 'hub', self_name: '333', peers: [], stats: [] }
+  await mount()
+  expect(badge()).toBeNull()
+})
+
+test.each([
+  [{ here: true }, '333'],
+  [{ owner: 'p50', here: false }, 'P50'],
+  [{ owner: 'gone', here: false }, null],
+])('a 3-machine mesh labels every row with its machine, the hub too (%o → %s)', async (at, name) => {
+  mesh.current = { self_id: 'hub', self_name: '333', peers: [peer('p50', 'P50'), peer('xeus', 'xeus')], stats: [] }
+  await mount([child], false, false, at)
+  expect(badge()).toBe(name)
 })

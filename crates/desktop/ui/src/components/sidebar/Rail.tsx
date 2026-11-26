@@ -20,7 +20,7 @@ import { type SessionSlice, useSessionField, useSessions } from '@/store/session
 import { AgentTree, ago } from './AgentTree'
 import { useDeskList } from './Desks'
 import { ProjectIcon } from './ProjectStyle'
-import { PinnedGlyph, type RowEdit, SessionActivity, SessionEdit, SessionMenu, SessionPending, subagentRunning, useRowTitle, useSessionActions } from './SessionItem'
+import { MachineChip, PinnedGlyph, type RowEdit, SessionActivity, SessionEdit, SessionMenu, SessionPending, subagentRunning, useRowTitle, useSessionActions } from './SessionItem'
 import { buildRows, newChatLabel, ProjectMenu, type Row, UNGROUPED, useSidebarSessions } from './SessionList'
 
 /** One icon of the collapsed rail: 36 px under a mouse, 44 px under a finger (the rail is 56 px). */
@@ -404,6 +404,7 @@ function PopChat({
           <SessionActivity id={s.id} here={s.here} running={s.running} />
           <SessionPending id={s.id} />
           <span className="min-w-0 flex-1 truncate">{title}</span>
+          <MachineChip owner={s.owner} epoch={s.epoch} here={s.here} />
           <span className="shrink-0 text-[11px] text-fg-tertiary tabular-nums">{ago(s.updated_at)}</span>
         </Link>
         {!inPane && running.length > 0 && (
@@ -470,7 +471,7 @@ function PopChat({
           <ul aria-label="Running subagents">
             {running.map((r) => (
               <li key={r.id}>
-                <PopSubagent {...r} onPick={pop.close} />
+                <PopSubagent {...r} owner={s.owner} epoch={s.epoch} here={s.here} onPick={pop.close} />
               </li>
             ))}
           </ul>
@@ -480,13 +481,14 @@ function PopChat({
   )
 }
 
-/** A running subagent listed under its chat: opens it, or drags into a pane like the expanded tree's rows. */
-function PopSubagent({ id, name, onPick }: { id: string; name: string; onPick(): void }) {
+/** A running subagent listed under its chat (on its chat's machine): opens it, or drags into a pane like the expanded tree's rows. */
+function PopSubagent({ id, name, owner, epoch, here, onPick }: { id: string; name: string; owner: string; epoch: number; here: boolean; onPick(): void }) {
   const drag = useSessionDrag(id, name)
   return (
     <Link to="/c/$session" params={{ session: id }} {...drag} data-rail-item className={cn(POP_ROW, 'h-7 pl-6 text-xs')} onClick={onPick}>
       <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-success" aria-hidden />
       <span className="min-w-0 flex-1 truncate">{name}</span>
+      <MachineChip owner={owner} epoch={epoch} here={here} />
     </Link>
   )
 }

@@ -44,6 +44,8 @@ import { cn } from '@/lib/utils'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { type Activity, type SessionSlice, shownActivity, statusLine, useSessionField, useSessions } from '@/store/sessions'
 import { routed, useEngineLabel } from '@/lib/owner'
+import { useMesh } from '@/components/tasks/queries'
+import type { MeshStatus } from '@/rpc/bindings/method.nodes.output'
 import { useApprovals } from '@/store/approvals'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
 
@@ -188,19 +190,39 @@ function ProjectItems({ current, onPick, onNew }: { current: string | null; onPi
   )
 }
 
+const CHIP = 'inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-sidebar-accent px-1 text-[10px] leading-4 text-fg-tertiary'
+
 /** Engine chip (68 §5): the owner's mesh name, muted, on a session owned elsewhere; hover names owner and epoch.
  * `prefix`: the chat header's `on ` (181 D4). 183 §12.1: `state` adds `· live` with a green dot (follow stream up), or `· offline`; `connected` adds nothing. */
 export function EngineChip({ owner, epoch, className, prefix = '', state }: { owner: string; epoch: number; className?: string; prefix?: string; state?: 'live' | 'connected' | 'offline' }) {
   const label = useEngineLabel(owner)
   return (
-    <span
-      title={`owned by ${owner || '?'} · epoch ${epoch}`}
-      className={cn('inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-sidebar-accent px-1 text-[10px] leading-4 text-fg-tertiary', className)}
-    >
+    <span title={`owned by ${owner || '?'} · epoch ${epoch}`} className={cn(CHIP, className)}>
       {state === 'live' && <span className="size-1.5 shrink-0 rounded-full bg-success" aria-hidden="true" />}
       {prefix}
       {label}
       {(state === 'live' || state === 'offline') && ` · ${state}`}
+    </span>
+  )
+}
+
+/**
+ * The mesh name of the machine a sidebar row's session runs on (this engine's when `here`), once the mesh has two or
+ * more machines (`machineRows`' rule: a peer besides this engine); `undefined` on a lone engine, or for an engine the
+ * roster does not know (or names not).
+ */
+export function machineName(mesh: MeshStatus | undefined, owner: string, here: boolean): string | undefined {
+  if (!mesh?.peers.some((p) => p.id !== mesh.self_id)) return undefined
+  return (here ? mesh.self_name : mesh.peers.find((p) => p.id === owner)?.name) || undefined
+}
+
+/** Every sidebar row's machine badge (chat, Active, subagent and rail rows): `machineName`, styled as `EngineChip`. */
+export function MachineChip({ owner, epoch, here, className }: { owner: string; epoch: number; here: boolean; className?: string }) {
+  const name = machineName(useMesh().data, owner, here)
+  if (!name) return null
+  return (
+    <span title={`runs on ${name} · epoch ${epoch}`} className={cn(CHIP, className)}>
+      {name}
     </span>
   )
 }
@@ -479,7 +501,7 @@ export const SessionItem = memo(function SessionItem({
           ∞
         </span>
       )}
-      {!here && <EngineChip owner={owner} epoch={epoch} className="ml-auto" />}
+      <MachineChip owner={owner} epoch={epoch} here={here} className="ml-auto" />
     </>
   )
 
