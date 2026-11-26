@@ -72,6 +72,12 @@ impl CardKind {
         matches!(self, Self::Sticky | Self::Note | Self::Diagram)
     }
 
+    /// Kinds whose card is sized to its rendered content when placed or updated without an explicit size
+    /// (the owner's client measures it and writes the size; see [`Card::fit`]).
+    pub fn fits_content(self) -> bool {
+        matches!(self, Self::Page | Self::Diagram | Self::Note | Self::Excerpt | Self::Image)
+    }
+
     fn parse(s: &str) -> Option<Self> {
         serde_json::from_value(Value::String(s.to_owned())).ok()
     }

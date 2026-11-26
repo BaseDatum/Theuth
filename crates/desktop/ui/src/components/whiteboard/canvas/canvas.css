@@ -165,6 +165,27 @@
 
 .wb-shield { position: absolute; inset: 0; z-index: 2; background: transparent; }
 .wb-card.entered .wb-shield { pointer-events: none; }
+/* A live body hiding content behind a scroll, not entered: a fade and a hint (entered, the region scrolls). */
+.wb-more {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 44px;
+  z-index: 3;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 6px;
+  background: linear-gradient(to bottom, transparent, var(--wb-card-bg));
+}
+.wb-more > span {
+  font: 500 10.5px/1 var(--font-sans, system-ui);
+  color: var(--fg-tertiary);
+  background: var(--wb-card-bg);
+  border: 1px solid var(--wb-card-border);
+  border-radius: 999px;
+  padding: 3px 8px;
+}
 
 .wb-chip {
   position: absolute;
@@ -187,11 +208,32 @@
   position: relative;
 }
 .wb-frame.selected { border-style: solid; border-color: var(--wb-accent); }
-/* A frame is grabbed by its title: its interior is canvas (pan, lasso, ink, frame drawing all pass through). */
-/* React Flow sets `pointer-events: all` inline on interactive nodes, hence !important. */
+/* A frame is grabbed by its title or its border: the node is click-through (its interior is canvas: pan, lasso, ink,
+ * frame drawing and the cards inside all pass), and a hit band `--wb-hit` wide on screen straddles the outline.
+ * `--wb-zoom` is the viewport zoom (Canvas sets it on `.wb-canvas`), so the band stays 12 px (20 px for a finger)
+ * at any zoom. React Flow sets `pointer-events: all` inline on interactive nodes, hence !important. */
+.wb-canvas { --wb-hit: calc(12px / var(--wb-zoom, 1)); }
+@media (pointer: coarse) { .wb-canvas { --wb-hit: calc(20px / var(--wb-zoom, 1)); } }
 .wb-canvas .react-flow__node-frame { pointer-events: none !important; }
 .wb-canvas .react-flow__node-frame .wb-frame-title,
-.wb-canvas .react-flow__node-frame .react-flow__resize-control { pointer-events: all; cursor: grab; }
+.wb-canvas .react-flow__node-frame .wb-frame-band { pointer-events: all; cursor: grab; }
+.wb-canvas .react-flow__node-frame .react-flow__resize-control { pointer-events: all; z-index: 2; }
+.wb-frame-band { position: absolute; }
+.wb-frame-band[data-side='top'] { left: calc(var(--wb-hit) / -2); right: calc(var(--wb-hit) / -2); top: calc(var(--wb-hit) / -2); height: var(--wb-hit); }
+.wb-frame-band[data-side='bottom'] { left: calc(var(--wb-hit) / -2); right: calc(var(--wb-hit) / -2); bottom: calc(var(--wb-hit) / -2); height: var(--wb-hit); }
+.wb-frame-band[data-side='left'] { top: calc(var(--wb-hit) / -2); bottom: calc(var(--wb-hit) / -2); left: calc(var(--wb-hit) / -2); width: var(--wb-hit); }
+.wb-frame-band[data-side='right'] { top: calc(var(--wb-hit) / -2); bottom: calc(var(--wb-hit) / -2); right: calc(var(--wb-hit) / -2); width: var(--wb-hit); }
+/* Selected, the outline itself resizes (the resizer's edge lines, widened to the band) and the band moves just inside
+ * it: drag there or by the title to move the frame with its cards. */
+.wb-canvas .react-flow__node-frame .react-flow__resize-control.line::after { content: ''; position: absolute; inset: calc(var(--wb-hit) / -2); }
+.wb-frame.selected > .wb-frame-band[data-side='top'] { top: calc(var(--wb-hit) / 2); left: calc(var(--wb-hit) / 2); right: calc(var(--wb-hit) / 2); }
+.wb-frame.selected > .wb-frame-band[data-side='bottom'] { bottom: calc(var(--wb-hit) / 2); left: calc(var(--wb-hit) / 2); right: calc(var(--wb-hit) / 2); }
+.wb-frame.selected > .wb-frame-band[data-side='left'] { left: calc(var(--wb-hit) / 2); top: calc(var(--wb-hit) / 2); bottom: calc(var(--wb-hit) / 2); }
+.wb-frame.selected > .wb-frame-band[data-side='right'] { right: calc(var(--wb-hit) / 2); top: calc(var(--wb-hit) / 2); bottom: calc(var(--wb-hit) / 2); }
+/* Hand (and Present, which locks it) pans: frames and links take no pointer there, nothing selects. */
+.wb-canvas[data-mode='hand'] .react-flow__node-frame .wb-frame-title,
+.wb-canvas[data-mode='hand'] .react-flow__node-frame .wb-frame-band,
+.wb-canvas[data-mode='hand'] .react-flow__edge { pointer-events: none; }
 .wb-frame > .wb-frame-title {
   position: absolute;
   left: 14px;
@@ -242,15 +284,20 @@
  * frame titles alike, since the mouse inks over all of them. A pan drag still shows React Flow's grabbing hand. */
 .wb-canvas[data-cursor='ink'] .react-flow__pane:not(.dragging)::before,
 .wb-canvas[data-cursor='ink'] .react-flow__node,
-.wb-canvas[data-cursor='ink'] .react-flow__node-frame .wb-frame-title { cursor: crosshair; }
+.wb-canvas[data-cursor='ink'] .react-flow__node-frame .wb-frame-title,
+.wb-canvas[data-cursor='ink'] .react-flow__node-frame .wb-frame-band { cursor: crosshair; }
 .wb-canvas[data-cursor='erase'] .react-flow__pane:not(.dragging)::before,
 .wb-canvas[data-cursor='erase'] .react-flow__node,
-.wb-canvas[data-cursor='erase'] .react-flow__node-frame .wb-frame-title {
+.wb-canvas[data-cursor='erase'] .react-flow__node-frame .wb-frame-title,
+.wb-canvas[data-cursor='erase'] .react-flow__node-frame .wb-frame-band {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Ccircle cx='10' cy='10' r='7' fill='white' fill-opacity='.55' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E") 10 10, cell;
 }
 
 .wb-canvas .react-flow__edge-path { stroke: var(--wb-link); stroke-width: 1.6; }
 .wb-canvas .react-flow__edge.selected .react-flow__edge-path { stroke: var(--wb-accent); stroke-width: 2.2; }
+/* A link is tapped near its line: the invisible interaction stroke is 24 px (32 px for a finger) on screen at any zoom. */
+.wb-canvas .react-flow__edge-interaction { stroke-width: calc(24px / var(--wb-zoom, 1)); }
+@media (pointer: coarse) { .wb-canvas .react-flow__edge-interaction { stroke-width: calc(32px / var(--wb-zoom, 1)); } }
 .wb-link-label {
   position: absolute;
   font: 500 11px/1.3 var(--font-sans, system-ui);

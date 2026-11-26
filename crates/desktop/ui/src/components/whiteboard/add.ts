@@ -2,6 +2,7 @@
 // view centre, on no card and no ink), sized like the engine's placement defaults (contract §3.1 "Placement").
 
 import type * as Y from 'yjs'
+import { fitsContent } from './canvas/fit'
 import { addCard } from './canvas/ops'
 import { ulid } from './canvas/ids'
 import type { CardKind, Id, Source } from './canvas/model'
@@ -22,10 +23,11 @@ export const SIZE: Record<CardKind, [number, number]> = {
 
 export type Spot = (w: number, h: number) => { x: number; y: number }
 
+/** `size` given: placed at it, never sized to content; else the default by kind, sized to content once it renders. */
 export function place(doc: Y.Doc, spot: Spot, kind: CardKind, title: string, source: Source, size?: [number, number]): Id {
   const [w, h] = size ?? SIZE[kind]
   const { x, y } = spot(w, h)
-  return addCard(doc, { kind, title, x, y, w, h, source })
+  return addCard(doc, { kind, title, x, y, w, h, source, fit: !size && fitsContent({ kind }), sized: !!size })
 }
 
 /** A URL the web card accepts: http(s) only; a bare host gets `https://`. */

@@ -847,6 +847,10 @@ fn undo(w: &mut W, inv: &[Inv]) -> (u32, Vec<(String, &'static str)>) {
     for i in inv.iter().rev() {
         match i {
             Inv::Field { root, id, key, before, after } => {
+                // The owner's client clears `fit` once it sized the card to its content: nothing to undo there.
+                if key == "fit" {
+                    continue;
+                }
                 let Some(now) = entry_json(w.maps, w.txn, root, id) else {
                     skip(id, "removed since", &mut skipped);
                     continue;
@@ -862,15 +866,14 @@ fn undo(w: &mut W, inv: &[Inv]) -> (u32, Vec<(String, &'static str)>) {
                 let Some(now) = entry_json(w.maps, w.txn, root, id) else {
                     continue;
                 };
-                let changed = after
-                    .iter()
-                    .filter(|(k, _)| !matches!(k.as_str(), "versions" | "snap" | "pin"))
-                    .find(|(k, v)| now.get(*k) != Some(v))
-                    .map(|(k, _)| k.clone());
-                let extra = now
-                    .keys()
-                    .find(|k| !after.contains_key(*k) && !matches!(k.as_str(), "versions" | "snap" | "pin"))
-                    .cloned();
+                // Bookkeeping and the client's size-to-content (`fit`, `scale`, `w`/`h` until the owner resized
+                // it: `sized`) are not the owner's edits.
+                let auto = |k: &str| {
+                    matches!(k, "versions" | "snap" | "pin" | "fit" | "scale")
+                        || (matches!(k, "w" | "h") && !now.contains_key("sized"))
+                };
+                let changed = after.iter().filter(|(k, _)| !auto(k)).find(|(k, v)| now.get(*k) != Some(v)).map(|(k, _)| k.clone());
+                let extra = now.keys().find(|k| !after.contains_key(*k) && !auto(k)).cloned();
                 if let Some(k) = changed.or(extra) {
                     skip(id, why(&k), &mut skipped);
                     continue;
@@ -1498,6 +1501,8 @@ fn place_card(w: &mut W, session: uuid::Uuid, a: super::tools::WbPlaceArgs) -> R
     let (dw, dh) = place::default_size(a.kind, device.as_deref());
     // A minimum only: the owner resizes cards freely, so the agent may place them at any size too.
     let (cw, ch) = (a.w.unwrap_or(dw).max(40.0), a.h.unwrap_or(dh).max(40.0));
+    // Without an explicit size, a content card is sized to what it shows by the owner's client (`fit`).
+    let explicit = a.w.is_some() || a.h.is_some();
     let spot = place::place(
         &w.snap,
         &place::Want {
@@ -1551,7 +1556,15 @@ fn place_card(w: &mut W, session: uuid::Uuid, a: super::tools::WbPlaceArgs) -> R
         placeholder: card.versions.is_empty().then(|| cut(title, 80)),
         ..card
     };
-    w.create("cards", &id, card_fields(&card));
+    let mut fields = card_fields(&card);
+    // `fit`: the owner's client sizes the card to its content, then clears it. `sized`: never on its own (explicit
+    // w/h here, or the owner resized it). Client-side state only, so not fields of the snapshot's `Card`.
+    if explicit {
+        fields.push(("sized", yrs::In::Any(Any::Bool(true))));
+    } else if a.kind.fits_content() {
+        fields.push(("fit", yrs::In::Any(Any::Bool(true))));
+    }
+    w.create("cards", &id, fields);
     Ok((id, frame.map(|f| f.id)))
 }
 
@@ -1587,6 +1600,11 @@ fn update_card(
     };
     if c.placeholder.is_some() {
         w.set("cards", &c.id, "placeholder", None);
+    }
+    // New content: the owner's client sizes the card to it again, unless it was sized explicitly.
+    let sized = entry_json(w.maps, w.txn, "cards", &c.id).is_some_and(|e| e.get("sized") == Some(&Value::Bool(true)));
+    if !sized && c.kind.fits_content() {
+        w.set("cards", &c.id, "fit", Some(json!(true)));
     }
     // §2.7: the push answers the card's sent marks on older versions (in-place kinds: every one).
     let mut answered = Vec::new();

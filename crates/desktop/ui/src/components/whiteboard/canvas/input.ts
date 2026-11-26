@@ -90,6 +90,31 @@ export function routePointer(kind: PointerKind, s: RouteState): Route {
 
 export const pointerKind = (t: string): PointerKind => (t === 'pen' ? 'pen' : t === 'touch' ? 'touch' : 'mouse')
 
+/** A held press opens a menu (a long-press, a right click) only while the pointer stayed within this many screen px. */
+export const MENU_SLOP = 4
+/** Does a held press whose pointer moved (dx, dy) screen px since it went down still open its menu? */
+export const menuOpens = (dx: number, dy: number): boolean => Math.hypot(dx, dy) < MENU_SLOP
+
+/** Where a drag starts: the canvas, a card's title bar (or a bare card's caption), or a card's body. */
+export type DragFrom = 'pane' | 'header' | 'body'
+export type DragIntent = 'pan' | 'move' | 'marquee' | 'lasso' | 'frame'
+
+/**
+ * What a drag does once it passes the drag threshold (below it, it is a click: select, double-click enters). Ink tools
+ * take the pointer before this (`routePointer`). Space held, the middle button and Hand pan everywhere; a card moves
+ * by its title bar, or by its body once selected; an unselected card's body pans the board; on the canvas the select
+ * tool lassos, the frame tool draws a frame, and otherwise a plain drag pans and Shift-drag draws a marquee.
+ */
+export function dragIntent(from: DragFrom, s: { mode: Mode; selected?: boolean; space?: boolean; shift?: boolean; button?: number }): DragIntent {
+  if (s.space || s.button === 1 || s.mode === 'hand') return 'pan'
+  if (from === 'pane') {
+    if (s.mode === 'select') return 'lasso'
+    if (s.mode === 'frame') return 'frame'
+    return s.shift ? 'marquee' : 'pan'
+  }
+  return from === 'header' || s.selected ? 'move' : 'pan'
+}
+
 /**
  * Two-finger tap = undo, three-finger tap = redo. Fed with touch pointer events; `up` returns the finger count of a
  * completed multi-finger tap (2 or 3), else 0.

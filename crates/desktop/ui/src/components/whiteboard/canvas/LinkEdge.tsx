@@ -1,7 +1,9 @@
-// §2.3 links: explicit arrows with an optional label; tap → label, direction flip, style, delete.
+// §2.3 links: explicit arrows with an optional label; tap near the line (a wide invisible hit stroke, canvas.css) →
+// label, arrow, direction flip, style, delete.
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from '@xyflow/react'
 import { ArrowLeftRight, Trash2 } from 'lucide-react'
 import { memo, useState } from 'react'
+import { useStore as useZustand } from 'zustand'
 import { useCanvas } from './context'
 import type { Link } from './model'
 import { patchLink, removeLink } from './ops'
@@ -10,7 +12,10 @@ export type LinkEdgeType = Edge<{ link: Link }, 'link'>
 
 export const LinkEdge = memo(function LinkEdge(p: EdgeProps<LinkEdgeType>) {
   const link = p.data?.link
-  const { doc, readOnly, stopCapturing } = useCanvas()
+  const { doc, readOnly, stopCapturing, store } = useCanvas()
+  // Hand (and Present, which locks it) pans: no link toolbar there.
+  const hand = useZustand(store, (s) => s.mode === 'hand' || s.present)
+  const tools = !!p.selected && !readOnly && !hand
   const [label, setLabel] = useState<string | null>(null)
   const [path, lx, ly] = getBezierPath(p)
   if (!link) return null
@@ -29,10 +34,11 @@ export const LinkEdge = memo(function LinkEdge(p: EdgeProps<LinkEdgeType>) {
         interactionWidth={24}
         style={{ strokeDasharray: link.style === 'dashed' ? '6 5' : undefined }}
       />
-      {(link.label || (p.selected && !readOnly)) && (
+      {(link.label || tools) && (
         <EdgeLabelRenderer>
-          <div className="nodrag nopan" style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)`, pointerEvents: 'all', zIndex: 5 }}>
-            {p.selected && !readOnly ? (
+          {/* The toolbar keeps its screen size at any zoom (the label scales with the board). */}
+          <div className="nodrag nopan" style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)${tools ? ' scale(calc(1 / var(--wb-zoom, 1)))' : ''}`, pointerEvents: 'all', zIndex: 5 }}>
+            {tools ? (
               <div className="wb-tools" role="toolbar" aria-label="Link actions">
                 <form
                   onSubmit={(e) => {

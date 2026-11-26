@@ -2,8 +2,9 @@
 // absolute coordinates (§2.2, §12.11) and the binding converts to parent-relative for React Flow and back on drag end.
 // Nothing here writes; `dragEnd` returns the writes the canvas commits (positions are written on drag end only).
 import { ridersOf } from '../ink/anchor'
-import { containsPoint } from './geom'
-import type { Board, Card, Frame, Id, Link, Port, Stroke } from './model'
+import { contains, containsPoint, intersects } from './geom'
+import { dragIntent } from './input'
+import type { Board, Box, Card, Frame, Id, Link, Port, Stroke } from './model'
 import type { Move } from './ops'
 
 /** Frames sit under every card; React Flow draws a child above its parent anyway. */
@@ -12,19 +13,25 @@ export const FRAME_Z = -1_000_000
 export type CardNodeData = { card: Card }
 export type FrameNodeData = { frame: Frame }
 export type FlowNode =
-  | { id: Id; type: 'card'; position: { x: number; y: number }; parentId?: Id; width: number; height: number; zIndex: number; data: CardNodeData; selected: boolean; draggable: boolean }
+  | { id: Id; type: 'card'; position: { x: number; y: number }; parentId?: Id; width: number; height: number; zIndex: number; data: CardNodeData; selected: boolean; draggable: boolean; dragHandle?: string }
   | { id: Id; type: 'frame'; position: { x: number; y: number }; width: number; height: number; zIndex: number; data: FrameNodeData; selected: boolean; draggable: boolean }
 export type FlowEdge = {
   id: Id; source: Id; target: Id; sourceHandle?: string; targetHandle?: string; type: 'link'; data: { link: Link }; selected: boolean
 }
 
-/** Cards that are drawn: not archived. A card whose frame is gone is loose. */
-export function nodesOf(board: Board, o: { selection: readonly Id[]; readOnly?: boolean; entered?: Id | null }): FlowNode[] {
+/** A card's title bar, or a bare card's caption: it moves the card even when its body would pan the board. */
+export const CARD_GRIP = '.wb-head, .wb-caption'
+
+/**
+ * Cards that are drawn: not archived. A card whose frame is gone is loose. `pan`: a drag pans everywhere (Space held,
+ * Hand), so nothing drags; otherwise an unselected card drags by its grip only and its body pans (`dragIntent`).
+ */
+export function nodesOf(board: Board, o: { selection: readonly Id[]; readOnly?: boolean; entered?: Id | null; pan?: boolean }): FlowNode[] {
   const sel = new Set(o.selection)
   const frames = Object.values(board.frames).sort((a, b) => a.y - b.y || a.x - b.x || (a.id < b.id ? -1 : 1))
   const out: FlowNode[] = frames.map((f) => ({
     id: f.id, type: 'frame', position: { x: f.x, y: f.y }, width: f.w, height: f.h, zIndex: FRAME_Z,
-    data: { frame: f }, selected: sel.has(f.id), draggable: !o.readOnly,
+    data: { frame: f }, selected: sel.has(f.id), draggable: !o.readOnly && !o.pan,
   }))
   const cards = Object.values(board.cards).filter((c) => c.state !== 'archived').sort((a, b) => a.z - b.z || (a.id < b.id ? -1 : 1))
   for (const c of cards) {
@@ -34,7 +41,8 @@ export function nodesOf(board: Board, o: { selection: readonly Id[]; readOnly?: 
       position: parent ? { x: c.x - parent.x, y: c.y - parent.y } : { x: c.x, y: c.y },
       ...(parent ? { parentId: parent.id } : {}),
       width: c.w, height: c.h, zIndex: c.z, data: { card: c }, selected: sel.has(c.id),
-      draggable: !o.readOnly && o.entered !== c.id,
+      draggable: !o.readOnly && !o.pan && o.entered !== c.id,
+      ...(dragIntent('body', { mode: 'idle', selected: sel.has(c.id) }) === 'pan' ? { dragHandle: CARD_GRIP } : {}),
     })
   }
   return out
@@ -83,6 +91,42 @@ export function frameAt(board: Board, x: number, y: number, except?: Id): Frame 
     if (!best || f.w * f.h < best.w * best.h) best = f
   }
   return best
+}
+
+/** A frame's padding around its cards and its title band above them (place.rs `PAD`, `BAND`). */
+export const FRAME_PAD = 32
+export const FRAME_BAND = 40
+
+/** The rect a frame takes around `boxes` (place.rs `frame_around`), null for none. */
+export function frameAround(boxes: readonly Box[]): Box | null {
+  if (boxes.length === 0) return null
+  const x0 = Math.min(...boxes.map((b) => b[0]))
+  const y0 = Math.min(...boxes.map((b) => b[1]))
+  const x1 = Math.max(...boxes.map((b) => b[0] + b[2]))
+  const y1 = Math.max(...boxes.map((b) => b[1] + b[3]))
+  return [x0 - FRAME_PAD, y0 - FRAME_PAD - FRAME_BAND, x1 - x0 + 2 * FRAME_PAD, y1 - y0 + 2 * FRAME_PAD + FRAME_BAND]
+}
+
+/**
+ * Membership after a frame is resized to `rect` (the drop of the resize): a drawn card fully inside joins unless it
+ * already sits in a smaller frame; a member left fully outside leaves. A member the new rect still touches stays.
+ */
+export function resizeMembership(board: Board, id: Id, rect: Box): { join: Id[]; leave: Id[] } {
+  const join: Id[] = []
+  const leave: Id[] = []
+  const area = rect[2] * rect[3]
+  for (const c of Object.values(board.cards)) {
+    if (c.state === 'archived') continue
+    const b: Box = [c.x, c.y, c.w, c.h]
+    if (c.frame === id) {
+      if (!intersects(rect, b)) leave.push(c.id)
+      continue
+    }
+    if (!contains(rect, b)) continue
+    const host = c.frame ? board.frames[c.frame] : undefined
+    if (!host || host.w * host.h > area) join.push(c.id)
+  }
+  return { join, leave }
 }
 
 export type DragWrites = { cards: Move[]; frames: { id: Id; x: number; y: number }[]; riders: Stroke[] }
