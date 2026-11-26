@@ -22,6 +22,7 @@ Written by the engine, atomically (temp file + rename in the same dir), on every
   "hb_ms": 1764160003000,
   "state": "running",
   "phase": "migrate:agent",
+  "phase_ms": 1764160002500,
   "label": "Migrating agent.db",
   "step": {"n": 3, "of": 78},
   "done": [{"phase": "config", "label": "Reading config", "ms": 12}],
