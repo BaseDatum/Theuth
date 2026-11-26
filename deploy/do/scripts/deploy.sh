@@ -8,7 +8,7 @@
 # Secrets come from the caller's environment only, never from files in the repo, never echoed, never on argv:
 #   PORKBUN_TUNZIP_APIKEY, PORKBUN_TUNZIP_SECRET   one Porkbun key for theuth.io (Caddy DNS-01) and tun.zip (edge)
 #   THEUTH_RELAY_COOKIE_SECRET                     the cluster Secret theuth/theuth-relay key cookie-secret
-#   GHCR_PULL_USER, GHCR_PULL_TOKEN                GitHub user + PAT with read:packages (images are private)
+#   GHCR_PULL_USER, GHCR_PULL_TOKEN                optional: only if the images are private (they are public since 2026-11-26)
 # Non-secret pins (RELAY_IMAGE, …) default to deploy/do/host/.env.example; the same names in the environment win.
 # SSH_USER (default root).
 # Remote commands are single-quoted on purpose: they expand on the droplet.
@@ -34,7 +34,7 @@ target="${SSH_USER:-root}@$ip"
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15)
 secrets=(PORKBUN_TUNZIP_APIKEY PORKBUN_TUNZIP_SECRET THEUTH_RELAY_COOKIE_SECRET)
 
-for v in "${secrets[@]}" GHCR_PULL_USER GHCR_PULL_TOKEN; do
+for v in "${secrets[@]}"; do
   [[ -n "${!v:-}" ]] || { echo "missing env $v" >&2; exit 1; }
 done
 for c in jq rsync; do command -v "$c" >/dev/null || { echo "$c required" >&2; exit 1; }; done
@@ -68,8 +68,10 @@ echo "==> writing /srv/theuth/secrets/tunzip-dns.json (values not shown)"
 jq -n '{key: env.PORKBUN_TUNZIP_APIKEY, secret: env.PORKBUN_TUNZIP_SECRET}' |
   remote 'umask 077; f=/srv/theuth/secrets/tunzip-dns.json; cat >"$f.tmp" && chown 65532:65532 "$f.tmp" && chmod 0400 "$f.tmp" && mv "$f.tmp" "$f"'
 
-echo "==> ghcr.io login as $GHCR_PULL_USER"
-printf '%s' "$GHCR_PULL_TOKEN" | remote "docker login ghcr.io -u '$GHCR_PULL_USER' --password-stdin >/dev/null"
+if [[ -n "${GHCR_PULL_TOKEN:-}" ]]; then
+  echo "==> ghcr.io login as ${GHCR_PULL_USER:?GHCR_PULL_USER required with GHCR_PULL_TOKEN}"
+  printf '%s' "$GHCR_PULL_TOKEN" | remote "docker login ghcr.io -u '$GHCR_PULL_USER' --password-stdin >/dev/null"
+fi
 
 echo "==> pull, build, up"
 remote 'set -e; cd /srv/theuth/app

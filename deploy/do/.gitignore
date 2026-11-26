@@ -5,3 +5,5 @@
 crash.log
 terraform.tfvars
 host/.env
+tfplan
+*.auto.tfvars.json
