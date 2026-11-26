@@ -92,6 +92,7 @@ export function empty(id: string): SessionSlice {
     jobsExpanded: false,
     remindersExpanded: false,
     kernelsExpanded: false,
+    linksExpanded: false,
     todosShown: false,
   };
 }

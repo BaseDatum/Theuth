@@ -4,19 +4,21 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { cn } from '@/lib/utils'
 import { CategoryMark } from './CategoryMark'
 
-/** Body before header: expanding never moves its own disclosure target. */
-export function BackgroundCard({ title, summary, color, expanded, onExpanded, children }: {
+/** Body before header: expanding never moves its own disclosure target. `bodyScroll`: the body's height cap and overflow
+ * (default a third of the visible band), `''` where the content scrolls itself. */
+export function BackgroundCard({ title, summary, color, expanded, onExpanded, bodyScroll = 'max-h-[calc(var(--visible-band,100dvh)/3)] overflow-y-auto', children }: {
   title: string
   summary: ReactNode
   color: string
   expanded: boolean
   onExpanded(open: boolean): void
+  bodyScroll?: string
   children: ReactNode
 }) {
   return (
     <Collapsible open={expanded} onOpenChange={onExpanded} className="tray-card-collapsible tray-float shrink-0 overflow-hidden rounded-xl border text-xs">
       <CollapsibleContent>
-        <div className="max-h-[calc(var(--visible-band,100dvh)/3)] overflow-y-auto border-b px-3 py-2">{children}</div>
+        <div className={cn('border-b px-3 py-2', bodyScroll)}>{children}</div>
       </CollapsibleContent>
       <CollapsibleTrigger className="flex min-h-9 w-full items-center gap-2 px-3 py-1.5 text-left outline-none hover:bg-layer-2 focus-visible:ring-[3px] focus-visible:ring-ring/50">
         <CategoryMark color={color} />

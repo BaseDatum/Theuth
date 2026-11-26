@@ -23,7 +23,7 @@ type Resolved = { hrefs: string[]; byHref: Map<string, Citation> }
 
 const Context = createContext<Resolved | null>(null)
 
-const KIND_ICON: Record<CiteKind, LucideIcon> = { notes: StickyNote, sources: FileText, knowledge: BookOpen, meetings: Mic, sessions: MessageSquare }
+export const KIND_ICON: Record<CiteKind, LucideIcon> = { notes: StickyNote, sources: FileText, knowledge: BookOpen, meetings: Mic, sessions: MessageSquare }
 
 /** How many distinct citations a message carries. */
 export const citationCount = (text: string): number => collectCitations(text).length
@@ -58,9 +58,25 @@ export function useOpenCite(): (cite: Cite, c?: Citation) => void {
   }
 }
 
+/**
+ * A click on a reply's link, wherever it is drawn (the message, the Links card): `theuth://` routes in-app, http(s)
+ * and mailto open in the user's browser (the webview would otherwise navigate itself away). `false`: not handled
+ * here, the anchor's default action applies.
+ */
+export function useOpenChatLink(): (href: string) => boolean {
+  const open = useOpenCite()
+  return (href) => {
+    const cite = parseTheuthHref(href)
+    if (cite) open(cite)
+    else if (/^(https?:|mailto:)/i.test(href)) openExternal(href)
+    else return false
+    return true
+  }
+}
+
 const dead = (c: Citation | undefined) => c !== undefined && (c.status === 'missing' || !c.available)
 
-const KIND_WORD: Record<CiteKind, string> = { notes: 'note', sources: 'source', knowledge: 'knowledge page', meetings: 'meeting', sessions: 'chat' }
+export const KIND_WORD: Record<CiteKind, string> = { notes: 'note', sources: 'source', knowledge: 'knowledge page', meetings: 'meeting', sessions: 'chat' }
 
 /** The drift word for a tooltip: `changed` = the passage's text differs from when it was cited (§6.4). */
 const driftNote = (c: Citation | undefined): string | null =>
@@ -73,6 +89,7 @@ export function CitationLink({ node: _node, href, children, ...rest }: Component
   const cite = href ? parseTheuthHref(href) : null
   const ctx = useContext(Context)
   const open = useOpenCite()
+  const openLink = useOpenChatLink()
   const [shown, setShown] = useScopedDisclosure(`cite|${href ?? ''}`)
   if (!cite) {
     const external = href !== undefined && /^(https?:|mailto:)/i.test(href) ? href : null
@@ -87,7 +104,7 @@ export function CitationLink({ node: _node, href, children, ...rest }: Component
               onClick: (e: MouseEvent<HTMLAnchorElement>) => {
                 e.preventDefault()
                 e.stopPropagation()
-                openExternal(external)
+                openLink(external)
               },
             }
           : {})}
