@@ -168,6 +168,7 @@ export const NODES_KEY = ['nodes'] as const
 /** The active engine's nodes; disabled (no request) where `list_nodes` is not answered. */
 export function useNodes() {
   const canQuery1 = useQuerySupport(["list_nodes"])
+  const hasNodes = useHasNodes()
   const api = useApi()
-  return useQuery({ queryKey: NODES_KEY, queryFn: () => api.list_nodes(), enabled: canQuery1 && (useHasNodes()), retry: false })
+  return useQuery({ queryKey: NODES_KEY, queryFn: () => api.list_nodes(), enabled: canQuery1 && hasNodes, retry: false })
 }
