@@ -3,6 +3,7 @@
 // Nothing here writes; `dragEnd` returns the writes the canvas commits (positions are written on drag end only).
 import { ridersOf } from '../ink/anchor'
 import { contains, containsPoint, intersects } from './geom'
+import { dragIntent } from './input'
 import type { Board, Box, Card, Frame, Id, Link, Port, Stroke } from './model'
 import type { Move } from './ops'
 
@@ -12,19 +13,25 @@ export const FRAME_Z = -1_000_000
 export type CardNodeData = { card: Card }
 export type FrameNodeData = { frame: Frame }
 export type FlowNode =
-  | { id: Id; type: 'card'; position: { x: number; y: number }; parentId?: Id; width: number; height: number; zIndex: number; data: CardNodeData; selected: boolean; draggable: boolean }
+  | { id: Id; type: 'card'; position: { x: number; y: number }; parentId?: Id; width: number; height: number; zIndex: number; data: CardNodeData; selected: boolean; draggable: boolean; dragHandle?: string }
   | { id: Id; type: 'frame'; position: { x: number; y: number }; width: number; height: number; zIndex: number; data: FrameNodeData; selected: boolean; draggable: boolean }
 export type FlowEdge = {
   id: Id; source: Id; target: Id; sourceHandle?: string; targetHandle?: string; type: 'link'; data: { link: Link }; selected: boolean
 }
 
-/** Cards that are drawn: not archived. A card whose frame is gone is loose. */
-export function nodesOf(board: Board, o: { selection: readonly Id[]; readOnly?: boolean; entered?: Id | null }): FlowNode[] {
+/** A card's title bar, or a bare card's caption: it moves the card even when its body would pan the board. */
+export const CARD_GRIP = '.wb-head, .wb-caption'
+
+/**
+ * Cards that are drawn: not archived. A card whose frame is gone is loose. `pan`: a drag pans everywhere (Space held,
+ * Hand), so nothing drags; otherwise an unselected card drags by its grip only and its body pans (`dragIntent`).
+ */
+export function nodesOf(board: Board, o: { selection: readonly Id[]; readOnly?: boolean; entered?: Id | null; pan?: boolean }): FlowNode[] {
   const sel = new Set(o.selection)
   const frames = Object.values(board.frames).sort((a, b) => a.y - b.y || a.x - b.x || (a.id < b.id ? -1 : 1))
   const out: FlowNode[] = frames.map((f) => ({
     id: f.id, type: 'frame', position: { x: f.x, y: f.y }, width: f.w, height: f.h, zIndex: FRAME_Z,
-    data: { frame: f }, selected: sel.has(f.id), draggable: !o.readOnly,
+    data: { frame: f }, selected: sel.has(f.id), draggable: !o.readOnly && !o.pan,
   }))
   const cards = Object.values(board.cards).filter((c) => c.state !== 'archived').sort((a, b) => a.z - b.z || (a.id < b.id ? -1 : 1))
   for (const c of cards) {
@@ -34,7 +41,8 @@ export function nodesOf(board: Board, o: { selection: readonly Id[]; readOnly?: 
       position: parent ? { x: c.x - parent.x, y: c.y - parent.y } : { x: c.x, y: c.y },
       ...(parent ? { parentId: parent.id } : {}),
       width: c.w, height: c.h, zIndex: c.z, data: { card: c }, selected: sel.has(c.id),
-      draggable: !o.readOnly && o.entered !== c.id,
+      draggable: !o.readOnly && !o.pan && o.entered !== c.id,
+      ...(dragIntent('body', { mode: 'idle', selected: sel.has(c.id) }) === 'pan' ? { dragHandle: CARD_GRIP } : {}),
     })
   }
   return out

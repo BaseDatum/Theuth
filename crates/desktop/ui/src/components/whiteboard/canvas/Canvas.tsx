@@ -27,7 +27,7 @@ import { FrameNode } from './FrameNode'
 import { contains, intersects, pad, scaleOf, shownCards, strokeWorldBox, union } from './geom'
 import { FreeInk, indexInk } from './InkLayer'
 import { ERASER_PX, HOVER_IDLE_MS, hoverLook } from './hover'
-import { MultiTap, PALM_MS, palmActive, penPoints, pointerKind, routePointer, StrokeSamples, type PointerKind } from './input'
+import { menuOpens, MultiTap, PALM_MS, palmActive, penPoints, pointerKind, routePointer, StrokeSamples, type PointerKind } from './input'
 import { LinkEdge } from './LinkEdge'
 import { assignLod, emptyLodState, type Lod } from './lod'
 import { beside } from './beside'
@@ -307,7 +307,14 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   }, [scheduleSnapshots, lod, theme])
 
   // ---- nodes and edges: derived from the board; React Flow keeps measurements and in-flight drag positions ----
-  const derived = useMemo(() => nodesOf(board, { selection, readOnly, entered }) as unknown as Node[], [board, selection, readOnly, entered])
+  /** Space held: a mouse drag pans (the grab cursor), whatever the tool and wherever it starts. */
+  const [spaceHeld, setSpaceHeld] = useState(false)
+  // Space or Hand: a drag pans everywhere, so nothing drags (input.ts `dragIntent`).
+  const panAll = spaceHeld || mode === 'hand'
+  const derived = useMemo(
+    () => nodesOf(board, { selection, readOnly, entered, pan: panAll }) as unknown as Node[],
+    [board, selection, readOnly, entered, panAll],
+  )
   const [nodes, setNodes] = useState<Node[]>(derived)
   const dragging = useRef(new Set<Id>())
   useEffect(() => {
@@ -378,12 +385,12 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const lastKind = useRef<PointerKind>('mouse')
   const suppressClick = useRef(false)
   const press = useRef<{ id: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null>(null)
+  /** The last press (any pointer, any button) and whether it has since moved past MENU_SLOP: a drag, never a menu. */
+  const held = useRef<{ x: number; y: number; far: boolean } | null>(null)
   const taps = useRef(new MultiTap()).current
   const rubberRef = useRef<Rubber | null>(null)
   const propsRef = useRef({ onPenActivity, onCanvasTap, readOnly })
   propsRef.current = { onPenActivity, onCanvasTap, readOnly }
-  /** Space held: a mouse drag pans (the grab cursor), whatever the tool. */
-  const [spaceHeld, setSpaceHeld] = useState(false)
 
   const drawWet = useCallback(() => {
     const cv = wetCanvas.current
@@ -563,12 +570,15 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       const kind = pointerKind(e.pointerType)
       lastKind.current = kind
       suppressClick.current = false
+      held.current = { x: e.clientX, y: e.clientY, far: false }
       if (kind === 'pen') penDownCancelsPalm()
       else if (kind === 'touch' && !palmActive(stateNow())) taps.down(e.pointerId, e.clientX, e.clientY, e.timeStamp)
       if (isControl(e.target) && kind !== 'touch') return
       const route = routePointer(kind, stateNow(e))
       const s = store.getState()
-      if (s.mode === 'frame' && kind !== 'pen' && route === 'pass' && onPane(e.target) && !propsRef.current.readOnly) {
+      // A pan gesture (Space held, a non-primary button) never starts the frame tool's band or the select tool's lasso.
+      const pan = stateNow(e).pan
+      if (s.mode === 'frame' && kind !== 'pen' && route === 'pass' && !pan && onPane(e.target) && !propsRef.current.readOnly) {
         e.preventDefault()
         e.stopPropagation()
         el.setPointerCapture(e.pointerId)
@@ -577,7 +587,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         setRubber(rubberRef.current)
         return
       }
-      if (s.mode === 'select' && kind !== 'pen' && route === 'pass' && onPane(e.target) && !isControl(e.target)) {
+      if (s.mode === 'select' && kind !== 'pen' && route === 'pass' && !pan && onPane(e.target) && !isControl(e.target)) {
         e.preventDefault()
         e.stopPropagation()
         el.setPointerCapture(e.pointerId)
@@ -635,8 +645,11 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
 
     const move = (e: PointerEvent) => {
       if (e.pointerType === 'touch') taps.move(e.pointerId, e.clientX, e.clientY)
+      const hd = held.current
+      if (hd && !hd.far && !menuOpens(e.clientX - hd.x, e.clientY - hd.y)) hd.far = true
       const pr = press.current
-      if (pr && pr.id === e.pointerId && Math.hypot(e.clientX - pr.x, e.clientY - pr.y) > 8) {
+      // A held press that moved past MENU_SLOP is a drag: its long-press menu is cancelled for good.
+      if (pr && pr.id === e.pointerId && !menuOpens(e.clientX - pr.x, e.clientY - pr.y)) {
         clearTimeout(pr.timer)
         press.current = null
       }
@@ -766,6 +779,12 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         if (e.cancelable && !isControl(e.target)) e.preventDefault()
       }
     }
+    // A press that became a drag (a right- or ctrl-drag, a long touch that moved) never ends in a context menu.
+    const menu = (e: MouseEvent) => {
+      if (!held.current?.far) return
+      e.preventDefault()
+      e.stopPropagation()
+    }
     const mouse = (e: MouseEvent) => {
       if (wet.current || rubberRef.current || lassoRef.current) e.stopPropagation()
     }
@@ -778,6 +797,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     el.addEventListener('touchstart', touch, { capture: true, passive: false })
     el.addEventListener('touchmove', touch, { capture: true, passive: false })
     el.addEventListener('mousedown', mouse, { capture: true })
+    el.addEventListener('contextmenu', menu, { capture: true })
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKey)
     window.addEventListener('blur', release)
@@ -790,6 +810,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       el.removeEventListener('touchstart', touch, { capture: true })
       el.removeEventListener('touchmove', touch, { capture: true })
       el.removeEventListener('mousedown', mouse, { capture: true })
+      el.removeEventListener('contextmenu', menu, { capture: true })
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('keyup', onKey)
       window.removeEventListener('blur', release)
@@ -1149,7 +1170,9 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
           nodesConnectable={!readOnly && !present}
           elementsSelectable={!present}
           connectionMode={ConnectionMode.Loose}
-          panOnDrag={mode !== 'select' && mode !== 'frame'}
+          // A plain drag pans (on a card's body too, unless selected: binding `dragHandle`); the select and frame tools
+          // keep their drag, and the middle button pans in every tool.
+          panOnDrag={mode !== 'select' && mode !== 'frame' ? true : [1]}
           // With an ink tool the mouse drag draws: a two-finger trackpad scroll pans instead of zooming (pinch, ⌘-scroll zoom).
           panOnScroll={mode === 'draw' || mode === 'erase'}
           selectionOnDrag={mode === 'select'}
