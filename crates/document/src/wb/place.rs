@@ -215,7 +215,7 @@ mod tests {
         }
     }
 
-    const KINDS: [CardKind; 10] = [
+    const KINDS: [CardKind; 11] = [
         CardKind::Page,
         CardKind::Diagram,
         CardKind::Note,
@@ -226,6 +226,7 @@ mod tests {
         CardKind::Image,
         CardKind::Sticky,
         CardKind::Session,
+        CardKind::View,
     ];
 
     #[test]

@@ -1151,15 +1151,15 @@ pub(crate) fn check_source(kind: CardKind, mut s: Source, session: uuid::Uuid) -
 
 /// Exact view routes a `view` card takes — the twin of `VALID_EXACT_PATHS` in the UI's `lib/view-catalog.ts`.
 const VIEW_EXACT: &[&str] = &[
-    "/attention", "/agents", "/agents/new", "/tasks", "/tasks/graph", "/routines", "/routines/new", "/autoresearch",
-    "/autoresearch/new", "/artifacts", "/knowledge", "/skills", "/notes", "/whiteboards", "/notebooks", "/meetings",
-    "/meetings/new", "/meetings/briefs", "/secrets", "/costs", "/settings", "/library", "/tools",
+    "/attention", "/agents", "/agents/new", "/projects", "/tasks", "/tasks/graph", "/routines", "/routines/new",
+    "/autoresearch", "/autoresearch/new", "/artifacts", "/knowledge", "/skills", "/notes", "/whiteboards", "/notebooks",
+    "/meetings", "/meetings/new", "/meetings/briefs", "/secrets", "/costs", "/settings", "/library", "/tools",
 ];
 
 /// `/<section>/<segment>` routes (`VALID_PARAM_PATTERNS`); `/agents` and `/routines` take a second segment,
 /// `/knowledge` any depth. `/whiteboards/<id>` is left out: a whiteboard inside a card could hold itself.
 const VIEW_PARAM: &[&str] = &[
-    "tasks", "notebooks", "notes", "agents", "routines", "meetings", "autoresearch", "knowledge", "artifacts",
+    "projects", "tasks", "notebooks", "notes", "agents", "routines", "meetings", "autoresearch", "knowledge", "artifacts",
     "attention", "skills", "sources", "settings", "tile/plugin",
 ];
 
@@ -1806,10 +1806,12 @@ mod tests {
             (" /tasks/ ", "/tasks"),
             ("/agents/ada/desk", "/agents/ada/desk"),
             ("/knowledge/a/b/c", "/knowledge/a/b/c"),
+            ("/projects", "/projects"),
+            ("/projects/theuth", "/projects/theuth"),
         ] {
             assert!(matches!(view(ok), Ok(Source::View { path }) if path == stored), "{ok}");
         }
-        for bad in ["/whiteboards/01J0", "/c/abc", "/new", "tasks", "https://x.y/tasks", "/tasks/../c/x", "/tasks/a/b", ""] {
+        for bad in ["/whiteboards/01J0", "/c/abc", "/new", "tasks", "https://x.y/tasks", "/tasks/../c/x", "/tasks/a/b", "/projects/a/b", ""] {
             assert!(view(bad).expect_err(bad).contains("app view path"), "{bad}");
         }
     }
