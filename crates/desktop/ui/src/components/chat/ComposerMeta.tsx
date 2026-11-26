@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Images, Scissors, ScrollText, Shield, ShieldCheck, ShieldOff } from 'lucide-react'
+import { COMPOSER_ICON, COMPOSER_ICON_BOX, COMPOSER_ICON_STROKE } from './composer-icons'
 import { useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -140,9 +141,9 @@ export function ApprovalShieldView({
           data-shield={state}
           aria-label={label}
           title={label}
-          className={cn('grid h-9 w-7 shrink-0 place-items-center rounded-lg outline-none hover:bg-foreground/6 focus-visible:ring-2 focus-visible:ring-ring/50', tone)}
+          className={cn(COMPOSER_ICON_BOX, 'grid place-items-center outline-none hover:bg-foreground/6 focus-visible:ring-2 focus-visible:ring-ring/50', tone)}
         >
-          <Icon className="size-4" fill={state === 'waiting' ? 'currentColor' : 'none'} />
+          <Icon className={COMPOSER_ICON} strokeWidth={COMPOSER_ICON_STROKE} fill={state === 'waiting' ? 'currentColor' : 'none'} />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" side="top" className="w-64 p-1 text-[13px]">
@@ -246,7 +247,7 @@ const RING = 2 * Math.PI * 8
 export function ContextRing({ pct, className }: { pct: number | null; className?: string }) {
   const used = Math.min(100, Math.max(0, pct ?? 0)) / 100
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" aria-hidden className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={COMPOSER_ICON_STROKE} strokeLinecap="round" aria-hidden className={className}>
       <circle cx="12" cy="12" r="8" opacity={0.28} />
       {used > 0 && <circle data-ring-used="" cx="12" cy="12" r="8" strokeDasharray={`${used * RING} ${RING}`} transform="rotate(-90 12 12)" />}
     </svg>
@@ -360,9 +361,9 @@ export function ContextButtonView({
           data-context-button=""
           aria-label={label}
           title={label}
-          className={cn('grid h-9 w-8 shrink-0 place-items-center rounded-lg outline-none hover:bg-foreground/6 focus-visible:ring-2 focus-visible:ring-ring/50 data-[state=open]:bg-foreground/6', tone)}
+          className={cn(COMPOSER_ICON_BOX, 'grid place-items-center outline-none hover:bg-foreground/6 focus-visible:ring-2 focus-visible:ring-ring/50 data-[state=open]:bg-foreground/6', tone)}
         >
-          <ContextRing pct={pct} className="size-[18px]" />
+          <ContextRing pct={pct} className={COMPOSER_ICON} />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" side="top" className="w-72 p-1 text-[13px]">

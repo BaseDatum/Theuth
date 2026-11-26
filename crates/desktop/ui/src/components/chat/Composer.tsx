@@ -84,6 +84,7 @@ import { CancelHint, DeleteNote, RecordingMeta, reduced, type Stage } from './Vo
 import { HeldStrip } from './HeldStrip'
 import { type Uploaded, uploadWait, useUploads } from './uploads'
 import { McpMenu } from './McpMenu'
+import { COMPOSER_ICON, COMPOSER_ICON_BOX, COMPOSER_ICON_STROKE } from './composer-icons'
 import { ApprovalShield, ComposerMeta, ContextButton, useComposerMeta } from './ComposerMeta'
 import { ComposerModel } from './ModelMenu'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
@@ -1530,10 +1531,10 @@ export function Composer({
             <PopoverTrigger asChild>
               <Button
                 variant="ghost"
-                className={cn('size-9 shrink-0 rounded-full text-fg-secondary', stage !== 'idle' && 'hidden')}
+                className={cn(COMPOSER_ICON_BOX, 'text-fg-secondary', stage !== 'idle' && 'hidden')}
                 aria-label="Add"
               >
-                <Plus className="size-5" />
+                <Plus className={COMPOSER_ICON} strokeWidth={COMPOSER_ICON_STROKE} />
               </Button>
             </PopoverTrigger>
             <PopoverContent align="start" className={cn('p-1', skillStep ? 'w-72' : 'w-52')}>

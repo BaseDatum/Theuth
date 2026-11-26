@@ -15,7 +15,7 @@ export async function relistReminders(api: Pick<Api, 'list_reminders'>, store: S
   }
 }
 
-/** Quiet PTYs remain in the Jobs card; the existing `ptys` set tracks screen activity only. */
+/** Every open PTY, quiet ones included, is a terminal (never a job); the existing `ptys` set tracks screen activity only. */
 export async function relistTerminals(api: Pick<Api, 'list_terminals'>, store: SessionsApi, session: string, signal: AbortSignal) {
   const events: TopicPayloads['tools.jobs@1'][] = []
   const off = onTopic('tools.jobs@1', (e) => {

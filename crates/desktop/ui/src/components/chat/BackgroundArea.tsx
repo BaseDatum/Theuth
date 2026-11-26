@@ -14,7 +14,8 @@ import { useScope } from '@/store/engine-scope'
 import { useSessionField } from '@/store/sessions'
 import { KernelStrip, useSessionKernels } from '@/components/cells/KernelStrip'
 import { BackgroundCard } from './BackgroundCard'
-import { ActivityDot, BackgroundDashes, SubagentDashes, SubagentLink, TerminalLink } from './SubagentStrip'
+import { BackgroundDashes, SubagentDashes, SubagentLink } from './SubagentStrip'
+import { CategoryMark } from './CategoryMark'
 import { openSurface, surfaceOf } from './slash'
 import { TodoCard } from './TodoCard'
 import { TrayTiles, trayHasItems, useTray } from './TrayItems'
@@ -121,7 +122,7 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
                   {agents.map((row) => (
                     <li key={row.id}>
                       <SubagentLink row={row} className="flex min-h-8 items-center gap-2 rounded py-1 outline-none hover:bg-layer-2 focus-visible:ring-2 focus-visible:ring-ring">
-                        <ActivityDot color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} />
+                        <CategoryMark color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} />
                         <span className="min-w-0 flex-1"><span className="block truncate font-medium">{row.name}</span><span className="block truncate text-fg-tertiary">{modelLabel(row)}</span></span>
                         <span className="text-fg-secondary">{row.state.state === 'approval' ? 'waiting on approval' : row.state.state === 'awaiting' ? 'waiting on peer' : 'running'}</span>
                         <span className="shrink-0 text-fg-tertiary tabular-nums">{row.started_at ? fmtThought(Math.max(0, now - Date.parse(row.started_at))) ?? '0s' : '—'}</span>
@@ -131,8 +132,9 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
                 </ul>
               </BackgroundCard>
             )}
-            {(jobCount > 0 || terminalCount > 0) && (
-              <BackgroundCard title="Jobs" color={backgroundColors.jobs.bg} summary={[jobCount > 0 && `${jobCount} running`, terminalCount > 0 && `${terminalCount} terminal${terminalCount === 1 ? '' : 's'}`].filter(Boolean).join(' · ')} expanded={jobsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'jobs', open)}>
+            {/* Jobs are non-PTY jobs only: terminals are their own category (the Terminals tile, the terminal dashes). */}
+            {jobCount > 0 && (
+              <BackgroundCard title="Jobs" color={backgroundColors.jobs.bg} summary={`${jobCount} running`} expanded={jobsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'jobs', open)}>
                 {jobsExpanded && <JobsRows session={session} active={shown} />}
               </BackgroundCard>
             )}
@@ -299,6 +301,12 @@ function useHorizonWarp(session: string, shown: boolean) {
   return { mounted: shown || phase !== 'closed', phase, shellRef, stageRef, pillRef }
 }
 
+/**
+ * The Jobs card's rows: running non-PTY jobs. `list_jobs` returns PTYs too; they belong to the Terminals category alone,
+ * as `JobStarted.pty` / `list_live_counts` already split them into `terminals`, never `jobs`.
+ */
+export const jobRows = <J extends { state: string; pty: boolean }>(jobs: J[] | undefined): J[] => jobs?.filter((j) => j.state === 'running' && !j.pty) ?? []
+
 /** Mounted only while the visible Jobs card is expanded. */
 function JobsRows({ session, active }: { session: string; active: boolean }) {
   const api = useApi()
@@ -318,16 +326,16 @@ function JobsRows({ session, active }: { session: string; active: boolean }) {
       setKilling(null)
     }
   }
-  const rows = query.data?.filter((j) => j.state === 'running') ?? []
+  const rows = jobRows(query.data)
   return (
     <>
       {!canList ? <p role="status">Jobs unavailable on this engine.</p> : query.error ? <p role="alert">{query.error.message}</p> : query.isPending ? <p role="status">Loading jobs…</p> : !rows.length ? <p role="status">No running jobs.</p> : (
         <ul>{rows.map((job) => (
           <li key={job.id} className="flex min-h-8 items-center gap-2 py-1">
-            <ActivityDot color={backgroundColors[job.pty ? 'terminals' : 'jobs'].bg} />
+            <CategoryMark color={backgroundColors.jobs.bg} />
             <span className="min-w-0 flex-1 truncate font-mono" title={job.command}>{job.command}</span>
             <span className="shrink-0 text-fg-tertiary tabular-nums">{fmtThought(Number(job.secs) * 1000 + Math.max(0, now - query.dataUpdatedAt)) ?? '0s'}</span>
-            {job.pty ? <TerminalLink session={session} job={job.id} label={`Open terminal ${job.id}`} className="shrink-0 rounded border px-1.5 py-0.5 hover:bg-layer-2">Open</TerminalLink> : canKill && <button type="button" disabled={killing !== null} onClick={() => void kill(job.id)} className="shrink-0 rounded border px-1.5 py-0.5 hover:bg-layer-2 disabled:opacity-50">{killing === job.id ? 'Killing…' : 'Kill'}</button>}
+            {canKill && <button type="button" disabled={killing !== null} onClick={() => void kill(job.id)} className="shrink-0 rounded border px-1.5 py-0.5 hover:bg-layer-2 disabled:opacity-50">{killing === job.id ? 'Killing…' : 'Kill'}</button>}
           </li>
         ))}</ul>
       )}
@@ -354,7 +362,7 @@ function ReminderRow({ session, id, reminder, now }: { session: string; id: stri
   }
   return (
     <li className="flex min-h-8 items-center gap-2 py-1">
-      <ActivityDot color={backgroundColors.reminders.bg} />
+      <CategoryMark color={backgroundColors.reminders.bg} />
       <span className="min-w-0 flex-1 break-words">{reminder?.message ?? `${id} · details unavailable`}</span>
       <span className="shrink-0 text-fg-tertiary tabular-nums" title={reminder ? new Date(reminder.fires_at * 1000).toLocaleString() : undefined}>{reminder ? countdown(reminder.fires_at, now) : '—'}</span>
       {canCancel && <button type="button" disabled={cancelling} onClick={() => void cancel()} className="shrink-0 rounded border px-1.5 py-0.5 hover:bg-layer-2 disabled:opacity-50">{cancelling ? 'Cancelling…' : 'Cancel'}</button>}
