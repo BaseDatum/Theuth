@@ -19,6 +19,7 @@ import { stripRows } from '@/lib/session-tree'
 const navigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
+  useRouter: () => undefined,
   Link: ({ to, params, ...props }: ComponentProps<'a'> & { to: string; params: Record<string, string> }) => createElement('a', { ...props, href: to.replace(/\$(\w+)/g, (_, key: string) => encodeURIComponent(params[key]!)) }),
 }))
 vi.mock('@/components/ui/sidebar', () => ({ useSidebar: () => ({ isMobile: false }) }))
@@ -498,4 +499,51 @@ test('the open grabber pill is a lighter gray, never the accent colour', async (
   const open = rule.slice(0, rule.indexOf('}'))
   expect(open).not.toMatch(/accent/)
   expect(open).toContain('background-color: color-mix(in oklab, var(--fg-tertiary) 22%, transparent)')
+})
+
+const replies = (n: number, from = 0) =>
+  Array.from({ length: n }, (_, i) => ({ id: `a${from + i}`, kind: 'assistant' as const, text: `See [page ${from + i}](https://site${from + i}.example/p).`, open: false, turn: from + i }))
+const setReplies = (entries: ReturnType<typeof replies>) =>
+  useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1!, entries } } }))
+
+test('links dash: none without links, exactly one for many; it opens the tray with Links expanded, the grabber with it folded', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  useSessions.getState().ensure('s1')
+  setReplies([{ id: 'a', kind: 'assistant', text: 'No links here, `https://code.example` is code.', open: false, turn: 1 }])
+  await mount()
+  // No links and nothing else: no bar at all.
+  expect(document.querySelector('[data-links-dash]')).toBeNull()
+  expect(document.querySelector('button')).toBeNull()
+  await run(() => setReplies(replies(12)))
+  const dashes = document.querySelectorAll('[data-links-dash]')
+  expect(dashes).toHaveLength(1)
+  expect(dashes[0]!.getAttribute('title')).toBe('12 links')
+  expect(dashes[0]!.querySelectorAll('svg')).toHaveLength(1)
+  // It sits after every other dash on the right: the outermost end.
+  const right = document.querySelector('.tray-dash-right > div')!
+  expect(right.lastElementChild).toBe(dashes[0])
+  await run(() => (dashes[0] as HTMLButtonElement).click())
+  expect(button('Links · 12').getAttribute('aria-expanded')).toBe('true')
+  const rows = document.querySelectorAll('[data-links-card] ul[aria-label="Links"] > li')
+  expect(rows).toHaveLength(12)
+  // Newest first, with the host, and a filter past 8 links.
+  expect(rows[0]!.textContent).toContain('page 11')
+  expect(rows[0]!.textContent).toContain('site11.example')
+  expect(document.querySelector('input[aria-label="Filter links"]')).not.toBeNull()
+  await click('Hide background activity')
+  await click('Show background activity')
+  expect(button('Links · 12').getAttribute('aria-expanded')).toBe('false')
+})
+
+test('links dash pulses once when a new link lands, not for a re-render without one', async () => {
+  useSessions.getState().ensure('s1')
+  setReplies(replies(2))
+  await mount()
+  const svg = () => document.querySelector('[data-links-dash] svg')!
+  expect(svg().classList.contains('link-dash-pulse')).toBe(false)
+  await run(() => setReplies([...replies(2), { id: 'x', kind: 'assistant', text: 'still streaming https://new.example/pa', open: true, turn: 3 }]))
+  expect(svg().classList.contains('link-dash-pulse')).toBe(false)
+  await run(() => setReplies(replies(3)))
+  expect(svg().classList.contains('link-dash-pulse')).toBe(true)
+  expect(document.querySelector('[data-links-dash]')!.getAttribute('title')).toBe('3 links')
 })

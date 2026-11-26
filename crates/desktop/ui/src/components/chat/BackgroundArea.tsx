@@ -19,6 +19,8 @@ import { CategoryMark } from './CategoryMark'
 import { openSurface, surfaceOf } from './slash'
 import { TodoCard } from './TodoCard'
 import { TrayTiles, trayHasItems, useTray } from './TrayItems'
+import { LinksCard, LinksDash } from './LinksTray'
+import { useChatLinks } from '@/lib/chat-links'
 
 function useClock(enabled: boolean) {
   const [now, setNow] = useState(Date.now)
@@ -44,7 +46,7 @@ export function countdown(firesAt: number, now: number): string {
  * One grabber, fixed against the composer; every populated category opens above it: the to-dos, the tiles (terminals,
  * kernels, browser, artifacts, subagents, jobs, desktop, CodeMap — the panels moved out of the header), then the cards.
  * The activity dashes grow out of the bar's ends on its row (subagents left; jobs · terminals · kernels · browsers ·
- * artifacts · desktop · reminders right), the `trailing` Advisor pill last.
+ * artifacts · desktop · reminders · links right), the `trailing` Advisor pill last.
  */
 export function BackgroundArea({ session, trailing }: { session: string; trailing?: ReactNode }) {
   const { sessions: store } = useScope()
@@ -60,6 +62,7 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
   const details = useSessionField(session, 'reminderDetails')
   const subagentsExpanded = useSessionField(session, 'subagentsExpanded') ?? false
   const jobsExpanded = useSessionField(session, 'jobsExpanded') ?? false
+  const links = useChatLinks(session)
   const remindersExpanded = useSessionField(session, 'remindersExpanded') ?? false
   const kernelsExpanded = useSessionField(session, 'kernelsExpanded') ?? false
   const kernels = useSessionKernels(session)
@@ -83,7 +86,7 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
   const busyKernels = kernels.filter((k) => k.phase !== 'ready').length
   // `agents` (liveRows) is the uncapped stripRows, so every dash the row could show keeps the bar visible; so does any
   // panel (`trayHasItems`), the bar being its only way in.
-  if (!hasTodos && !agents.length && !jobCount && !terminalCount && !kernels.length && !reminderCount && !trayHasItems(tray)) {
+  if (!hasTodos && !agents.length && !jobCount && !terminalCount && !kernels.length && !reminderCount && !links.length && !trayHasItems(tray)) {
     return trailing ? <div className="mx-auto flex min-h-7 w-full shrink-0 select-none items-center justify-center px-4 text-xs text-fg-tertiary md:max-w-[768px]">{trailing}</div> : null
   }
   const waiting = agents.filter((a) => a.state.state === 'approval').length
@@ -155,6 +158,7 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
                   {remindersExpanded && <ul>{[...(reminders ?? [])].map((id) => <ReminderRow key={id} session={session} id={id} reminder={details?.get(id)} now={now} />)}</ul>}
                 </BackgroundCard>
               )}
+              {links.length > 0 && <LinksCard session={session} links={links} settled={phase === 'open'} />}
             </div>
           </div>
         </div>
@@ -167,12 +171,17 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
         <div className="tray-dash-side tray-dash-left pointer-events-none relative z-10 -mr-3 flex min-w-0 items-end justify-end py-1 [&>*]:pointer-events-auto">
           <SubagentDashes session={session} />
         </div>
-        <button type="button" aria-expanded={shown} aria-controls={blockId} aria-label={label} title={label} onClick={() => store.getState().setTodosShown(session, !shown)} className="group flex h-6 w-20 shrink-0 cursor-pointer touch-manipulation select-none items-center justify-center rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+        <button type="button" aria-expanded={shown} aria-controls={blockId} aria-label={label} title={label} onClick={() => {
+          // The grabber opens the area with the Links card folded to its header; only the links dash opens it expanded.
+          if (!shown) store.getState().setBackgroundExpanded(session, 'links', false)
+          store.getState().setTodosShown(session, !shown)
+        }} className="group flex h-6 w-20 shrink-0 cursor-pointer touch-manipulation select-none items-center justify-center rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
           <span ref={pillRef} className="tray-grabber-pill h-[5px] w-12 rounded-full bg-fg-tertiary/40 group-hover:bg-fg-secondary group-active:bg-fg-secondary" />
         </button>
         <div className="tray-dash-side tray-dash-right pointer-events-none relative z-10 -ml-3 flex min-w-0 items-end gap-3 [&>*]:pointer-events-auto">
           <div className="flex min-w-0 flex-wrap-reverse items-end justify-start gap-x-[7px] py-1">
             <BackgroundDashes session={session} tray={tray} />
+            <LinksDash session={session} links={links} />
           </div>
           {trailing && <div className="flex shrink-0 items-center">{trailing}</div>}
         </div>

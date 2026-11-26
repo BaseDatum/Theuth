@@ -365,6 +365,8 @@ export type SessionSlice = {
   jobsExpanded: boolean;
   remindersExpanded: boolean;
   kernelsExpanded: boolean;
+  /** The Links card (the links dash's): open from the dash, folded to its header when the grabber opens the area. */
+  linksExpanded: boolean;
   /** The whole background area is shown above the composer; the grabber and `/todos` toggle it. Default hidden. */
   todosShown: boolean;
   /** 109 §8.2: the interruption banner above the composer; cleared by the next turn that is not the resumed one. */
@@ -442,7 +444,7 @@ type SessionsStore = {
   setTodosExpanded(id: string, expanded: boolean): void;
   /** Show or hide the todo block (the grabber's state); independent of `todosExpanded`. */
   setTodosShown(id: string, shown: boolean): void;
-  setBackgroundExpanded(id: string, card: "subagents" | "jobs" | "kernels" | "reminders", expanded: boolean): void;
+  setBackgroundExpanded(id: string, card: "subagents" | "jobs" | "kernels" | "reminders" | "links", expanded: boolean): void;
   setReminders(id: string, rows: PendingReminderView[]): void;
   setTerminals(id: string, ids: Iterable<string>): void;
   /** A gap may hide a `TodoChanged`: label the list stale (one session, or every session) until a snapshot confirms it. */

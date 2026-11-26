@@ -69,6 +69,8 @@
   --project-slate: #566472;
   --project-sand: #8a6f42;
   --project-plum: #7d3f5c;
+  /* The links dash (chain link) on the bar above the composer: a darker gold, ≥3:1 on the light page. */
+  --dash-link: #8a7338;
   /* 160 D2: chart series (shadcn `--chart-N`), the project minerals in this order; never the accent or carnelian (warning / danger). */
   --chart-1: #3d6b66; /* faience */
   --chart-2: #8a6f42; /* sand */
@@ -119,6 +121,7 @@
   --project-slate: #8a9aaa;
   --project-sand: #b89a63;
   --project-plum: #b0708f;
+  --dash-link: #c9b37a;
   --chart-1: #5b8f8a; /* faience */
   --chart-2: #b89a63; /* sand */
   --chart-3: #6f8fc0; /* lapis */
@@ -278,6 +281,7 @@
   --color-project-slate: var(--project-slate);
   --color-project-sand: var(--project-sand);
   --color-project-plum: var(--project-plum);
+  --color-dash-link: var(--dash-link);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -501,6 +505,28 @@ body.voice-hold {
   }
   .subagent-blink {
     animation: subagent-lit 380ms step-end both;
+  }
+}
+/* The links dash: dimmed at rest like the other dashes, lit on hover; one brief pulse when a new link lands. */
+.link-dash {
+  opacity: 0.6;
+  transition: opacity 150ms ease;
+}
+:is(a, button):is(:hover, :focus-visible) > .link-dash {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .link-dash-pulse {
+    animation: link-dash-pulse 520ms ease-out both;
+  }
+}
+:root[data-animations="off"] .link-dash-pulse {
+  animation: none;
+}
+@keyframes link-dash-pulse {
+  40% {
+    opacity: 1;
+    transform: scale(1.25);
   }
 }
 

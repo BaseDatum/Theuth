@@ -22,4 +22,6 @@ export const backgroundColors = {
   /** The tray's Code map tile only: the CodeMap has no dash on the bar. */
   codemap: { bg: 'bg-fg-tertiary', text: 'text-fg-tertiary' },
   reminders: { bg: 'bg-project-plum', text: 'text-project-plum' },
+  /** The links dash: a gold chain link (`LinksDash`, an SVG in `text-dash-link`); this colours the Links card's mark. */
+  links: { bg: 'bg-dash-link', text: 'text-dash-link' },
 } as const

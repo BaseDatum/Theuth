@@ -20,7 +20,7 @@ import { kernelName, phaseText, useSessionKernels } from '@/components/cells/Ker
 
 /** Each dash keeps a full-height hit target; the visible dash is the bar's 5px. */
 /** 24 px tall to tap, 16 px of layout (`-my-1`): wrapped rows stack 12 px apart, the hit areas overlapping a little. */
-const DASH_HIT = 'group/dash -my-1 flex h-6 shrink-0 items-center rounded px-px outline-none focus-visible:ring-2 focus-visible:ring-ring'
+export const DASH_HIT = 'group/dash -my-1 flex h-6 shrink-0 items-center rounded px-px outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
 /** The subagent dashes, right-aligned against the grabber's left end; the "+N" sits at the outer (left) end. */
 export function SubagentDashes({ session }: { session: string }) {
