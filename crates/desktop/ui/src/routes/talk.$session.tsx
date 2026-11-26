@@ -3,10 +3,13 @@ import { requirements } from '@/components/talk/requirements'
 // 76 §0.12 / §5.2: the talk view. Centre: the orb (the state) and two subtitle lines. Left: the session's
 // transcript, collapsed by default, remembered per session. Right: every panel a session has, from `Header`
 // exactly as in `/c/$session`. Phones: the transcript is a sheet. Leaving the view does not stop the talk. In a pane
-// beside the chat (the composer's Talk, `openTalkView`): the orb alone, and the talk ending closes the pane.
+// beside the chat (the composer's Talk, `openTalkView`): the orb alone; the talk ending closes the pane, and closing
+// the pane ends the talk.
 
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, MessageSquareText } from 'lucide-react'
+import { useOptionalView } from '@danfessler/trellis-react'
+import { onPaneClosed, usePanes } from '@/lib/panes'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
@@ -94,9 +97,20 @@ function TalkRoute() {
   // In a pane, the conversation ending here (the orb, the chat's End talk, ⌘T) closes the pane: the chat beside it stays.
   const was = useRef(here)
   useEffect(() => {
-    if (was.current && !here) closePane?.()
+    const ended = was.current && !here
     was.current = here
+    if (ended) closePane?.()
   }, [here, closePane])
+  // …and the pane closing (its ×, ⌥⌘W) ends the conversation: from the composer it is the talk's only UI. Not on the
+  // workspace unmounting (another page), and not in the full-window view, which leaves the talk running.
+  const leaf = useOptionalView()?.id
+  const ws = usePanes((s) => s.ws)
+  useEffect(() => {
+    if (!ws || !leaf || !closePane) return
+    return onPaneClosed(ws, leaf, () => {
+      if (was.current) void talk.stop(api)
+    })
+  }, [ws, leaf, closePane, api])
 
   useEffect(() => {
     const onStop = () => {

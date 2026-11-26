@@ -533,6 +533,14 @@ export function revealView(leaf: string): void {
   if (selected !== null && selected !== leaf && panel.views.includes(selected)) usePanes.setState({ selected: leaf })
 }
 
+/** `closed` runs when pane `leaf` closes for good (its ×, ⌥⌘W, a layout close) in `ws` — never on the workspace
+ * unmounting (another page). Returns the unsubscribe. */
+export function onPaneClosed(ws: WorkspaceHandle, leaf: string, closed: () => void): () => void {
+  return ws.on('close', (v: ViewInfo) => {
+    if (v.id === leaf) closed()
+  })
+}
+
 /** The user picked pane `id` (a press in it, its tab, the keyboard): it is selected; a chat is focused too and, unless
  * a draft, the URL moves to it. */
 export function picked(id: string): void {

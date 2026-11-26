@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { tileLeaf, usePanes } from '@/lib/panes'
-import { tileProps, tiling, untile } from '@/lib/panes.testing'
+import { closeLeaves, onPaneClosed, tileLeaf, usePanes } from '@/lib/panes'
+import { tileProps, tiling, unmount, untile } from '@/lib/panes.testing'
 import { tileId } from '@/lib/tiles'
 import { openTalkView } from './open'
 
@@ -49,4 +49,23 @@ test('where nothing tiles (a phone, no pane host, no workspace) Talk navigates t
   untile()
   expect(openTalkView('a', 'a', navigate)).toBeNull()
   expect(navigate.mock.calls).toEqual([['a'], ['a'], ['a']])
+})
+
+test("closing the talk pane (its ×, a layout close) fires the talk view's close hook; another pane closing does not", () => {
+  const leaf = openTalkView('a', 'a', vi.fn())!
+  const ended = vi.fn()
+  onPaneClosed(usePanes.getState().ws!, leaf, ended)
+  usePanes.getState().close('a')
+  expect(ended).not.toHaveBeenCalled()
+  closeLeaves([leaf])
+  expect(ended).toHaveBeenCalledTimes(1)
+  expect(tree()).not.toContain(leaf)
+})
+
+test('the workspace unmounting (another page) does not count as the talk pane closing', () => {
+  const leaf = openTalkView('a', 'a', vi.fn())!
+  const ended = vi.fn()
+  onPaneClosed(usePanes.getState().ws!, leaf, ended)
+  unmount()
+  expect(ended).not.toHaveBeenCalled()
 })
