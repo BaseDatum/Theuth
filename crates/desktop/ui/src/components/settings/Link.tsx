@@ -9,7 +9,8 @@ import { Dot as PresenceDot, meshChip, useMembersLine } from '@/components/link/
 import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
 import { Dot, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { ago } from '@/components/sidebar/AgentTree'
-import { age } from '@/components/tasks/helpers'
+import { DeviceList } from '@/components/settings/DeviceList'
+import { deleteDevices } from '@/components/settings/devices'
 import { useMesh } from '@/components/tasks/queries'
 import {
   AlertDialog,
@@ -20,14 +21,12 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { useApi } from '@/lib/rpc'
 import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngines } from '@/link/engines'
-import type { Device } from "@/rpc/bindings/method.nodes.output"
 import type { DeviceInfo } from "@/rpc/bindings/method.nodes.output"
 import type { LinkEvent } from "@/rpc/bindings/event.link_2eevents.output"
 import type { PairingPayload } from "@/rpc/bindings/method.nodes.output"
@@ -43,14 +42,12 @@ const LINK_EVENTS = ['LinkRelay', 'LinkPairing', 'LinkPaired', 'LinkDevice', 'Li
 /** Any of these changes the replicated device registry (69 §6). */
 const DEVICE_EVENTS = ['DevicePaired', 'DevicesChanged', 'LinkRevoked'] as const satisfies readonly LinkEvent['type'][]
 
-const PLATFORM: Record<string, string> = { ios: 'iOS', macos: 'macOS', web: 'Web', theuth: 'theuth' }
-
 const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.message('Copied'))
 
 /**
  * 188 Settings › Network › Devices: phones and browsers pair with a mesh here. On a node: the mesh's devices (69 §3–§4),
- * the relay with both identities, the per-node legacy devices (31 §7.5), then the other meshes this app reaches. On a
- * bare device (web/phone, no local node): "Pair with a mesh" and the meshes it reaches.
+ * then the relay with both identities, then the other meshes this app reaches. On a bare device (web/phone, no local
+ * node): "Pair with a mesh" and the meshes it reaches.
  */
 export function DevicesTab() {
   const navigate = useNavigate()
@@ -90,7 +87,6 @@ function NodeSide() {
 
   const enable = useAction((v: { enabled: boolean; relay: string | null }) => api.link_enable(v.enabled, v.relay), { keys })
   const rename = useAction((name: string) => api.link_rename(name), { keys })
-  const revoke = useAction((id: string) => api.link_revoke_device(id), { keys })
 
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: KEY })
@@ -115,7 +111,7 @@ function NodeSide() {
   return (
     <>
       {active !== LOCAL && <p className="pb-2 text-[13px] text-fg-secondary">Managing Link of {nodeName ?? s.name}</p>}
-      <Devices />
+      <Devices online={new Set(s.devices.filter((d) => d.online).map((d) => d.id))} />
 
       <Section title="Relay" actions={<Switch checked={s.enabled} disabled={enable.isPending} onCheckedChange={(v) => enable.mutate({ enabled: v, relay: null })} />}>
         <Row
@@ -130,13 +126,16 @@ function NodeSide() {
           <Editable value={s.relay} width="w-72" disabled={enable.isPending} onSave={(relay) => enable.mutate({ enabled: s.enabled, relay })} />
         </Row>
         {s.harness_id && (
-          <Row label="This node" description="Its Link identity: what legacy devices dial.">
+          <Row label="This node" description="Its own Link identity: what other nodes dial to reach it.">
             <span className="font-mono text-[13px] text-fg-tertiary">{s.harness_id.slice(0, 8)}…</span>
             <Button variant="ghost" size="icon-sm" aria-label="Copy node id" onClick={() => void copy(s.harness_id ?? '')}>
               <Copy />
             </Button>
           </Row>
         )}
+        <Row label="Node name" description="What devices see while they pair through this node.">
+          <Editable value={s.name} width="w-56" disabled={rename.isPending} onSave={(name) => rename.mutate(name)} />
+        </Row>
         {s.mesh && (
           <Row
             label="This mesh"
@@ -159,28 +158,16 @@ function NodeSide() {
           the document is never stored on the relay, so it is available while this computer is.
         </p>
       </Section>
-
-      {/* 188: the node name is what legacy devices show, not the machine's name, so it sits with them. */}
-      {s.devices.length > 0 && (
-        <Section title="Legacy devices">
-          <p className="pb-2 text-[13px] text-fg-secondary">Paired with this node alone, before meshes. They keep working; re-pair them with the mesh above to reach every node.</p>
-          <Row label="Node name" description="Shown on legacy devices paired with this node.">
-            <Editable value={s.name} width="w-56" disabled={rename.isPending} onSave={(name) => rename.mutate(name)} />
-          </Row>
-          {s.devices.map((d) => (
-            <LegacyRow key={d.id} device={d} onRevoke={() => revoke.mutate(d.id)} />
-          ))}
-        </Section>
-      )}
     </>
   )
 }
 
 /**
- * Devices paired with this mesh (69 §3–§4): the replicated registry — every phone/browser paired to the mesh, revoked
- * rows greyed — rename, revoke, and "Pair a device": a 4-part QR any node may show; the hub accepts.
+ * Devices paired with this mesh (69 §3–§4): the replicated registry, grouped by {@link DeviceList} — rename, revoke,
+ * delete (everywhere, revoking first), and "Pair a device": a 4-part QR any node may show; the hub accepts. `online`:
+ * ids with a live session on this node (`link_status`).
  */
-function Devices() {
+function Devices({ online }: { online: ReadonlySet<string> }) {
   const canQuery2 = useQuerySupport(["devices_list"])
   const api = useApi()
   const qc = useQueryClient()
@@ -191,6 +178,7 @@ function Devices() {
   const start = useAction((_: void) => api.device_pair_start(null), { keys: [], onSuccess: setPairing })
   const rename = useAction((v: { id: string; name: string }) => api.device_rename(v.id, v.name), { keys: [DEVICES] })
   const revoke = useAction((id: string) => api.device_revoke(id), { keys: [DEVICES] })
+  const remove = useAction((ds: DeviceInfo[]) => deleteDevices((id) => api.device_revoke(id), ds), { keys: [DEVICES] })
 
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: DEVICES })
@@ -235,69 +223,17 @@ function Devices() {
         </div>
       )}
       {devices.isError && <Empty>{devices.error.message}</Empty>}
-      {devices.data?.length === 0 && <Empty>No device paired with this mesh yet. A QR code is valid for five minutes and pairs one device.</Empty>}
-      {devices.data?.map((d) => (
-        <DeviceRow key={d.id} device={d} onRename={(name) => rename.mutate({ id: d.id, name })} onRevoke={() => revoke.mutate(d.id)} />
-      ))}
+      {devices.data && (
+        <DeviceList
+          devices={devices.data}
+          online={online}
+          onRename={(d, name) => rename.mutate({ id: d.id, name })}
+          onRevoke={(d) => revoke.mutate(d.id)}
+          onDelete={(d) => remove.mutate([d])}
+          onDeleteAll={(ds) => remove.mutate(ds)}
+        />
+      )}
     </Section>
-  )
-}
-
-function DeviceRow({ device: d, onRename, onRevoke }: { device: DeviceInfo; onRename: (name: string) => void; onRevoke: () => void }) {
-  const seen = d.last_seen_ms ? `seen ${age(d.last_seen_ms)} ago` : 'never seen'
-  return (
-    <Row
-      label={
-        <span className={`flex items-center gap-2 ${d.revoked ? 'text-fg-tertiary line-through' : ''}`}>
-          <Dot on={!d.revoked && d.last_seen_ms > 0} />
-          <Editable value={d.name} width="w-48" disabled={d.revoked} onSave={onRename} />
-        </span>
-      }
-      description={`${PLATFORM[d.platform] ?? d.platform} · ${d.id} · paired ${age(d.paired_ms)} ago · ${d.revoked ? 'revoked' : seen}`}
-    >
-      {!d.revoked && <Revoke name={d.name} onRevoke={onRevoke} description="Its connection closes now and every node of the mesh refuses it; pairing again needs a new QR scan." />}
-    </Row>
-  )
-}
-
-/** A per-node device (31 §7.5), read-only: name, platform, paired, seen, and Revoke. */
-function LegacyRow({ device: d, onRevoke }: { device: Device; onRevoke: () => void }) {
-  const paired = ago(new Date(Number(d.paired_at_ms)).toISOString())
-  const seen = Number(d.last_seen_ms)
-  return (
-    <Row
-      label={
-        <span className="flex items-center gap-2">
-          <Dot on={d.online} />
-          <span className="max-w-72 truncate text-sm">{d.name}</span>
-        </span>
-      }
-      description={`${PLATFORM[d.platform] ?? d.platform} · paired ${paired} ago · ${d.online ? 'online' : seen ? `seen ${ago(new Date(seen).toISOString())} ago` : 'never seen'} · re-pair with the mesh`}
-    >
-      <Revoke name={d.name} onRevoke={onRevoke} description="Its connection closes now and it cannot reconnect to this node; pairing again needs a new QR scan." />
-    </Row>
-  )
-}
-
-function Revoke({ name, description, onRevoke }: { name: string; description: string; onRevoke: () => void }) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="outline" size="sm">
-          Revoke
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Revoke {name}?</AlertDialogTitle>
-          <AlertDialogDescription>{description}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={onRevoke}>Revoke</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
   )
 }
 
