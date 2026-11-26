@@ -46,6 +46,7 @@ ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 figment = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "mesh/ts"]

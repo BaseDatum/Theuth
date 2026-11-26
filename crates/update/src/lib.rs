@@ -35,8 +35,19 @@ use tokio::time::Instant;
 /// Registry name of the [`UpdateActor`].
 pub const UPDATE_ACTOR: &str = "update";
 
-/// Where `latest.json` lives (39 §3.1). `update.url` overrides it.
-pub const URL: &str = "https://s3.rwx.dev/theuth/releases/latest.json";
+/// Primary release manifest on GitHub Releases (39 §3.1).
+pub const GITHUB_URL: &str =
+    "https://github.com/BaseDatum/Theuth/releases/latest/download/latest.json";
+
+/// Fallback release manifest on S3 (39 §3.1).
+pub const S3_URL: &str = "https://s3.rwx.dev/theuth/releases/latest.json";
+
+/// Default release manifest endpoints, tried in order (GitHub Releases first, S3 fallback).
+pub const DEFAULT_URLS: &[&str] = &[GITHUB_URL, S3_URL];
+
+/// Primary manifest URL (39 §3.1). Kept for callers expecting `update::URL`;
+/// `update.url` overrides the default fallback chain.
+pub const URL: &str = GITHUB_URL;
 
 /// The minisign public key every payload is verified against (39 §5.1), in
 /// Tauri's encoding (the `.pub` file, base64). Shared with the desktop's
@@ -64,15 +75,30 @@ const EXIT_RESTART: i32 = 75;
 pub struct UpdateConfig {
     /// `false`: the harness never touches the network for this.
     pub enabled: bool,
-    /// Manifest URL; the default is [`URL`]. A scratch bucket for checks.
-    pub url: String,
+    /// Optional single manifest URL override (e.g. a scratch bucket or local mock).
+    /// When unset (`None` or blank), [`DEFAULT_URLS`] are tried in order.
+    pub url: Option<String>,
 }
 
 impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            url: URL.to_owned(),
+            url: None,
+        }
+    }
+}
+
+impl UpdateConfig {
+    /// Manifest URLs to try in order.
+    ///
+    /// When `url` is unset (or blank), returns [`DEFAULT_URLS`] (GitHub Releases
+    /// first, S3 fallback). When `url` is explicitly configured, returns only that
+    /// single URL with no fallback to production endpoints.
+    pub fn endpoints(&self) -> Vec<&str> {
+        match self.url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(url) => vec![url],
+            None => DEFAULT_URLS.to_vec(),
         }
     }
 }
@@ -232,8 +258,8 @@ fn tauri_b64(s: &str) -> anyhow::Result<String> {
     Ok(String::from_utf8(bin)?)
 }
 
-fn pubkey() -> anyhow::Result<PublicKey> {
-    let text = tauri_b64(PUBKEY).map_err(|_| anyhow::anyhow!("update: pubkey not configured"))?;
+fn pubkey_from(b64: &str) -> anyhow::Result<PublicKey> {
+    let text = tauri_b64(b64).map_err(|_| anyhow::anyhow!("update: pubkey not configured"))?;
     PublicKey::decode(&text).map_err(|_| anyhow::anyhow!("update: pubkey not configured"))
 }
 
@@ -242,6 +268,19 @@ fn pubkey() -> anyhow::Result<PublicKey> {
 /// `<data_dir>/updates/`.
 pub async fn run_once(cfg: &UpdateConfig, data_dir: &Path) -> anyhow::Result<Outcome> {
     check_and_apply(cfg, data_dir, &current_version()?, None).await
+}
+
+async fn fetch_manifest(client: &reqwest::Client, url: &str) -> anyhow::Result<Manifest> {
+    client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?
+        .error_for_status()
+        .with_context(|| format!("GET {url}"))?
+        .json()
+        .await
+        .with_context(|| format!("GET {url}"))
 }
 
 /// 39 §3.2 steps 0–4 and H. `applied`: the version an earlier tick already
@@ -257,76 +296,155 @@ async fn check_and_apply(
     let exe = std::env::current_exe()
         .and_then(|p| p.canonicalize())
         .context("current_exe")?;
+    let endpoints = cfg.endpoints();
+    check_and_apply_with(&endpoints, data_dir, &exe, current, applied, PUBKEY).await
+}
+
+async fn check_and_apply_with(
+    endpoints: &[&str],
+    data_dir: &Path,
+    exe: &Path,
+    current: &Version,
+    applied: Option<&str>,
+    pubkey_b64: &str,
+) -> anyhow::Result<Outcome> {
+    if endpoints.is_empty() {
+        anyhow::bail!("no update endpoints configured");
+    }
     let homebrew = exe.to_string_lossy().contains("/Cellar/theuth/");
 
-    // Step 1: the manifest.
+    // Step 1: the manifest, trying candidate endpoints in order.
     let client = reqwest::Client::builder()
         .connect_timeout(HTTP_TIMEOUT)
         .read_timeout(HTTP_TIMEOUT)
         .user_agent(format!("theuth/{}", platform::version::get()))
         .build()?;
-    let manifest: Manifest = client
-        .get(&cfg.url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await
-        .with_context(|| format!("GET {}", cfg.url))?;
-    let remote = Version::parse(&manifest.version)
-        .with_context(|| format!("manifest version {:?}", manifest.version))?;
-    if !newer(current, &remote) {
-        return Ok(Outcome::UpToDate);
-    }
-    let version = manifest.version;
     let key = format!("cli-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let Some(platform) = manifest.platforms.get(&key) else {
-        tracing::debug!("update: {version} has no `{key}` entry");
-        return Ok(Outcome::UpToDate);
-    };
-    let done = Outcome::Applied {
-        from: current.to_string(),
-        to: version.clone(),
-    };
-    if applied == Some(version.as_str()) {
-        return Ok(done);
-    }
+    let mut errors: Vec<String> = Vec::new();
+    let mut missing_platform = false;
 
-    // Step H: the package manager's file is the package manager's.
-    if homebrew {
-        brew_upgrade(&version).await?;
-        return Ok(done);
-    }
+    for (idx, &endpoint) in endpoints.iter().enumerate() {
+        let has_next = idx + 1 < endpoints.len();
+        let manifest = match fetch_manifest(&client, endpoint).await {
+            Ok(m) => m,
+            Err(e) => {
+                if has_next {
+                    tracing::debug!("update: manifest {endpoint} failed ({e:#}); trying next endpoint");
+                } else {
+                    tracing::debug!("update: manifest {endpoint} failed: {e:#}");
+                }
+                errors.push(format!("{endpoint}: {e:#}"));
+                continue;
+            }
+        };
+        let remote = match Version::parse(&manifest.version)
+            .with_context(|| format!("manifest version {:?}", manifest.version))
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("update: manifest {endpoint} invalid version: {e:#}");
+                errors.push(format!("{endpoint}: {e:#}"));
+                continue;
+            }
+        };
+        if !newer(current, &remote) {
+            return Ok(Outcome::UpToDate);
+        }
+        let version = manifest.version;
+        let Some(platform) = manifest.platforms.get(&key) else {
+            if has_next {
+                tracing::warn!(
+                    "update: {version} from {endpoint} has no `{key}` entry; trying next endpoint"
+                );
+            } else {
+                tracing::debug!("update: {version} from {endpoint} has no `{key}` entry");
+            }
+            missing_platform = true;
+            continue;
+        };
+        let done = Outcome::Applied {
+            from: current.to_string(),
+            to: version.clone(),
+        };
+        if applied == Some(version.as_str()) {
+            return Ok(done);
+        }
 
-    // Step 4: can we replace it?
-    let dir = exe.parent().context("current_exe has no parent")?;
-    if !writable(dir) {
-        tracing::info!(
-            "update: {version} is available but {} is not writable; `sudo t --update` installs it",
-            exe.display()
-        );
-        return Ok(Outcome::Available { version, path: exe });
-    }
+        // Step H: the package manager's file is the package manager's.
+        if homebrew {
+            brew_upgrade(&version).await?;
+            return Ok(done);
+        }
 
-    // Steps 2–3: download + verify, extract, rename.
-    let updates = data_dir.join("updates");
-    tokio::fs::create_dir_all(&updates)
+        // Step 4: can we replace it?
+        let dir = exe.parent().context("current_exe has no parent")?;
+        if !writable(dir) {
+            tracing::info!(
+                "update: {version} is available but {} is not writable; `sudo t --update` installs it",
+                exe.display()
+            );
+            return Ok(Outcome::Available {
+                version,
+                path: exe.to_path_buf(),
+            });
+        }
+
+        // Steps 2–3: download + verify, extract, rename.
+        let updates = data_dir.join("updates");
+        tokio::fs::create_dir_all(&updates)
+            .await
+            .with_context(|| updates.display().to_string())?;
+        // Private name: another updater (other process or this one's foreground
+        // `--update` beside the tick loop) must never truncate the tarball this
+        // one verified and is about to unpack.
+        let tarball = updates.join(format!(
+            "theuth_{version}.{:016x}.tar.gz.part",
+            rand::random::<u64>()
+        ));
+        match download(
+            &client,
+            &platform.url,
+            &platform.signature,
+            &tarball,
+            pubkey_b64,
+        )
         .await
-        .with_context(|| updates.display().to_string())?;
-    // Private name: another updater (other process or this one's foreground
-    // `--update` beside the tick loop) must never truncate the tarball this
-    // one verified and is about to unpack.
-    let tarball = updates.join(format!(
-        "theuth_{version}.{:016x}.tar.gz.part",
-        rand::random::<u64>()
-    ));
-    let result = match download(&client, &platform.url, &platform.signature, &tarball).await {
-        Ok(()) => install(&tarball, &exe).await,
-        Err(e) => Err(e),
-    };
-    let _ = std::fs::remove_file(&tarball);
-    result?;
-    Ok(done)
+        {
+            Ok(()) => {
+                let result = install(&tarball, exe).await;
+                let _ = std::fs::remove_file(&tarball);
+                result?;
+                return Ok(done);
+            }
+            Err(DownloadError::Transport(e)) => {
+                let _ = std::fs::remove_file(&tarball);
+                if has_next {
+                    tracing::warn!(
+                        "update: download {} (from {endpoint}) failed ({e:#}); trying next endpoint",
+                        platform.url
+                    );
+                } else {
+                    tracing::warn!(
+                        "update: download {} (from {endpoint}) failed: {e:#}",
+                        platform.url
+                    );
+                }
+                errors.push(format!("{endpoint} (payload {}): {e:#}", platform.url));
+            }
+            Err(DownloadError::Fatal(e)) => {
+                let _ = std::fs::remove_file(&tarball);
+                return Err(e);
+            }
+        }
+    }
+
+    if errors.is_empty() && missing_platform {
+        return Ok(Outcome::UpToDate);
+    }
+    if errors.len() == 1 {
+        anyhow::bail!("update failed: {}", errors[0]);
+    }
+    anyhow::bail!("all update endpoints failed: {}", errors.join("; "));
 }
 
 /// Step H: `brew upgrade --formula theuth`, then confirm the Cellar holds `version`.
@@ -383,6 +501,13 @@ fn writable(dir: &Path) -> bool {
     ok
 }
 
+enum DownloadError {
+    /// HTTP/network failure fetching the payload — eligible for endpoint fallback.
+    Transport(anyhow::Error),
+    /// Signature verification, pubkey, or local filesystem failure — fatal.
+    Fatal(anyhow::Error),
+}
+
 /// Step 2: stream `url` to `dest`, hashing as it lands; verify against
 /// `signature` (Tauri-encoded `.sig`) before returning. `dest` is left in
 /// place on error for the caller to remove.
@@ -391,27 +516,52 @@ async fn download(
     url: &str,
     signature: &str,
     dest: &Path,
-) -> anyhow::Result<()> {
-    let pk = pubkey()?;
-    let sig = Signature::decode(&tauri_b64(signature).context("signature encoding")?)
-        .context("signature")?;
-    let mut verifier = pk.verify_stream(&sig).context("signature")?;
+    pubkey_b64: &str,
+) -> Result<(), DownloadError> {
+    let pk = pubkey_from(pubkey_b64).map_err(DownloadError::Fatal)?;
+    let sig = Signature::decode(
+        &tauri_b64(signature)
+            .context("signature encoding")
+            .map_err(DownloadError::Fatal)?,
+    )
+    .context("signature")
+    .map_err(DownloadError::Fatal)?;
+    let mut verifier = pk
+        .verify_stream(&sig)
+        .context("signature")
+        .map_err(DownloadError::Fatal)?;
     let mut resp = client
         .get(url)
         .send()
-        .await?
+        .await
+        .with_context(|| format!("GET {url}"))
+        .map_err(DownloadError::Transport)?
         .error_for_status()
-        .with_context(|| format!("GET {url}"))?;
+        .with_context(|| format!("GET {url}"))
+        .map_err(DownloadError::Transport)?;
     let mut file = tokio::fs::File::create(dest)
         .await
-        .with_context(|| dest.display().to_string())?;
-    while let Some(chunk) = resp.chunk().await? {
+        .with_context(|| dest.display().to_string())
+        .map_err(DownloadError::Fatal)?;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .with_context(|| format!("read {url}"))
+        .map_err(DownloadError::Transport)?
+    {
         verifier.update(&chunk);
-        file.write_all(&chunk).await?;
+        file.write_all(&chunk).await.map_err(|e| {
+            DownloadError::Fatal(anyhow::Error::new(e).context(dest.display().to_string()))
+        })?;
     }
-    file.flush().await?;
+    file.flush().await.map_err(|e| {
+        DownloadError::Fatal(anyhow::Error::new(e).context(dest.display().to_string()))
+    })?;
     drop(file);
-    verifier.finalize().context("signature does not verify")?;
+    verifier
+        .finalize()
+        .context("signature does not verify")
+        .map_err(DownloadError::Fatal)?;
     Ok(())
 }
 
@@ -1095,5 +1245,507 @@ mod tests {
             sorted(&["t", &helper_a, &helper_b, &old_helper]),
             "no .new leftovers"
         );
+    }
+
+    /// Ephemeral test-only minisign keypair (secret key discarded) signing a
+    /// 115-byte `.tar.gz` containing one regular file `t` = `b"new-theuth-binary"`.
+    const TEST_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgQURCQTVEOTQyQ0QwNzZFNApSV1RrZHRBc2xGMjZyZnliM1d3bmZJYUlsU1AzcTZzWDFRNzRCVmY2eWU0SFE3bEl2eDNsdnZzYQo=";
+    const TEST_SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIG1pbmlzaWduIHNlY3JldCBrZXkKUlVUa2R0QXNsRjI2cmE3MXg1bERJVXgzRDB2MXFHTGpSQk8za1VEME9OMnlHSm50ek40NTVXRlJhR2pLK2JWdW9EK0NUMUNLSGVnZFlrM1dsK3Z0Z05hVUMrRmFBTy8zRGd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NjkzNjEwCWZpbGU6cGF5bG9hZC50YXIuZ3oJaGFzaGVkCkgwdk1DQkQwNEhYZEtXS1MySnBkdTZTeFRxTm95TThZQm90NURyZDJGZG9HdXY5enREMFNKQ1IyQ1MxWUlSK0w4blQ1YUF2TzlRbE1ycWVuZnBNQUJ3PT0K";
+    const TEST_TGZ_B64: &str = "H4sIAAAAAAAA/+3OMQqDQBAF0D3KXkAYA+p5FATTWJiV4O0Vm0CqNDEp3mv+8Jv5JX1fHLqmOfPwnhG3+nWffRttl3JcsC2tj9IvOV/x6h/N47Mq07iWqRruc79svx4EAAAAAAAAAADAR3Z4WsXXACgAAA==";
+    const TEST_BINARY: &[u8] = b"new-theuth-binary";
+
+    fn test_tgz() -> Vec<u8> {
+        base64::prelude::BASE64_STANDARD
+            .decode(TEST_TGZ_B64)
+            .unwrap()
+    }
+
+    fn host_platform_key() -> String {
+        format!("cli-{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+    }
+
+    struct MockServer {
+        base_url: String,
+        hits: Arc<std::sync::atomic::AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for MockServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    impl MockServer {
+        fn hits(&self) -> usize {
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("{}{path}", self.base_url)
+        }
+    }
+
+    async fn spawn_mock_server(
+        handler: impl Fn(&str) -> (u16, Vec<u8>) + Send + Sync + 'static,
+    ) -> MockServer {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncReadExt as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_bg = Arc::clone(&hits);
+        let handler = Arc::new(handler);
+        let task = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let hits = Arc::clone(&hits_bg);
+                let handler = Arc::clone(&handler);
+                tokio::spawn(async move {
+                    let mut req = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    while let Ok(n) = stream.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        req.extend_from_slice(&buf[..n]);
+                        if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let first_line = String::from_utf8_lossy(&req);
+                    let path = first_line
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    let (status, body) = handler(path);
+                    let reason = match status {
+                        200 => "OK",
+                        404 => "Not Found",
+                        500 => "Internal Server Error",
+                        _ => "Error",
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(&body).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        MockServer {
+            base_url: format!("http://{addr}"),
+            hits,
+            task,
+        }
+    }
+
+    fn manifest_json(version: &str, platform_key: &str, payload_url: &str, sig: &str) -> Vec<u8> {
+        serde_json::json!({
+            "version": version,
+            "platforms": {
+                platform_key: {
+                    "url": payload_url,
+                    "signature": sig,
+                }
+            }
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[test]
+    fn constants_and_update_config_endpoints() {
+        assert_eq!(URL, GITHUB_URL);
+        assert_eq!(DEFAULT_URLS, &[GITHUB_URL, S3_URL]);
+
+        let def = UpdateConfig::default();
+        assert!(def.enabled);
+        assert_eq!(def.url, None);
+        assert_eq!(def.endpoints(), DEFAULT_URLS);
+
+        let empty_yaml: UpdateConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(empty_yaml.enabled);
+        assert_eq!(empty_yaml.endpoints(), DEFAULT_URLS);
+
+        let disabled_yaml: UpdateConfig = serde_yaml::from_str("enabled: false\n").unwrap();
+        assert!(!disabled_yaml.enabled);
+        assert_eq!(disabled_yaml.endpoints(), DEFAULT_URLS);
+
+        let null_url_yaml: UpdateConfig = serde_yaml::from_str("url: ~\n").unwrap();
+        assert_eq!(null_url_yaml.endpoints(), DEFAULT_URLS);
+
+        let blank_url_yaml: UpdateConfig = serde_yaml::from_str("url: \"   \"\n").unwrap();
+        assert_eq!(blank_url_yaml.endpoints(), DEFAULT_URLS);
+
+        let custom_yaml: UpdateConfig =
+            serde_yaml::from_str("url: https://scratch.example/latest.json\n").unwrap();
+        assert_eq!(
+            custom_yaml.endpoints(),
+            vec!["https://scratch.example/latest.json"]
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_primary_succeeds_without_contacting_secondary() {
+        let key = host_platform_key();
+        let tgz = test_tgz();
+        let payload_holder = Arc::new(std::sync::OnceLock::<String>::new());
+        let payload_ref = Arc::clone(&payload_holder);
+        let primary = spawn_mock_server(move |path| match path {
+            "/latest.json" => (
+                200,
+                manifest_json("2.2.0", &key, payload_ref.get().unwrap(), TEST_SIG),
+            ),
+            "/payload.tar.gz" => (200, tgz.clone()),
+            _ => (404, Vec::new()),
+        })
+        .await;
+        payload_holder.set(primary.url("/payload.tar.gz")).unwrap();
+
+        let secondary = spawn_mock_server(|_| (200, Vec::new())).await;
+
+        let (dir, exe) = installed();
+        let data_dir = tempfile::tempdir().unwrap();
+        let endpoints = [primary.url("/latest.json"), secondary.url("/latest.json")];
+        let endpoint_refs: Vec<&str> = endpoints.iter().map(String::as_str).collect();
+
+        let outcome = check_and_apply_with(
+            &endpoint_refs,
+            data_dir.path(),
+            &exe,
+            &v("2.1.0"),
+            None,
+            TEST_PUBKEY,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            Outcome::Applied {
+                from: "2.1.0".into(),
+                to: "2.2.0".into(),
+            }
+        );
+        assert_eq!(std::fs::read(&exe).unwrap(), TEST_BINARY);
+        assert_eq!(primary.hits(), 2);
+        assert_eq!(secondary.hits(), 0, "fallback must not be contacted");
+        assert!(names(&data_dir.path().join("updates")).is_empty());
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn fallback_primary_http_404_and_500_uses_secondary() {
+        for status in [404u16, 500u16] {
+            let primary = spawn_mock_server(move |_| (status, b"error".to_vec())).await;
+
+            let key = host_platform_key();
+            let tgz = test_tgz();
+            let payload_holder = Arc::new(std::sync::OnceLock::<String>::new());
+            let payload_ref = Arc::clone(&payload_holder);
+            let secondary = spawn_mock_server(move |path| match path {
+                "/latest.json" => (
+                    200,
+                    manifest_json("2.2.0", &key, payload_ref.get().unwrap(), TEST_SIG),
+                ),
+                "/payload.tar.gz" => (200, tgz.clone()),
+                _ => (404, Vec::new()),
+            })
+            .await;
+            payload_holder
+                .set(secondary.url("/payload.tar.gz"))
+                .unwrap();
+
+            let (dir, exe) = installed();
+            let data_dir = tempfile::tempdir().unwrap();
+            let endpoints = [primary.url("/latest.json"), secondary.url("/latest.json")];
+            let endpoint_refs: Vec<&str> = endpoints.iter().map(String::as_str).collect();
+
+            let outcome = check_and_apply_with(
+                &endpoint_refs,
+                data_dir.path(),
+                &exe,
+                &v("2.1.0"),
+                None,
+                TEST_PUBKEY,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                outcome,
+                Outcome::Applied {
+                    from: "2.1.0".into(),
+                    to: "2.2.0".into(),
+                },
+                "status {status}"
+            );
+            assert_eq!(std::fs::read(&exe).unwrap(), TEST_BINARY);
+            assert_eq!(primary.hits(), 1);
+            assert_eq!(secondary.hits(), 2);
+            drop(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_primary_payload_error_uses_secondary() {
+        for payload_status in [500u16, 404u16] {
+            let key = host_platform_key();
+            let p_holder = Arc::new(std::sync::OnceLock::<String>::new());
+            let p_ref = Arc::clone(&p_holder);
+            let p_key = key.clone();
+            let primary = spawn_mock_server(move |path| match path {
+                "/latest.json" => (
+                    200,
+                    manifest_json("2.2.0", &p_key, p_ref.get().unwrap(), TEST_SIG),
+                ),
+                "/payload.tar.gz" => (payload_status, b"broken payload".to_vec()),
+                _ => (404, Vec::new()),
+            })
+            .await;
+            p_holder.set(primary.url("/payload.tar.gz")).unwrap();
+
+            let tgz = test_tgz();
+            let s_holder = Arc::new(std::sync::OnceLock::<String>::new());
+            let s_ref = Arc::clone(&s_holder);
+            let secondary = spawn_mock_server(move |path| match path {
+                "/latest.json" => (
+                    200,
+                    manifest_json("2.2.0", &key, s_ref.get().unwrap(), TEST_SIG),
+                ),
+                "/payload.tar.gz" => (200, tgz.clone()),
+                _ => (404, Vec::new()),
+            })
+            .await;
+            s_holder.set(secondary.url("/payload.tar.gz")).unwrap();
+
+            let (dir, exe) = installed();
+            let data_dir = tempfile::tempdir().unwrap();
+            let endpoints = [primary.url("/latest.json"), secondary.url("/latest.json")];
+            let endpoint_refs: Vec<&str> = endpoints.iter().map(String::as_str).collect();
+
+            let outcome = check_and_apply_with(
+                &endpoint_refs,
+                data_dir.path(),
+                &exe,
+                &v("2.1.0"),
+                None,
+                TEST_PUBKEY,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                outcome,
+                Outcome::Applied {
+                    from: "2.1.0".into(),
+                    to: "2.2.0".into(),
+                },
+                "payload status {payload_status}"
+            );
+            assert_eq!(std::fs::read(&exe).unwrap(), TEST_BINARY);
+            assert_eq!(primary.hits(), 2, "primary manifest + failed payload");
+            assert_eq!(secondary.hits(), 2, "secondary manifest + payload");
+            assert!(
+                names(&data_dir.path().join("updates")).is_empty(),
+                "partial temp files must be cleaned up"
+            );
+            drop(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_primary_up_to_date_does_not_contact_secondary() {
+        for remote_ver in ["2.1.0", "2.0.9", "3.0.0"] {
+            let key = host_platform_key();
+            let primary = spawn_mock_server(move |_| {
+                (
+                    200,
+                    manifest_json(remote_ver, &key, "http://127.0.0.1:1/unused", TEST_SIG),
+                )
+            })
+            .await;
+            let secondary = spawn_mock_server(|_| (200, Vec::new())).await;
+
+            let (dir, exe) = installed();
+            let data_dir = tempfile::tempdir().unwrap();
+            let endpoints = [primary.url("/latest.json"), secondary.url("/latest.json")];
+            let endpoint_refs: Vec<&str> = endpoints.iter().map(String::as_str).collect();
+
+            let outcome = check_and_apply_with(
+                &endpoint_refs,
+                data_dir.path(),
+                &exe,
+                &v("2.1.0"),
+                None,
+                TEST_PUBKEY,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(outcome, Outcome::UpToDate, "remote {remote_ver}");
+            assert_eq!(primary.hits(), 1);
+            assert_eq!(secondary.hits(), 0, "fallback must not be contacted");
+            drop(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_both_endpoints_fail_returns_error() {
+        let primary = spawn_mock_server(|_| (404, b"not found".to_vec())).await;
+        let secondary = spawn_mock_server(|_| (500, b"boom".to_vec())).await;
+
+        let (dir, exe) = installed();
+        let data_dir = tempfile::tempdir().unwrap();
+        let endpoints = [primary.url("/latest.json"), secondary.url("/latest.json")];
+        let endpoint_refs: Vec<&str> = endpoints.iter().map(String::as_str).collect();
+
+        let err = check_and_apply_with(
+            &endpoint_refs,
+            data_dir.path(),
+            &exe,
+            &v("2.1.0"),
+            None,
+            TEST_PUBKEY,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains(&endpoints[0]), "missing primary url: {msg}");
+        assert!(msg.contains(&endpoints[1]), "missing secondary url: {msg}");
+        assert_eq!(primary.hits(), 1);
+        assert_eq!(secondary.hits(), 1);
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn explicit_custom_url_does_not_fall_back() {
+        let custom = spawn_mock_server(|_| (500, b"custom fail".to_vec())).await;
+        let cfg = UpdateConfig {
+            enabled: true,
+            url: Some(custom.url("/latest.json")),
+        };
+        let endpoints = cfg.endpoints();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0], custom.url("/latest.json"));
+
+        let (dir, exe) = installed();
+        let data_dir = tempfile::tempdir().unwrap();
+        let err = check_and_apply_with(
+            &endpoints,
+            data_dir.path(),
+            &exe,
+            &v("2.1.0"),
+            None,
+            TEST_PUBKEY,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err:#}").contains(&custom.url("/latest.json")));
+        assert_eq!(custom.hits(), 1);
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn fallback_primary_missing_platform_uses_secondary() {
+        let primary = spawn_mock_server(|_| {
+            (
+                200,
+                manifest_json(
+                    "2.2.0",
+                    "cli-otheros-otherarch",
+                    "http://127.0.0.1:1/unused",
+                    TEST_SIG,
+                ),
+            )
+        })
+        .await;
+
+        let key = host_platform_key();
+        let tgz = test_tgz();
+        let s_holder = Arc::new(std::sync::OnceLock::<String>::new());
+        let s_ref = Arc::clone(&s_holder);
+        let secondary = spawn_mock_server(move |path| match path {
+            "/latest.json" => (
+                200,
+                manifest_json("2.2.0", &key, s_ref.get().unwrap(), TEST_SIG),
+            ),
+            "/payload.tar.gz" => (200, tgz.clone()),
+            _ => (404, Vec::new()),
+        })
+        .await;
+        s_holder.set(secondary.url("/payload.tar.gz")).unwrap();
+
+        let (dir, exe) = installed();
+        let data_dir = tempfile::tempdir().unwrap();
+        let endpoints = [primary.url("/latest.json"), secondary.url("/latest.json")];
+        let endpoint_refs: Vec<&str> = endpoints.iter().map(String::as_str).collect();
+
+        let outcome = check_and_apply_with(
+            &endpoint_refs,
+            data_dir.path(),
+            &exe,
+            &v("2.1.0"),
+            None,
+            TEST_PUBKEY,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            Outcome::Applied {
+                from: "2.1.0".into(),
+                to: "2.2.0".into(),
+            }
+        );
+        assert_eq!(std::fs::read(&exe).unwrap(), TEST_BINARY);
+        assert_eq!(primary.hits(), 1);
+        assert_eq!(secondary.hits(), 2);
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn bad_signature_is_rejected_and_leaves_exe_intact() {
+        let key = host_platform_key();
+        let mut tampered = test_tgz();
+        tampered[0] ^= 0xff;
+        let p_holder = Arc::new(std::sync::OnceLock::<String>::new());
+        let p_ref = Arc::clone(&p_holder);
+        let primary = spawn_mock_server(move |path| match path {
+            "/latest.json" => (
+                200,
+                manifest_json("2.2.0", &key, p_ref.get().unwrap(), TEST_SIG),
+            ),
+            "/payload.tar.gz" => (200, tampered.clone()),
+            _ => (404, Vec::new()),
+        })
+        .await;
+        p_holder.set(primary.url("/payload.tar.gz")).unwrap();
+
+        let (dir, exe) = installed();
+        let data_dir = tempfile::tempdir().unwrap();
+        let endpoints = [primary.url("/latest.json")];
+        let endpoint_refs: Vec<&str> = endpoints.iter().map(String::as_str).collect();
+
+        let err = check_and_apply_with(
+            &endpoint_refs,
+            data_dir.path(),
+            &exe,
+            &v("2.1.0"),
+            None,
+            TEST_PUBKEY,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("signature does not verify"));
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old");
+        assert!(names(&data_dir.path().join("updates")).is_empty());
+        drop(dir);
     }
 }

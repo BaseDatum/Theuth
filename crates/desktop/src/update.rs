@@ -7,9 +7,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::time::Duration;
 
+use anyhow::Context as _;
 use tauri::plugin::TauriPlugin;
 use tauri::{AppHandle, Emitter, Manager, Url, Wry};
 use tauri_plugin_updater::{Config, Update, UpdaterExt};
+
+/// Fallback manifest URL (mirrors `update::S3_URL` and the second entry in `tauri.conf.json`).
+const S3_FALLBACK_URL: &str = "https://s3.rwx.dev/theuth/releases/latest.json";
 
 /// A verified update waiting for `RunEvent::Exit` (39 §3.3: bytes stay in memory).
 /// `restart`: Settings › General asked to install now; the quit handshake relaunches instead of exiting.
@@ -52,28 +56,30 @@ pub fn start(app: &AppHandle) {
     });
 }
 
+fn is_held(app: &AppHandle, version: &str) -> bool {
+    app.state::<Pending>()
+        .update
+        .lock()
+        .is_ok_and(|p| p.as_ref().is_some_and(|(u, _)| u.version == version))
+}
+
 /// One check: manifest → compare → download (minisign-verified) → park in [`Pending`].
 /// `Some(version)` when an update is parked (now or from an earlier check), `None` when current.
 async fn check(app: &AppHandle) -> anyhow::Result<Option<String>> {
     // 39 §7: `THEUTH_UPDATE_URL` points a scratch bucket; default is tauri.conf.json.
-    let builder = match std::env::var("THEUTH_UPDATE_URL")
+    let override_url = std::env::var("THEUTH_UPDATE_URL")
         .ok()
-        .and_then(|s| s.parse::<Url>().ok())
-    {
+        .and_then(|s| s.parse::<Url>().ok());
+    let has_override = override_url.is_some();
+    let builder = match override_url {
         Some(url) => app.updater_builder().endpoints(vec![url])?,
         None => app.updater_builder(),
     };
-    let Some(update) = builder.build()?.check().await? else {
+    let Some(mut update) = builder.build()?.check().await? else {
         return Ok(None);
     };
-    let version = update.version.clone();
-    let held = app
-        .state::<Pending>()
-        .update
-        .lock()
-        .is_ok_and(|p| p.as_ref().is_some_and(|(u, _)| u.version == update.version));
-    if held {
-        return Ok(Some(version));
+    if is_held(app, &update.version) {
+        return Ok(Some(update.version));
     }
     // The plugin escalates with an AppleScript password prompt when the bundle
     // is not ours to rename (39 §1.1: no dialogs); a root-owned .app is skipped.
@@ -85,12 +91,56 @@ async fn check(app: &AppHandle) -> anyhow::Result<Option<String>> {
             update.version
         );
     }
-    let bytes = update.download(|_, _| {}, || {}).await?;
-    tracing::info!("update: {} verified, installs at quit", update.version);
-    app.emit(
-        "update-ready",
-        serde_json::json!({ "version": update.version }),
-    )?;
+    let bytes = match update.download(|_, _| {}, || {}).await {
+        Ok(bytes) => bytes,
+        Err(primary_err) => {
+            let fallback_url: Url = S3_FALLBACK_URL.parse()?;
+            let can_fallback =
+                !has_override && update.download_url.host_str() != fallback_url.host_str();
+            if !can_fallback {
+                return Err(primary_err.into());
+            }
+            tracing::warn!(
+                "update: download of {} from {} failed ({primary_err}); falling back to {S3_FALLBACK_URL}",
+                update.version,
+                update.download_url
+            );
+            let Some(fallback_update) = app
+                .updater_builder()
+                .endpoints(vec![fallback_url])?
+                .build()?
+                .check()
+                .await
+                .with_context(|| {
+                    format!(
+                        "fallback check against {S3_FALLBACK_URL} after download failure: {primary_err}"
+                    )
+                })?
+            else {
+                anyhow::bail!(
+                    "download from {} failed ({primary_err}) and fallback {S3_FALLBACK_URL} reported no update",
+                    update.download_url
+                );
+            };
+            if is_held(app, &fallback_update.version) {
+                return Ok(Some(fallback_update.version));
+            }
+            let fallback_bytes = fallback_update
+                .download(|_, _| {}, || {})
+                .await
+                .with_context(|| {
+                    format!(
+                        "fallback download from {} failed (primary error: {primary_err})",
+                        fallback_update.download_url
+                    )
+                })?;
+            update = fallback_update;
+            fallback_bytes
+        }
+    };
+    let version = update.version.clone();
+    tracing::info!("update: {version} verified, installs at quit");
+    app.emit("update-ready", serde_json::json!({ "version": version }))?;
     if let Ok(mut p) = app.state::<Pending>().update.lock() {
         *p = Some((update, bytes));
     }
