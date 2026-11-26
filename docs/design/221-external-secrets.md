@@ -1533,8 +1533,9 @@ docker run -d --rm --name sso-vw --network container:sso-kc \
   `localhost` on the first free port of 8065..=8070, on 127.0.0.1 and on ::1 (the browser may
   resolve `localhost` to either). It calls
   `connection_sso_begin` with that port and opens the system browser at `authorize_url`.
-- The listener takes the first `GET /?code=…&state=…`. It answers a small "you can close this tab"
-  page (or an error page for `error=`), hands the full URL to `connection_sso_complete` and closes.
+- The listener takes the first `GET /?code=…&state=…`. It answers the OAuth login's callback page
+  (`oauth::callback_page`: "Logged in", or "Login failed" for `error=`), hands the full URL to
+  `connection_sso_complete` and closes.
 - The flow times out after 5 minutes, with a Cancel button. Both close the listener.
   `NeedTwoFactor` continues on the same login card with the code field.
 
