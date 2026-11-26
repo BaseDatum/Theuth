@@ -36,6 +36,7 @@ const task = (id: string, title: string, owner: string, state: Task['state'], up
   blockers: [],
   blocks: [],
   parent: null,
+  accent: null,
   project,
   where: null,
   home: null,
