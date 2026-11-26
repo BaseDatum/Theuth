@@ -111,7 +111,7 @@ test('the meta is a row at the top of the box, before the text in DOM order, nev
   expect(src.slice(bar).includes('<ComposerMeta')).toBe(false)
   expect(at('<McpMenu')).toBeLessThan(at('<ApprovalShield'))
   expect(at('<ApprovalShield')).toBeGreaterThan(bar)
-  expect(at('<ApprovalShield')).toBeLessThan(at('data-model-slot=""'))
+  expect(at('<ApprovalShield')).toBeLessThan(at('<ModelSlot '))
   // No container-query shedding of the % or the cost.
   expect(readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')).not.toMatch(/@max-|\/bar:hidden/)
 })
@@ -217,20 +217,24 @@ function barSource(): string {
 test('the model picker is on the bar, right before talk · mic · send, and not in the top row', () => {
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
   const bar = barSource()
+  // The picker lives in `ModelSlot` (its own component, so the slot's live width re-renders it alone), placed once.
+  const slot = src.slice(src.indexOf('function ModelSlot('), src.indexOf('\n}\n', src.indexOf('function ModelSlot(')))
   expect(src.match(/<ComposerModel /g)).toHaveLength(1)
-  expect(src.slice(0, src.indexOf('<div data-composer-bar=""')).includes('<ComposerModel ')).toBe(false)
+  expect(slot).toContain('<ComposerModel session={session} own={own} room={room} />')
+  expect(src.match(/<ModelSlot /g)).toHaveLength(1)
+  expect(src.slice(0, src.indexOf('<div data-composer-bar=""')).includes('<ModelSlot ')).toBe(false)
   expect(readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')).not.toMatch(/ComposerModel|chat-model|model\?: ReactNode/)
   // + · MCP · shield … [slot: spacer + model] · talk · mic · send
-  const order = ['<Popover', '<McpMenu', '<ApprovalShield', 'data-model-slot=""', '<ComposerModel session={session} own={ownModel} room={modelRoom} />', 'aria-label="Talk"', '<MicButton', '<SendButton ']
+  const order = ['<Popover', '<McpMenu', '<ApprovalShield', '<ModelSlot ', 'aria-label="Talk"', '<MicButton', '<SendButton ']
   const idx = order.map((s) => bar.indexOf(s))
   expect(idx.every((i) => i >= 0)).toBe(true)
   expect([...idx].sort((a, b) => a - b)).toEqual(idx)
   // The slot is the bar's one flex-1 item from a 0 basis, so its measured width is the room the buttons leave.
-  expect(bar).toContain('<div ref={modelSlot} data-model-slot="" className="-ml-1 flex min-w-0 flex-1 justify-end">')
-  expect(bar.match(/className="[^"]*\bflex-1\b/g)).toHaveLength(1)
-  expect(src).toContain('const modelRoom = useWidth(modelSlot)')
+  expect(slot).toContain('<div ref={slot} data-model-slot="" className="-ml-1 flex min-w-0 flex-1 justify-end">')
+  expect(bar.match(/className="[^"]*\bflex-1\b/g) ?? []).toHaveLength(0)
+  expect(slot).toContain('const room = useWidth(slot)')
   // Hidden during a voice note and in a HUD composer, as before.
-  expect(bar).toContain("{!resolveSession && stage === 'idle' && <ComposerModel")
+  expect(bar).toContain("<ModelSlot session={session} own={ownModel} show={!resolveSession && stage === 'idle'} />")
   // The menu still opens upward.
   expect(readFileSync(new URL('./ModelMenu.tsx', import.meta.url), 'utf8')).toContain('<PopoverContent side="top" align="end"')
 })

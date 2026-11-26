@@ -3,7 +3,7 @@ import '@danfessler/trellis/style.css'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSidebar } from '@/components/ui/sidebar'
+import { useSidebarIsMobile } from '@/components/ui/sidebar'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { usePressDrag } from '@/hooks/use-press-drag'
 import { active } from '@/store/engine-scope'
@@ -271,14 +271,15 @@ function Prepared(p: { session: string; types: string[]; icons: Icons; sessions:
 }
 
 /** The tab bar of the pane at the window's top-left corner (`first`, shown while it holds several views) starts right
- * of the macOS traffic lights while the sidebar is closed, as that pane's header does. */
+ * of the macOS traffic lights while the sidebar is closed, as that pane's header does. The rule keys off the sidebar's
+ * own `data-state` / `data-collapsible`, so a toggle swaps no stylesheet (and this never re-renders for one). */
 function CornerTabs() {
-  const { open, rail } = useSidebar()
   const first = usePanes((s) => s.first)
-  if (open || first === null || !isMacDesktop()) return null
-  const tab = `[data-trellis-part='tab'][data-view='${CSS.escape(first)}']`
+  if (first === null || !isMacDesktop()) return null
+  const bar = `[data-slot='sidebar-inset'] .trellis [data-trellis-part='tabbar']:has([data-trellis-part='tab'][data-view=${JSON.stringify(first)}])`
+  const closed = `[data-slot='sidebar'][data-state='collapsed']`
   // Beside the collapsed rail only the lights' overhang past its 3.5rem is left to clear (`cornerPad`).
-  return <style>{`.trellis [data-trellis-part='tabbar']:has(${tab}) { padding-inline-start: ${rail ? '1.5rem' : '5rem'}; }`}</style>
+  return <style>{`${closed} ~ ${bar} { padding-inline-start: 5rem; } ${closed}[data-collapsible='icon'] ~ ${bar} { padding-inline-start: 1.5rem; }`}</style>
 }
 
 /**
@@ -292,7 +293,7 @@ function CornerTabs() {
  * `inert`.
  */
 export function Panes({ session, kinds, icons = NO_ICONS, render }: { session: string; kinds: readonly string[]; icons?: Icons; render: Render }) {
-  const { isMobile } = useSidebar()
+  const isMobile = useSidebarIsMobile()
   const leaves = usePanes((s) => s.leaves)
   const focused = usePanes((s) => s.focused)
   const attached = usePanes((s) => s.ws !== null)

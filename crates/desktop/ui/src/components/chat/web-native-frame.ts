@@ -6,6 +6,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState, useSyncExtern
 import { usePanes } from '@/lib/panes'
 import * as native from '@/lib/web-view-native'
 import { useWebViews } from '@/lib/web-views'
+import { SIDEBAR_SLIDE_EVENT } from '@/lib/sidebar-slide'
 
 /** Open things a native web view would draw over (it sits above all DOM): radix dialogs, sheets, menus, popovers,
  * selects, the modal backdrops and the notice history. Tooltips are not among them: they come and go with the pointer. */
@@ -91,8 +92,9 @@ export const FOLLOW_IDLE_MS = 250
  * Call `moved` with `el`'s rectangle whenever it changes, until the returned stop. Every frame while it moves, and for
  * `FOLLOW_FRAMES` frames after; then a poll every `FOLLOW_IDLE_MS`, so an idle frame does not keep a display-rate loop
  * running (on iPad that held the compositor busy for as long as a web view was open). A resize of `el`, a window resize,
- * a scroll anywhere, or a transition or animation starting goes straight back to every frame; the poll catches what
- * moves without any of those, one poll late at worst. `moved` does not get the starting rectangle.
+ * a scroll anywhere, a transition or animation starting, or the sidebar's slide (`SIDEBAR_SLIDE_EVENT`: Web Animations
+ * fire no event of their own) goes straight back to every frame; the poll catches what moves without any of those, one
+ * poll late at worst. `moved` does not get the starting rectangle.
  */
 export function followRect(el: HTMLElement, moved: (r: native.Rect) => void): () => void {
   let last = rectOf(el)
@@ -127,7 +129,7 @@ export function followRect(el: HTMLElement, moved: (r: native.Rect) => void): ()
   const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(wake) : null
   ro?.observe(el)
   const opts = { capture: true, passive: true } as const
-  const events = ['resize', 'scroll', 'transitionrun', 'animationstart'] as const
+  const events = ['resize', 'scroll', 'transitionrun', 'animationstart', SIDEBAR_SLIDE_EVENT] as const
   for (const e of events) window.addEventListener(e, wake, opts)
   window.visualViewport?.addEventListener('resize', wake)
   frame = requestAnimationFrame(tick)

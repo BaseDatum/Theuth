@@ -68,15 +68,22 @@ export function settleRail(nav: HTMLElement): void {
   nav.style.overflowY = prev
 }
 
-/** `settleRail` on the rail's middle once it mounts (next frame) and whenever the sidebar container ends a width transition. */
+/** `settleRail` on the rail's middle once it mounts and the container's collapse slide (if any) has finished, and
+ * whenever the sidebar container ends a width transition. Never mid-slide: settling forces a synchronous layout. */
 export function useSettledRail(nav: HTMLElement | null): void {
   useEffect(() => {
     if (!nav) return
     const container = nav.closest<HTMLElement>('[data-slot="sidebar-container"]')
-    const frame = requestAnimationFrame(() => settleRail(nav))
+    let gone = false
+    const frame = requestAnimationFrame(() => {
+      const sliding = container?.getAnimations?.() ?? []
+      if (sliding.length === 0) return settleRail(nav)
+      void Promise.allSettled(sliding.map((a) => a.finished)).then(() => !gone && settleRail(nav))
+    })
     const ended = (e: TransitionEvent) => e.target === container && e.propertyName === 'width' && settleRail(nav)
     container?.addEventListener('transitionend', ended)
     return () => {
+      gone = true
       cancelAnimationFrame(frame)
       container?.removeEventListener('transitionend', ended)
     }

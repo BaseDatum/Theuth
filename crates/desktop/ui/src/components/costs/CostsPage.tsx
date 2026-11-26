@@ -4,7 +4,7 @@
 
 import { useNavigate } from '@tanstack/react-router'
 import { Download } from 'lucide-react'
-import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, type ReactNode, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { SidebarLead } from '@/components/nav/SectionBand'
 import { useInsideTile } from '@/components/tiles/tile-context'
@@ -65,6 +65,27 @@ const Sessions = memo(function Sessions({ v, now, onFilter }: { v: { ix: Index; 
   return <SessionsTable rows={rows} title={`Sessions · ${v.rangeLabel}`} now={now} onFilter={onFilter} />
 })
 
+/** The page's top bar. Its own component: the traffic-light inset follows the sidebar (`cornerPad`), so a toggle
+ * re-renders this bar alone, never the page and its charts. */
+function CostsHeader({ children }: { children: ReactNode }) {
+  const sidebar = useSidebar()
+  const mac = isMacDesktop()
+  const insideTile = useInsideTile()
+  return (
+    <header
+      data-tauri-drag-region={(!insideTile && mac) || undefined}
+      className={cn(
+        'flex shrink-0 items-center gap-2.5 border-b border-border-subtle px-3 md:px-4',
+        insideTile ? 'h-10' : 'h-[52px]',
+        !insideTile && mac && cornerPad(sidebar),
+      )}
+    >
+      {!insideTile && <SidebarLead />}
+      {children}
+    </header>
+  )
+}
+
 /**
  * The costs page. Mounted once by `CostsResident` (and kept, hidden, when you leave); `search` is the /costs URL state,
  * `visible` whether it is on screen. While hidden nothing ticks or re-renders: the clock and the cube index are held.
@@ -78,9 +99,6 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
   const view = useDeferredValue(search)
   const navigate = useNavigate()
   const api = useApi()
-  const sidebar = useSidebar()
-  const mac = isMacDesktop()
-  const insideTile = useInsideTile()
   const tz = useMemo(defaultTz, [])
   // 215: the resident page mounts hidden; only being on screen counts as a visit.
   useEffect(() => {
@@ -155,15 +173,7 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={(!insideTile && mac) || undefined}
-        className={cn(
-          'flex shrink-0 items-center gap-2.5 border-b border-border-subtle px-3 md:px-4',
-          insideTile ? 'h-10' : 'h-[52px]',
-          !insideTile && mac && cornerPad(sidebar),
-        )}
-      >
-        {!insideTile && <SidebarLead />}
+      <CostsHeader>
         <h1 className="text-[15px] font-semibold tracking-[0.2px]">Costs</h1>
         <span className="hidden min-w-0 items-center gap-1.5 truncate font-mono text-[10px] tracking-[1.4px] text-fg-tertiary uppercase sm:inline-flex">
           <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-success motion-safe:animate-pulse" />
@@ -175,7 +185,7 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
           <Download />
           CSV
         </Button>
-      </header>
+      </CostsHeader>
       <div data-costs-scroll className="min-h-0 flex-1 overflow-y-auto">
         <div className="@container mx-auto flex max-w-[1600px] flex-col gap-3.5 px-3 pt-3.5 pb-5 md:px-4">
           <RangeBar search={live} r={rNow} gran={granNow} tz={tz} now={now} set={set} />

@@ -42,6 +42,8 @@ const FG = '#e8dcc8'
  */
 const DEFAULT_ROWS = 40
 const DEFAULT_COLS = 120
+/** How long a run of box resizes must pause before the terminal refits (and resizes its PTY). */
+const REFIT_MS = 64
 /** A kernel PTY's fixed grid (171 §7.4): the cell viewer starts there and never resizes it. */
 const CELL_ROWS = 30
 const CELL_COLS = 100
@@ -297,7 +299,21 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
         })
       : null
     if (ref) setSize(`${term.cols}×${term.rows}`)
-    const ro = fit ? new ResizeObserver(() => fit.fit()) : null
+    // The first fit is immediate; after that a burst of resizes (a divider drag, the sidebar's slide) fits once it
+    // settles, so the PTY gets one `pty_resize`, not one per frame.
+    let fitted = false
+    let refit: ReturnType<typeof setTimeout> | undefined
+    let fitFrame = 0
+    const ro = fit
+      ? new ResizeObserver(() => {
+          if (!fitted) {
+            fitted = true
+            return fit.fit()
+          }
+          clearTimeout(refit)
+          refit = setTimeout(() => (fitFrame = requestAnimationFrame(() => fit.fit())), REFIT_MS)
+        })
+      : null
     ro?.observe(el)
     // Cell source: grow to the rows in use (a full-screen program or scrolled output takes the whole grid); the
     // kernel PTY itself is never resized.
@@ -321,6 +337,8 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
     return () => {
       wire.dispose()
       ro?.disconnect()
+      clearTimeout(refit)
+      cancelAnimationFrame(fitFrame)
       parsed?.dispose()
       resized?.dispose()
       ta.removeEventListener('focus', focused)

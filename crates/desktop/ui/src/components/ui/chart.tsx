@@ -42,6 +42,7 @@ function ChartContainer({
   children,
   config,
   initialDimension = INITIAL_DIMENSION,
+  debounce = 100,
   ...props
 }: React.ComponentProps<"div"> & {
   config: ChartConfig
@@ -52,6 +53,9 @@ function ChartContainer({
     width: number
     height: number
   }
+  /** ms a resize burst settles before the chart redraws (Recharts' `ResponsiveContainer`); the first size is
+   * `initialDimension`'s, at once. */
+  debounce?: number
 }) {
   const uniqueId = React.useId()
   const chartId = `chart-${id ?? uniqueId.replace(/:/g, "")}`
@@ -70,6 +74,7 @@ function ChartContainer({
         <ChartStyle id={chartId} config={config} />
         <RechartsPrimitive.ResponsiveContainer
           initialDimension={initialDimension}
+          debounce={debounce}
         >
           {children}
         </RechartsPrimitive.ResponsiveContainer>

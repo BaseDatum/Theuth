@@ -151,6 +151,19 @@ function useWidth(ref: RefObject<HTMLElement | null>): number | undefined {
   return width
 }
 
+/** 215 C2: the model's slot on the composer's bar: the room every button leaves (it is the bar's one `flex-1` item), so
+ * the label picks the longest step that fits (`modelStep`) and never pushes a button. Its own component: the slot's
+ * live width re-renders the picker alone, never the whole composer, on every pixel of a drag. */
+function ModelSlot({ session, own, show }: { session: string | null; own: boolean | undefined; show: boolean }) {
+  const slot = useRef<HTMLDivElement>(null)
+  const room = useWidth(slot)
+  return (
+    <div ref={slot} data-model-slot="" className="-ml-1 flex min-w-0 flex-1 justify-end">
+      {show && <ComposerModel session={session} own={own} room={room} />}
+    </div>
+  )
+}
+
 /** The box's placeholder. An exported session's human input never joins a peer task; it steers a human turn or waits
  * behind a task (50 §6.3). 183 §12.1 / mock panel 3: a chat owned elsewhere names the machine it runs on, a steer too;
  * `short` (a narrow window or a touch screen) drops the `Message — ` lead, and the name itself never breaks. */
@@ -784,10 +797,6 @@ export function Composer({
   const narrow = useNarrow(box, NARROW_BOX_PX)
   // The bar's fit: the box's content width is the bar's (`contentRect` leaves out the box's padding).
   const barTight = useNarrow(box, BAR_TIGHT_PX)
-  // The model's slot on the bar: the room every button leaves (it is the bar's one `flex-1` item), so the label picks
-  // the longest step that fits (`modelStep`) and never pushes a button.
-  const modelSlot = useRef<HTMLDivElement>(null)
-  const modelRoom = useWidth(modelSlot)
   // The box's top row (`13%  ~$44`): an existing session only, never the new-chat draft or a HUD composer.
   const meta = useComposerMeta(!resolveSession && session ? session : null)
   // The row counts toward the box: the text's max height gives up its 16 px, so a full box is no taller than before.
@@ -1624,9 +1633,7 @@ export function Composer({
           {/* 215 C2: the spacer, and the model's slot at its right end: `flex-1` from a 0 basis, so its width is exactly
               the room left, whatever the label shows. `-ml-1` cancels its own gap — 4px a 280px pane needs. A HUD
               composer's chat is named on demand, so no picker; a voice note takes the row, so it goes meanwhile. */}
-          <div ref={modelSlot} data-model-slot="" className="-ml-1 flex min-w-0 flex-1 justify-end">
-            {!resolveSession && stage === 'idle' && <ComposerModel session={session} own={ownModel} room={modelRoom} />}
-          </div>
+          <ModelSlot session={session} own={ownModel} show={!resolveSession && stage === 'idle'} />
           {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. B3: while it
               runs here, the chat view keeps a compact indicator: tap opens the talk view, the x ends the talk. */}
           {talkHere ? (

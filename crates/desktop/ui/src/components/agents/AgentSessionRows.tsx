@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
 import { Branch, GLYPH, SubagentRow, ago } from '@/components/sidebar/AgentTree'
-import { useSidebar } from '@/components/ui/sidebar'
+import { useSidebarIsMobile } from '@/components/ui/sidebar'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { childrenOf, withAncestors } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
@@ -19,7 +19,7 @@ const MORE_CLASS = 'flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-f
 export function AgentSessionRows({ desk, depth }: { desk: string; depth: number }) {
   const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
-  const mobile = useSidebar().isMobile
+  const mobile = useSidebarIsMobile()
   const { rows, live, deskRunning } = useAgentSessions(desk)
   const lingering = useLingering(useMemo(() => live.map((r) => r.id), [live]))
   const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })

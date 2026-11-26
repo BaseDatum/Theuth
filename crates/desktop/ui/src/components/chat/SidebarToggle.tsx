@@ -1,10 +1,10 @@
 import { PanelLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useSidebar } from '@/components/ui/sidebar'
+import { useSidebarActions } from '@/components/ui/sidebar'
 
 /** The top-left pane header's way to the sidebar (chat, web and tile headers alike). */
 export function SidebarToggle() {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar } = useSidebarActions()
   return (
     <Button
       variant="ghost"

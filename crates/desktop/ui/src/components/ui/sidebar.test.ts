@@ -3,7 +3,21 @@ import { act, createElement as h, type ReactElement, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, test } from 'vitest'
-import { readSidebarOpen, readSidebarWidth, Sidebar, SidebarMenuAction, SidebarProvider, useSidebar, useSidebarOpen, writeSidebarOpen } from './sidebar'
+import {
+  readSidebarOpen,
+  readSidebarWidth,
+  Sidebar,
+  SidebarGroupLabel,
+  SidebarInset,
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarProvider,
+  useSidebar,
+  useSidebarActions,
+  useSidebarIsMobile,
+  useSidebarOpen,
+  writeSidebarOpen,
+} from './sidebar'
 import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 
 const classes = (showOnHover: boolean) => /class="([^"]*)"/.exec(renderToStaticMarkup(h(SidebarMenuAction, { showOnHover })))![1]!.split(' ')
@@ -19,19 +33,22 @@ test('the ⋯ hides until hover only for a fine pointer at ≥ md; the finger hi
   expect(classes(false)).not.toContain('md:pointer-fine:opacity-0')
 })
 
-// jsdom's about:blank drops cookies: a minimal jar, one `name=value` per write like the browser's.
+// jsdom's about:blank drops cookies: a minimal jar, one `name=value` per write like the browser's; `writes` logs each name.
 const jar = new Map<string, string>()
+const writes: string[] = []
 Object.defineProperty(document, 'cookie', {
   configurable: true,
   get: () => [...jar].map(([k, v]) => `${k}=${v}`).join('; '),
   set: (raw: string) => {
     const [k, v] = raw.split(';')[0]!.split('=')
     jar.set(k!.trim(), v!)
+    writes.push(k!.trim())
   },
 })
 const desktop = window.matchMedia
 afterEach(() => {
   jar.clear()
+  writes.length = 0
   window.matchMedia = desktop
   document.body.innerHTML = ''
 })
@@ -237,6 +254,149 @@ describe('the touch edge swipe', () => {
     expect(seen!.state).toBe('collapsed')
     await swipe(document.querySelector('[data-card]')!, 10, 200)
     expect(seen!.state).toBe('expanded')
+    await act(async () => root.unmount())
+  })
+})
+
+test('the desktop sidebar animates no layout property: no width, left/right, margin or padding transitions', async () => {
+  const { root } = await mount(h(SidebarProvider, { rail: true }, h(Sidebar, { collapsible: 'icon' }, 'nav'), h(SidebarInset)))
+  const cls = (slot: string) => document.querySelector<HTMLElement>(`[data-slot="${slot}"]`)!.className
+  for (const slot of ['sidebar-gap', 'sidebar-container']) expect(cls(slot)).not.toMatch(/transition-\[[^\]]*(width|left|right)/)
+  expect(cls('sidebar-wrapper').split(' ')).toContain('overflow-x-clip')
+  const markup = renderToStaticMarkup(h(SidebarProvider, null, h(SidebarMenuButton, null, 'Chat'), h(SidebarGroupLabel, null, 'Desks')))
+  expect(markup).not.toMatch(/transition-\[[^\]]*(width|height|padding|margin)/)
+  await act(async () => root.unmount())
+})
+
+test('actions and isMobile readers do not re-render on a toggle or a width change; the actions stay the same object', async () => {
+  const renders = { actions: 0, mobile: 0, all: 0 }
+  const seen: ReturnType<typeof useSidebarActions>[] = []
+  const Actions = () => (renders.actions++, seen.push(useSidebarActions()), null)
+  const Mobile = () => (renders.mobile++, useSidebarIsMobile(), null)
+  let all: ReturnType<typeof useSidebar> | undefined
+  const All = () => (renders.all++, (all = useSidebar()), null)
+  const { root } = await mount(h(SidebarProvider, { rail: true, defaultOpen: true }, h(Sidebar, { collapsible: 'icon' }, 'nav'), h(Actions), h(Mobile), h(All)))
+  const before = { ...renders }
+  await act(async () => seen[0]!.toggleSidebar())
+  await act(async () => seen[0]!.toggleSidebar())
+  await act(async () => seen[0]!.setWidth(300))
+  expect([renders.actions, renders.mobile]).toEqual([before.actions, before.mobile])
+  expect(renders.all).toBe(before.all + 3)
+  expect(all!.width).toBe(300)
+  expect(new Set(seen).size).toBe(1)
+  await act(async () => root.unmount())
+})
+
+test('a toggle saves sidebar_state exactly once, uncontrolled or controlled by useSidebarOpen', async () => {
+  let seen: ReturnType<typeof useSidebar> | undefined
+  const Probe = () => ((seen = useSidebar()), null)
+  const free = await mount(h(SidebarProvider, { rail: true }, h(Sidebar, { collapsible: 'icon' }, 'nav'), h(Probe)))
+  writes.length = 0
+  await act(async () => seen!.toggleSidebar())
+  expect(writes.filter((k) => k === 'sidebar_state')).toHaveLength(1)
+  await act(async () => free.root.unmount())
+
+  const Shell = () => {
+    const [open, setOpen] = useSidebarOpen()
+    return h(SidebarProvider, { open, onOpenChange: setOpen, rail: true }, h(Sidebar, { collapsible: 'icon' }, 'nav'), h(Probe))
+  }
+  const held = await mount(h(Shell))
+  writes.length = 0
+  await act(async () => seen!.toggleSidebar())
+  expect(writes.filter((k) => k === 'sidebar_state')).toHaveLength(1)
+  await act(async () => held.root.unmount())
+})
+
+test('⇧⌘S (`theuth:toggle-sidebar`) toggles the uncontrolled shell, which starts from the saved state; a controlled one ignores it', async () => {
+  let seen: ReturnType<typeof useSidebar> | undefined
+  const Probe = () => ((seen = useSidebar()), null)
+  writeSidebarOpen(false)
+  const free = await mount(h(SidebarProvider, { rail: true }, h(Sidebar, { collapsible: 'icon' }, 'nav'), h(Probe)))
+  expect(seen!.state).toBe('collapsed')
+  await act(async () => void window.dispatchEvent(new Event('theuth:toggle-sidebar')))
+  expect(seen!.state).toBe('expanded')
+  expect(readSidebarOpen(document.cookie)).toBe(true)
+  await act(async () => free.root.unmount())
+  const fixed = await mount(h(SidebarProvider, { open: true }, h(Probe)))
+  await act(async () => void window.dispatchEvent(new Event('theuth:toggle-sidebar')))
+  expect(seen!.open).toBe(true)
+  await act(async () => fixed.root.unmount())
+})
+
+describe('the desktop slide', () => {
+  type Fake = { el: Element; frames: Keyframe[]; cancelled: boolean; finish(): Promise<void> }
+  let made: Fake[] = []
+  const proto = HTMLElement.prototype as { animate?: unknown }
+  afterEach(() => {
+    delete proto.animate
+    made = []
+  })
+  const fakeAnimate = () => {
+    proto.animate = function (this: Element, frames: Keyframe[]) {
+      const { promise: finished, resolve } = Promise.withResolvers<void>()
+      const a: Fake = { el: this, frames, cancelled: false, finish: () => act(async () => resolve()) }
+      made.push(a)
+      return { finished, cancel: () => void (a.cancelled = true) }
+    }
+  }
+  const shell = async () => {
+    let seen: ReturnType<typeof useSidebar> | undefined
+    const Probe = () => ((seen = useSidebar()), null)
+    const m = await mount(h(SidebarProvider, { rail: true, defaultOpen: false }, h(Sidebar, { collapsible: 'icon' }, 'nav'), h(SidebarInset), h(Probe)))
+    const gap = document.querySelector<HTMLElement>('[data-slot="sidebar-gap"]')!
+    const box = document.querySelector<HTMLElement>('[data-slot="sidebar-container"]')!
+    const inset = document.querySelector<HTMLElement>('[data-slot="sidebar-inset"]')!
+    return { ...m, gap, box, inset, toggle: () => act(async () => seen!.toggleSidebar()) }
+  }
+  const xs = (a: Fake) => a.frames.map((f) => f.transform)
+
+  test('expanding slides sidebar and column by transform alone, keeping the rail\'s gap until it ends; then the gap commits once', async () => {
+    fakeAnimate()
+    const { root, gap, box, inset, toggle } = await shell()
+    expect(box.style.transform).toContain('var(--sidebar-width-icon) - var(--sidebar-width)')
+    await toggle()
+    // 256 px wide, the rail 56: both travel 200 px.
+    expect(made.map((a) => [a.el, xs(a)])).toEqual([
+      [box, ['translateX(-200px)', 'translateX(0px)']],
+      [inset, ['translateX(0px)', 'translateX(200px)']],
+    ])
+    expect(gap.style.width).toBe('var(--sidebar-width-icon)')
+    expect(box.style.transform).toBe('')
+    await made[0]!.finish()
+    expect(gap.style.width).toBe('')
+    expect(made.every((a) => a.cancelled)).toBe(true)
+    await act(async () => root.unmount())
+  })
+
+  test('collapsing commits the narrow gap at once and slides the wider column in; a toggle mid-slide drops the old slide for good', async () => {
+    fakeAnimate()
+    const { root, gap, box, inset, toggle } = await shell()
+    await toggle()
+    const opening = [...made]
+    await toggle()
+    expect(opening.every((a) => a.cancelled)).toBe(true)
+    expect(gap.style.width).toBe('')
+    const closing = made.slice(2)
+    expect(closing.map((a) => a.el)).toEqual([box, inset])
+    expect(xs(closing[1]!).at(-1)).toBe('translateX(0px)')
+    expect(xs(closing[0]!).at(-1)).toBe('translateX(-200px)')
+    // The stale slide finishing late leaves the collapsed gap alone.
+    await opening[0]!.finish()
+    expect(gap.style.width).toBe('')
+    expect(closing.some((a) => a.cancelled)).toBe(false)
+    await act(async () => root.unmount())
+  })
+
+  test('reduced motion (or no Web Animations, as here by default) jumps straight to the end', async () => {
+    const { root, gap, toggle } = await shell()
+    await toggle()
+    expect(gap.style.width).toBe('')
+    fakeAnimate()
+    window.matchMedia = ((q: string) => ({ ...desktop(q), matches: q.includes('reduce') })) as typeof window.matchMedia
+    await toggle()
+    await toggle()
+    expect(made).toEqual([])
+    expect(gap.style.width).toBe('')
     await act(async () => root.unmount())
   })
 })
