@@ -2,14 +2,14 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Hourglass, TriangleAlert } from 'lucide-react'
-import { Fragment, type ReactNode, memo, useEffect, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { counts } from '@/components/chat/broadcast'
 import { EyeMark, SourceTag, WatchCostCell, WatchDot } from '@/components/chat/ObservedBar'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { costShort, costTitle } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { modelLabel } from '@/components/agents/sessions'
-import { cappedTree, childrenOf, live, observedLabel, withAncestors } from '@/lib/session-tree'
+import { cappedTree, childrenOf, live, notAdvisor, observedLabel, withAncestors } from '@/lib/session-tree'
 import { backgroundColors } from '@/lib/background-colors'
 import { cn } from '@/lib/utils'
 import type { CostBucket } from "@/rpc/bindings/method.agent.output"
@@ -225,10 +225,43 @@ export function Branch({
 }
 
 /**
- * A session's subtree: seeded from `list_agents` when it appears, live from events after; each parent's children as
- * a `Branch` (ranked and capped on their own, the open chat's path always visible). `liveOnly` keeps just the `live`
- * rows and their ancestors — a desk that is not the open chat shows what is working, not its history. `tick`: every row
- * a checkbox (the broadcast picker).
+ * What of `root`'s descendants the replicated `list_sessions` says changed: ids with their running / watch-only state,
+ * sorted. A remote session's spawns arrive by replication only when its stream misses them, so the tree refetches on it.
+ */
+export function descendantKey(sessions: readonly SessionSummary[], root: string): string {
+  const byParent = new Map<string, SessionSummary[]>()
+  for (const s of sessions) {
+    if (s.parent === null || !notAdvisor(s)) continue
+    const list = byParent.get(s.parent)
+    if (list) list.push(s)
+    else byParent.set(s.parent, [s])
+  }
+  const out: string[] = []
+  const seen = new Set([root])
+  const queue = [root]
+  for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
+    for (const s of byParent.get(id) ?? []) {
+      if (seen.has(s.id)) continue
+      seen.add(s.id)
+      queue.push(s.id)
+      out.push(`${s.id}:${s.running ? 1 : 0}:${s.observed?.state ?? ''}:${s.finished_at ?? ''}`)
+    }
+  }
+  return out.sort().join('\n')
+}
+
+/** A `list_agents` snapshot over the tree's rows: its rows win, a row it lacks (a live spawn newer than it) stays. */
+export function mergeChildren(current: Record<string, AgentInfo> | undefined, snapshot: AgentInfo[]): AgentInfo[] {
+  const ids = new Set(snapshot.map((a) => a.id))
+  return [...snapshot, ...Object.values(current ?? {}).filter((r) => !ids.has(r.id))]
+}
+
+/**
+ * A session's subtree: seeded from `list_agents` when it appears, live from events after, and refetched (debounced)
+ * when the replicated `list_sessions` changes the subtree — a peer's session streams only its own events, so a child
+ * spawned there may reach this engine by replication alone. Each parent's children as a `Branch` (ranked and capped on
+ * their own, the open chat's path always visible). `liveOnly` keeps just the `live` rows and their ancestors — a desk
+ * that is not the open chat shows what is working, not its history. `tick`: every row a checkbox (the broadcast picker).
  */
 export function AgentTree({ session, active, liveOnly = false, tick }: { session: string; active: string | undefined; liveOnly?: boolean; tick?: Ticks }) {
   const canQuery1 = useQuerySupport(["list_sessions"])
@@ -237,12 +270,27 @@ export function AgentTree({ session, active, liveOnly = false, tick }: { session
   const children = useSessionField(session, 'children')
   // The sidebar keeps `list_sessions` warm; it lends `updated_at`/`created_at` to the ranking.
   const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const tree = useMemo(() => descendantKey(sessions, session), [sessions, session])
+  // The last fetch: a new session seeds at once, a changed subtree refetches after 300 ms of quiet.
+  const fetched = useRef<{ api: typeof api; session: string; tree: string } | null>(null)
   useEffect(() => {
-    api.list_agents(session).then(
-      (a) => useSessions.getState().setChildren(session, a),
-      () => {},
-    )
-  }, [api, session])
+    const last = fetched.current
+    const fresh = last?.api !== api || last.session !== session
+    if (!fresh && last?.tree === tree) return
+    const load = () => {
+      fetched.current = { api, session, tree }
+      api.list_agents(session).then(
+        (a) => {
+          const st = useSessions.getState()
+          st.setChildren(session, mergeChildren(st.sessions[session]?.children, a))
+        },
+        () => {},
+      )
+    }
+    if (fresh) return load()
+    const timer = window.setTimeout(load, 300)
+    return () => window.clearTimeout(timer)
+  }, [api, session, tree])
   const { byParent, keep, some } = useMemo(() => {
     const rows = children ?? {}
     const all = Object.values(rows)

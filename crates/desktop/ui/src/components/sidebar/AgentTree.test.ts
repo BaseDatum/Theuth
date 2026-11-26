@@ -80,3 +80,26 @@ test('the tree clock: none without rows, by the second while a row reads seconds
   expect(agoStep({ a: row('2026-11-25T00:01:00Z') }, now, true)).toBe(30_000)
   expect(agoStep({ a: row('2026-11-25T00:01:00Z'), b: { activity: { last_active: '2026-11-25T00:09:55Z' } } as never }, now, true)).toBe(1_000)
 })
+
+test('a replicated spawn refetches the tree, merging: snapshot rows update, a live row it lacks stays', async () => {
+  const { descendantKey } = await import('./AgentTree')
+  const { queryKeys } = await import('@/lib/rpc')
+  const summary = (id: string, parent: string | null, running = false) => ({ id, parent, running, kind: 'chat', observed: null, finished_at: null }) as never
+  await mount()
+  expect(Object.keys(useSessions.getState().sessions.root!.children)).toEqual(['child'])
+  // A live spawn the next snapshot does not carry yet.
+  const live = { ...row, id: 'live', name: 'live' }
+  await act(async () => useSessions.getState().setChildren('root', [row, live]))
+  // P50's second child lands by replication; its snapshot changes the first child's state.
+  rows = [{ ...row, state: { state: 'idle' } as AgentInfo['state'] }, { ...row, id: 'probe2', name: 'win-probe2' }]
+  const sessions = [summary('root', null), summary('child', 'root'), summary('probe2', 'root', true), summary('other', null), summary('grand', 'probe2')]
+  expect(descendantKey(sessions, 'root').split('\n').map((l) => l.split(':')[0])).toEqual(['child', 'grand', 'probe2'])
+  await act(async () => {
+    client.setQueryData(queryKeys.sessions, sessions)
+    await new Promise((r) => setTimeout(r, 400))
+  })
+  const children = useSessions.getState().sessions.root!.children
+  expect(Object.keys(children).sort()).toEqual(['child', 'live', 'probe2'])
+  expect(children.child!.state.state).toBe('idle')
+  expect(document.body.textContent).toContain('win-probe2')
+})
