@@ -2,8 +2,9 @@
 // over the chat import these without pulling a kind's body (a VNC client, xterm, the CodeMap) into their module graph.
 
 import type { Item } from '@/components/chat/Attachments'
+import { isMobileLayout } from '@/hooks/use-mobile'
 import { openPopout } from '@/lib/popout'
-import { type Edge, isFrame, placeView, revealView, tileLeaf, tileSpec, usePanes } from '@/lib/panes'
+import { applyLayoutOp, type Edge, isFrame, type PanePlacement, placeView, revealView, tileLeaf, tileSpec, usePanes } from '@/lib/panes'
 import { openTile, setTileProps, type Tile, tileable, tileId } from '@/lib/tiles'
 import { normalizeViewPath } from '@/lib/view-title'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
@@ -160,4 +161,39 @@ export function openViewTile(
   const edge: Edge = opts?.edge ?? (opts?.target ? 'right' : isFrame(anchor) ? 'tab' : 'right')
   placeView(anchor, leaf, edge, spec)
   return id
+}
+
+/**
+ * A chat card's Open for a `show_view` call: an open `view` tile for `props.path` is revealed and selected; else it opens
+ * with `show_view`'s placement (`applyLayoutOp` `open_view`): default `beside` joins the panel holding view tiles, else
+ * right of `session`'s chat (default: the focused one); `replace` alone takes over `target`. Never closes another tile.
+ * Returns the tile's leaf, or `null` when nothing opened. On a phone (no tiles) it navigates to the route through
+ * `navigate` instead and returns `null`.
+ */
+export function openViewFromCard(
+  props: ViewProps,
+  opts?: { placement?: PanePlacement; target?: string; session?: string; navigate?: (href: string) => void },
+): string | null {
+  if (isMobileLayout()) {
+    opts?.navigate?.(normalizeViewPath(props.path))
+    return null
+  }
+  const { focused, leaves } = usePanes.getState()
+  // A card outlives its call's layout: a target since closed leaves the default placement, and `replace` never falls
+  // back to taking over the chat.
+  const target = opts?.target && leaves.includes(opts.target) ? opts.target : undefined
+  const placement = !target && opts?.placement === 'replace' ? undefined : opts?.placement
+  const answer = applyLayoutOp(
+    { op: 'open_view', path: props.path, title: props.title, placement, target, focus: true },
+    opts?.session ?? focused ?? '',
+    opts?.navigate,
+  )
+  const r = answer.kind === 'done' ? answer.result : null
+  return r && typeof r === 'object' && 'pane' in r && typeof r.pane === 'string' ? r.pane : null
+}
+
+/** Reactive: the tile `leafOrPath` names is laid out — a leaf (`tile:…`, `web:…`), else a `view` tile's route path. */
+export function useTileOpen(leafOrPath: string): boolean {
+  const leaf = isFrame(leafOrPath) ? leafOrPath : tileLeaf(tileId('view', '', normalizeViewPath(leafOrPath)))
+  return usePanes((s) => s.leaves.includes(leaf))
 }
