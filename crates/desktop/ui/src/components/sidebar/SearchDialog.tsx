@@ -7,7 +7,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
 import { Button } from '@/components/ui/button'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
-import { machineRows, olderText, openNewChatOn } from '@/components/chat/NewChatPane'
+import { machineRows, openNewChatOn } from '@/components/chat/NewChatPane'
 import { useMesh } from '@/components/tasks/queries'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import {
@@ -698,8 +698,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                       <CommandItem
                         key={m.id}
                         value={`new-chat-on:${m.id}`}
-                        disabled={!m.online || m.older}
-                        title={m.older ? olderText(m.name) : undefined}
+                        disabled={!m.online}
                         onSelect={() => {
                           onOpenChange(false)
                           openNewChatOn(navigate, m.id)
@@ -708,7 +707,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                       >
                         <SquarePen aria-hidden />
                         <span className="min-w-0 flex-1 truncate">New chat on {m.name}</span>
-                        <span className="text-xs text-fg-tertiary">{m.older ? 'needs update' : m.status}</span>
+                        <span className="text-xs text-fg-tertiary">{m.status}</span>
                       </CommandItem>
                     ))}
                   </CommandGroup>

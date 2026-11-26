@@ -101,19 +101,23 @@ const MESH = {
 
 test('183 mock panel 5: this machine first; LAN / via relay / offline with its age, an offline one not pickable', () => {
   expect(machineRows(MESH, NOW)).toEqual([
-    { id: null, name: "Sky's MacBook", detail: 'macOS · laptop', status: 'this machine', online: true, older: false, repos: [] },
-    { id: 'xeus', name: 'xeus', detail: 'Arch Linux · desktop', status: 'LAN', online: true, older: false, repos: ['/home/sky/Develop/theuth'] },
-    { id: 'cloud', name: 'cloud-1', detail: 'Ubuntu · server', status: 'via relay', online: true, older: false, repos: [] },
-    { id: 'studio', name: 'studio', detail: '', status: 'offline 3h', online: false, older: false, repos: [] },
+    { id: null, name: "Sky's MacBook", detail: 'macOS · laptop', status: 'this machine', online: true, repos: [] },
+    { id: 'xeus', name: 'xeus', detail: 'Arch Linux · desktop', status: 'LAN', online: true, repos: ['/home/sky/Develop/theuth'] },
+    { id: 'cloud', name: 'cloud-1', detail: 'Ubuntu · server', status: 'via relay', online: true, repos: [] },
+    { id: 'studio', name: 'studio', detail: '', status: 'offline 3h', online: false, repos: [] },
   ])
   // A lone engine (or one whose only peer row is itself) shows no picker.
   expect(machineRows({ ...MESH, peers: [] }, NOW)).toEqual([])
   expect(machineRows(undefined, NOW)).toEqual([])
 })
 
-test('U3: a peer whose stats carry no os_name runs a pre-183 theuth: flagged older (not pickable); no stats at all is unknown, not older', () => {
-  const rows = machineRows({ ...MESH, stats: [...MESH.stats.filter((s) => s.id !== 'xeus'), stat('xeus', '', 'desktop')] }, NOW)
-  expect(rows.map((r) => [r.id, r.older])).toEqual([[null, false], ['xeus', true], ['cloud', false], ['studio', false]])
+// The P50 case: a peer's stats row whose newer columns never replicated (all empty) says nothing about its version.
+const EMPTY_XEUS = { ...MESH, stats: [...MESH.stats.filter((s) => s.id !== 'xeus'), { ...stat('xeus', '', 'desktop'), class: '' as EngineStats['class'] }] }
+
+test('a peer whose stats row is empty is an ordinary, pickable machine with what is known as its line', () => {
+  const rows = machineRows(EMPTY_XEUS, NOW)
+  expect(rows[1]).toEqual({ id: 'xeus', name: 'xeus', detail: '', status: 'LAN', online: true, repos: [] })
+  expect(machineRows({ ...MESH, stats: [...MESH.stats.filter((s) => s.id !== 'xeus'), stat('xeus', '', 'desktop')] }, NOW)[1]?.detail).toBe('desktop')
 })
 
 test('183 W-10: the chosen machine and folder ride into create_session as engine / cwd, then reset to this machine', async () => {

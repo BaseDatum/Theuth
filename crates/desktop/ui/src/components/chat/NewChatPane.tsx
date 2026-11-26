@@ -32,26 +32,24 @@ import type { EngineClass } from "@/rpc/bindings/method.nodes.output"
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import { tilde } from './HarnessCards'
 
-/** 183 §12.5 / mock panel 5: one machine a new chat can start on; `id` `null` is this machine (the default). `older`: a
- * pre-183 engine (its stats carry no `os_name`), which cannot take a chat started from here. */
-export type MachineRow = { id: string | null; name: string; detail: string; status: string; online: boolean; older: boolean; repos: string[] }
-
-/** U3: why an `older` machine cannot be picked. */
-export const olderText = (name: string): string => `${name} runs an older theuth; update it to start chats there`
+/** 183 §12.5 / mock panel 5: one machine a new chat can start on; `id` `null` is this machine (the default). */
+export type MachineRow = { id: string | null; name: string; detail: string; status: string; online: boolean; repos: string[] }
 
 /** Machine class words (`EngineStats.class`) for `os_name · class` lines here and in Settings › Network. */
 export const CLASS: Record<EngineClass, string> = { laptop: 'laptop', desktop: 'desktop', server: 'server', container: 'container', vm: 'VM' }
 
 /** This machine first, then every paired engine: `os_name · class` from its replicated stats; `LAN` / `via relay` /
- * `offline 3h` (an offline one cannot be picked). No peers, no rows: a lone engine shows no picker. */
+ * `offline 3h` (an offline one cannot be picked). No peers, no rows: a lone engine shows no picker. A stats row with
+ * empty columns says nothing about the peer's version (a column can be late to replicate): it is pickable, its line
+ * shows what is known. */
 export function machineRows(mesh: Pick<MeshStatus, 'self_id' | 'self_name' | 'peers' | 'stats'> | undefined, now = Date.now()): MachineRow[] {
   if (!mesh?.peers.some((p) => p.id !== mesh.self_id)) return []
   const facts = (id: string) => {
     const s = mesh.stats.find((x) => x.id === id)
-    return { detail: s ? [s.os_name, CLASS[s.class]].filter(Boolean).join(' · ') : '', older: s?.os_name === '', repos: s?.repos ?? [] }
+    return { detail: s ? [s.os_name, CLASS[s.class]].filter(Boolean).join(' · ') : '', repos: s?.repos ?? [] }
   }
   return [
-    { id: null, name: mesh.self_name || 'This machine', status: 'this machine', online: true, ...facts(mesh.self_id), older: false },
+    { id: null, name: mesh.self_name || 'This machine', status: 'this machine', online: true, ...facts(mesh.self_id) },
     ...mesh.peers
       .filter((p) => p.id !== mesh.self_id)
       .map((p) => ({
@@ -175,12 +173,11 @@ export function MachineBar({ priv }: { priv: boolean }) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-[min(21rem,calc(100vw-2rem))]">
           {rows.map((r) => (
-            <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online || r.older} onSelect={() => pickMachine(r.id)} className="items-start gap-2.5">
+            <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online} onSelect={() => pickMachine(r.id)} className="items-start gap-2.5">
               <span className={cn('mt-1.5 size-1.5 shrink-0 rounded-full', r.online ? 'bg-success' : 'ring-1 ring-fg-tertiary ring-inset')} aria-hidden="true" />
               <span className="min-w-0 flex-1">
                 <span className="block font-medium">{r.name}</span>
                 {r.detail && <span className="block text-xs text-fg-secondary">{r.detail}</span>}
-                {r.older && <span className="block text-xs text-warning">{olderText(r.name)}</span>}
               </span>
               <span className={cn('flex shrink-0 items-center gap-1 text-xs text-fg-tertiary', r.status === 'via relay' && 'rounded-full border border-border px-2')}>
                 {r.status}
@@ -219,7 +216,6 @@ export function MachineBar({ priv }: { priv: boolean }) {
         </DropdownMenuContent>
       </DropdownMenu>
       {browse && <BrowseDialog machine={chosen} open onOpenChange={setBrowse} onPick={(c) => set({ cwd: c })} />}
-      {chosen.older && <span role="alert" className="w-full text-xs text-warning">{olderText(chosen.name)}</span>}
     </>
   )
 }
@@ -331,9 +327,9 @@ export function NewChatOnMenu() {
       <DropdownMenuContent side="right" align="start" className="w-[min(18rem,calc(100vw-2rem))]">
         <DropdownMenuLabel>New chat on</DropdownMenuLabel>
         {rows.map((r) => (
-          <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online || r.older} title={r.older ? olderText(r.name) : undefined} onSelect={() => openNewChatOn(navigate, r.id)}>
+          <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online} onSelect={() => openNewChatOn(navigate, r.id)}>
             <span className="min-w-0 flex-1 truncate">{r.name}</span>
-            <span className="text-xs text-fg-tertiary">{r.older ? 'needs update' : r.status}</span>
+            <span className="text-xs text-fg-tertiary">{r.status}</span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
