@@ -22,6 +22,7 @@ const SIDES = ['top', 'right', 'bottom', 'left'] as const
 export const FrameNode = memo(function FrameNode({ data, selected }: NodeProps<FrameNodeType>) {
   const { frame } = data
   const { doc, readOnly, stopCapturing, store, board } = useCanvas()
+  const hovered = useZustand(store, (s) => s.hover === frame.id)
   // Hand (and Present, which locks it) pans: a frame shows no chrome there and its band and title take no pointer.
   const hand = useZustand(store, (s) => s.mode === 'hand' || s.present)
   const [title, setTitle] = useState<string | null>(null)
@@ -84,7 +85,7 @@ export const FrameNode = memo(function FrameNode({ data, selected }: NodeProps<F
           </NodeToolbar>
         </>
       )}
-      <div className={selected ? 'wb-frame selected' : 'wb-frame'} data-colour={frame.colour} aria-label={`Frame ${frame.title}`}>
+      <div className={['wb-frame', selected && 'selected', hovered && 'hover'].filter(Boolean).join(' ')} data-colour={frame.colour} aria-label={`Frame ${frame.title}`}>
         {SIDES.map((s) => <div key={s} className="wb-frame-band" data-side={s} aria-hidden />)}
         <span className="wb-frame-title">
           {frame.title || 'Frame'}

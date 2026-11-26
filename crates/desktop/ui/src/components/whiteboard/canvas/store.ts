@@ -14,6 +14,7 @@ export type WbView = {
   present: boolean          // Present mode (`present.ts`): every piece of chrome hidden, Hand locked
   selection: Id[]           // cards, links, frames, marks
   entered: Id | null        // the card whose frame receives touches (design §4.4)
+  hover: Id | null          // the item the outline panel's pointer (or focus) is on: highlighted on the canvas
   penDown: boolean          // the pointer path sets it while a pen is down
   scrub: Record<Id, number> // card → version shown (view state; absent = current)
 }
@@ -33,6 +34,7 @@ export function createWhiteboardStore(init?: Partial<WbView>): WbStore {
     present: false,
     selection: [],
     entered: null,
+    hover: null,
     penDown: false,
     scrub: {},
     ...init,

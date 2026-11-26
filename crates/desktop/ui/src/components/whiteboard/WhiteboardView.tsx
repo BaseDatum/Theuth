@@ -50,6 +50,8 @@ import { type WbTurnInfo, wbRpc } from './wire'
 import { awake, CURSOR_IDLE_MS, EXIT_SHOW_MS, presentKey, presentMode, revealsCluster, revealsExit } from './present'
 
 const Canvas = lazy(() => import('./canvas/Canvas'))
+/** The outline's side panel (desktop and iPad, ≥ 768 px): docked at the left, the canvas beside it. */
+const OUTLINE_W = 300
 
 export type WhiteboardViewProps = {
   doc: string
@@ -119,6 +121,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   const board = useBoard(provider)
   const [title, rename] = useNoteTitle(doc, provider)
   const readOnly = board.meta.v > 1
+  // The outline: the phone's full default view; on wider screens a side panel beside the live canvas.
   const [outline, setOutline] = useState(phone)
   const [openCard, setOpenCard] = useState<Id | null>(null)
   const [chooser, setChooser] = useState<Chooser | null>(null)
@@ -207,6 +210,13 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   const presenting = useMemo(() => presentMode(store), [store])
   useEffect(() => () => presenting.dispose(), [presenting])
   const present = useStore(store, (s) => s.present)
+  const fullOutline = outline && phone
+  const sidePanel = outline && !phone && !present
+  const selection = useStore(store, (s) => s.selection)
+  // The panel's pointer leaves no highlight behind when it closes.
+  useEffect(() => {
+    if (!sidePanel) store.getState().set({ hover: null })
+  }, [sidePanel, store])
   const [exitShown, setExitShown] = useState(false)
   const exitPeek = useMemo(() => awake({ ms: EXIT_SHOW_MS, onChange: setExitShown }), [])
   const cursorAwake = useMemo(() => awake({ ms: CURSOR_IDLE_MS, onChange: (on) => frameEl.current?.toggleAttribute('data-cursor-idle', !on) }), [])
@@ -640,7 +650,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
       onUndo={() => void undoTurn()}
       onDismiss={() => setBubble(null)}
       onOpenSession={() => openSession(bubble.session)}
-      floating={!anchor || outline}
+      floating={!anchor || fullOutline}
       beside={clusterOpen}
     />
   ) : null
@@ -651,7 +661,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
     onFit: () => handle.current?.fit(store.getState().selection.length ? 'selection' : 'all'),
     onOutline: () => {
       timer.hide()
-      setOutline(true)
+      setOutline((o) => phone || !o)
     },
     onPresent: () => presenting.on(),
     onUndo: () => handle.current?.undo(),
@@ -662,9 +672,18 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
     addable: readOnly ? { sticky: false, note: false, web: false, image: false, view: false, clipboard: false, artifact: false, excerpt: false, diff: false, terminal: false } : addable,
   }
 
+  /** Side panel: select the item on the canvas and bring it into view (a link: both its ends). */
+  const reveal = (id: Id) => {
+    const h = handle.current
+    store.getState().set({ selection: [id], entered: null })
+    const link = board.links[id]
+    if (link) h?.fit({ ids: [link.from, link.to] })
+    else h?.focus(id, { animate: !matchMedia('(prefers-reduced-motion: reduce)').matches })
+  }
+
   return (
     <div ref={frameEl} className={frame} data-whiteboard={doc} data-present={present ? '' : undefined} onPointerMove={onPointerMove}>
-      {outline ? (
+      {fullOutline ? (
         <div className="absolute inset-0 overflow-y-auto">
           <OutlineView
             board={board}
@@ -699,49 +718,90 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
           />
         </div>
       ) : null}
-      {/* The canvas stays mounted under the outline (its handle feeds the composer). */}
-      {/* opacity-0 as well: React Flow sets `visibility: visible` inline on measured nodes, so `invisible` alone leaves cards over the outline. */}
-      <div className={outline ? 'pointer-events-none invisible absolute inset-0 opacity-0' : 'absolute inset-0'} aria-hidden={outline} onPointerDownCapture={pauseFollow}>
-        <Suspense fallback={<div className="size-full bg-background" />}>
-          <Canvas
-            ref={handle}
-            provider={provider}
-            store={store}
-            host={host}
-            readOnly={readOnly || phone}
-            embedded={embedded}
-            className="size-full"
-            anchored={bubble && anchor && !outline && !present ? [{ key: 'reply', card: anchor, node: bubbleNode }] : []}
-            onCanvasTap={() => (store.getState().present ? exitPeek.poke() : timer.tap())}
-            onPenActivity={(down) => down && timer.pen()}
-            onViewChange={() => {
-              recomputeEdges()
-              replan()
+      {sidePanel && (
+        // Its own pointer and wheel stay here (the canvas is a sibling, never under it): a drag never pans, the wheel
+        // scrolls the list. Esc with the focus inside closes it before the canvas or the shell see the key.
+        <aside
+          aria-label="Outline"
+          data-outline-panel=""
+          className="wb-glass absolute inset-y-0 left-0 z-20 overflow-y-auto overscroll-contain pt-[var(--safe-top,0px)] pl-[var(--safe-left,0px)]"
+          style={{ width: OUTLINE_W }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return
+            e.stopPropagation()
+            e.preventDefault()
+            setOutline(false)
+          }}
+        >
+          <OutlineView
+            panel
+            board={board}
+            title={title}
+            selected={selection}
+            a={{
+              onOpen: setOpenCard,
+              onSelect: reveal,
+              onHover: (id) => store.getState().set({ hover: id }),
+              onRestore: readOnly ? undefined : (id) => ops.restore(provider.doc, [id]),
+              onPin: readOnly ? undefined : (id, on) => ops.pinMark(provider.doc, id, on),
+              toolbar: (
+                <>
+                  <ToolbarButton onClick={() => setOutline(false)}>Close outline</ToolbarButton>
+                  <ToolbarButton onClick={() => void navigator.clipboard?.writeText(outlineText(board, title)).then(() => notify.success('Outline copied'))}>Copy outline</ToolbarButton>
+                </>
+              ),
             }}
-            onCardOpen={setOpenCard}
           />
-        </Suspense>
+        </aside>
+      )}
+      {/* The canvas: beside the side panel; under the phone's full outline it stays mounted (its handle feeds the
+       * composer), opacity-0 as well: React Flow sets `visibility: visible` inline on measured nodes, so `invisible`
+       * alone leaves cards over the outline. */}
+      <div className="absolute inset-y-0 right-0" style={{ left: sidePanel ? OUTLINE_W : 0 }} data-canvas-region="">
+        <div className={fullOutline ? 'pointer-events-none invisible absolute inset-0 opacity-0' : 'absolute inset-0'} aria-hidden={fullOutline} onPointerDownCapture={pauseFollow}>
+          <Suspense fallback={<div className="size-full bg-background" />}>
+            <Canvas
+              ref={handle}
+              provider={provider}
+              store={store}
+              host={host}
+              readOnly={readOnly || phone}
+              embedded={embedded}
+              className="size-full"
+              anchored={bubble && anchor && !fullOutline && !present ? [{ key: 'reply', card: anchor, node: bubbleNode }] : []}
+              onCanvasTap={() => (store.getState().present ? exitPeek.poke() : timer.tap())}
+              onPenActivity={(down) => down && timer.pen()}
+              onViewChange={() => {
+                recomputeEdges()
+                replan()
+              }}
+              onCardOpen={setOpenCard}
+            />
+          </Suspense>
+        </div>
+        {!fullOutline &&
+          !present &&
+          edges.map((m) => {
+            const c = board.cards[m.id]
+            return (
+              <button
+                key={m.id}
+                type="button"
+                aria-label={`Off screen: ${c?.title || 'a card'}${c?.placeholder !== undefined ? ' (being made)' : ''}. Show it`}
+                title={c?.title}
+                onClick={() => handle.current?.focus(m.id, { animate: !matchMedia('(prefers-reduced-motion: reduce)').matches })}
+                className="wb-glass absolute z-10 grid size-9 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full"
+                style={{ left: m.x, top: m.y }}
+              >
+                <ChevronRight className="size-4" style={{ transform: `rotate(${m.angle}deg)` }} aria-hidden />
+              </button>
+            )
+          })}
       </div>
-      {!outline &&
-        !present &&
-        edges.map((m) => {
-          const c = board.cards[m.id]
-          return (
-            <button
-              key={m.id}
-              type="button"
-              aria-label={`Off screen: ${c?.title || 'a card'}${c?.placeholder !== undefined ? ' (being made)' : ''}. Show it`}
-              title={c?.title}
-              onClick={() => handle.current?.focus(m.id, { animate: !matchMedia('(prefers-reduced-motion: reduce)').matches })}
-              className="wb-glass absolute z-10 grid size-9 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full"
-              style={{ left: m.x, top: m.y }}
-            >
-              <ChevronRight className="size-4" style={{ transform: `rotate(${m.angle}deg)` }} aria-hidden />
-            </button>
-          )
-        })}
-      {!outline && !present && clusterOpen && <Cluster {...controls} onHold={timer.hold} />}
-      {!embedded && onClose && clusterOpen && !outline && !present && (
+      {!fullOutline && !present && clusterOpen && <Cluster {...controls} onHold={timer.hold} />}
+      {!embedded && onClose && clusterOpen && !fullOutline && !present && (
         <button type="button" aria-label="Close the whiteboard" onClick={onClose} className="wb-glass wb-rise absolute top-[calc(16px+var(--safe-top,0px))] right-[calc(24px+var(--safe-right,0px))] z-20 grid size-11 place-items-center rounded-full">
           <X className="size-5" />
         </button>
@@ -756,10 +816,10 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
           Stop presenting
         </button>
       )}
-      {bubble && !present && (!anchor || outline) && bubbleNode}
+      {bubble && !present && (!anchor || fullOutline) && bubbleNode}
       {waiting && !present && (
         <div
-          className={`wb-rise absolute z-20 bottom-[var(--wb-dock,calc(80px+var(--safe-bottom,0px)))] w-[min(360px,calc(100vw-48px))] rounded-xl shadow-lg [&>*]:my-0 ${clusterOpen && !outline ? 'right-[calc(94px+var(--safe-right,0px))]' : 'right-[calc(24px+var(--safe-right,0px))]'}`}
+          className={`wb-rise absolute z-20 bottom-[var(--wb-dock,calc(80px+var(--safe-bottom,0px)))] w-[min(360px,calc(100vw-48px))] rounded-xl shadow-lg [&>*]:my-0 ${clusterOpen && !fullOutline ? 'right-[calc(94px+var(--safe-right,0px))]' : 'right-[calc(24px+var(--safe-right,0px))]'}`}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <ApprovalCard approval={waiting} />

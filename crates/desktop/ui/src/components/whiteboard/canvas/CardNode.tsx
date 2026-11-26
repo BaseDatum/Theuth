@@ -147,6 +147,7 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
   const { card } = data
   const { store, lod, readOnly, enter, doc, stopCapturing, spot, board } = useCanvas()
   const entered = useZustand(store, (s) => s.entered === card.id)
+  const hovered = useZustand(store, (s) => s.hover === card.id)
   // Hand (and Present, which locks it) pans: no card chrome there, a click-selected card included.
   const hand = useZustand(store, (s) => s.mode === 'hand')
   const scrub = useZustand(store, (s) => s.scrub[card.id])
@@ -255,6 +256,7 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
     selected && !entered && 'selected',
     entered && 'entered',
     spot === card.id && 'spot',
+    hovered && 'hover',
   ].filter(Boolean).join(' ')
   const onResizeEnd = useResizeEnd((_, p) => {
     const at = toAbsolute(board, card.id, { x: p.x, y: p.y })

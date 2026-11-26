@@ -15,6 +15,8 @@ export const LinkEdge = memo(function LinkEdge(p: EdgeProps<LinkEdgeType>) {
   const { doc, readOnly, stopCapturing, store } = useCanvas()
   // Hand (and Present, which locks it) pans: no link toolbar there.
   const hand = useZustand(store, (s) => s.mode === 'hand' || s.present)
+  // The outline panel's row under the pointer: the link shows as selected does.
+  const hovered = useZustand(store, (s) => s.hover === p.id)
   const tools = !!p.selected && !readOnly && !hand
   const [label, setLabel] = useState<string | null>(null)
   const [path, lx, ly] = getBezierPath(p)
@@ -32,7 +34,7 @@ export const LinkEdge = memo(function LinkEdge(p: EdgeProps<LinkEdgeType>) {
         markerEnd={p.markerEnd}
         markerStart={p.markerStart}
         interactionWidth={24}
-        style={{ strokeDasharray: link.style === 'dashed' ? '6 5' : undefined }}
+        style={{ strokeDasharray: link.style === 'dashed' ? '6 5' : undefined, ...(hovered ? { stroke: 'var(--wb-accent)', strokeWidth: 2.2 } : {}) }}
       />
       {(link.label || tools) && (
         <EdgeLabelRenderer>

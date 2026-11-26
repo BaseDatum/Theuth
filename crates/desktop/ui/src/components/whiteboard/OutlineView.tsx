@@ -1,8 +1,11 @@
 // 218 §8.8 / design §4.7: the whiteboard as a list — frames → rows → cards, then links and open marks. The accessible
-// representation of the canvas (Tab order by frame and row; every cluster action reachable from here) and the phone's
-// default view. The same order and aliases the agent reads in its `<whiteboard>` block.
+// representation of the canvas (Tab order by frame and row; every cluster action reachable from here). Two forms: the
+// phone's default full view (`panel` off: a row opens its card), and the desktop/iPad side panel beside the live canvas
+// (`panel` on: a row selects its item there and brings it into view, the pointer on a row highlights it, and the
+// canvas selection is marked here). The same order and aliases the agent reads in its `<whiteboard>` block.
 
-import type { ReactNode } from 'react'
+import { Maximize2 } from 'lucide-react'
+import { type ReactNode, useEffect, useMemo, useRef } from 'react'
 import type { Board, Card, Id, Mark } from './canvas/model'
 import { rowsOf } from './canvas/rows'
 
@@ -43,6 +46,10 @@ export type OutlineActions = {
   onOpen(card: Id): void
   /** Show it on the canvas (switches to the canvas, focused on the item). */
   onShow?(id: Id): void
+  /** Side panel: select the card, frame, link or mark on the canvas and bring it into view. */
+  onSelect?(id: Id): void
+  /** Side panel: the item under the pointer (or holding the keyboard focus); null when it leaves. */
+  onHover?(id: Id | null): void
   onDim?(card: Id): void
   onUndim?(card: Id): void
   onArchive?(card: Id): void
@@ -53,6 +60,45 @@ export type OutlineActions = {
 }
 
 const btn = 'rounded-md px-2 py-1 text-xs text-fg-secondary hover:bg-layer-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg-accent'
+const ring = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg-accent'
+
+/** The pointer on a panel row (its trailing controls included) highlights its item on the canvas. */
+const hoverOn = (a: OutlineActions, id: Id) => ({ onPointerEnter: () => a.onHover?.(id), onPointerLeave: () => a.onHover?.(null) })
+
+/** A panel row's hit target: the whole row, always there (no control appears or vanishes on hover). */
+function Pick({ id, a, sel, children, onDoubleClick }: { id: Id; a: OutlineActions; sel: boolean; children: ReactNode; onDoubleClick?(): void }) {
+  return (
+    <button
+      type="button"
+      data-outline-id={id}
+      aria-current={sel ? 'true' : undefined}
+      className={`flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${sel ? 'bg-fg-accent/15' : 'hover:bg-layer-2'} ${ring}`}
+      onClick={() => a.onSelect?.(id)}
+      onDoubleClick={onDoubleClick}
+      onFocus={() => a.onHover?.(id)}
+      onBlur={() => a.onHover?.(null)}
+    >
+      {children}
+    </button>
+  )
+}
+
+function PanelCardRow({ card, board, a, sel }: { card: Card; board: Board; a: OutlineActions; sel: boolean }) {
+  const alias = board.aliases[card.id]
+  return (
+    <li className="flex items-center gap-0.5" {...hoverOn(a, card.id)}>
+      <Pick id={card.id} a={a} sel={sel} onDoubleClick={() => a.onOpen(card.id)}>
+        {alias && <span className="shrink-0 font-mono text-xs text-fg-tertiary">{alias}</span>}
+        <span className={`min-w-0 flex-1 truncate ${card.state === 'dimmed' ? 'text-fg-tertiary' : 'text-fg-primary'}`}>{card.title || 'Untitled'}</span>
+        <span className="shrink-0 text-xs text-fg-tertiary">{KIND_LABEL[card.kind]}</span>
+        <span className="sr-only">{cardLabel(card, alias)}</span>
+      </Pick>
+      <button type="button" className={`grid size-8 shrink-0 place-items-center rounded-md text-fg-tertiary hover:bg-layer-2 hover:text-fg-primary ${ring}`} aria-label={`Open ${card.title || 'card'}`} onClick={() => a.onOpen(card.id)}>
+        <Maximize2 className="size-3.5" aria-hidden />
+      </button>
+    </li>
+  )
+}
 
 function CardRow({ card, board, a }: { card: Card; board: Board; a: OutlineActions }) {
   const alias = board.aliases[card.id]
@@ -92,7 +138,7 @@ function CardRow({ card, board, a }: { card: Card; board: Board; a: OutlineActio
   )
 }
 
-function Rows({ rows, board, a }: { rows: Id[][]; board: Board; a: OutlineActions }) {
+function Rows({ rows, board, a, sel }: { rows: Id[][]; board: Board; a: OutlineActions; sel: ReadonlySet<Id> | null }) {
   return (
     <ol className="flex flex-col gap-2">
       {rows.map((row, i) => (
@@ -103,7 +149,8 @@ function Rows({ rows, board, a }: { rows: Id[][]; board: Board; a: OutlineAction
           <ul className="flex flex-col">
             {row.map((id) => {
               const card = board.cards[id]
-              return card ? <CardRow key={id} card={card} board={board} a={a} /> : null
+              if (!card) return null
+              return sel ? <PanelCardRow key={id} card={card} board={board} a={a} sel={sel.has(id)} /> : <CardRow key={id} card={card} board={board} a={a} />
             })}
           </ul>
         </li>
@@ -112,7 +159,19 @@ function Rows({ rows, board, a }: { rows: Id[][]; board: Board; a: OutlineAction
   )
 }
 
-export function OutlineView({ board, title, a }: { board: Board; title: string; a: OutlineActions }) {
+const NONE: readonly Id[] = []
+
+/** `panel`: the side panel beside the canvas; `selected` is the canvas selection, marked on its rows. */
+export function OutlineView({ board, title, a, panel = false, selected = NONE }: { board: Board; title: string; a: OutlineActions; panel?: boolean; selected?: readonly Id[] }) {
+  const sel = useMemo(() => (panel ? new Set(selected) : null), [panel, selected])
+  const root = useRef<HTMLDivElement>(null)
+  // A selection made on the canvas scrolls its row into the panel's view.
+  const first = selected[0]
+  useEffect(() => {
+    if (!panel || !first) return
+    const row = [...(root.current?.querySelectorAll<HTMLElement>('[data-outline-id]') ?? [])].find((e) => e.dataset.outlineId === first)
+    row?.scrollIntoView?.({ block: 'nearest' })
+  }, [panel, first])
   const { frames, loose } = rowsOf(board)
   const listed = (id: Id) => {
     const c = board.cards[id]
@@ -128,30 +187,44 @@ export function OutlineView({ board, title, a }: { board: Board; title: string; 
   const empty = frames.length === 0 && loose.length === 0
   const arrow = { end: '→', both: '↔', none: '—' } as const
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 pt-[calc(var(--safe-top,0px)+16px)] pb-32" aria-label={`Whiteboard outline: ${title}`}>
-      <header className="flex flex-col gap-2">
-        <h1 className="text-lg font-semibold text-fg-primary">{title || 'Untitled whiteboard'}</h1>
+    <div
+      ref={root}
+      className={sel ? 'flex flex-col gap-4 px-2 pt-3 pb-6' : 'mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 pt-[calc(var(--safe-top,0px)+16px)] pb-32'}
+      aria-label={`Whiteboard outline: ${title}`}
+    >
+      <header className={sel ? 'flex flex-col gap-2 px-2' : 'flex flex-col gap-2'}>
+        <h1 className={sel ? 'truncate text-sm font-semibold text-fg-primary' : 'text-lg font-semibold text-fg-primary'}>{title || 'Untitled whiteboard'}</h1>
         {a.toolbar && (
           <div role="toolbar" aria-label="Whiteboard actions" className="flex flex-wrap gap-1">
             {a.toolbar}
           </div>
         )}
       </header>
-      {empty && <p className="text-sm text-fg-secondary">This whiteboard has no cards yet. Add a sticky, or ask the agent to place something.</p>}
+      {empty && <p className={sel ? 'px-2 text-sm text-fg-secondary' : 'text-sm text-fg-secondary'}>This whiteboard has no cards yet. Add a sticky, or ask the agent to place something.</p>}
       {frames.map(({ frame, rows }) => (
         <section key={frame.id} aria-label={`Frame ${frame.title}`} className="flex flex-col gap-1">
-          <h2 className="px-2 text-sm font-semibold text-fg-primary">
-            {board.aliases[frame.id] && <span className="mr-2 font-mono text-xs text-fg-tertiary">{board.aliases[frame.id]}</span>}
-            {frame.title || 'Frame'}
-            {frame.preset && <span className="ml-2 text-xs font-normal text-fg-tertiary">{frame.preset}</span>}
-          </h2>
-          <Rows rows={rows} board={board} a={a} />
+          {sel ? (
+            <h2 className="flex text-sm font-semibold text-fg-primary" {...hoverOn(a, frame.id)}>
+              <Pick id={frame.id} a={a} sel={sel.has(frame.id)}>
+                {board.aliases[frame.id] && <span className="shrink-0 font-mono text-xs font-normal text-fg-tertiary">{board.aliases[frame.id]}</span>}
+                <span className="min-w-0 flex-1 truncate">{frame.title || 'Frame'}</span>
+                {frame.preset && <span className="shrink-0 text-xs font-normal text-fg-tertiary">{frame.preset}</span>}
+              </Pick>
+            </h2>
+          ) : (
+            <h2 className="px-2 text-sm font-semibold text-fg-primary">
+              {board.aliases[frame.id] && <span className="mr-2 font-mono text-xs text-fg-tertiary">{board.aliases[frame.id]}</span>}
+              {frame.title || 'Frame'}
+              {frame.preset && <span className="ml-2 text-xs font-normal text-fg-tertiary">{frame.preset}</span>}
+            </h2>
+          )}
+          <Rows rows={rows} board={board} a={a} sel={sel} />
         </section>
       ))}
       {loose.length > 0 && (
         <section aria-label="Cards outside frames" className="flex flex-col gap-1">
           {frames.length > 0 && <h2 className="px-2 text-sm font-semibold text-fg-primary">Outside frames</h2>}
-          <Rows rows={loose} board={board} a={a} />
+          <Rows rows={loose} board={board} a={a} sel={sel} />
         </section>
       )}
       {links.length > 0 && (
@@ -161,11 +234,24 @@ export function OutlineView({ board, title, a }: { board: Board; title: string; 
             {links.map((l) => {
               const from = board.cards[l.from]
               const to = board.cards[l.to]
-              return (
-                <li key={l.id} className="px-2 py-1 text-sm text-fg-secondary">
-                  {board.aliases[l.id] && <span className="mr-2 font-mono text-xs text-fg-tertiary">{board.aliases[l.id]}</span>}
+              const alias = board.aliases[l.id]
+              const caption = (
+                <>
                   {from?.title || 'Untitled'} {arrow[l.arrow]} {to?.title || 'Untitled'}
                   {l.label ? <span className="text-fg-tertiary"> “{l.label}”</span> : null}
+                </>
+              )
+              return sel ? (
+                <li key={l.id} className="flex" {...hoverOn(a, l.id)}>
+                  <Pick id={l.id} a={a} sel={sel.has(l.id)}>
+                    {alias && <span className="shrink-0 font-mono text-xs text-fg-tertiary">{alias}</span>}
+                    <span className="min-w-0 flex-1 truncate text-fg-secondary">{caption}</span>
+                  </Pick>
+                </li>
+              ) : (
+                <li key={l.id} className="px-2 py-1 text-sm text-fg-secondary">
+                  {alias && <span className="mr-2 font-mono text-xs text-fg-tertiary">{alias}</span>}
+                  {caption}
                 </li>
               )
             })}
@@ -176,16 +262,26 @@ export function OutlineView({ board, title, a }: { board: Board; title: string; 
         <section aria-label="Marks" className="flex flex-col gap-1">
           <h2 className="px-2 text-sm font-semibold text-fg-primary">Marks</h2>
           <ul className="flex flex-col">
-            {marks.map((m) => (
-              <li key={m.id} className="flex items-center gap-1 px-2 py-1 text-sm text-fg-secondary">
-                <span className="min-w-0 flex-1 truncate">{markLabel(m, board)}</span>
-                {a.onPin && (
-                  <button type="button" className={btn} onClick={() => a.onPin?.(m.id, m.state !== 'pinned')}>
-                    {m.state === 'pinned' ? 'Unpin' : 'Pin'}
-                  </button>
-                )}
-              </li>
-            ))}
+            {marks.map((m) => {
+              const pin = a.onPin && (
+                <button type="button" className={btn} onClick={() => a.onPin?.(m.id, m.state !== 'pinned')}>
+                  {m.state === 'pinned' ? 'Unpin' : 'Pin'}
+                </button>
+              )
+              return sel ? (
+                <li key={m.id} className="flex items-center gap-0.5" {...hoverOn(a, m.id)}>
+                  <Pick id={m.id} a={a} sel={sel.has(m.id)}>
+                    <span className="min-w-0 flex-1 truncate text-fg-secondary">{markLabel(m, board)}</span>
+                  </Pick>
+                  {pin}
+                </li>
+              ) : (
+                <li key={m.id} className="flex items-center gap-1 px-2 py-1 text-sm text-fg-secondary">
+                  <span className="min-w-0 flex-1 truncate">{markLabel(m, board)}</span>
+                  {pin}
+                </li>
+              )
+            })}
           </ul>
         </section>
       )}
