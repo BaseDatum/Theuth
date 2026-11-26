@@ -1,0 +1,18 @@
+# iroh-relay on the theuth host; deploy/relay/iroh-relay.toml with the certificate taken from Caddy's store.
+# HAProxy passes 443 (SNI iroh.relay.theuth.io) to 8443; 7842/udp is published directly. 8080 and 9090 stay
+# on the compose network. No STUN in iroh-relay 1.x: QUIC address discovery is the only UDP service.
+enable_relay = true
+enable_quic_addr_discovery = true
+enable_metrics = true
+http_bind_addr = "[::]:8080"
+metrics_bind_addr = "[::]:9090"
+access = "everyone"
+
+[tls]
+https_bind_addr = "[::]:8443"
+quic_bind_addr = "[::]:7842"
+hostname = ["iroh.relay.theuth.io"]
+# Re-read every 24 h; Caddy renews ~30 days before expiry, so the new certificate is picked up long before.
+cert_mode = "Reloading"
+manual_cert_path = "/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/iroh.relay.theuth.io/iroh.relay.theuth.io.crt"
+manual_key_path = "/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/iroh.relay.theuth.io/iroh.relay.theuth.io.key"
