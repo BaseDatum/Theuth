@@ -26,7 +26,7 @@ use crate::devices::Row;
 use crate::identity::{Identity, now_ms};
 use crate::mesh_uplink::MeshUplink;
 use crate::state::Ctx;
-use crate::store::{PendingRow, Store};
+use crate::store::{Op, PendingRow, Store};
 use crate::types::LinkEvent;
 
 /// How often the mirrors are re-read from the table.
@@ -256,6 +256,10 @@ async fn refresh(ctx: Arc<Ctx>, store: Store) {
             _ = ctx.rt.shutdown.cancelled() => return,
             _ = tick.tick() => {}
         }
+        // The first tick is immediate: expired pairings and long-revoked devices go at start too.
+        if let Err(e) = store.apply(&Op::Purge { now_ms: now_ms() }).await {
+            tracing::debug!("link.sqlite: purge: {e:#}");
+        }
         match store.devices().await {
             Ok(rows) => {
                 if reload_devices(&ctx, rows) {
@@ -273,26 +277,25 @@ async fn refresh(ctx: Arc<Ctx>, store: Store) {
     }
 }
 
-/// Mirror the table when it holds a row the mirror does not have in that
-/// form (a pairing, a revoke, a rename from another engine); `false` when
-/// nothing changed. The table may also *lag* the mirror by a queued local
-/// write — that direction is left alone. A device revoked elsewhere loses
-/// its conns here (`CLOSE 0`, as a local revoke).
+/// Mirror the table when it differs in a way the mirror must follow (a pairing, a revoke, a
+/// rename or a delete from another engine, a purge); `false` when nothing changed. The table may
+/// also *lag* the mirror by a queued local write — that direction is left alone. A device revoked
+/// or deleted elsewhere loses its conns here (`CLOSE 0`, as a local revoke).
 pub(crate) fn reload_devices(ctx: &Ctx, rows: Vec<Row>) -> bool {
     let mut st = ctx.lock();
-    if !rows.iter().any(|r| !st.devices.all().contains(r)) {
+    if !st.devices.stale(&rows) {
         return false;
     }
-    let revoked: Vec<[u8; 32]> = rows
+    let mut cut: Vec<[u8; 32]> = rows
         .iter()
         .filter(|r| !r.active() && st.devices.by_key(&r.key).is_some())
         .map(|r| r.key)
         .collect();
-    st.devices.reload(rows);
-    if !revoked.is_empty() {
+    cut.extend(st.devices.reload(rows));
+    if !cut.is_empty() {
         for c in st
             .all_conns()
-            .filter(|c| c.device.is_some_and(|k| revoked.contains(&k)))
+            .filter(|c| c.device.is_some_and(|k| cut.contains(&k)))
         {
             c.cancel.cancel();
         }
@@ -465,6 +468,88 @@ mod tests {
         assert!(cancel.is_cancelled(), "the revoked device's conn is closed");
         assert!(ctx.lock().devices.by_key(&key).is_none());
         assert_eq!(ctx.lock().devices.all().len(), 2);
+    }
+
+    /// A row deleted on another engine (or purged): the mirror drops it and its live conns close;
+    /// the key is then unknown, not revoked.
+    #[tokio::test]
+    async fn a_replicated_delete_drops_the_row_and_closes_its_conns() {
+        let ctx = ctx("ws://x", None, None);
+        let keys = [[7u8; 32], [8u8; 32]];
+        let rows: Vec<Row> = keys
+            .iter()
+            .map(|key| Row {
+                id: crate::devices::device_id(key),
+                key: *key,
+                name: "iPad".into(),
+                platform: "ios".into(),
+                paired_at_ms: 1,
+                last_seen_ms: 0,
+                revoked_ms: None,
+            })
+            .collect();
+        assert!(reload_devices(&ctx, rows.clone()));
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        ctx.lock().mesh_conns.insert(
+            4,
+            ConnHandle {
+                device: Some(keys[0]),
+                inbound: tx,
+                cancel: cancel.clone(),
+            },
+        );
+
+        assert!(reload_devices(&ctx, vec![rows[1].clone()]), "a row went");
+        assert!(cancel.is_cancelled(), "the deleted device's conn is closed");
+        let st = ctx.lock();
+        assert_eq!(st.devices.all(), &rows[1..]);
+        assert!(!st.devices.is_revoked(&keys[0]) && st.devices.by_key(&keys[0]).is_none());
+    }
+
+    /// Settings' Delete: `Revoke` on an active device revokes it (conns close, `LinkRevoked`);
+    /// `Revoke` again deletes the row; a third is an unknown device.
+    #[tokio::test]
+    async fn revoke_then_revoke_again_deletes_the_device() {
+        let ctx = ctx("ws://x", None, None);
+        let key = [7u8; 32];
+        let id = crate::devices::device_id(&key);
+        ctx.lock().devices.insert(Row {
+            id: id.clone(),
+            key,
+            name: "iPhone".into(),
+            platform: "ios".into(),
+            paired_at_ms: 1,
+            last_seen_ms: 0,
+            revoked_ms: None,
+        });
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        ctx.lock().conns.insert(
+            2,
+            ConnHandle {
+                device: Some(key),
+                inbound: tx,
+                cancel: cancel.clone(),
+            },
+        );
+        let actor = LinkActor::spawn(LinkActor {
+            ctx: ctx.clone(),
+            config_path: std::env::temp_dir().join("theuth-link-delete-test.yaml"),
+            uplink: None,
+            pair_timer: None,
+            follower: mesh::lease::Follower::default(),
+            mesh: None,
+            mesh_loading: false,
+            mesh_ready: false,
+        });
+        let revoke = || crate::Revoke { id: id.clone() };
+        actor.ask(revoke()).await.unwrap();
+        assert!(cancel.is_cancelled(), "revoking closes the conn");
+        assert!(ctx.lock().devices.is_revoked(&key));
+        actor.ask(revoke()).await.unwrap();
+        assert!(ctx.lock().devices.all().is_empty(), "deleted");
+        assert!(actor.ask(revoke()).await.is_err(), "unknown now");
     }
 
     /// 183 D11: after the device key reset every paired phone and iPad must re-pair: each

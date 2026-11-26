@@ -1,28 +1,53 @@
 //! Paired-device registry (31 §6.3, replicated per 69 decision 3): the
 //! `devices` and `pending` tables of `<data_dir>/link.sqlite`, mirrored in
 //! memory so conn tasks answer without awaiting. Every mutation goes to the
-//! store's ordered writer; rows other engines wrote arrive by replication and
-//! land here through [`Devices::reload`] / [`Pending::reload`].
+//! store's ordered writer; rows other engines wrote (or deleted) arrive by
+//! replication and land here through [`Devices::reload`] / [`Pending::reload`].
 //!
-//! `devices.yaml` (pre-69) is imported once — when the table is empty — as
-//! active rows, then left on disk and never read again.
+//! Lifetime of a device row: paired → revoked (`revoked_ms`, refused by every
+//! hub) → deleted (a replicated row delete, always preceded by a revoke so a
+//! delete that loses to a concurrent column write leaves the row revoked).
+//! Revoked rows are deleted [`REVOKED_TTL_MS`] after their revocation, expired
+//! `pending` rows on every refresh ([`crate::store::Op::Purge`]).
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
-use crate::identity::{b64, now_ms, unb64};
+use crate::identity::{b64, now_ms};
 use crate::store::{Op, PendingRow, Store};
 use crate::types::{Device, DeviceInfo};
 
-/// One device row. `pub` is base64url in YAML/sqlite, raw bytes in memory.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A revoked row is deleted this long after `revoked_ms` (30 days).
+pub const REVOKED_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Pre-69 per-engine device list. Never read; deleted once at start ([`remove_legacy`]).
+const LEGACY_DEVICES: &str = "devices.yaml";
+
+/// Delete the pre-69 device list under `link_dir` (`<data_dir>/link`), logging once when it was
+/// there. `link/identity` stays: it is the engine identity the engine uplink and the `nodes`
+/// plugin (this harness as a device of other nodes) still use. `true` when a file was removed.
+pub fn remove_legacy(link_dir: &Path) -> bool {
+    let path = link_dir.join(LEGACY_DEVICES);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            tracing::info!("link: removed legacy device list {}", path.display());
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            tracing::warn!("link: remove {}: {e}", path.display());
+            false
+        }
+    }
+}
+
+/// One device row (`static_pub` is base64url in sqlite, raw bytes here).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     /// First 8 chars of `b64url(pub)`.
     pub id: String,
     /// Device static public key.
-    #[serde(rename = "pub", with = "pubkey")]
     pub key: [u8; 32],
     /// Display name.
     pub name: String,
@@ -32,8 +57,7 @@ pub struct Row {
     pub paired_at_ms: u64,
     /// Unix ms of the last conn close; `0` never.
     pub last_seen_ms: u64,
-    /// Unix ms of revocation; `None` while active. Never deleted (69 decision 3).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Unix ms of revocation; `None` while active.
     pub revoked_ms: Option<u64>,
 }
 
@@ -75,27 +99,16 @@ pub fn device_id(key: &[u8; 32]) -> String {
     s
 }
 
-mod pubkey {
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
-
-    pub fn serialize<S: Serializer>(key: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&super::b64(key))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
-        let s = String::deserialize(d)?;
-        super::unb64(&s)
-            .and_then(|v| v.try_into().ok())
-            .ok_or_else(|| D::Error::custom("pub: expected 32 base64url bytes"))
-    }
-}
-
 /// The registry: every row (revoked included) in pairing order. Small
 /// (`max_devices` 16), so lookups are linear scans. `store: None` = memory
 /// only (the store failed to open, or a test).
 pub struct Devices {
     rows: Vec<Row>,
     store: Option<Store>,
+    /// Inserted here, not yet seen in the table: a reload keeps them.
+    unflushed: HashSet<String>,
+    /// Deleted here, still in the table: a reload drops them.
+    deleted: HashSet<String>,
 }
 
 impl Devices {
@@ -104,49 +117,62 @@ impl Devices {
         Self {
             rows: Vec::new(),
             store: None,
+            unflushed: HashSet::new(),
+            deleted: HashSet::new(),
         }
     }
 
-    /// Load the table; when it is empty and `<link_dir>/devices.yaml` exists,
-    /// import its rows as active (once — the file is left in place, unread
-    /// afterwards).
-    pub async fn open(store: Store, link_dir: &Path) -> Self {
-        let mut rows = store.devices().await.unwrap_or_else(|e| {
+    /// Load the table.
+    pub async fn open(store: Store) -> Self {
+        let rows = store.devices().await.unwrap_or_else(|e| {
             tracing::warn!("link.sqlite: devices: {e:#}");
             Vec::new()
         });
-        if rows.is_empty() {
-            let yaml = link_dir.join("devices.yaml");
-            if let Ok(text) = std::fs::read_to_string(&yaml) {
-                let imported = serde_yaml::from_str::<Option<Vec<Row>>>(&text)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("{}: {e}; not imported", yaml.display());
-                        None
-                    })
-                    .unwrap_or_default();
-                for r in &imported {
-                    if let Err(e) = store.apply(&Op::PutDevice(r.clone())).await {
-                        tracing::warn!("link.sqlite: import {}: {e:#}", r.id);
-                    }
-                }
-                if !imported.is_empty() {
-                    tracing::info!(
-                        "link: imported {} device(s) from devices.yaml",
-                        imported.len()
-                    );
-                }
-                rows = imported;
-            }
-        }
         Self {
             rows,
             store: Some(store),
+            unflushed: HashSet::new(),
+            deleted: HashSet::new(),
         }
     }
 
-    /// Replace the mirror with what the table holds now (replicated rows).
-    pub fn reload(&mut self, rows: Vec<Row>) {
-        self.rows = rows;
+    /// The table's rows differ from the mirror in a way a reload must pick up: a row (or a
+    /// version of one) the mirror lacks, or a mirror row the table no longer has (deleted on
+    /// another engine, or purged). A table that merely lags a local insert or delete is not.
+    pub fn stale(&self, table: &[Row]) -> bool {
+        table
+            .iter()
+            .any(|r| !self.deleted.contains(&r.id) && !self.rows.contains(r))
+            || self
+                .rows
+                .iter()
+                .any(|m| !self.unflushed.contains(&m.id) && !table.iter().any(|r| r.id == m.id))
+    }
+
+    /// Replace the mirror with what the table holds now (replicated rows), keeping local inserts
+    /// and deletes the table has not caught up with. Returns the keys of rows that disappeared
+    /// (deleted elsewhere or purged): their conns must close.
+    pub fn reload(&mut self, table: Vec<Row>) -> Vec<[u8; 32]> {
+        self.unflushed
+            .retain(|id| !table.iter().any(|r| &r.id == id));
+        self.deleted.retain(|id| table.iter().any(|r| &r.id == id));
+        let gone = self
+            .rows
+            .iter()
+            .filter(|m| !self.unflushed.contains(&m.id) && !table.iter().any(|r| r.id == m.id))
+            .map(|m| m.key)
+            .collect();
+        let kept: Vec<Row> = self
+            .rows
+            .drain(..)
+            .filter(|m| self.unflushed.contains(&m.id))
+            .collect();
+        self.rows = table
+            .into_iter()
+            .filter(|r| !self.deleted.contains(&r.id))
+            .collect();
+        self.rows.extend(kept);
+        gone
     }
 
     /// Active rows, in pairing order.
@@ -174,8 +200,8 @@ impl Devices {
         self.rows().find(|r| &r.key == key)
     }
 
-    /// The key belongs to a revoked row (the row stays in the table; 69 §5: a
-    /// revoked device is refused, not treated as a stranger).
+    /// The key belongs to a revoked row (69 §5: a revoked device is refused, not treated as a
+    /// stranger).
     pub fn is_revoked(&self, key: &[u8; 32]) -> bool {
         self.rows.iter().any(|r| &r.key == key && !r.active())
     }
@@ -185,9 +211,16 @@ impl Devices {
         self.rows().find(|r| r.id == id)
     }
 
+    /// Any row, revoked included, by `Device.id`.
+    pub fn any_by_id(&self, id: &str) -> Option<&Row> {
+        self.rows.iter().find(|r| r.id == id)
+    }
+
     /// Upsert (a re-pairing of a revoked key reactivates it) and persist.
     pub fn insert(&mut self, row: Row) {
         self.rows.retain(|r| r.key != row.key);
+        self.deleted.remove(&row.id);
+        self.unflushed.insert(row.id.clone());
         self.write(Op::PutDevice(row.clone()));
         self.rows.push(row);
     }
@@ -203,6 +236,24 @@ impl Devices {
             id: id.to_owned(),
             at_ms,
         });
+        Some(row)
+    }
+
+    /// Delete the row `id` everywhere (a replicated row delete), revoking it first when active so
+    /// a delete that loses to a concurrent write on another engine leaves it revoked, never
+    /// active. Returns the row as it was.
+    pub fn delete(&mut self, id: &str) -> Option<Row> {
+        let i = self.rows.iter().position(|r| r.id == id)?;
+        let row = self.rows.remove(i);
+        if row.active() {
+            self.write(Op::Revoke {
+                id: id.to_owned(),
+                at_ms: now_ms(),
+            });
+        }
+        self.unflushed.remove(id);
+        self.deleted.insert(id.to_owned());
+        self.write(Op::DeleteDevice(id.to_owned()));
         Some(row)
     }
 
@@ -407,57 +458,196 @@ mod tests {
         panic!("writer did not settle");
     }
 
-    #[tokio::test]
-    async fn yaml_is_imported_once_and_revoke_keeps_the_row() {
+    #[test]
+    fn the_legacy_device_list_is_deleted_once_and_the_identity_stays() {
         let dir = tempfile::tempdir().unwrap();
         let link_dir = dir.path().join("link");
         std::fs::create_dir_all(&link_dir).unwrap();
-        let key = [7u8; 32];
-        let legacy = row(key, "iPhone");
-        std::fs::write(
-            link_dir.join("devices.yaml"),
-            serde_yaml::to_string(std::slice::from_ref(&legacy)).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(link_dir.join("devices.yaml"), "- id: x\n").unwrap();
+        std::fs::write(link_dir.join("identity"), [1u8; 32]).unwrap();
 
+        assert!(remove_legacy(&link_dir));
+        assert!(!link_dir.join("devices.yaml").exists());
+        assert!(
+            link_dir.join("identity").exists(),
+            "the engine identity stays"
+        );
+        assert!(!remove_legacy(&link_dir), "nothing left: a no-op");
+        assert!(
+            !remove_legacy(&dir.path().join("absent")),
+            "no link dir: a no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_keeps_the_row_and_delete_revokes_then_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join(DB)).await.unwrap();
-        let mut d = Devices::open(store.clone(), &link_dir).await;
-        assert_eq!(
-            d.rows().cloned().collect::<Vec<_>>(),
-            std::slice::from_ref(&legacy)
-        );
-        assert_eq!(
-            store.devices().await.unwrap(),
-            std::slice::from_ref(&legacy),
-            "imported into the table"
-        );
-        assert!(link_dir.join("devices.yaml").exists(), "left in place");
+        let mut d = Devices::open(store.clone()).await;
+        let key = [7u8; 32];
+        let phone = row(key, "iPhone");
+        d.insert(phone.clone());
+        settle(&store, |r| r.len() == 1).await;
 
-        assert!(d.rename(&legacy.id, "Phone"));
+        assert!(d.rename(&phone.id, "Phone"));
         assert!(d.touch_last_seen(&key, 5));
-        assert_eq!(d.remove(&legacy.id).map(|r| r.name), Some("Phone".into()));
+        assert_eq!(d.remove(&phone.id).map(|r| r.name), Some("Phone".into()));
         assert!(d.by_key(&key).is_none(), "revoked = unknown");
-        assert!(d.by_id(&legacy.id).is_none());
-        assert!(d.remove(&legacy.id).is_none(), "revoking twice is a no-op");
+        assert!(d.is_revoked(&key));
+        assert!(d.by_id(&phone.id).is_none());
+        assert!(d.remove(&phone.id).is_none(), "revoking twice is a no-op");
         assert_eq!(d.all().len(), 1, "the row stays");
         let rows = settle(&store, |r| r[0].revoked_ms.is_some()).await;
         assert_eq!((rows[0].name.as_str(), rows[0].last_seen_ms), ("Phone", 5));
 
-        // A second open does not re-import: the table is not empty.
-        std::fs::write(
-            link_dir.join("devices.yaml"),
-            serde_yaml::to_string(&[row([8u8; 32], "x")]).unwrap(),
-        )
-        .unwrap();
-        let d2 = Devices::open(store.clone(), &link_dir).await;
-        assert_eq!(d2.all().len(), 1);
-        assert!(d2.is_empty(), "no active rows");
-
         // Re-pairing a revoked key reactivates it.
-        let mut d2 = d2;
-        d2.insert(row(key, "again"));
-        assert_eq!(d2.by_key(&key).map(|r| r.name.as_str()), Some("again"));
-        assert_eq!(d2.len(), 1);
+        d.insert(row(key, "again"));
+        assert_eq!(d.by_key(&key).map(|r| r.name.as_str()), Some("again"));
+        settle(&store, |r| r[0].revoked_ms.is_none()).await;
+
+        // Delete an ACTIVE row: gone from the mirror at once, and a reload of a table that still
+        // lags the delete does not bring it back.
+        let table = store.devices().await.unwrap();
+        assert_eq!(d.delete(&phone.id).map(|r| r.name), Some("again".into()));
+        assert!(d.all().is_empty());
+        assert!(
+            !d.is_revoked(&key) && d.by_key(&key).is_none(),
+            "unknown now"
+        );
+        assert!(!d.stale(&table), "the table only lags the local delete");
+        assert!(d.reload(table).is_empty());
+        assert!(d.all().is_empty());
+        settle(&store, <[Row]>::is_empty).await;
+        assert!(d.delete(&phone.id).is_none(), "deleting twice is a no-op");
+    }
+
+    /// The delete replicates as a row delete; it is preceded by a revoke, so when it loses to a
+    /// newer write on another engine (the hub touching `last_seen_ms` as the conn closes) the row
+    /// survives there REVOKED — the device still cannot reconnect.
+    #[tokio::test]
+    async fn a_delete_replicates_and_a_lost_delete_leaves_the_row_revoked() {
+        struct Side {
+            _dir: tempfile::TempDir,
+            store: Store,
+            engine: Arc<replica::Engine>,
+            handle: replica::ReplicaHandle,
+        }
+        async fn side() -> Side {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(&dir.path().join(DB)).await.unwrap();
+            let engine = replica::Engine::open(&dir.path().join("replica.sqlite"))
+                .await
+                .unwrap();
+            let handle = engine
+                .attach(store.pool(), crate::store::TABLES)
+                .await
+                .unwrap();
+            Side {
+                _dir: dir,
+                store,
+                engine,
+                handle,
+            }
+        }
+        async fn captured(from: &Side) -> Vec<replica::ChangeBatch> {
+            let mut out = Vec::new();
+            while let Some(batch) = from.handle.flush().await.unwrap() {
+                out.push(batch);
+            }
+            out
+        }
+        let (a, b) = (side().await, side().await);
+        let mut da = Devices::open(a.store.clone()).await;
+        for key in [[7u8; 32], [8u8; 32]] {
+            da.insert(row(key, "iPad"));
+        }
+        settle(&a.store, |r| r.len() == 2).await;
+        for batch in captured(&a).await {
+            b.engine.apply(&batch).await.unwrap();
+        }
+        assert_eq!(b.store.devices().await.unwrap().len(), 2);
+
+        // 7: deleted on A, nothing else written → gone on B too.
+        // 8: deleted on A, then B (the hub) writes `last_seen_ms` later, before it hears of it.
+        let (gone, kept) = (device_id(&[7u8; 32]), device_id(&[8u8; 32]));
+        da.delete(&gone);
+        da.delete(&kept);
+        settle(&a.store, <[Row]>::is_empty).await;
+        let deletes = captured(&a).await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        b.store
+            .apply(&Op::TouchLastSeen {
+                id: kept.clone(),
+                at_ms: 9,
+            })
+            .await
+            .unwrap();
+        captured(&b).await;
+        for batch in &deletes {
+            b.engine.apply(batch).await.unwrap();
+        }
+
+        let on_b = b.store.devices().await.unwrap();
+        assert_eq!(on_b.len(), 1, "{on_b:?}");
+        assert_eq!(on_b[0].id, kept);
+        assert!(
+            on_b[0].revoked_ms.is_some(),
+            "survived the lost delete revoked"
+        );
+        let mut db = Devices::empty();
+        assert!(db.stale(&on_b));
+        db.reload(on_b);
+        assert!(db.is_revoked(&[8u8; 32]) && db.by_key(&[8u8; 32]).is_none());
+    }
+
+    #[tokio::test]
+    async fn purge_drops_expired_pending_and_long_revoked_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join(DB)).await.unwrap();
+        let now = 100 * REVOKED_TTL_MS;
+        let rows = [
+            ([1u8; 32], None),
+            ([2u8; 32], Some(now - REVOKED_TTL_MS - 1)),
+            ([3u8; 32], Some(now - REVOKED_TTL_MS + 1)),
+        ];
+        for (key, revoked_ms) in rows {
+            let r = Row {
+                revoked_ms,
+                ..row(key, "x")
+            };
+            store.apply(&Op::PutDevice(r)).await.unwrap();
+        }
+        for (id, expires_ms) in [("old", now - 1), ("edge", now), ("live", now + 1)] {
+            store
+                .apply(&Op::PutPending(PendingRow {
+                    id: id.into(),
+                    psk_sealed: vec![1],
+                    name: String::new(),
+                    created_ms: 0,
+                    expires_ms,
+                }))
+                .await
+                .unwrap();
+        }
+
+        store.apply(&Op::Purge { now_ms: now }).await.unwrap();
+
+        let ids: Vec<String> = store
+            .devices()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, [device_id(&[1u8; 32]), device_id(&[3u8; 32])]);
+        let pending: Vec<String> = store
+            .pending()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(pending, ["live"]);
     }
 
     #[tokio::test]

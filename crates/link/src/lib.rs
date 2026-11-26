@@ -390,24 +390,33 @@ impl Message<RenameDevice> for LinkActor {
 impl Message<Revoke> for LinkActor {
     type Reply = Result<(), String>;
 
+    /// An active device is revoked (the row stays, refused everywhere); an already revoked one
+    /// is deleted across the mesh — Settings' Delete is revoke, then revoke again.
     async fn handle(&mut self, m: Revoke, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        {
+        let revoked = {
             let mut st = self.ctx.lock();
-            let key = st
+            let (key, active) = st
                 .devices
-                .by_id(&m.id)
-                .map(|r| r.key)
+                .any_by_id(&m.id)
+                .map(|r| (r.key, r.active()))
                 .ok_or_else(|| format!("unknown device {}", m.id))?;
             // Each conn task (either uplink) sends CLOSE 0 and removes itself.
             for c in st.all_conns().filter(|c| c.device == Some(key)) {
                 c.cancel.cancel();
             }
-            st.devices.remove(&m.id);
+            if active {
+                st.devices.remove(&m.id);
+            } else {
+                st.devices.delete(&m.id);
+            }
+            active
+        };
+        if revoked {
+            self.ctx
+                .rt
+                .publish(LinkEvent::LinkRevoked { id: m.id })
+                .await;
         }
-        self.ctx
-            .rt
-            .publish(LinkEvent::LinkRevoked { id: m.id })
-            .await;
         self.ctx.rt.publish(LinkEvent::DevicesChanged).await;
         Ok(())
     }
@@ -550,6 +559,8 @@ impl runtime::Plugin for LinkPlugin {
             LinkConfig::default()
         });
         let dir = rt.data_dir.join("link");
+        // The pre-69 per-engine device list: gone once, whatever the config says.
+        devices::remove_legacy(&dir);
         let identity = if cfg.enabled {
             match Identity::load_or_create(&dir) {
                 Ok(id) => Some(id),
@@ -573,7 +584,7 @@ impl runtime::Plugin for LinkPlugin {
             }
         };
         let devices = match &store {
-            Some(s) => Devices::open(s.clone(), &dir).await,
+            Some(s) => Devices::open(s.clone()).await,
             None => Devices::empty(),
         };
         let vault = secrets::handle(rt).await;

@@ -40,9 +40,9 @@ pub struct PendingRow {
 /// One queued mutation.
 #[derive(Clone, Debug)]
 pub enum Op {
-    /// Upsert a device row (pairing, import).
+    /// Upsert a device row (a pairing).
     PutDevice(Row),
-    /// `revoked_ms = at_ms` (never a delete).
+    /// `revoked_ms = at_ms`: refused by every hub, the row stays.
     Revoke {
         /// `Device.id`.
         id: String,
@@ -67,6 +67,15 @@ pub enum Op {
     PutPending(PendingRow),
     /// Consumed or expired.
     DeletePending(String),
+    /// Delete a device row (replicated as a row delete). [`crate::devices::Devices::delete`]
+    /// revokes first, so a delete that loses to a newer column write leaves the row revoked.
+    DeleteDevice(String),
+    /// Housekeeping at `now_ms`: delete `pending` rows past `expires_ms` (whatever mesh key
+    /// sealed them) and devices revoked [`crate::devices::REVOKED_TTL_MS`] ago or longer.
+    Purge {
+        /// Unix ms.
+        now_ms: u64,
+    },
 }
 
 /// Handle to `<data_dir>/link.sqlite`. Cheap to clone.
@@ -231,6 +240,23 @@ async fn apply(pool: &SqlitePool, op: &Op) -> anyhow::Result<()> {
         Op::DeletePending(id) => {
             sqlx::query("DELETE FROM pending WHERE id = ?")
                 .bind(id)
+                .execute(pool)
+                .await?;
+        }
+        Op::DeleteDevice(id) => {
+            sqlx::query("DELETE FROM devices WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+        Op::Purge { now_ms } => {
+            sqlx::query("DELETE FROM pending WHERE expires_ms <= ?")
+                .bind(*now_ms as i64)
+                .execute(pool)
+                .await?;
+            let cutoff = now_ms.saturating_sub(crate::devices::REVOKED_TTL_MS);
+            sqlx::query("DELETE FROM devices WHERE revoked_ms IS NOT NULL AND revoked_ms <= ?")
+                .bind(cutoff as i64)
                 .execute(pool)
                 .await?;
         }

@@ -13,7 +13,7 @@ pub const LINK_ACTOR: &str = "link";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LinkConfig {
-    /// `false`: nothing dials out; `identity` and `devices.yaml` stay on disk.
+    /// `false`: nothing dials out; the engine `identity` stays on disk.
     pub enabled: bool,
     /// Relay WebSocket origin, e.g. `wss://relay.theuth.io` or `ws://127.0.0.1:8787`.
     pub relay: String,
@@ -241,8 +241,9 @@ pub struct RenameDevice {
     pub name: String,
 }
 
-/// `ask` → `Result<(), String>`: revoke a device — close its conns, delete its
-/// row; publishes `LinkRevoked`.
+/// `ask` → `Result<(), String>`: revoke an active device — close its conns, set `revoked_ms`
+/// (the row stays, refused by every hub), publish `LinkRevoked`; on an already revoked device,
+/// delete its row across the mesh. Both publish `DevicesChanged`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Revoke {
     /// `Device.id`.
