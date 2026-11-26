@@ -3507,6 +3507,7 @@
             description: None,
             status: None,
             reports: Default::default(),
+            auth_methods: vec![],
         };
         let reg = RegistryAgent {
             id: "codex-acp".into(),

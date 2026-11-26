@@ -86,7 +86,7 @@ use crate::store::communication::{AcceptExchange, CommError};
 use crate::store::{self, Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
-    AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
+    AGENT_ACTOR, AcpLogin, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, ArchiveSession, BroadcastOutcome, BroadcastReceipt,
     BroadcastRequest, BroadcastRow, BroadcastTargets, Cancel, CancelScope, Compact, CompactStyle,
     ContextItems, DeleteSession, Delivery, DeskSession, EditTurn, EscalateModel, ForkSession,
@@ -11885,6 +11885,7 @@ fn acp_info(name: String, e: &acp::Entry) -> acp::EntryInfo {
         description: e.description.clone(),
         status: None,
         reports: e.reports(),
+        auth_methods: Vec::new(),
     }
 }
 
@@ -11912,6 +11913,7 @@ impl Message<ListAcp> for Agents {
                     )
                     .await;
                     info.status = Some(r.status);
+                    info.auth_methods = r.auth_methods;
                 }
                 info
             });
@@ -11964,6 +11966,35 @@ impl Message<RemoveAcp> for Agents {
         }
         acp::save(data_dir, &entries).map_err(|e| format!("{e:#}"))?;
         acp::registry::remove_bin(data_dir, &m.name).map_err(|e| format!("bin/{}: {e}", m.name))
+    }
+}
+
+impl Message<AcpLogin> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<String, String>>;
+
+    async fn handle(&mut self, m: AcpLogin, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let data_dir = self.rt.data_dir.clone();
+        // Interactive browser sign-in can take minutes: off the mailbox.
+        tokio::spawn(async move {
+            let result = async {
+                let entries = acp::load(&data_dir).map_err(|e| format!("{e:#}"))?;
+                let entry = entries
+                    .get(&m.name)
+                    .ok_or_else(|| acp::unknown(&m.name, &entries))?;
+                let stderr_log = data_dir.join("logs").join(format!("acp-{}.log", m.name));
+                acp::login(
+                    acp::Transport::Process(entry.config()),
+                    stderr_log,
+                    m.method.as_deref(),
+                )
+                .await
+            }
+            .await;
+            tx.send(result);
+        });
+        reply
     }
 }
 

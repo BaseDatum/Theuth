@@ -3127,6 +3127,17 @@ pub struct RemoveAcp {
     pub name: String,
 }
 
+/// `ask` → `Result<String, String>`: authenticate a configured ACP harness
+/// (`agents.yaml`) and return its fresh probe status.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AcpLogin {
+    /// Entry name in `agents.yaml`.
+    pub name: String,
+    /// Optional auth method id (`initialize.authMethods[].id`); defaults to the
+    /// first agent-type method.
+    pub method: Option<String>,
+}
+
 /// `ask` → `Result<Vec<acp::registry::RegistryAgent>, String>`: the ACP
 /// registry (cached a day; offline serves the cache).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]

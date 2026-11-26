@@ -1,6 +1,6 @@
 use crate as agent;
 use agent::rpc_forward as forward;
-use agent::{SetModelFavorite, AddAcp, AddProvider, Agents, CompactStyle, EscalateModel, GetCompactStyle, GetEscalateModel, GetSubagentModel, GetTitleModel, GetVisionModel, ListAcp, ListLogins, ListModels, ListProviders, ListRegistry, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog, AwsProfiles, ListAwsProfiles, SetAwsProfile, EndlessConfig, GetPolishModel, SetPolishModel};
+use agent::{AcpLogin, SetModelFavorite, AddAcp, AddProvider, Agents, CompactStyle, EscalateModel, GetCompactStyle, GetEscalateModel, GetSubagentModel, GetTitleModel, GetVisionModel, ListAcp, ListLogins, ListModels, ListProviders, ListRegistry, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog, AwsProfiles, ListAwsProfiles, SetAwsProfile, EndlessConfig, GetPolishModel, SetPolishModel};
 use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
@@ -271,6 +271,10 @@ pub trait AgentSettingsApi {
     /// Remove a harness entry and its downloaded binary, if any.
     #[method(name = "remove_acp")]
     async fn remove_acp(&self, name: String) -> RpcResult<()>;
+    /// Authenticate a configured ACP harness (`authenticate` for agent-type methods,
+    /// or returns the terminal login command), then re-probes and returns the fresh status.
+    #[method(name = "acp_login")]
+    async fn acp_login(&self, name: String, method: Option<String>) -> RpcResult<String>;
     /// The ACP agent registry (cached for a day; offline returns the cache).
     #[method(name = "list_acp_registry")]
     async fn list_acp_registry(&self) -> RpcResult<Vec<acp::registry::RegistryAgent>>;
@@ -771,6 +775,10 @@ impl AgentSettingsApiServer for Server {
 
     async fn remove_acp(&self, name: String) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, RemoveAcp { name }).await
+    }
+
+    async fn acp_login(&self, name: String, method: Option<String>) -> RpcResult<String> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, AcpLogin { name, method }).await
     }
 
     async fn list_acp_registry(&self) -> RpcResult<Vec<acp::registry::RegistryAgent>> {

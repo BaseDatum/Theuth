@@ -20,14 +20,14 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentRequest, AuthCapabilities, AuthMethod, AuthenticateRequest, CancelNotification,
-    ClientCapabilities, ContentBlock, Error, ErrorCode, Implementation, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, McpServer, Meta, NewSessionRequest, PermissionOption,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigSelectOptions, SessionConfigValueId, SessionId,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason,
-    SubagentCapabilities, ToolCallUpdate, Usage,
+    AgentRequest, AuthCapabilities, AuthMethod, AuthMethodTerminal, AuthenticateRequest,
+    CancelNotification, ClientCapabilities, ContentBlock, Error, ErrorCode, Implementation,
+    InitializeRequest, InitializeResponse, LoadSessionRequest, McpServer, Meta, NewSessionRequest,
+    PermissionOption, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SessionConfigId, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOptions,
+    SessionConfigValueId, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, StopReason, SubagentCapabilities, ToolCallUpdate, Usage,
 };
 use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, JsonRpcRequest, LineDirection, Lines,
@@ -39,7 +39,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::PeerMessage;
+use crate::{AuthMethodInfo, AuthMethodKind, PeerMessage};
 
 pub mod opencode;
 mod process;
@@ -49,6 +49,8 @@ use process::{ChildProcess, EXIT_GRACE, ExitSlot};
 
 /// [`probe`] gives up on `initialize` + `session/new` after this long.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// [`login`] waits this long for `authenticate` (the user is signing in via browser).
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// What the caller gets from the connection: `session/update` notifications,
 /// `session/request_permission` requests, subagent announces (141 §7.1) and
@@ -305,7 +307,7 @@ pub trait Dialer: Send + Sync + fmt::Debug {
 }
 
 /// How the harness is reached (32 §6.5).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Transport {
     /// Spawn a process ([`crate::Entry::config`]) and speak ACP on its stdio.
     Process(AcpAgentConfig),
@@ -497,6 +499,8 @@ pub struct ProbeResult {
     /// `ok` | `login required: <cmd>` | `spawn failed: <why>` (the
     /// [`crate::EntryInfo::status`] strings).
     pub status: String,
+    /// Authentication methods advertised in `initialize.authMethods`, if `initialize` succeeded.
+    pub auth_methods: Vec<AuthMethodInfo>,
 }
 
 /// The spawned connection before a session exists: the handle, the shutdown
@@ -514,6 +518,8 @@ struct Link {
     /// The harness's session id once opened; the typed handler reads it to
     /// tell a depth-1 RFD announce (`parent: None`) from a nested one.
     own: Own,
+    /// Authentication methods advertised in `initialize.authMethods`.
+    auth_methods: Vec<AuthMethod>,
 }
 
 /// Why the handshake could not open a session.
@@ -698,6 +704,7 @@ impl Link {
                 closed,
                 options: shared,
                 own,
+                auth_methods: Vec::new(),
             }),
             Err(_) => Err(format!("spawn failed: {}", exit_text(done.await, closed))),
         }
@@ -743,6 +750,7 @@ impl Link {
             Ok(i) => i,
             Err(e) => return Err(Fail::Other(self.explain(e).await)),
         };
+        self.auth_methods = init.auth_methods.clone();
         let mut load = resume.filter(|_| init.agent_capabilities.load_session);
         let mut authenticated = false;
         let mut with_mcp = !mcp.is_empty();
@@ -904,6 +912,7 @@ impl Harness {
             closed,
             options: shared,
             own: _,
+            auth_methods: _,
         } = link;
         *shared.lock().unwrap_or_else(|p| p.into_inner()) = options;
         if let Some(done) = done {
@@ -1176,6 +1185,97 @@ async fn set_option(
         .map_err(|e| format!("{} (has: {values})", error_text(&e)))
 }
 
+/// Wire view of `initialize.authMethods`.
+fn auth_methods_info(methods: &[AuthMethod]) -> Vec<AuthMethodInfo> {
+    methods
+        .iter()
+        .filter_map(|m| match m {
+            AuthMethod::Agent(a) => Some(AuthMethodInfo {
+                id: a.id.0.to_string(),
+                name: a.name.clone(),
+                kind: AuthMethodKind::Agent,
+            }),
+            AuthMethod::Terminal(t) => Some(AuthMethodInfo {
+                id: t.id.0.to_string(),
+                name: t.name.clone(),
+                kind: AuthMethodKind::Terminal,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Outcome of choosing an authentication method from `initialize.authMethods`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectedAuth {
+    /// Agent-type method: send JSON-RPC `authenticate { methodId }`.
+    Agent {
+        /// Method id for `AuthenticateRequest`.
+        id: String,
+        /// Human-readable label for error reporting.
+        name: String,
+    },
+    /// Terminal-type method: the user runs this command in a terminal.
+    Terminal {
+        /// Full command line to show the user.
+        command: String,
+    },
+}
+
+/// Choose an auth method from `methods`:
+/// - An explicit `requested` id wins (and errors if not advertised).
+/// - Otherwise the first agent-type method is preferred over terminal methods.
+/// - If only terminal methods are advertised, returns [`SelectedAuth::Terminal`]
+///   with the command line the user must run.
+pub(crate) fn select_auth_method(
+    config: Option<&AcpAgentConfig>,
+    methods: &[AuthMethod],
+    requested: Option<&str>,
+) -> Result<SelectedAuth, String> {
+    if let Some(id) = requested {
+        let Some(found) = methods.iter().find(|m| &*m.id().0 == id) else {
+            if methods.is_empty() {
+                return Err(format!(
+                    "unknown auth method `{id}` (harness advertises no auth methods)"
+                ));
+            }
+            let available: Vec<&str> = methods.iter().map(|m| &*m.id().0).collect();
+            return Err(format!(
+                "unknown auth method `{id}` (available: {})",
+                available.join(", ")
+            ));
+        };
+        return match found {
+            AuthMethod::Agent(a) => Ok(SelectedAuth::Agent {
+                id: a.id.0.to_string(),
+                name: a.name.clone(),
+            }),
+            AuthMethod::Terminal(t) => Ok(SelectedAuth::Terminal {
+                command: terminal_command(config, Some(t)),
+            }),
+            _ => Err(format!("unsupported auth method `{id}`")),
+        };
+    }
+    if let Some(a) = methods.iter().find_map(|m| match m {
+        AuthMethod::Agent(a) => Some(a),
+        _ => None,
+    }) {
+        return Ok(SelectedAuth::Agent {
+            id: a.id.0.to_string(),
+            name: a.name.clone(),
+        });
+    }
+    if let Some(t) = methods.iter().find_map(|m| match m {
+        AuthMethod::Terminal(t) => Some(t),
+        _ => None,
+    }) {
+        return Ok(SelectedAuth::Terminal {
+            command: terminal_command(config, Some(t)),
+        });
+    }
+    Err("harness advertises no auth methods".to_owned())
+}
+
 /// Open, `initialize`, `session/new`, report, close. Never authenticates.
 /// [`PROBE_TIMEOUT`] → `spawn failed: timeout`.
 pub async fn probe(transport: Transport, stderr_log: PathBuf) -> ProbeResult {
@@ -1183,24 +1283,85 @@ pub async fn probe(transport: Transport, stderr_log: PathBuf) -> ProbeResult {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let attempt = async {
         let config = transport.config().cloned();
-        let mut link = Link::spawn(transport, &stderr_log, tx).await?;
-        link.open(config.as_ref(), &cwd, None, None, &[], false)
-            .await
-            .map_err(|f| match f {
-                Fail::Login(cmd) => format!("login required: {cmd}"),
-                Fail::Other(why) => format!("spawn failed: {why}"),
-            })
+        let mut link = match Link::spawn(transport, &stderr_log, tx).await {
+            Ok(l) => l,
+            Err(status) => return Err((status, Vec::new())),
+        };
+        let r = link.open(config.as_ref(), &cwd, None, None, &[], false).await;
+        let auth_methods = auth_methods_info(&link.auth_methods);
+        match r {
+            Ok(_) => Ok(auth_methods),
+            Err(Fail::Login(cmd)) => Err((format!("login required: {cmd}"), auth_methods)),
+            Err(Fail::Other(why)) => Err((format!("spawn failed: {why}"), auth_methods)),
+        }
     };
     match tokio::time::timeout(PROBE_TIMEOUT, attempt).await {
-        Ok(Ok(_)) => ProbeResult {
+        Ok(Ok(auth_methods)) => ProbeResult {
             ok: true,
             status: "ok".to_owned(),
+            auth_methods,
         },
-        Ok(Err(status)) => ProbeResult { ok: false, status },
+        Ok(Err((status, auth_methods))) => ProbeResult {
+            ok: false,
+            status,
+            auth_methods,
+        },
         Err(_) => ProbeResult {
             ok: false,
             status: "spawn failed: timeout".to_owned(),
+            auth_methods: Vec::new(),
         },
+    }
+}
+
+/// Spawn the transport, `initialize`, pick `method` (or the first agent-type
+/// method), send `authenticate` with [`LOGIN_TIMEOUT`], then re-probe and
+/// return the fresh status string (the same shape [`probe`] reports).
+/// A terminal-only harness returns `login required: <cmd>` so the UI can show
+/// the command to run.
+pub async fn login(
+    transport: Transport,
+    stderr_log: PathBuf,
+    method: Option<&str>,
+) -> Result<String, String> {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let config = transport.config().cloned();
+    let (mut link, init) = tokio::time::timeout(PROBE_TIMEOUT, async {
+        let mut link = Link::spawn(transport.clone(), &stderr_log, tx).await?;
+        let init: InitializeResponse = match link.request(initialize_request()).await {
+            Ok(i) => i,
+            Err(e) => return Err(format!("initialize failed: {}", link.explain(e).await)),
+        };
+        Ok((link, init))
+    })
+    .await
+    .map_err(|_| "initialize timed out".to_owned())??;
+
+    match select_auth_method(config.as_ref(), &init.auth_methods, method)? {
+        SelectedAuth::Terminal { command } => {
+            drop(link);
+            Ok(format!("login required: {command}"))
+        }
+        SelectedAuth::Agent { id, name } => {
+            match tokio::time::timeout(LOGIN_TIMEOUT, link.request(AuthenticateRequest::new(id)))
+                .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    let why = link.explain(e).await;
+                    return Err(format!("authenticate ({name}) failed: {why}"));
+                }
+                Err(_) => {
+                    return Err(format!(
+                        "authenticate ({name}) timed out after {} minutes",
+                        LOGIN_TIMEOUT.as_secs() / 60
+                    ));
+                }
+            }
+            drop(link);
+            let fresh = probe(transport, stderr_log).await;
+            Ok(fresh.status)
+        }
     }
 }
 
@@ -1224,21 +1385,22 @@ fn initialize_request() -> InitializeRequest {
         .client_info(Implementation::new("theuth", platform::version::get()))
 }
 
-/// The command line the user must run for a terminal-type auth method: our
+/// The command line the user must run for one terminal-type auth method: our
 /// configured invocation plus the method's `args`, prefixed by its `env`.
 /// Without a process (a dial transport) there is nothing to run here: the
 /// method's name, or `login`.
-fn login_command(config: Option<&AcpAgentConfig>, methods: &[AuthMethod]) -> String {
-    let terminal = methods.iter().find_map(|m| match m {
-        AuthMethod::Terminal(t) => Some(t),
-        _ => None,
-    });
+fn terminal_command(
+    config: Option<&AcpAgentConfig>,
+    terminal: Option<&AuthMethodTerminal>,
+) -> String {
     let Some(config) = config else {
         return terminal.map_or_else(|| "login".to_owned(), |t| t.name.clone());
     };
     let mut parts: Vec<String> = Vec::new();
     if let Some(t) = terminal {
-        parts.extend(t.env.iter().map(|(k, v)| format!("{k}={v}")));
+        let mut env: Vec<(&String, &String)> = t.env.iter().collect();
+        env.sort_by_key(|(k, _)| *k);
+        parts.extend(env.into_iter().map(|(k, v)| format!("{k}={v}")));
     }
     parts.push(config.command().display().to_string());
     parts.extend(config.arguments().iter().cloned());
@@ -1246,6 +1408,16 @@ fn login_command(config: Option<&AcpAgentConfig>, methods: &[AuthMethod]) -> Str
         parts.extend(t.args.iter().cloned());
     }
     parts.join(" ")
+}
+
+/// The command line the user must run for the first terminal-type auth method
+/// in `methods`.
+fn login_command(config: Option<&AcpAgentConfig>, methods: &[AuthMethod]) -> String {
+    let terminal = methods.iter().find_map(|m| match m {
+        AuthMethod::Terminal(t) => Some(t),
+        _ => None,
+    });
+    terminal_command(config, terminal)
 }
 
 /// Serde name of a stop reason (`end_turn`, `cancelled`, …).
@@ -1573,6 +1745,90 @@ mod tests {
         assert_eq!(login_command(Some(&config), &[]), "codex-acp --acp");
         assert_eq!(login_command(None, &methods), "Log in");
         assert_eq!(login_command(None, &[]), "login");
+    }
+
+    #[test]
+    fn select_auth_method_prefers_explicit_then_agent_then_terminal() {
+        let config = AcpAgentConfig::new("codex-acp").arg("--acp");
+        let mut term = AuthMethodTerminal::new("cli-login", "Terminal login");
+        term.args = vec!["--login".into()];
+        term.env = [("A".to_owned(), "1".to_owned())].into();
+        let mixed = vec![
+            AuthMethod::Terminal(term.clone()),
+            AuthMethod::Agent(AuthMethodAgent::new("oauth", "OAuth")),
+            AuthMethod::Agent(AuthMethodAgent::new("sso", "Enterprise SSO")),
+        ];
+
+        // Agent-type preferred over terminal even when terminal is listed first.
+        assert_eq!(
+            select_auth_method(Some(&config), &mixed, None),
+            Ok(SelectedAuth::Agent {
+                id: "oauth".into(),
+                name: "OAuth".into(),
+            })
+        );
+
+        // Explicit id wins — both for a non-first agent method and for a terminal method.
+        assert_eq!(
+            select_auth_method(Some(&config), &mixed, Some("sso")),
+            Ok(SelectedAuth::Agent {
+                id: "sso".into(),
+                name: "Enterprise SSO".into(),
+            })
+        );
+        assert_eq!(
+            select_auth_method(Some(&config), &mixed, Some("cli-login")),
+            Ok(SelectedAuth::Terminal {
+                command: "A=1 codex-acp --acp --login".into(),
+            })
+        );
+
+        // Unknown explicit id names the requested id and available methods.
+        assert_eq!(
+            select_auth_method(Some(&config), &mixed, Some("nope")),
+            Err("unknown auth method `nope` (available: cli-login, oauth, sso)".into())
+        );
+
+        // Terminal-only returns the command text.
+        let terminal_only = vec![AuthMethod::Terminal(term)];
+        assert_eq!(
+            select_auth_method(Some(&config), &terminal_only, None),
+            Ok(SelectedAuth::Terminal {
+                command: "A=1 codex-acp --acp --login".into(),
+            })
+        );
+
+        // Empty list returns a clear error.
+        assert_eq!(
+            select_auth_method(Some(&config), &[], None),
+            Err("harness advertises no auth methods".into())
+        );
+        assert_eq!(
+            select_auth_method(Some(&config), &[], Some("oauth")),
+            Err("unknown auth method `oauth` (harness advertises no auth methods)".into())
+        );
+
+        // Wire view preserves id, name, and kind.
+        assert_eq!(
+            auth_methods_info(&mixed),
+            vec![
+                AuthMethodInfo {
+                    id: "cli-login".into(),
+                    name: "Terminal login".into(),
+                    kind: AuthMethodKind::Terminal,
+                },
+                AuthMethodInfo {
+                    id: "oauth".into(),
+                    name: "OAuth".into(),
+                    kind: AuthMethodKind::Agent,
+                },
+                AuthMethodInfo {
+                    id: "sso".into(),
+                    name: "Enterprise SSO".into(),
+                    kind: AuthMethodKind::Agent,
+                },
+            ]
+        );
     }
 
     /// A dialer that fails never reaches the SDK: no process, the dial text is the error.
