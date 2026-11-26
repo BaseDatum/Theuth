@@ -23,6 +23,7 @@ pub mod bringup;
 pub mod config;
 pub mod docker;
 pub mod guest;
+pub mod k8s;
 pub mod record;
 pub mod release;
 pub mod ssh;

@@ -94,6 +94,17 @@ pub fn parse(s: &str) -> Option<Payload> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// `t mesh pair --remote` (224 §4): the same one-time token, id and addresses without
+/// `vault_key`/`vault_key_id`, for an engine whose ticket travels through a cloud provider's
+/// metadata or a Kubernetes Secret. The joiner needs neither: a 183 inviter hands it the
+/// keyring in `PairAck`, inside the token-checked connection.
+pub fn without_vault_key(s: &str) -> Option<String> {
+    let mut p = parse(s)?;
+    p.vault_key = None;
+    p.vault_key_id = None;
+    Some(build(&p))
+}
+
 /// One row of the peer set as it travels between engines: the `peers` table
 /// row plus its tombstone. LWW on [`PeerEntry::stamp`]; a removal wins a tie.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +277,10 @@ mod tests {
         );
         assert!(parse("2.abc").is_none());
         assert!(parse("1.!!!").is_none());
+        let remote = parse(&without_vault_key(&s).unwrap()).unwrap();
+        assert_eq!((remote.vault_key, remote.vault_key_id), (None, None));
+        assert_eq!((remote.id, remote.token), (p.id, p.token.clone()));
+        assert!(without_vault_key("2.abc").is_none());
     }
 
     #[test]
