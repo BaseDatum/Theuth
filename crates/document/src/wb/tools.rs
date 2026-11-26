@@ -206,10 +206,11 @@ pub struct WbPlaceArgs {
     /// phone | tablet | desktop | auto — a page card's device size.
     #[serde(default)]
     pub device: Option<String>,
-    /// Width in world px (default by kind).
+    /// Width in world px. Omit both w and h to let the owner's board size a page, diagram, note, excerpt
+    /// or image card to its content (re-sized on wb_update); otherwise the default by kind.
     #[serde(default)]
     pub w: Option<f64>,
-    /// Height in world px (default by kind).
+    /// Height in world px (see w).
     #[serde(default)]
     pub h: Option<f64>,
 }

@@ -108,6 +108,8 @@ export function chunked(doc: Y.Doc, origin: unknown, ops: (() => void)[], invers
 export type NewCard = {
   kind: CardKind; title: string; x: number; y: number; w: number; h: number
   source?: Source; viewport?: DeviceViewport; frame?: Id
+  /** `fit`: sized to its content once it renders (fit.ts); `sized`: an explicit size, never fitted on its own. */
+  fit?: boolean; sized?: boolean
 }
 
 export function addCard(doc: Y.Doc, c: NewCard): Id {
@@ -118,6 +120,7 @@ export function addCard(doc: Y.Doc, c: NewCard): Id {
     const m = nested({
       kind: c.kind, x: c.x, y: c.y, w: c.w, h: c.h, z: maxZ(doc) + 1, title: c.title.slice(0, 120),
       viewport: c.viewport ? { ...c.viewport } : undefined, state: 'live', frame: c.frame, by: 'owner',
+      fit: c.fit || undefined, sized: c.sized || undefined,
     })
     m.set('versions', versions)
     doc.getMap<unknown>('cards').set(id, m)
@@ -128,6 +131,7 @@ export function addCard(doc: Y.Doc, c: NewCard): Id {
 export type CardPatch = Partial<{
   x: number; y: number; w: number; h: number; z: number; title: string; viewport: DeviceViewport | undefined
   state: 'live' | 'dimmed' | 'archived'; tag: string | undefined; frame: Id | undefined; pin: boolean | undefined; placeholder: string | undefined
+  fit: boolean | undefined; sized: boolean | undefined
 }>
 
 export function patchCard(doc: Y.Doc, id: Id, patch: CardPatch): void {

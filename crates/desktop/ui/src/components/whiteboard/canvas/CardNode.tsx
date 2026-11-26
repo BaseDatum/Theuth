@@ -2,19 +2,22 @@
 // shimmer, selected outline + four handles, entered border; a shield over every live body until the card is entered.
 import { Handle, NodeResizer, NodeToolbar, Position, type Node, type NodeProps } from '@xyflow/react'
 import { useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, ChevronRight, ExternalLink, EyeOff, Eye, Archive, PanelRight, Pin, PinOff, RefreshCw } from 'lucide-react'
-import { memo, useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight, ExternalLink, EyeOff, Eye, Archive, Maximize2, PanelRight, Pin, PinOff, RefreshCw, RotateCcw } from 'lucide-react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { openViewFromCard } from '@/components/tiles/open'
 import { useStore as useZustand } from 'zustand'
 import { CardBoundary, Chip, hostOf, KIND_NAME, LiveBody, Snapshot } from './cards/bodies'
+import { pageViewport } from './cards/PageCard'
 import { useWebPreview, WebFavicon } from './cards/WebCard'
 import { useCanvas } from './context'
-import { versionOf, type Card } from './model'
+import { LOCAL, OWNER, versionOf, type Card } from './model'
 import { archive, dim, patchCard, restore } from './ops'
 import { IN_PLACE } from './ops'
 import { CardInk } from './InkLayer'
 import { toAbsolute, type CardNodeData } from './binding'
-import { isBare } from './send'
+import { headerOf, isBare } from './send'
+import { applyFit, fitSize, fitsContent, measureBody } from './fit'
+import { hidesOverflow, scrollChain, wheelRoute, ZOOM_SURFACE } from './scroll'
 import { useResizeEnd } from './resize'
 import { viewCardPath } from '../view-card'
 
@@ -62,7 +65,7 @@ function OpenInPane({ path, title }: { path: string; title: string }) {
   )
 }
 
-function Toolbar({ card, refreshPreview }: { card: Card; refreshPreview: (() => void) | null }) {
+function Toolbar({ card, refreshPreview, fitNow, resetView }: { card: Card; refreshPreview: (() => void) | null; fitNow: (() => void) | null; resetView: (() => void) | null }) {
   const { doc, open, stopCapturing, readOnly } = useCanvas()
   const [tagging, setTagging] = useState(false)
   const [tag, setTag] = useState('')
@@ -97,6 +100,16 @@ function Toolbar({ card, refreshPreview }: { card: Card; refreshPreview: (() => 
       {refreshPreview && (
         <button type="button" aria-label="Refresh preview" onClick={refreshPreview}>
           <RefreshCw className="size-4" />
+        </button>
+      )}
+      {resetView && (
+        <button type="button" aria-label="Reset view" title="Reset the diagram's view (fit)" onClick={resetView}>
+          <RotateCcw className="size-4" />
+        </button>
+      )}
+      {!readOnly && fitNow && (
+        <button type="button" aria-label="Fit to content" title="Fit to content" onClick={fitNow}>
+          <Maximize2 className="size-4" />
         </button>
       )}
       {!readOnly && (
@@ -147,6 +160,90 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
   const placeholder = card.placeholder !== undefined
   // A diagram is just the diagram: no title bar; its title (if any) is a small caption on hover or selection.
   const bare = isBare(card)
+  const live = (level === 'live' || entered) && !placeholder
+
+  // Size to content (fit.ts): a card with `fit` pending is measured once its live body settles (the same size three
+  // reads in a row, 250 ms apart; given up after 10 s), then sized. Pages size to their device viewport.
+  const fitBox = useRef<HTMLDivElement>(null)
+  const latest = useRef({ card, board, live })
+  latest.current = { card, board, live }
+  const naturalOf = useCallback((): { w: number; h: number } | null => {
+    const { card: c, board: b, live: l } = latest.current
+    if (c.kind === 'page') return pageViewport(c, c.frame ? b.frames[c.frame]?.preset : undefined)
+    return l && fitBox.current ? measureBody(fitBox.current) : null
+  }, [])
+  useEffect(() => {
+    if (!card.fit || readOnly || !live) return
+    const t0 = performance.now()
+    let last = ''
+    let same = 0
+    const timer = setInterval(() => {
+      const n = naturalOf()
+      if (performance.now() - t0 > 10_000) clearInterval(timer)
+      if (!n) return
+      const k = `${n.w}×${n.h}`
+      same = k === last ? same + 1 : 0
+      last = k
+      if (same < 2) return
+      clearInterval(timer)
+      const { card: c, board: b } = latest.current
+      applyFit(doc, b, c.id, fitSize(n, headerOf(c)), LOCAL, false)
+    }, 250)
+    return () => clearInterval(timer)
+  }, [card.fit, readOnly, live, doc, naturalOf])
+  const fitNow = fitsContent(card)
+    ? () => {
+        const n = naturalOf()
+        if (n) applyFit(doc, board, card.id, fitSize(n, headerOf(card)), OWNER, true)
+        else patchCard(doc, card.id, { fit: true, sized: undefined }) // not live here: sized when it next renders
+        stopCapturing()
+      }
+    : null
+
+  // Wheel and pinch over the body (scroll.ts `wheelRoute`): the board's unless the card is entered; entered, an inner
+  // pan/zoom diagram or a scroll region that can still move takes it and it is stopped here, before the board's
+  // zoom/pan (the inner handler runs first, on its own element). Never both.
+  const clip = useRef<HTMLDivElement>(null)
+  const enteredRef = useRef(entered)
+  enteredRef.current = entered
+  useEffect(() => {
+    const el = clip.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.target instanceof Element)) return
+      const zoomSurface = e.target.closest(ZOOM_SURFACE) !== null
+      const chain = scrollChain(e.target, el.parentElement ?? el)
+      if (wheelRoute(enteredRef.current, { zoomSurface, pinch: e.ctrlKey, chain, dx: e.deltaX, dy: e.deltaY }) === 'inner') e.stopPropagation()
+    }
+    el.addEventListener('wheel', onWheel, { passive: true })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+  // A diagram's inner pan/zoom is never kept on the board: it starts fitted, and leaving the card or "Reset view"
+  // remounts it fitted (its double-click/tap also fits, inside DiagramFrame).
+  const [viewEpoch, setViewEpoch] = useState(0)
+  const wasEntered = useRef(entered)
+  useEffect(() => {
+    if (wasEntered.current && !entered && card.kind === 'diagram') setViewEpoch((n) => n + 1)
+    wasEntered.current = entered
+  }, [entered, card.kind])
+  const resetView = card.kind === 'diagram' && live ? () => setViewEpoch((n) => n + 1) : null
+  // A live body that hides content behind a scroll shows a fade and a "scroll ↓" hint until the card is entered.
+  const [more, setMore] = useState(false)
+  useEffect(() => {
+    const el = fitBox.current
+    if (!el || entered || !live) {
+      setMore(false)
+      return
+    }
+    const check = () => setMore(hidesOverflow(el))
+    const t = setTimeout(check, 600)
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => {
+      clearTimeout(t)
+      ro.disconnect()
+    }
+  }, [entered, live, source])
 
   const cls = [
     'wb-card',
@@ -161,7 +258,8 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
   ].filter(Boolean).join(' ')
   const onResizeEnd = useResizeEnd((_, p) => {
     const at = toAbsolute(board, card.id, { x: p.x, y: p.y })
-    patchCard(doc, card.id, { x: Math.round(at.x), y: Math.round(at.y), w: Math.round(p.width), h: Math.round(p.height) })
+    // The owner sized it: never sized to content on its own again (its toolbar's "Fit to content" still does).
+    patchCard(doc, card.id, { x: Math.round(at.x), y: Math.round(at.y), w: Math.round(p.width), h: Math.round(p.height), sized: true })
     stopCapturing()
   })
 
@@ -178,7 +276,7 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
       )}
       {selected && !entered && !hand && (
         <NodeToolbar position={Position.Top} offset={14}>
-          <Toolbar card={card} refreshPreview={refreshPreview} />
+          <Toolbar card={card} refreshPreview={refreshPreview} fitNow={fitNow} resetView={resetView} />
         </NodeToolbar>
       )}
       <div className={cls} data-card={card.id} aria-label={`${KIND_NAME[card.kind]}: ${card.title}`}>
@@ -195,7 +293,9 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
           </div>
         )}
         <div
-          className="wb-clip"
+          ref={clip}
+          // Entered, a drag inside the body is the content's (scroll, select), not a board pan.
+          className={entered ? 'wb-clip nopan' : 'wb-clip'}
           data-body
           onPointerUp={(e) => {
             // Double-tap (finger) or double-click enters the card; a pen never reaches here (the ink filter takes it).
@@ -208,16 +308,32 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
         >
           {placeholder ? (
             <div className="wb-shimmer">{card.placeholder || 'building…'}</div>
-          ) : level === 'live' || entered ? (
-            <CardBoundary card={card}>
-              <LiveBody card={card} source={source} editing={entered} />
-            </CardBoundary>
+          ) : live ? (
+            // Content past the biggest fitted size renders at 1/scale and is scaled down whole (fit.ts), never cropped.
+            <div
+              ref={fitBox}
+              className="absolute top-0 left-0 size-full origin-top-left"
+              // Not entered, the body takes no pointer: the shield and the board get every press, wheel and pinch.
+              style={{
+                pointerEvents: entered ? undefined : 'none',
+                ...(card.scale ? { width: `${100 / card.scale}%`, height: `${100 / card.scale}%`, transform: `scale(${card.scale})` } : {}),
+              }}
+            >
+              <CardBoundary key={viewEpoch} card={card}>
+                <LiveBody card={card} source={source} editing={entered} />
+              </CardBoundary>
+            </div>
           ) : level === 'snapshot' && !scrub ? (
             <Snapshot card={card} />
           ) : (
             <Chip card={card} />
           )}
           {!entered && level === 'live' && !placeholder && <div className="wb-shield" />}
+          {more && !entered && (
+            <div className="wb-more" aria-hidden>
+              <span>scroll ↓</span>
+            </div>
+          )}
         </div>
         <CardInk card={card} />
         {stacked && <Scrubber card={card} />}

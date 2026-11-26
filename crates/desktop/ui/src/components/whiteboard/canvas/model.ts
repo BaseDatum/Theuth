@@ -31,6 +31,12 @@ export type Card = {
   id: Id; kind: CardKind; x: number; y: number; w: number; h: number; z: number; title: string
   versions: Version[]; viewport?: DeviceViewport; state: CardState; tag?: string; frame?: Id
   placeholder?: string; snap?: { v: number; at: number; theme: 'light' | 'dark' }; pin?: boolean; by: By
+  /** Size pending: the owner's client sizes the card to its content (fit.ts), then clears it. */
+  fit?: boolean
+  /** Sized explicitly (an agent's w/h, or the owner resized it): never sized to content on its own. */
+  sized?: boolean
+  /** Content scale (< 1) when the content is larger than the biggest card size-to-content makes. */
+  scale?: number
 }
 export type Port = 'top' | 'right' | 'bottom' | 'left'
 export type Link = { id: Id; from: Id; to: Id; from_port?: Port; to_port?: Port; label?: string; style: 'solid' | 'dashed'; arrow: 'end' | 'both' | 'none'; by: By }
@@ -183,6 +189,10 @@ export function readCard(id: Id, v: unknown): Card | null {
     if (sv !== undefined && at !== undefined && theme) card.snap = { v: sv, at, theme }
   }
   if (r.pin === true) card.pin = true
+  if (r.fit === true) card.fit = true
+  if (r.sized === true) card.sized = true
+  const scale = num(r.scale)
+  if (scale !== undefined && scale > 0 && scale < 1) card.scale = scale
   return card
 }
 
