@@ -30,17 +30,3 @@ export function groupDevices(devices: readonly DeviceInfo[], online: ReadonlySet
   }
   return groups
 }
-
-/**
- * Delete a device across the mesh. `device_revoke` on an active device revokes it (its connection closes now); on a
- * revoked one it deletes the row — so an active device takes two calls, a revoked one a single call.
- */
-export async function deleteDevice(revoke: (id: string) => Promise<unknown>, d: DeviceInfo): Promise<void> {
-  if (!d.revoked) await revoke(d.id)
-  await revoke(d.id)
-}
-
-/** {@link deleteDevice} for each, one at a time (the engine serializes them anyway). */
-export async function deleteDevices(revoke: (id: string) => Promise<unknown>, devices: readonly DeviceInfo[]): Promise<void> {
-  for (const d of devices) await deleteDevice(revoke, d)
-}

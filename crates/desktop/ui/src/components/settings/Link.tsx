@@ -10,7 +10,6 @@ import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
 import { Dot, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { ago } from '@/components/sidebar/AgentTree'
 import { DeviceList } from '@/components/settings/DeviceList'
-import { deleteDevices } from '@/components/settings/devices'
 import { useMesh } from '@/components/tasks/queries'
 import {
   AlertDialog,
@@ -164,8 +163,8 @@ function NodeSide() {
 
 /**
  * Devices paired with this mesh (69 §3–§4): the replicated registry, grouped by {@link DeviceList} — rename, revoke,
- * delete (everywhere, revoking first), and "Pair a device": a 4-part QR any node may show; the hub accepts. `online`:
- * ids with a live session on this node (`link_status`).
+ * delete (`device_delete`: everywhere, revoking first; hidden on an engine without it), and "Pair a device": a 4-part
+ * QR any node may show; the hub accepts. `online`: ids with a live session on this node (`link_status`).
  */
 function Devices({ online }: { online: ReadonlySet<string> }) {
   const canQuery2 = useQuerySupport(["devices_list"])
@@ -178,7 +177,13 @@ function Devices({ online }: { online: ReadonlySet<string> }) {
   const start = useAction((_: void) => api.device_pair_start(null), { keys: [], onSuccess: setPairing })
   const rename = useAction((v: { id: string; name: string }) => api.device_rename(v.id, v.name), { keys: [DEVICES] })
   const revoke = useAction((id: string) => api.device_revoke(id), { keys: [DEVICES] })
-  const remove = useAction((ds: DeviceInfo[]) => deleteDevices((id) => api.device_revoke(id), ds), { keys: [DEVICES] })
+  const canDelete = useQuerySupport(['device_delete'])
+  const remove = useAction(
+    async (ds: DeviceInfo[]) => {
+      for (const d of ds) await api.device_delete(d.id)
+    },
+    { keys: [DEVICES] },
+  )
 
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: DEVICES })
@@ -229,8 +234,8 @@ function Devices({ online }: { online: ReadonlySet<string> }) {
           online={online}
           onRename={(d, name) => rename.mutate({ id: d.id, name })}
           onRevoke={(d) => revoke.mutate(d.id)}
-          onDelete={(d) => remove.mutate([d])}
-          onDeleteAll={(ds) => remove.mutate(ds)}
+          onDelete={canDelete ? (d) => remove.mutate([d]) : undefined}
+          onDeleteAll={canDelete ? (ds) => remove.mutate(ds) : undefined}
         />
       )}
     </Section>

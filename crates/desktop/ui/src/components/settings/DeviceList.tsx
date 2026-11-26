@@ -23,7 +23,7 @@ const STATUS: Record<DeviceStatus, string> = { connected: 'connected now', offli
 /**
  * The mesh's device registry (69 §3), grouped: active devices, then Inactive (not seen for 90 days, with "Delete all
  * inactive"), then a collapsed Revoked group. Every row: name, platform, last seen, status; Revoke while not revoked,
- * Delete always.
+ * Delete always — unless `onDelete`/`onDeleteAll` are absent (an engine without `device_delete`).
  */
 export function DeviceList({
   devices,
@@ -40,13 +40,14 @@ export function DeviceList({
   now?: number
   onRename: (d: DeviceInfo, name: string) => void
   onRevoke: (d: DeviceInfo) => void
-  onDelete: (d: DeviceInfo) => void
-  onDeleteAll: (ds: DeviceInfo[]) => void
+  /** `device_delete`; absent hides every Delete. */
+  onDelete?: (d: DeviceInfo) => void
+  onDeleteAll?: (ds: DeviceInfo[]) => void
 }) {
   const { active, inactive, revoked } = groupDevices(devices, online, now)
   const [showRevoked, setShowRevoked] = useState(false)
   const row = (d: DeviceInfo) => (
-    <DeviceRow key={d.id} device={d} status={deviceStatus(d, online)} now={now} onRename={(name) => onRename(d, name)} onRevoke={() => onRevoke(d)} onDelete={() => onDelete(d)} />
+    <DeviceRow key={d.id} device={d} status={deviceStatus(d, online)} now={now} onRename={(name) => onRename(d, name)} onRevoke={() => onRevoke(d)} onDelete={onDelete && (() => onDelete(d))} />
   )
   return (
     <>
@@ -56,12 +57,14 @@ export function DeviceList({
         <div data-device-group="inactive" className="pt-4">
           <div className="flex items-center justify-between">
             <h4 className="text-[13px] font-medium text-fg-secondary">Inactive · not seen for 90 days ({inactive.length})</h4>
-            <Confirm
-              trigger="Delete all inactive"
-              title={`Delete ${inactive.length} inactive device${inactive.length === 1 ? '' : 's'}?`}
-              description="Each is revoked and removed from every node of the mesh. Using one again needs a new QR scan."
-              onConfirm={() => onDeleteAll(inactive)}
-            />
+            {onDeleteAll && (
+              <Confirm
+                trigger="Delete all inactive"
+                title={`Delete ${inactive.length} inactive device${inactive.length === 1 ? '' : 's'}?`}
+                description="Each is revoked and removed from every node of the mesh. Using one again needs a new QR scan."
+                onConfirm={() => onDeleteAll(inactive)}
+              />
+            )}
           </div>
           {inactive.map(row)}
         </div>
@@ -97,7 +100,7 @@ function DeviceRow({
   now: number
   onRename: (name: string) => void
   onRevoke: () => void
-  onDelete: () => void
+  onDelete?: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const seen = status === 'connected' ? 'seen now' : d.last_seen_ms ? `seen ${age(d.last_seen_ms, now)} ago` : 'never seen'
@@ -130,12 +133,14 @@ function DeviceRow({
           onConfirm={onRevoke}
         />
       )}
-      <Confirm
-        trigger="Delete"
-        title={`Delete ${d.name}?`}
-        description={`${d.revoked ? '' : 'It is revoked, then '}removed from every node of the mesh. Using it again needs a new QR scan.`}
-        onConfirm={onDelete}
-      />
+      {onDelete && (
+        <Confirm
+          trigger="Delete"
+          title={`Delete ${d.name}?`}
+          description={`${d.revoked ? '' : 'It is revoked, then '}removed from every node of the mesh. Using it again needs a new QR scan.`}
+          onConfirm={onDelete}
+        />
+      )}
     </Row>
   )
 }

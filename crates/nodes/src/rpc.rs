@@ -37,15 +37,22 @@ pub trait NetworkApi {
     /// Rename a paired device.
     #[method(name = "link_rename_device")]
     async fn link_rename_device(&self, id: String, name: String) -> RpcResult<()>;
-    /// Revoke a paired device: close its conns, delete its row.
+    /// Revoke a paired device: close its conns, set `revoked_ms` (the row stays). A no-op on a
+    /// revoked device.
     #[method(name = "link_revoke_device")]
     async fn link_revoke_device(&self, id: String) -> RpcResult<()>;
     /// Every row of the replicated device registry, revoked included (69 §3).
     #[method(name = "devices_list")]
     async fn devices_list(&self) -> RpcResult<Vec<link::DeviceInfo>>;
-    /// Revoke a device (69 §3): `revoked_ms` set, conns closed; replicates to every hub.
+    /// Revoke a device (69 §3): `revoked_ms` set, conns closed; replicates to every hub. The row
+    /// stays (listed as revoked, deleted 30 days later); a no-op on a revoked device.
     #[method(name = "device_revoke")]
     async fn device_revoke(&self, id: String) -> RpcResult<()>;
+    /// Delete a device from the replicated registry (69 §3): revoked first when active (conns
+    /// closed), then its row deleted on every node. A delete that loses to a concurrent write
+    /// elsewhere leaves the row revoked, so the device cannot reconnect either way.
+    #[method(name = "device_delete")]
+    async fn device_delete(&self, id: String) -> RpcResult<()>;
     /// Rename a device in the replicated registry (69 §3).
     #[method(name = "device_rename")]
     async fn device_rename(&self, id: String, name: String) -> RpcResult<()>;
@@ -172,6 +179,10 @@ impl NetworkApiServer for Server {
 
     async fn device_revoke(&self, id: String) -> RpcResult<()> {
         send(&link()?, Revoke { id }).await
+    }
+
+    async fn device_delete(&self, id: String) -> RpcResult<()> {
+        send(&link()?, link::DeleteDevice { id }).await
     }
 
     async fn device_rename(&self, id: String, name: String) -> RpcResult<()> {

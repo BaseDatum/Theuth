@@ -390,28 +390,49 @@ impl Message<RenameDevice> for LinkActor {
 impl Message<Revoke> for LinkActor {
     type Reply = Result<(), String>;
 
-    /// An active device is revoked (the row stays, refused everywhere); an already revoked one
-    /// is deleted across the mesh — Settings' Delete is revoke, then revoke again.
     async fn handle(&mut self, m: Revoke, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let revoked = {
+        {
             let mut st = self.ctx.lock();
-            let (key, active) = st
+            let row = st
                 .devices
                 .any_by_id(&m.id)
-                .map(|r| (r.key, r.active()))
                 .ok_or_else(|| format!("unknown device {}", m.id))?;
+            if !row.active() {
+                return Ok(());
+            }
+            let key = row.key;
             // Each conn task (either uplink) sends CLOSE 0 and removes itself.
             for c in st.all_conns().filter(|c| c.device == Some(key)) {
                 c.cancel.cancel();
             }
-            if active {
-                st.devices.remove(&m.id);
-            } else {
-                st.devices.delete(&m.id);
+            st.devices.remove(&m.id);
+        }
+        self.ctx
+            .rt
+            .publish(LinkEvent::LinkRevoked { id: m.id })
+            .await;
+        self.ctx.rt.publish(LinkEvent::DevicesChanged).await;
+        Ok(())
+    }
+}
+
+impl Message<DeleteDevice> for LinkActor {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: DeleteDevice, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let was_active = {
+            let mut st = self.ctx.lock();
+            let key = st
+                .devices
+                .any_by_id(&m.id)
+                .map(|r| r.key)
+                .ok_or_else(|| format!("unknown device {}", m.id))?;
+            for c in st.all_conns().filter(|c| c.device == Some(key)) {
+                c.cancel.cancel();
             }
-            active
+            st.devices.delete(&m.id).is_some_and(|r| r.active())
         };
-        if revoked {
+        if was_active {
             self.ctx
                 .rt
                 .publish(LinkEvent::LinkRevoked { id: m.id })

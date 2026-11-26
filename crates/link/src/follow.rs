@@ -507,32 +507,35 @@ mod tests {
         assert!(!st.devices.is_revoked(&keys[0]) && st.devices.by_key(&keys[0]).is_none());
     }
 
-    /// Settings' Delete: `Revoke` on an active device revokes it (conns close, `LinkRevoked`);
-    /// `Revoke` again deletes the row; a third is an unknown device.
+    /// `Revoke` is idempotent (a revoked device stays listed); `DeleteDevice` removes the row,
+    /// revoking an active device first (its conns close); deleting again is an unknown device.
     #[tokio::test]
-    async fn revoke_then_revoke_again_deletes_the_device() {
+    async fn revoke_is_idempotent_and_delete_removes_the_row() {
         let ctx = ctx("ws://x", None, None);
-        let key = [7u8; 32];
-        let id = crate::devices::device_id(&key);
-        ctx.lock().devices.insert(Row {
-            id: id.clone(),
-            key,
-            name: "iPhone".into(),
-            platform: "ios".into(),
-            paired_at_ms: 1,
-            last_seen_ms: 0,
-            revoked_ms: None,
-        });
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let cancel = tokio_util::sync::CancellationToken::new();
-        ctx.lock().conns.insert(
-            2,
-            ConnHandle {
-                device: Some(key),
-                inbound: tx,
-                cancel: cancel.clone(),
-            },
-        );
+        let (revoked, active) = ([7u8; 32], [8u8; 32]);
+        let mut cancels = Vec::new();
+        for (n, key) in [revoked, active].into_iter().enumerate() {
+            ctx.lock().devices.insert(Row {
+                id: crate::devices::device_id(&key),
+                key,
+                name: "iPhone".into(),
+                platform: "ios".into(),
+                paired_at_ms: 1,
+                last_seen_ms: 0,
+                revoked_ms: None,
+            });
+            let (tx, _rx) = tokio::sync::mpsc::channel(1);
+            let cancel = tokio_util::sync::CancellationToken::new();
+            ctx.lock().conns.insert(
+                n as u32,
+                ConnHandle {
+                    device: Some(key),
+                    inbound: tx,
+                    cancel: cancel.clone(),
+                },
+            );
+            cancels.push(cancel);
+        }
         let actor = LinkActor::spawn(LinkActor {
             ctx: ctx.clone(),
             config_path: std::env::temp_dir().join("theuth-link-delete-test.yaml"),
@@ -543,13 +546,37 @@ mod tests {
             mesh_loading: false,
             mesh_ready: false,
         });
-        let revoke = || crate::Revoke { id: id.clone() };
-        actor.ask(revoke()).await.unwrap();
-        assert!(cancel.is_cancelled(), "revoking closes the conn");
-        assert!(ctx.lock().devices.is_revoked(&key));
-        actor.ask(revoke()).await.unwrap();
-        assert!(ctx.lock().devices.all().is_empty(), "deleted");
-        assert!(actor.ask(revoke()).await.is_err(), "unknown now");
+        let id = |k: &[u8; 32]| crate::devices::device_id(k);
+        actor.ask(crate::Revoke { id: id(&revoked) }).await.unwrap();
+        assert!(cancels[0].is_cancelled(), "revoking closes the conn");
+        actor.ask(crate::Revoke { id: id(&revoked) }).await.unwrap();
+        assert!(
+            ctx.lock().devices.is_revoked(&revoked),
+            "a second revoke: no-op"
+        );
+        assert_eq!(ctx.lock().devices.all().len(), 2);
+
+        actor
+            .ask(crate::DeleteDevice { id: id(&active) })
+            .await
+            .unwrap();
+        assert!(
+            cancels[1].is_cancelled(),
+            "deleting an active device closes its conn"
+        );
+        actor
+            .ask(crate::DeleteDevice { id: id(&revoked) })
+            .await
+            .unwrap();
+        assert!(ctx.lock().devices.all().is_empty(), "both deleted");
+        assert!(
+            actor
+                .ask(crate::DeleteDevice { id: id(&active) })
+                .await
+                .is_err(),
+            "unknown now"
+        );
+        assert!(actor.ask(crate::Revoke { id: id(&active) }).await.is_err());
     }
 
     /// 183 D11: after the device key reset every paired phone and iPad must re-pair: each

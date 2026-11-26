@@ -242,10 +242,19 @@ pub struct RenameDevice {
 }
 
 /// `ask` → `Result<(), String>`: revoke an active device — close its conns, set `revoked_ms`
-/// (the row stays, refused by every hub), publish `LinkRevoked`; on an already revoked device,
-/// delete its row across the mesh. Both publish `DevicesChanged`.
+/// (the row stays, refused by every hub), publish `LinkRevoked` and `DevicesChanged`. A no-op on
+/// an already revoked device.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Revoke {
+    /// `Device.id`.
+    pub id: String,
+}
+
+/// `ask` → `Result<(), String>`: delete a device across the mesh — close its conns, revoke it
+/// when active (so a delete that loses to a concurrent write elsewhere leaves it revoked), then
+/// delete its row; publishes `LinkRevoked` (when it was active) and `DevicesChanged`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeleteDevice {
     /// `Device.id`.
     pub id: String,
 }

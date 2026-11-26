@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { DeviceInfo } from '@/rpc/bindings/method.nodes.output'
 import { DeviceList } from './DeviceList'
-import { INACTIVE_MS, deleteDevice, deleteDevices, groupDevices } from './devices'
+import { INACTIVE_MS, groupDevices } from './devices'
 
 const NOW = 1_000 * INACTIVE_MS
 const DAY = 24 * 60 * 60 * 1000
@@ -46,17 +46,11 @@ test('an empty registry says so', () => {
   expect(html).toContain('No device paired with this mesh yet')
 })
 
-test('Delete revokes an active device first, a revoked one is deleted at once', async () => {
-  const calls: string[] = []
-  const revoke = async (id: string) => void calls.push(id)
-  await deleteDevice(revoke, phone)
-  expect(calls).toEqual(['phone', 'phone'])
-  calls.length = 0
-  await deleteDevice(revoke, safari)
-  expect(calls).toEqual(['safari'])
-  calls.length = 0
-  await deleteDevices(revoke, [ipad, safari])
-  expect(calls).toEqual(['ipad', 'ipad', 'safari'])
+test('an engine without device_delete gets no Delete buttons, Revoke stays', () => {
+  const html = renderToStaticMarkup(h(DeviceList, { devices: ALL, online: new Set<string>(), now: NOW, onRename() {}, onRevoke() {} }))
+  expect(html).not.toContain('>Delete<')
+  expect(html).not.toContain('Delete all inactive')
+  expect(html).toContain('>Revoke<')
 })
 
 let root: Root | null = null
