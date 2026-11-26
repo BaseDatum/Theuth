@@ -47,6 +47,7 @@ import { type EdgeMark, FOLLOW_PAUSE_MS, edgeMarks } from './edges'
 import { pencilGestures } from './pencil-gestures'
 import { imageKey, sendWhiteboard, withoutImage } from './send/send'
 import { type WbTurnInfo, wbRpc } from './wire'
+import { awake, CURSOR_IDLE_MS, EXIT_SHOW_MS, presentKey, presentMode, revealsCluster, revealsExit } from './present'
 
 const Canvas = lazy(() => import('./canvas/Canvas'))
 
@@ -201,10 +202,39 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   useEffect(() => timer.keep(keepControls), [timer, keepControls])
   useEffect(() => store.subscribe((s, p) => s.penDown && !p.penDown && timer.pen()), [store, timer])
 
+  // ── Present (`present.ts`): every piece of chrome hidden, Hand locked, the cursor gone after 2 s still. The exit
+  // button shows only on a move into the top-right corner or a tap on the canvas (no keyboard on an iPad).
+  const presenting = useMemo(() => presentMode(store), [store])
+  useEffect(() => () => presenting.dispose(), [presenting])
+  const present = useStore(store, (s) => s.present)
+  const [exitShown, setExitShown] = useState(false)
+  const exitPeek = useMemo(() => awake({ ms: EXIT_SHOW_MS, onChange: setExitShown }), [])
+  const cursorAwake = useMemo(() => awake({ ms: CURSOR_IDLE_MS, onChange: (on) => frameEl.current?.toggleAttribute('data-cursor-idle', !on) }), [])
+  useEffect(
+    () => () => {
+      exitPeek.dispose()
+      cursorAwake.dispose()
+    },
+    [exitPeek, cursorAwake],
+  )
+  useEffect(() => {
+    if (!present) {
+      exitPeek.stop()
+      cursorAwake.stop()
+      frameEl.current?.removeAttribute('data-cursor-idle')
+      return
+    }
+    timer.hide()
+    setOutline(false)
+    setOpenCard(null)
+    setChooser(null)
+    cursorAwake.poke()
+  }, [present, timer, exitPeek, cursorAwake])
+
   // ── Pencil double-tap / squeeze (iPad): the plugin forwards the gesture; the store stays the only writer of the tool.
   useEffect(() => {
     if (readOnly) return
-    const gestures = pencilGestures(store, () => timer.show())
+    const gestures = pencilGestures(store, () => !store.getState().present && timer.show())
     let gone = false
     let unlisten: (() => void) | null = null
     void listenPencil(gestures.on).then((u) => {
@@ -516,18 +546,43 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  // Desktop: the cluster also appears when the pointer rests in the bottom-right quadrant.
-  const rest = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Present's keys come first (capture): Shift+P toggles, Esc leaves Present before it reaches the card, the cluster or
+  // the ink tool (its latch is untouched), and the single-key shortcuts stay out while presenting. Embedded (a tile):
+  // Shift+P only while the focus is inside this whiteboard.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
+      const on = store.getState().present
+      if (embedded && !on && !frameEl.current?.contains(document.activeElement)) return
+      const k = presentKey(e, on)
+      if (!k) return
+      e.stopPropagation()
+      if (k === 'swallow') return
+      e.preventDefault()
+      if (k === 'toggle') presenting.toggle()
+      else presenting.off()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [embedded, presenting, store])
+
+  // Desktop: the cluster also rises when the mouse moves toward it (rightwards along the right edge, lower half) — on
+  // the move itself, never after a rest, and never with Hand or while presenting (`revealsCluster`).
   const onPointerMove = (e: React.PointerEvent) => {
-    if (e.pointerType !== 'mouse' || coarse) return
+    const st = store.getState()
     const r = e.currentTarget.getBoundingClientRect()
-    const inQuad = e.clientX > r.left + r.width / 2 && e.clientY > r.top + r.height / 2
-    if (rest.current) clearTimeout(rest.current)
-    // Not over the composer, which sits in that quadrant.
+    const at = { x: e.clientX, y: e.clientY }
+    if (st.present) {
+      cursorAwake.poke()
+      if (e.pointerType === 'mouse' && revealsExit(at, r)) exitPeek.poke()
+      return
+    }
+    if (e.pointerType !== 'mouse' || coarse) return
+    // Not over the composer, which sits in that strip.
     const over = e.target instanceof Element && e.target.closest('[data-whiteboard-composer]') !== null
-    const idle = () => !store.getState().clusterOpen
-    rest.current = inQuad && !over && idle() ? setTimeout(() => idle() && timer.show(), 600) : null
-    if (store.getState().clusterOpen) timer.activity()
+    if (!over && !st.clusterOpen && revealsCluster(at, r, e.movementX, st.mode, st.present)) timer.show()
+    else if (st.clusterOpen) timer.activity()
   }
 
   // ── Export (P5, cheap parts): a note brief, and the current view as a PNG on the clipboard.
@@ -598,6 +653,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
       timer.hide()
       setOutline(true)
     },
+    onPresent: () => presenting.on(),
     onUndo: () => handle.current?.undo(),
     onRedo: () => handle.current?.redo(),
     canUndo: handle.current?.canUndo() ?? false,
@@ -607,7 +663,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   }
 
   return (
-    <div ref={frameEl} className={frame} data-whiteboard={doc} onPointerMove={onPointerMove}>
+    <div ref={frameEl} className={frame} data-whiteboard={doc} data-present={present ? '' : undefined} onPointerMove={onPointerMove}>
       {outline ? (
         <div className="absolute inset-0 overflow-y-auto">
           <OutlineView
@@ -655,8 +711,8 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
             readOnly={readOnly || phone}
             embedded={embedded}
             className="size-full"
-            anchored={bubble && anchor && !outline ? [{ key: 'reply', card: anchor, node: bubbleNode }] : []}
-            onCanvasTap={() => timer.tap()}
+            anchored={bubble && anchor && !outline && !present ? [{ key: 'reply', card: anchor, node: bubbleNode }] : []}
+            onCanvasTap={() => (store.getState().present ? exitPeek.poke() : timer.tap())}
             onPenActivity={(down) => down && timer.pen()}
             onViewChange={() => {
               recomputeEdges()
@@ -667,6 +723,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
         </Suspense>
       </div>
       {!outline &&
+        !present &&
         edges.map((m) => {
           const c = board.cards[m.id]
           return (
@@ -683,14 +740,24 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
             </button>
           )
         })}
-      {!outline && clusterOpen && <Cluster {...controls} onHold={timer.hold} />}
-      {!embedded && onClose && clusterOpen && !outline && (
+      {!outline && !present && clusterOpen && <Cluster {...controls} onHold={timer.hold} />}
+      {!embedded && onClose && clusterOpen && !outline && !present && (
         <button type="button" aria-label="Close the whiteboard" onClick={onClose} className="wb-glass wb-rise absolute top-[calc(16px+var(--safe-top,0px))] right-[calc(24px+var(--safe-right,0px))] z-20 grid size-11 place-items-center rounded-full">
           <X className="size-5" />
         </button>
       )}
-      {bubble && (!anchor || outline) && bubbleNode}
-      {waiting && (
+      {present && exitShown && (
+        <button
+          type="button"
+          onClick={() => presenting.off()}
+          className="wb-glass wb-rise absolute top-[calc(16px+var(--safe-top,0px))] right-[calc(24px+var(--safe-right,0px))] z-20 flex h-11 items-center gap-2 rounded-full px-4 text-sm"
+        >
+          <X className="size-4" aria-hidden />
+          Stop presenting
+        </button>
+      )}
+      {bubble && !present && (!anchor || outline) && bubbleNode}
+      {waiting && !present && (
         <div
           className={`wb-rise absolute z-20 bottom-[var(--wb-dock,calc(80px+var(--safe-bottom,0px)))] w-[min(360px,calc(100vw-48px))] rounded-xl shadow-lg [&>*]:my-0 ${clusterOpen && !outline ? 'right-[calc(94px+var(--safe-right,0px))]' : 'right-[calc(24px+var(--safe-right,0px))]'}`}
           onPointerDown={(e) => e.stopPropagation()}
@@ -719,7 +786,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
         onSent={sent}
         dockRef={dock}
       />
-      {card && <CardSheet card={card} phone={phone} blobUrl={host.blobUrl} onClose={() => setOpenCard(null)} onSession={(s) => openSession(s)} />}
+      {card && !present && <CardSheet card={card} phone={phone} blobUrl={host.blobUrl} onClose={() => setOpenCard(null)} onSession={(s) => openSession(s)} />}
       {chooser && <ChooserDialog c={chooser} onDone={() => setChooser(null)} />}
       {pickingView && <ViewPicker onPick={(path, t) => select(place(provider.doc, spot, 'view', t, { t: 'view', path }))} onDone={() => setPickingView(false)} />}
       <input

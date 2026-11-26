@@ -134,6 +134,8 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
   const { card } = data
   const { store, lod, readOnly, enter, doc, stopCapturing, spot, board } = useCanvas()
   const entered = useZustand(store, (s) => s.entered === card.id)
+  // Hand (and Present, which locks it) pans: no card chrome there, a click-selected card included.
+  const hand = useZustand(store, (s) => s.mode === 'hand')
   const scrub = useZustand(store, (s) => s.scrub[card.id])
   const level = lod[card.id] ?? 'chip'
   const source = versionOf(card, scrub)?.source
@@ -165,7 +167,7 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
 
   return (
     <>
-      {selected && !readOnly && !entered && (
+      {selected && !readOnly && !entered && !hand && (
         <NodeResizer
           minWidth={80}
           minHeight={60}
@@ -174,7 +176,7 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
           onResizeEnd={onResizeEnd}
         />
       )}
-      {selected && !entered && (
+      {selected && !entered && !hand && (
         <NodeToolbar position={Position.Top} offset={14}>
           <Toolbar card={card} refreshPreview={refreshPreview} />
         </NodeToolbar>

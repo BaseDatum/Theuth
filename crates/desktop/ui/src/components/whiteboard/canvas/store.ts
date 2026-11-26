@@ -11,6 +11,7 @@ export type WbView = {
   showAnswered: boolean
   keepControls: boolean
   clusterOpen: boolean      // B4 owns the timer; B3 reads it for the attribution panel (R3)
+  present: boolean          // Present mode (`present.ts`): every piece of chrome hidden, Hand locked
   selection: Id[]           // cards, links, frames, marks
   entered: Id | null        // the card whose frame receives touches (design §4.4)
   penDown: boolean          // the pointer path sets it while a pen is down
@@ -29,6 +30,7 @@ export function createWhiteboardStore(init?: Partial<WbView>): WbStore {
     showAnswered: false,
     keepControls: false,
     clusterOpen: false,
+    present: false,
     selection: [],
     entered: null,
     penDown: false,

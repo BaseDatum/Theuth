@@ -69,6 +69,16 @@
   width: min(390px, calc(100% - 24px - var(--safe-left, 0px) - var(--safe-right, 0px)));
 }
 
+/* Present (`present.ts`): the dock stays mounted (its draft and picker state) but is gone; the cursor hides once the
+   pointer has been still for 2 s (`data-cursor-idle`). */
+[data-whiteboard][data-present] .wb-dock {
+  display: none;
+}
+[data-whiteboard][data-present][data-cursor-idle],
+[data-whiteboard][data-present][data-cursor-idle] * {
+  cursor: none !important;
+}
+
 .wb-rise {
   animation: wb-rise 160ms ease-out;
 }

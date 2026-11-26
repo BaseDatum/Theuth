@@ -94,6 +94,8 @@
 }
 .wb-card.bare:hover > .wb-caption,
 .wb-card.bare.selected > .wb-caption { opacity: 1; }
+/* Hand pans: hovering a card shows nothing (no caption, no link ports); `data-mode` is on the `.wb-canvas` wrapper. */
+.wb-canvas[data-mode='hand'] .wb-card.bare:not(.selected):hover > .wb-caption { opacity: 0; }
 .wb-card.spot { box-shadow: 0 0 0 4px var(--wb-accent), 0 0 40px color-mix(in oklab, var(--wb-accent) 45%, transparent); }
 
 .wb-head {
@@ -221,6 +223,7 @@
 .wb-canvas .react-flow__node:hover .react-flow__handle.wb-handle,
 .wb-canvas .react-flow__node.selected .react-flow__handle.wb-handle { opacity: 1; pointer-events: all; }
 .wb-canvas.link-mode .react-flow__handle.wb-handle { opacity: 1; pointer-events: all; }
+.wb-canvas[data-mode='hand'] .react-flow__node .react-flow__handle.wb-handle { opacity: 0; pointer-events: none; }
 @media (pointer: coarse) {
   /* bigger hit target for a finger, same visual */
   .wb-canvas .react-flow__handle.wb-handle::after { content: ''; position: absolute; inset: -14px; border-radius: 50%; }

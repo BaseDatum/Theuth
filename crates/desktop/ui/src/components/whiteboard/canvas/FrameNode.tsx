@@ -2,6 +2,7 @@
 import { NodeResizer, NodeToolbar, Position, type Node, type NodeProps } from '@xyflow/react'
 import { Trash2 } from 'lucide-react'
 import { memo, useState } from 'react'
+import { useStore as useZustand } from 'zustand'
 import { useCanvas } from './context'
 import type { FrameNodeData } from './binding'
 import { PRESETS, type FrameColour } from './model'
@@ -17,7 +18,8 @@ const SWATCH: Record<FrameColour, string> = {
 
 export const FrameNode = memo(function FrameNode({ data, selected }: NodeProps<FrameNodeType>) {
   const { frame } = data
-  const { doc, readOnly, stopCapturing } = useCanvas()
+  const { doc, readOnly, stopCapturing, store } = useCanvas()
+  const hand = useZustand(store, (s) => s.mode === 'hand')
   const [title, setTitle] = useState<string | null>(null)
   const preset = frame.preset ? ` · ${frame.preset} ${PRESETS[frame.preset][0]}×${PRESETS[frame.preset][1]}` : ''
   const onResizeEnd = useResizeEnd((_, p) => {
@@ -26,7 +28,7 @@ export const FrameNode = memo(function FrameNode({ data, selected }: NodeProps<F
   })
   return (
     <>
-      {selected && !readOnly && (
+      {selected && !readOnly && !hand && (
         <>
           <NodeResizer
             minWidth={160}

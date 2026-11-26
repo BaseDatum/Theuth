@@ -137,6 +137,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const selection = useZustand(store, (s) => s.selection)
   const entered = useZustand(store, (s) => s.entered)
   const clusterOpen = useZustand(store, (s) => s.clusterOpen)
+  const present = useZustand(store, (s) => s.present)
 
   const boardRef = useRef(board)
   boardRef.current = board
@@ -879,7 +880,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     return () => ro.disconnect()
   }, [])
 
-  // ---- keyboard (full window only). The shell owns V P E L F N O, ⌘0, ⌘↵ and Esc for cards/composer/cluster;
+  // ---- keyboard (full window only). The shell owns V P E L F N O, ⌘0, ⌘↵ and Esc for cards/composer/cluster (and,
+  // first, in a capture listener, Shift+P and Esc for Present: this never sees them while presenting);
   // the canvas owns undo/redo, Enter (enter the selected card), Delete (archive / remove / erase) and Esc for its
   // own modes and selection. ----
   useEffect(() => {
@@ -1132,9 +1134,10 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
           onSelectionChange={onSelectionChange}
           onNodeDragStart={onNodeDragStart}
           onNodeDragStop={onNodeDragStop}
-          nodesDraggable={!readOnly}
-          nodesConnectable={!readOnly}
-          elementsSelectable
+          // Present: pan and zoom only — nothing selects, drags or links.
+          nodesDraggable={!readOnly && !present}
+          nodesConnectable={!readOnly && !present}
+          elementsSelectable={!present}
           connectionMode={ConnectionMode.Loose}
           panOnDrag={mode !== 'select' && mode !== 'frame'}
           // With an ink tool the mouse drag draws: a two-finger trackpad scroll pans instead of zooming (pinch, ⌘-scroll zoom).
@@ -1157,23 +1160,23 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
           {bg === 'grid' && <Background variant={BackgroundVariant.Lines} gap={44} color="color-mix(in oklab, var(--fg-tertiary) 18%, transparent)" />}
           <ViewportPortal>
             <FreeInk />
-            {inkSel.length > 0 && <InkSelection board={board} ids={inkSel} />}
+            {inkSel.length > 0 && !present && <InkSelection board={board} ids={inkSel} />}
           </ViewportPortal>
-          {clusterOpen && (
+          {clusterOpen && !present && (
             <Panel position="top-left" className="wb-attribution">
               <a href="https://reactflow.dev" target="_blank" rel="noreferrer">
                 React Flow
               </a>
             </Panel>
           )}
-          {anchored && anchored.length > 0 && <Anchored items={anchored} board={board} size={size} right={clusterOpen ? 94 : 24} />}
+          {anchored && anchored.length > 0 && !present && <Anchored items={anchored} board={board} size={size} right={clusterOpen ? 94 : 24} />}
         </ReactFlow>
         <canvas ref={wetCanvas} className="wb-wet" aria-hidden />
         <div ref={hoverDot} className="wb-hover" data-hover-preview="" hidden aria-hidden />
         {rubber && <RubberBand r={rubber} />}
         {lasso && <LassoPath pts={lasso.pts} />}
-        <Offscreen board={board} width={size.w} height={size.h} onGo={(id) => focus(id, { animate: true })} />
-        {markMenu && board.marks[markMenu.mark] && (
+        {!present && <Offscreen board={board} width={size.w} height={size.h} onGo={(id) => focus(id, { animate: true })} />}
+        {markMenu && !present && board.marks[markMenu.mark] && (
           <Menu x={markMenu.x} y={markMenu.y}>
             {board.marks[markMenu.mark]!.state === 'pinned' ? (
               <button type="button" onClick={() => { pinMark(doc, markMenu.mark, false); undo.stopCapturing(); setMarkMenu(null) }}>
@@ -1189,7 +1192,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
             </button>
           </Menu>
         )}
-        {!readOnly && (inkSel.length > 0 || selection.length > 1) && (
+        {!readOnly && !present && (inkSel.length > 0 || selection.length > 1) && (
           <SelectionBar
             board={board}
             selection={selection}
@@ -1200,7 +1203,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
             onClear={() => { store.getState().set({ selection: [] }); setInkSel([]) }}
           />
         )}
-        {menu && (
+        {menu && !present && (
           <Menu x={menu.x} y={menu.y}>
             <button
               type="button"

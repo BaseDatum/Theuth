@@ -47,6 +47,8 @@ export type ClusterProps = {
   onAdd(kind: AddKind): void
   onFit(): void
   onOutline(): void
+  /** Present mode (`present.ts`, also Shift+P): every piece of chrome hidden, Hand locked; Esc leaves it. */
+  onPresent(): void
   onUndo(): void
   onRedo(): void
   canUndo: boolean
@@ -257,6 +259,9 @@ export function ClusterActions(p: ClusterProps & { side: 'left' | 'top'; sep: Re
       </ClusterButton>
       <ClusterButton label="Outline view" onClick={p.onOutline}>
         <ListTree className="size-5" />
+      </ClusterButton>
+      <ClusterButton label="Present (Shift+P)" onClick={p.onPresent}>
+        <Presentation className="size-5" />
       </ClusterButton>
       <ClusterButton
         label="Follow the agent"
