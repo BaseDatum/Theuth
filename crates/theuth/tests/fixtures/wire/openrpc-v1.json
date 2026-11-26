@@ -140777,6 +140777,20 @@
             "type": "array"
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "favorites",
+          "required": false,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -161490,6 +161504,19 @@
           },
           "x-theuth-aliases": [
             "includeKeys"
+          ]
+        },
+        {
+          "name": "include_favorites",
+          "required": false,
+          "schema": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "includeFavorites"
           ]
         }
       ],
