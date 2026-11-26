@@ -45,6 +45,8 @@ pub enum CardKind {
     Sticky,
     /// A session.
     Session,
+    /// A live app view: a route of the app (`/tasks/graph?project=…`) rendered inside the card.
+    View,
 }
 
 impl CardKind {
@@ -61,6 +63,7 @@ impl CardKind {
             Self::Image => "image",
             Self::Sticky => "sticky",
             Self::Session => "session",
+            Self::View => "view",
         }
     }
 
@@ -198,6 +201,12 @@ pub enum Source {
         /// Session id.
         session: String,
     },
+    /// A live app view: one of the app's view routes (`/tasks/graph?project=…`, `/tasks`, `/agents`), rendered
+    /// live and interactive inside the card.
+    View {
+        /// The route path, with its query.
+        path: String,
+    },
 }
 
 impl Source {
@@ -214,6 +223,7 @@ impl Source {
             Self::Image { .. } => CardKind::Image,
             Self::Sticky { .. } => CardKind::Sticky,
             Self::Session { .. } => CardKind::Session,
+            Self::View { .. } => CardKind::View,
         }
     }
 }

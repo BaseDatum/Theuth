@@ -1,6 +1,6 @@
 // §8.5 renderers by kind (live LOD). Each fills the card's body; the chrome (title bar, shield, ink, scrubber) is
 // CardNode's. Heavy live views (pages) are budgeted by lod.ts; terminals and web views never run live on the canvas.
-import { AppWindow, FileCode2, FileDiff, FileText, Globe, Image as ImageIcon, MessageSquare, Shapes, StickyNote, Terminal as TerminalIcon, type LucideIcon } from 'lucide-react'
+import { AppWindow, FileCode2, FileDiff, FileText, Globe, Image as ImageIcon, LayoutDashboard, MessageSquare, Shapes, StickyNote, Terminal as TerminalIcon, type LucideIcon } from 'lucide-react'
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { CustomRendererProps } from 'streamdown'
@@ -23,14 +23,16 @@ const JsonRenderFence = lazy(() => import('@/components/chat/surface/JsonRenderF
 const OpenUIFence = lazy(() => import('@/components/chat/surface/OpenUIFence').then((m) => ({ default: m.OpenUIFence })))
 const DiffBody = lazy(() => import('@/components/code/DiffBody').then((m) => ({ default: m.DiffBody })))
 const NoteView = lazy(() => import('@/components/notes/NotePage').then((m) => ({ default: m.NoteView })))
+// Lazy: it pulls the route tree, which holds the whiteboard route itself.
+const ViewCard = lazy(() => import('./ViewCard'))
 
 export const KIND_ICON: Record<CardKind, LucideIcon> = {
   page: AppWindow, diagram: Shapes, note: FileText, excerpt: FileCode2, diff: FileDiff, terminal: TerminalIcon,
-  web: Globe, image: ImageIcon, sticky: StickyNote, session: MessageSquare,
+  web: Globe, image: ImageIcon, sticky: StickyNote, session: MessageSquare, view: LayoutDashboard,
 }
 export const KIND_NAME: Record<CardKind, string> = {
   page: 'page', diagram: 'diagram', note: 'note', excerpt: 'excerpt', diff: 'diff', terminal: 'terminal',
-  web: 'web', image: 'image', sticky: 'sticky', session: 'session',
+  web: 'web', image: 'image', sticky: 'sticky', session: 'session', view: 'app view',
 }
 
 const fence = (code: string, language: string) => ({ code, isIncomplete: false, language }) as unknown as CustomRendererProps
@@ -250,6 +252,13 @@ export function LiveBody({ card, source, editing }: { card: Card; source: Source
       return <ImageBody s={source} title={card.title} />
     case 'session':
       return <SessionBody id={source.session} title={card.title} />
+    case 'view':
+      // Live and shielded on the canvas; entered, the view takes pointer, wheel and keys (pan, zoom, click in the graph).
+      return (
+        <Suspense fallback={<Pending />}>
+          <ViewCard path={source.path} interactive={editing} />
+        </Suspense>
+      )
   }
 }
 

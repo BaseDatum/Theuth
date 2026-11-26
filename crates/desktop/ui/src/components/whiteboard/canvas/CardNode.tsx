@@ -1,8 +1,10 @@
 // §8.5 card chrome: title bar (title + kind), stacked edge and the `v2 of 3` scrubber, dimmed + tag chip, placeholder
 // shimmer, selected outline + four handles, entered border; a shield over every live body until the card is entered.
 import { Handle, NodeResizer, NodeToolbar, Position, type Node, type NodeProps } from '@xyflow/react'
-import { ChevronLeft, ChevronRight, ExternalLink, EyeOff, Eye, Archive, Pin, PinOff } from 'lucide-react'
+import { useNavigate } from '@tanstack/react-router'
+import { ChevronLeft, ChevronRight, ExternalLink, EyeOff, Eye, Archive, PanelRight, Pin, PinOff } from 'lucide-react'
 import { memo, useRef, useState } from 'react'
+import { openViewFromCard } from '@/components/tiles/open'
 import { useStore as useZustand } from 'zustand'
 import { CardBoundary, Chip, KIND_NAME, LiveBody, Snapshot } from './cards/bodies'
 import { useCanvas } from './context'
@@ -13,6 +15,7 @@ import { CardInk } from './InkLayer'
 import { toAbsolute, type CardNodeData } from './binding'
 import { isBare } from './send'
 import { useResizeEnd } from './resize'
+import { viewCardPath } from '../view-card'
 
 export type CardNodeType = Node<CardNodeData, 'card'>
 
@@ -48,10 +51,22 @@ function Scrubber({ card }: { card: Card }) {
   )
 }
 
+/** A view card's route in a pane (on a phone: the route itself). Only view cards mount it: it needs the app router. */
+function OpenInPane({ path, title }: { path: string; title: string }) {
+  const navigate = useNavigate()
+  return (
+    <button type="button" onClick={() => openViewFromCard({ path, title: title || undefined }, { navigate: (href) => void navigate({ href }) })}>
+      <PanelRight className="size-4" /> Open in pane
+    </button>
+  )
+}
+
 function Toolbar({ card }: { card: Card }) {
   const { doc, open, stopCapturing, readOnly } = useCanvas()
   const [tagging, setTagging] = useState(false)
   const [tag, setTag] = useState('')
+  const source = card.kind === 'view' ? versionOf(card)?.source : undefined
+  const viewPath = source?.t === 'view' ? viewCardPath(source.path) : null
   if (tagging) {
     return (
       <form
@@ -77,6 +92,7 @@ function Toolbar({ card }: { card: Card }) {
       <button type="button" onClick={() => open(card.id)}>
         <ExternalLink className="size-4" /> Open
       </button>
+      {viewPath && <OpenInPane path={viewPath} title={card.title} />}
       {!readOnly && (
         <>
           <span className="sep" />

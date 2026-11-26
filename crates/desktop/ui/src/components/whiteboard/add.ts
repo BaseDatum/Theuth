@@ -17,6 +17,7 @@ export const SIZE: Record<CardKind, [number, number]> = {
   web: [320, 240],
   note: [320, 240],
   session: [320, 240],
+  view: [560, 400],
 }
 
 export type Spot = (w: number, h: number) => { x: number; y: number }

@@ -1143,9 +1143,57 @@ pub(crate) fn check_source(kind: CardKind, mut s: Source, session: uuid::Uuid) -
         Source::Sticky { text } if text.chars().count() > 280 => {
             return Err("sticky text is over the 280-character limit; use a note card for more".into());
         }
+        Source::View { path } => *path = view_path(path)?,
         _ => {}
     }
     Ok(s)
+}
+
+/// Exact view routes a `view` card takes — the twin of `VALID_EXACT_PATHS` in the UI's `lib/view-catalog.ts`.
+const VIEW_EXACT: &[&str] = &[
+    "/attention", "/agents", "/agents/new", "/tasks", "/tasks/graph", "/routines", "/routines/new", "/autoresearch",
+    "/autoresearch/new", "/artifacts", "/knowledge", "/skills", "/notes", "/whiteboards", "/notebooks", "/meetings",
+    "/meetings/new", "/meetings/briefs", "/secrets", "/costs", "/settings", "/library", "/tools",
+];
+
+/// `/<section>/<segment>` routes (`VALID_PARAM_PATTERNS`); `/agents` and `/routines` take a second segment,
+/// `/knowledge` any depth. `/whiteboards/<id>` is left out: a whiteboard inside a card could hold itself.
+const VIEW_PARAM: &[&str] = &[
+    "tasks", "notebooks", "notes", "agents", "routines", "meetings", "autoresearch", "knowledge", "artifacts",
+    "attention", "skills", "sources", "settings", "tile/plugin",
+];
+
+/// A `view` card's path: one of the app's view routes (the UI's view catalog), with its query kept.
+pub(crate) fn view_path(raw: &str) -> Result<String, String> {
+    let p = raw.trim();
+    let refuse = || {
+        Err(format!(
+            "a view card takes an app view path such as /tasks/graph?project=<name>, /tasks or /agents; {} is not one",
+            outline::quote(p, 80)
+        ))
+    };
+    let scheme = p.split_once(':').is_some_and(|(s, _)| {
+        s.starts_with(|c: char| c.is_ascii_alphabetic())
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+    });
+    if !p.starts_with('/') || p.contains("..") || scheme || p.chars().count() > 512 {
+        return refuse();
+    }
+    let (pathname, suffix) = p.split_at(p.find(['?', '#']).unwrap_or(p.len()));
+    let pathname = if pathname.len() > 1 { pathname.strip_suffix('/').unwrap_or(pathname) } else { pathname };
+    let param = VIEW_PARAM.iter().any(|section| {
+        let rest = pathname.strip_prefix('/').and_then(|r| r.strip_prefix(section)).and_then(|r| r.strip_prefix('/'));
+        let Some(rest) = rest.filter(|r| !r.is_empty()) else {
+            return false;
+        };
+        let max = match *section {
+            "knowledge" => usize::MAX,
+            "agents" | "routines" => 2,
+            _ => 1,
+        };
+        rest.split('/').count() <= max && rest.split('/').all(|s| !s.is_empty())
+    });
+    if VIEW_EXACT.contains(&pathname) || param { Ok(format!("{pathname}{suffix}")) } else { refuse() }
 }
 
 impl DocumentActor {
@@ -1747,6 +1795,22 @@ mod tests {
         ] {
             let e = web(bad).expect_err(bad);
             assert!(e.contains("http(s) URL"), "{e}");
+        }
+    }
+
+    #[test]
+    fn view_cards_take_app_view_paths_only() {
+        let view = |p: &str| check_source(CardKind::View, Source::View { path: p.into() }, uuid::Uuid::nil());
+        for (ok, stored) in [
+            ("/tasks/graph?project=theuth", "/tasks/graph?project=theuth"),
+            (" /tasks/ ", "/tasks"),
+            ("/agents/ada/desk", "/agents/ada/desk"),
+            ("/knowledge/a/b/c", "/knowledge/a/b/c"),
+        ] {
+            assert!(matches!(view(ok), Ok(Source::View { path }) if path == stored), "{ok}");
+        }
+        for bad in ["/whiteboards/01J0", "/c/abc", "/new", "tasks", "https://x.y/tasks", "/tasks/../c/x", "/tasks/a/b", ""] {
+            assert!(view(bad).expect_err(bad).contains("app view path"), "{bad}");
         }
     }
 }

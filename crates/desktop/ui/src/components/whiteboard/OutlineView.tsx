@@ -17,9 +17,10 @@ export const KIND_LABEL: Record<Card['kind'], string> = {
   image: 'image',
   sticky: 'sticky',
   session: 'session',
+  view: 'app view',
 }
 
-const VERSIONED = new Set<Card['kind']>(['page', 'excerpt', 'diff', 'terminal', 'web', 'image', 'session'])
+const VERSIONED = new Set<Card['kind']>(['page', 'excerpt', 'diff', 'terminal', 'web', 'image', 'session', 'view'])
 
 /** One card's spoken label: alias, title, kind, version, state, tag. */
 export function cardLabel(card: Card, alias: string | undefined): string {

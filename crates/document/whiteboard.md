@@ -7,7 +7,7 @@ description: "How to work on a whiteboard — the canvas the user arranges (mock
 
 A whiteboard is an infinite canvas the user keeps open full screen (usually an iPad with a Pencil).
 On it are **cards** — pages (live `.html` mocks), diagrams, notes, code excerpts, diffs, terminals,
-web pages, images, stickies and sessions — that **stay where they are put**, explicit **links**
+web pages, images, stickies, sessions and live app views — that **stay where they are put**, explicit **links**
 between cards, **frames** that group cards, and the user's **ink**. You talk to the user through a
 small composer in the corner of that canvas; what you make lands on the canvas, not in the chat.
 At the end of a session the whiteboard *is* the spec: every direction tried, the ones rejected
@@ -73,7 +73,7 @@ One item per line:
 | `c3 page "Mock B — flat list" v2/2 · live` | a card: alias, kind, title, `vN/N` = it has N versions and shows the newest (stickies, notes and diagrams have none), state |
 | `· dimmed "header kept; grouping rejected"` | a rejected or superseded direction, with its reason |
 | `· placeholder` | reserved, still being made (by you or another session) |
-| `· 3 lines · #7419` | a sticky's size and a change detector; `#dea4` on a diagram likewise; an excerpt shows `path#L10-L24`, a web card its host. When the `#xxxx` changes, the content changed — `wb_card` it |
+| `· 3 lines · #7419` | a sticky's size and a change detector; `#dea4` on a diagram likewise; an excerpt shows `path#L10-L24`, a web card its host, a view card its route (`/tasks/graph?project=theuth`). When the `#xxxx` changes, the content changed — `wb_card` it |
 | `l1 c4 → c5 "drives"` | an explicit link (`→` one way, `↔` both, `—` none) with its label |
 | `m4 on c3 v2 · sent · "page says: tab bar, item 3" · handwriting: "no third tab"` | a **mark**: a cluster of the user's ink they sent, on card c3 as it was at version 2 (or `on canvas`). `sent` = waiting for you; `pinned` = a lasting annotation the user keeps. The quoted parts are captions, see below |
 | `… 12 more cards — wb_read(frame="f2") for one frame` | the outline was cut; read one frame at a time |
@@ -172,6 +172,7 @@ A `source` is `{"t": <kind>, …}` and `t` must equal the card's kind:
 | `terminal` | `{"t": "terminal", "job": "j3"}` |
 | `web` | `{"t": "web", "url": "https://…"}` |
 | `session` | `{"t": "session", "session": "<session id>"}` |
+| `view` | `{"t": "view", "path": "/tasks/graph?project=<project>"}` — a live app view: the task graph, the task board (`/tasks`), agents (`/agents`), any app view path (`pane_list` lists them; not `/whiteboards/<id>`). It stays live and the user works in it; `wb_crop` shows its last stored snapshot, which can lag the live data |
 
 `session` defaults to yours on `page`, `diff`, `terminal` and `image`.
 
@@ -313,5 +314,6 @@ Variants."*
   `whiteboard="<id>"`.
 - `… source.t is sticky but the card is a page …` — `t` must match the card's kind.
 - `… over the 280-character limit …` — a sticky is short; use a `note` card for more.
+- `… a view card takes an app view path …` — `path` must be an app view route such as `/tasks/graph?project=<name>`.
 - `wb_crop: no snapshot stored for c3 yet …` — no client has rendered it; read it with `wb_card`.
 - `this is a whiteboard; use the wb_* tools …` — a `doc_*` call on a whiteboard.

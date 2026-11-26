@@ -3,7 +3,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, MessageSquare, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import type { CustomRendererProps } from 'streamdown'
 import { useText } from '@/components/chat/ArtifactCard'
 import { HtmlPage } from '@/components/chat/HtmlPage'
@@ -22,6 +22,9 @@ import type { Card, Source } from './canvas/model'
 import { versionOf } from './canvas/model'
 import { KIND_LABEL } from './OutlineView'
 import { webUrl } from './add'
+
+// Lazy: it pulls the route tree, which holds the whiteboard route itself.
+const ViewCard = lazy(() => import('./canvas/cards/ViewCard'))
 
 function PageBody({ session, callId, title }: { session: string; callId: string; title: string }) {
   const api = useApi()
@@ -106,6 +109,14 @@ function Body({ card, source, blobUrl, onSession }: { card: Card; source: Source
           <button type="button" onClick={() => onSession(source.session)} className="flex items-center gap-2 rounded-lg bg-layer-2 px-3 py-2 text-sm">
             <MessageSquare className="size-4" /> Open the session
           </button>
+        </div>
+      )
+    case 'view':
+      return (
+        <div className="relative h-full">
+          <Suspense fallback={null}>
+            <ViewCard path={source.path} interactive />
+          </Suspense>
         </div>
       )
   }

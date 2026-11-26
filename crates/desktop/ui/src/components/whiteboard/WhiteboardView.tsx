@@ -33,6 +33,7 @@ import { CardSheet } from './CardSheet'
 import { OutlineView, outlineText } from './OutlineView'
 import { type SessionPick, WhiteboardComposer, useSessionTitle } from './WhiteboardComposer'
 import { asUrl, excerptOf, parseFileRef, place, placeFromClipboard, placeImage } from './add'
+import { ViewPicker } from './ViewPicker'
 import { bubbleAnchor, lastReply } from './reply'
 import type { PlannedImage, SendPlan, WhiteboardCanvasHandle } from './canvas/api'
 import type { Board, Id, Meta } from './canvas/model'
@@ -120,6 +121,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   const [outline, setOutline] = useState(phone)
   const [openCard, setOpenCard] = useState<Id | null>(null)
   const [chooser, setChooser] = useState<Chooser | null>(null)
+  const [pickingView, setPickingView] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
   // ── Sessions: the target (R1: none → the first send makes one), the bound list (R12 chip, picker).
@@ -427,6 +429,8 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
           })
         case 'image':
           return fileInput.current?.click()
+        case 'view':
+          return setPickingView(true)
         case 'clipboard': {
           const id = await placeFromClipboard(d, spot, host.blobPut)
           return id ? select(id) : notify('The clipboard is empty')
@@ -483,7 +487,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
       notify.error(e instanceof Error ? e.message : String(e))
     }
   }
-  const addable: Record<AddKind, boolean> = { sticky: true, note: true, web: true, image: true, clipboard: true, artifact: !!session, excerpt: !!session, diff: !!session, terminal: !!session && terminals.length > 0 }
+  const addable: Record<AddKind, boolean> = { sticky: true, note: true, web: true, image: true, view: true, clipboard: true, artifact: !!session, excerpt: !!session, diff: !!session, terminal: !!session && terminals.length > 0 }
 
   // ── Keyboard (desktop, full window): V H P E L F N O, ⌘0, ⌘↵, Esc.
   useEffect(() => {
@@ -599,7 +603,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
     canUndo: handle.current?.canUndo() ?? false,
     canRedo: handle.current?.canRedo() ?? false,
     more,
-    addable: readOnly ? { sticky: false, note: false, web: false, image: false, clipboard: false, artifact: false, excerpt: false, diff: false, terminal: false } : addable,
+    addable: readOnly ? { sticky: false, note: false, web: false, image: false, view: false, clipboard: false, artifact: false, excerpt: false, diff: false, terminal: false } : addable,
   }
 
   return (
@@ -627,6 +631,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
                   {!readOnly && <ToolbarButton onClick={() => void add('note')}>Add note</ToolbarButton>}
                   {!readOnly && <ToolbarButton onClick={() => void add('web')}>Add web page</ToolbarButton>}
                   {!readOnly && <ToolbarButton onClick={() => void add('image')}>Add image</ToolbarButton>}
+                  {!readOnly && <ToolbarButton onClick={() => void add('view')}>Add app view</ToolbarButton>}
                   {!readOnly && <ToolbarButton onClick={() => void add('clipboard')}>Paste</ToolbarButton>}
                   <ToolbarButton onClick={() => handle.current?.undo()}>Undo</ToolbarButton>
                   <ToolbarButton onClick={() => handle.current?.redo()}>Redo</ToolbarButton>
@@ -716,6 +721,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
       />
       {card && <CardSheet card={card} phone={phone} blobUrl={host.blobUrl} onClose={() => setOpenCard(null)} onSession={(s) => openSession(s)} />}
       {chooser && <ChooserDialog c={chooser} onDone={() => setChooser(null)} />}
+      {pickingView && <ViewPicker onPick={(path, t) => select(place(provider.doc, spot, 'view', t, { t: 'view', path }))} onDone={() => setPickingView(false)} />}
       <input
         ref={fileInput}
         type="file"

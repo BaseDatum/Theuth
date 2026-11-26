@@ -8,7 +8,7 @@ export const ENGINE = 'engine'    // provider.ts#L16 literal
 
 export type Id = string
 export type By = 'owner' | `session:${string}`
-export type CardKind = 'page' | 'diagram' | 'note' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'sticky' | 'session'
+export type CardKind = 'page' | 'diagram' | 'note' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'sticky' | 'session' | 'view'
 export type Source =
   | { t: 'page'; session: string; call_id: string }
   | { t: 'diagram'; lang: 'json-render' | 'openui' | 'mermaid'; code: string }
@@ -20,6 +20,8 @@ export type Source =
   | { t: 'image'; session?: string; call_id?: string; path?: string; blob?: string }
   | { t: 'sticky'; text: string }
   | { t: 'session'; session: string }
+  /** A live app view: an app route (`/tasks/graph?project=…`) rendered inside the card. */
+  | { t: 'view'; path: string }
 export type Version = { source: Source; at: number; by: By; note?: string }
 export type DevicePreset = 'phone' | 'tablet' | 'desktop' | 'auto' | 'custom'
 export type DeviceViewport = { w: number; h: number; preset: DevicePreset }
@@ -57,7 +59,7 @@ export type Board = {
 
 type Raw = Record<string, unknown>
 
-const CARD_KINDS: readonly CardKind[] = ['page', 'diagram', 'note', 'excerpt', 'diff', 'terminal', 'web', 'image', 'sticky', 'session']
+const CARD_KINDS: readonly CardKind[] = ['page', 'diagram', 'note', 'excerpt', 'diff', 'terminal', 'web', 'image', 'sticky', 'session', 'view']
 const CARD_STATES: readonly CardState[] = ['live', 'dimmed', 'archived']
 const PORTS: readonly Port[] = ['top', 'right', 'bottom', 'left']
 const FRAME_COLOURS: readonly FrameColour[] = ['neutral', 'blue', 'green', 'amber', 'red', 'violet']
@@ -136,6 +138,7 @@ function readSource(v: unknown, kind: CardKind): Source | null {
     }
     case 'sticky': return str(s.text) !== undefined ? { t: 'sticky', text: s.text as string } : null
     case 'session': return str(s.session) !== undefined ? { t: 'session', session: s.session as string } : null
+    case 'view': return str(s.path) !== undefined ? { t: 'view', path: s.path as string } : null
   }
 }
 

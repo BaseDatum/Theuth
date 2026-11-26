@@ -30,6 +30,7 @@ pub fn default_size(kind: CardKind, device: Option<&str>) -> (f64, f64) {
         CardKind::Diagram => (360.0, 260.0),
         CardKind::Excerpt | CardKind::Diff | CardKind::Terminal => (420.0, 300.0),
         CardKind::Image | CardKind::Web | CardKind::Note | CardKind::Session => (320.0, 240.0),
+        CardKind::View => (560.0, 400.0),
     }
 }
 

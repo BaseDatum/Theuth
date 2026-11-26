@@ -37,7 +37,7 @@ function Shell({ s }: { s: WbStore }) {
       h(Cluster, {
         store: s, onActivity: () => timer.activity(), onAdd() {}, onFit() {}, onOutline() {}, onUndo() {}, onRedo() {},
         canUndo: false, canRedo: false, more: null, onHold: timer.hold,
-        addable: { sticky: true, note: true, artifact: true, excerpt: true, diff: true, terminal: true, web: true, image: true, clipboard: true },
+        addable: { sticky: true, note: true, artifact: true, excerpt: true, diff: true, terminal: true, web: true, image: true, view: true, clipboard: true },
       }),
   )
 }
