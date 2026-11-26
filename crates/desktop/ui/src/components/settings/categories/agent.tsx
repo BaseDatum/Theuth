@@ -21,6 +21,6 @@ export const agent: SettingsCategory = {
     { required: {"methods":["get_external_settings","set_external_setting"],"topics":[]}, id: 'external-secrets', label: 'Secrets', icon: KeyRound, Component: SecretsSettingsTab },
     { required: {"methods":["list_models","set_advisor_default_effort","set_advisor_default_model","set_advisor_immune_turns","set_advisor_max_consults","set_advisor_notes_per_update","set_advisor_sync_backlog","set_model_favorite"],"topics":[]}, id: 'advisor', label: 'Advisor', icon: Eye, Component: Advisor },
     { required: {"methods":["autoresearch.mechanism","autoresearch.settings.get","autoresearch.settings.set","list_models","list_schedules","set_model_favorite"],"topics":[]}, id: 'autoresearch', label: 'Autoresearch', icon: FlaskConical, Component: Autoresearch },
-    { required: {"methods":["add_acp","list_acp","list_acp_registry","remove_acp"],"topics":[]}, id: 'harnesses', label: 'Harnesses', icon: Bot, Component: Agents },
+    { required: {"methods":["acp_login","add_acp","list_acp","list_acp_registry","remove_acp"],"topics":[]}, id: 'harnesses', label: 'Harnesses', icon: Bot, Component: Agents },
   ],
 }
