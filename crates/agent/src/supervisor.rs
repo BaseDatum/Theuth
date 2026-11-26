@@ -11647,6 +11647,24 @@ impl Message<ListProviders> for Agents {
     }
 }
 
+impl Agents {
+    /// Make a saved custom provider live: into the gateway map (its key is read live from the
+    /// vault, 162 D5), then list its models (162 D4: the same writer as Refresh). A failed listing
+    /// keeps the existing list and comes back as its error. The caller reloads the catalog.
+    async fn upsert_provider(
+        &self,
+        name: &str,
+        g: &crate::providers::Gateway,
+    ) -> Result<(), String> {
+        self.auth
+            .gateways
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_owned(), g.clone());
+        self.list_gateway(name, g).await.map(drop)
+    }
+}
+
 impl Message<AddProvider> for Agents {
     type Reply = Result<ProviderInfo, String>;
 
@@ -11676,18 +11694,114 @@ impl Message<AddProvider> for Agents {
             g.runtime,
         )
         .await?;
-        self.auth
-            .gateways
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(m.name.clone(), g.clone());
-        // 162 D4: the same writer as Refresh; a failed listing keeps the existing list.
-        if let Err(e) = self.list_gateway(&m.name, &g).await {
+        if let Err(e) = self.upsert_provider(&m.name, &g).await {
             tracing::warn!(provider = %m.name, "{e}; keeping the existing list");
         }
         self.reload_catalog().await;
         self.provider_info(&m.name)
             .ok_or_else(|| format!("no provider {}", m.name))
+    }
+}
+
+use crate::{
+    ApplyProviders, ExportProviders, ExportedProviders, ProviderSyncResult, ProviderSyncStatus,
+};
+
+impl Message<ExportProviders> for Agents {
+    type Reply = ExportedProviders;
+
+    async fn handle(
+        &mut self,
+        m: ExportProviders,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> ExportedProviders {
+        let (mut rows, skipped) = crate::providers::export(&self.rt.data_dir, m.names.as_deref());
+        if m.include_keys {
+            for r in &mut rows {
+                r.key = self.auth.key(&r.name).filter(|k| !k.is_empty());
+            }
+        }
+        ExportedProviders { rows, skipped }
+    }
+}
+
+impl Message<ApplyProviders> for Agents {
+    type Reply = Vec<ProviderSyncResult>;
+
+    /// The target of a mesh copy: each row is upserted on its own (one bad row fails only its
+    /// line), the live ones list their models concurrently, then one catalog reload.
+    async fn handle(
+        &mut self,
+        m: ApplyProviders,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<ProviderSyncResult> {
+        let line = |name: &str, status, detail: Option<String>| ProviderSyncResult {
+            name: name.to_owned(),
+            status,
+            detail,
+        };
+        let secrets = match crate::providers::secrets_actor() {
+            Ok(a) => a,
+            Err(e) => {
+                return m
+                    .rows
+                    .iter()
+                    .map(|r| line(&r.name, ProviderSyncStatus::Error, Some(e.clone())))
+                    .collect();
+            }
+        };
+        let mut results = Vec::with_capacity(m.rows.len());
+        let mut live = Vec::new();
+        for row in &m.rows {
+            match crate::providers::apply(&self.rt.data_dir, &secrets, row).await {
+                Err(e) => results.push(line(&row.name, ProviderSyncStatus::Error, Some(e))),
+                Ok((replaced, mut g)) => {
+                    let status = if replaced {
+                        ProviderSyncStatus::Updated
+                    } else {
+                        ProviderSyncStatus::Added
+                    };
+                    g.key = crate::providers::sent_key(row)
+                        .map(str::to_owned)
+                        .or_else(|| self.auth.key(&row.name).filter(|k| !k.is_empty()))
+                        .unwrap_or_default();
+                    if g.key.is_empty() && !g.local() {
+                        // As at start (`providers::load`): no key, not live; an old row goes.
+                        self.auth
+                            .gateways
+                            .write()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&row.name);
+                        let why = format!(
+                            "saved, not active: this engine's vault has no `{}` key yet; copy again \
+                             with API keys, or restart once the vault has it",
+                            row.name
+                        );
+                        results.push(line(&row.name, status, Some(why)));
+                    } else {
+                        live.push((results.len(), row.name.as_str(), g));
+                        results.push(line(&row.name, status, None));
+                    }
+                }
+            }
+        }
+        let listed = futures::future::join_all(
+            live.iter()
+                .map(|(_, name, g)| self.upsert_provider(name, g)),
+        )
+        .await;
+        for ((i, _, _), r) in live.iter().zip(listed) {
+            if let Err(e) = r {
+                results[*i].detail = Some(format!("saved; {e}"));
+            }
+        }
+        if results
+            .iter()
+            .any(|r| r.status != ProviderSyncStatus::Error)
+        {
+            self.reload_catalog().await;
+        }
+        results
     }
 }
 

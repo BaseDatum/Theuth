@@ -8,7 +8,8 @@
 //!   [`ListModels`], [`SetModel`], [`GetDefaultModel`], [`SetEffort`], [`GetDefaultEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
-//!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`RefreshProviderModels`], [`NewSession`],
+//!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`RefreshProviderModels`],
+//!   [`ExportProviders`], [`ApplyProviders`], [`NewSession`],
 //!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`], [`Ancestors`],
 //!   [`ContextItems`], [`RemoveContext`], [`GetTodos`]; continuation/activity transitions in [`continuation`]
 //! - communication policy and peer contracts (design doc 50) in [`communication`]:
@@ -2900,6 +2901,109 @@ impl RefreshedModels {
             )
         }
     }
+}
+
+/// One `providers.yaml` row as a mesh copy carries it (`sync_providers` → the target's
+/// `apply_providers`). `key` is sent only when the copy asked for keys; otherwise the target uses
+/// the vault secret of `name` it already has (the vault replicates).
+#[derive(Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ProviderRow {
+    /// The provider's name (`rwx` → `rwx/model`); also its vault secret's name.
+    pub name: String,
+    /// Base URL as stored (`https://host/v1/`).
+    pub base_url: String,
+    /// 177: the runtime preset it was added with.
+    #[serde(default)]
+    pub runtime: Option<LocalRuntime>,
+    /// The row's hand-set wire protocol; `None`: by host.
+    #[serde(default)]
+    pub protocol: Option<providers::GatewayProtocol>,
+    /// R2-3: the vault secret of `name` is this provider's own (its add stored it).
+    #[serde(default)]
+    pub owns_key: bool,
+    /// The API key, only when the copy includes keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+impl fmt::Debug for ProviderRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderRow")
+            .field("name", &self.name)
+            .field("base_url", &self.base_url)
+            .field("runtime", &self.runtime)
+            .field("protocol", &self.protocol)
+            .field("owns_key", &self.owns_key)
+            .field("key", &self.key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// What a mesh copy did with one provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderSyncStatus {
+    /// A new row on the target.
+    Added,
+    /// Replaced the target's row of the same name.
+    Updated,
+    /// Not sent (its base URL is loopback, or no such provider here).
+    Skipped,
+    /// The target refused or failed to store it.
+    Error,
+}
+
+/// One provider's line of a mesh copy report.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ProviderSyncResult {
+    /// The provider's name.
+    pub name: String,
+    /// What happened to it.
+    pub status: ProviderSyncStatus,
+    /// Why it was skipped or failed, or what still needs doing (its key, a failed model listing).
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// Reply of `sync_providers`: the target engine and one result per provider.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ProviderSyncReport {
+    /// The target engine's mesh id.
+    pub target: String,
+    /// Skipped rows first, then the target's answer per sent row.
+    pub results: Vec<ProviderSyncResult>,
+}
+
+/// `ask` → [`ExportedProviders`]: this engine's `providers.yaml` rows for a mesh copy.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ExportProviders {
+    /// Only these names; `None`: every row.
+    #[serde(default)]
+    pub names: Option<Vec<String>>,
+    /// Attach each row's vault key.
+    #[serde(default)]
+    pub include_keys: bool,
+}
+
+/// Reply of [`ExportProviders`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, kameo::Reply)]
+pub struct ExportedProviders {
+    /// The rows to send.
+    pub rows: Vec<ProviderRow>,
+    /// Rows not sent, with why ([`ProviderSyncStatus::Skipped`]).
+    pub skipped: Vec<ProviderSyncResult>,
+}
+
+/// `ask` → `Vec<ProviderSyncResult>`: upsert mesh-copied rows by name into `providers.yaml`,
+/// store a sent key, and make them live; one result per row.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplyProviders {
+    /// The rows, as [`ExportProviders`] produced them on the sender.
+    pub rows: Vec<ProviderRow>,
 }
 
 /// `ask` → `Vec<LocalServer>`: probe the default local runtime ports on

@@ -308,6 +308,26 @@ pub trait AgentSettingsApi {
     /// List a provider's models again (custom: `GET {base}models`; opencode/openrouter: their list) and reload the catalog (162).
     #[method(name = "refresh_provider_models")]
     async fn refresh_provider_models(&self, name: String) -> RpcResult<RefreshedModels>;
+    /// Copy this engine's custom providers (`providers.yaml` rows; `names`: only those) to mesh
+    /// engine `to`, whose `apply_providers` upserts them by name. Keys stay here unless
+    /// `include_keys` (the vault replicates; the target uses its own copy). A row whose address
+    /// is loopback points at this machine and comes back `skipped`. The owner's press only; a
+    /// target without `apply_providers` is an error naming the update it needs.
+    #[method(name = "sync_providers", with_extensions)]
+    async fn sync_providers(
+        &self,
+        to: String,
+        names: Option<Vec<String>>,
+        include_keys: Option<bool>,
+    ) -> RpcResult<agent::ProviderSyncReport>;
+    /// The target of `sync_providers`: upsert `rows` into `providers.yaml` by name (other rows
+    /// stay), store a sent key in the vault (a keyless row never deletes one), and make them
+    /// live without a restart. One result per row; a failed model listing does not fail the row.
+    #[method(name = "apply_providers", with_extensions)]
+    async fn apply_providers(
+        &self,
+        rows: Vec<agent::ProviderRow>,
+    ) -> RpcResult<Vec<agent::ProviderSyncResult>>;
     /// 177 E8: what answers on the default local runtime ports of 127.0.0.1
     /// (11434, 1234, 8000, 8080); 1.5 s at most. Never adds anything.
     #[method(name = "local_servers_probe")]
@@ -826,6 +846,70 @@ impl AgentSettingsApiServer for Server {
 
     async fn refresh_provider_models(&self, name: String) -> RpcResult<RefreshedModels> {
         ask::<Agents, _>(agent::AGENT_ACTOR, RefreshProviderModels { name }).await
+    }
+
+    async fn sync_providers(
+        &self,
+        ext: &Extensions,
+        to: String,
+        names: Option<Vec<String>>,
+        include_keys: Option<bool>,
+    ) -> RpcResult<agent::ProviderSyncReport> {
+        if !secrets::rpc::human_press(ext) {
+            return Err(jsonrpsee::types::ErrorObjectOwned::owned(
+                rpc_core::UNAUTHORIZED,
+                "copying providers to another engine needs the owner's press",
+                None::<()>,
+            ));
+        }
+        let here = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+        if to.is_empty() || to == here.engine() {
+            return Err(rpc_core::failed("pick another engine to copy to"));
+        }
+        let exported = ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::ExportProviders {
+                names,
+                include_keys: include_keys.unwrap_or(false),
+            },
+        )
+        .await?;
+        let mut results = exported.skipped;
+        if !exported.rows.is_empty() {
+            let peer = replica::PeerId(to.clone());
+            // The target lists each provider's models (up to 10 s, concurrently) before it answers.
+            let wait = forward::TIMEOUT + std::time::Duration::from_secs(15);
+            let applied: Option<Vec<agent::ProviderSyncResult>> =
+                forward::to_peer_within(ext, &peer, "apply_providers", (&exported.rows,), wait)
+                    .await
+                    .map_err(|e| {
+                        if e.code() == jsonrpsee::types::error::METHOD_NOT_FOUND_CODE {
+                            rpc_core::failed(format!(
+                                "engine {} needs a theuth update to take copied providers",
+                                to.get(..8).unwrap_or(&to)
+                            ))
+                        } else {
+                            e
+                        }
+                    })?;
+            let Some(applied) = applied else {
+                return Err(forward::unreachable(to, "not connected").await);
+            };
+            results.extend(applied);
+        }
+        Ok(agent::ProviderSyncReport {
+            target: to,
+            results,
+        })
+    }
+
+    async fn apply_providers(
+        &self,
+        ext: &Extensions,
+        rows: Vec<agent::ProviderRow>,
+    ) -> RpcResult<Vec<agent::ProviderSyncResult>> {
+        rpc_core::owner(ext)?;
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::ApplyProviders { rows }).await
     }
 
     async fn local_servers_probe(&self) -> RpcResult<Vec<agent::LocalServer>> {

@@ -13,7 +13,7 @@ use kameo::actor::ActorRef;
 use models::{Limit, Model, Provider};
 use serde::{Deserialize, Serialize};
 
-use crate::LocalRuntime;
+use crate::{LocalRuntime, ProviderRow, ProviderSyncResult, ProviderSyncStatus};
 
 /// One custom provider (named endpoint, OpenAI-compatible unless its `protocol` says otherwise).
 #[derive(Clone, Debug, Default)]
@@ -31,7 +31,8 @@ pub(crate) struct Gateway {
 }
 
 /// `protocol:` of a `providers.yaml` row: which genai adapter speaks to the endpoint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum GatewayProtocol {
     /// OpenAI chat completions (`…/chat/completions`, Bearer).
@@ -517,6 +518,100 @@ pub async fn remove(
     remove_models(data_dir, name)
 }
 
+/// The sender of a mesh copy (`sync_providers`): this engine's `providers.yaml` rows (`names`:
+/// only those), keyless. A loopback base URL points at this machine, not the target's, so that
+/// row is skipped; so is a named provider with no row here.
+pub(crate) fn export(
+    data_dir: &Path,
+    names: Option<&[String]>,
+) -> (Vec<ProviderRow>, Vec<ProviderSyncResult>) {
+    let rows = read_file(data_dir);
+    let skip = |name: &str, why: &str| ProviderSyncResult {
+        name: name.to_owned(),
+        status: ProviderSyncStatus::Skipped,
+        detail: Some(why.to_owned()),
+    };
+    let mut out = Vec::new();
+    let mut skipped = Vec::new();
+    if let Some(names) = names {
+        for name in names.iter().filter(|n| !rows.contains_key(n.as_str())) {
+            skipped.push(skip(name, "no such provider on this engine"));
+        }
+    }
+    for (name, entry) in rows {
+        if names.is_some_and(|n| !n.contains(&name)) {
+            continue;
+        }
+        if crate::local::loopback_url(&entry.base_url) {
+            skipped.push(skip(
+                &name,
+                "its address is loopback: it points at this machine, not the target",
+            ));
+            continue;
+        }
+        out.push(ProviderRow {
+            owns_key: entry.owns_key(),
+            name,
+            base_url: entry.base_url,
+            runtime: entry.runtime,
+            protocol: entry.protocol,
+            key: None,
+        });
+    }
+    (out, skipped)
+}
+
+/// Upsert `row` into `rows` by name (the same name is replaced, every other row kept);
+/// `Ok(true)`: it replaced one. A sent key makes the row own its vault secret.
+fn merge(rows: &mut BTreeMap<String, Entry>, row: &ProviderRow) -> Result<bool, String> {
+    let entry = Entry {
+        base_url: normalize_url(&row.base_url)?,
+        runtime: row.runtime,
+        owns_key: Some(row.owns_key || sent_key(row).is_some()),
+        protocol: row.protocol,
+    };
+    validate_name(&row.name, entry.local())?;
+    Ok(rows.insert(row.name.clone(), entry).is_some())
+}
+
+/// A mesh-copied row's key, when one was sent and is not blank.
+pub(crate) fn sent_key(row: &ProviderRow) -> Option<&str> {
+    row.key.as_deref().map(str::trim).filter(|k| !k.is_empty())
+}
+
+/// The target of a mesh copy (`apply_providers`): upsert `row` into `providers.yaml` and store
+/// a sent key in the vault (source `provider sync`). A keyless row never deletes a vault secret:
+/// the vault replicates, so the target's copy of the key is the one to use. Returns whether it
+/// replaced a row, and the gateway as stored (its `key` empty; the caller fills it).
+pub(crate) async fn apply(
+    data_dir: &Path,
+    actor: &ActorRef<secrets::SecretsActor>,
+    row: &ProviderRow,
+) -> Result<(bool, Gateway), String> {
+    let mut rows = read_file(data_dir);
+    let replaced = merge(&mut rows, row)?;
+    if let Some(key) = sent_key(row) {
+        actor
+            .ask(secrets::Set {
+                name: row.name.clone(),
+                value: key.to_owned(),
+                note: Some(format!("custom provider {} key", row.name)),
+                source: "provider sync".into(),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let e = &rows[&row.name];
+    let g = Gateway {
+        base_url: e.base_url.clone(),
+        key: String::new(),
+        runtime: e.runtime,
+        protocol: e.protocol,
+    };
+    write_file(data_dir, rows)?;
+    Ok((replaced, g))
+}
+
 fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     let mut open = std::fs::OpenOptions::new();
@@ -919,5 +1014,129 @@ mod tests {
             std::fs::read_to_string(dir.join("models.json")).unwrap(),
             "{ not json"
         );
+    }
+
+    fn row(name: &str, url: &str, key: Option<&str>) -> ProviderRow {
+        ProviderRow {
+            name: name.into(),
+            base_url: url.into(),
+            runtime: None,
+            protocol: None,
+            owns_key: true,
+            key: key.map(Into::into),
+        }
+    }
+
+    /// A mesh copy upserts by name: a new name is added, the same name replaced, every other
+    /// row kept; an illegal name changes nothing.
+    #[test]
+    fn merge_upserts_by_name_and_keeps_others() {
+        let mut rows = BTreeMap::new();
+        assert!(!merge(&mut rows, &row("a", "https://a.example/v1", None)).unwrap());
+        assert!(!merge(&mut rows, &row("b", "https://b.example/v1", None)).unwrap());
+        let mut gw = row("a", "https://a2.example/v1", None);
+        gw.protocol = Some(GatewayProtocol::Anthropic);
+        assert!(merge(&mut rows, &gw).unwrap(), "same name replaces");
+        assert_eq!(rows["a"].base_url, "https://a2.example/v1/");
+        assert_eq!(rows["a"].protocol, Some(GatewayProtocol::Anthropic));
+        assert_eq!(rows["b"].base_url, "https://b.example/v1/");
+        assert!(merge(&mut rows, &row("openai", "https://x.example/v1", None)).is_err());
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["a", "b"]);
+    }
+
+    /// The target side: a keyless row keeps the vault key it already has (replicated), a sent
+    /// key is stored, other rows stay in the file.
+    #[tokio::test]
+    async fn apply_keyless_row_keeps_the_vault_key() {
+        use kameo::actor::Spawn;
+        use std::sync::Arc;
+        let scratch = crate::test_dir("prov-apply");
+        let dir = scratch.path().to_path_buf();
+        let vault = Arc::new(
+            secrets::Vault::open(&dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let actor = secrets::SecretsActor::spawn(secrets::SecretsActor::new(
+            vault.clone(),
+            rt,
+            std::time::Duration::from_secs(1),
+        ));
+        let key = |n: &str| vault.get(n, 0).map(|k| k.as_str().to_owned());
+        save(&dir, &actor, "gw", "https://old.example/v1", "k-here", None)
+            .await
+            .unwrap();
+        save(
+            &dir,
+            &actor,
+            "keep",
+            "https://keep.example/v1",
+            "k-keep",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (replaced, g) = apply(&dir, &actor, &row("gw", "https://new.example/v1", None))
+            .await
+            .unwrap();
+        assert!(replaced);
+        assert_eq!(
+            (g.base_url.as_str(), g.key.as_str()),
+            ("https://new.example/v1/", "")
+        );
+        assert_eq!(
+            key("gw").as_deref(),
+            Some("k-here"),
+            "a keyless row never deletes"
+        );
+        let loaded = load(&dir, Some(&vault));
+        assert_eq!(loaded["gw"].base_url, "https://new.example/v1/");
+        assert_eq!(loaded["keep"].key, "k-keep");
+
+        let (replaced, _) = apply(
+            &dir,
+            &actor,
+            &row("fresh", "https://f.example/v1", Some(" k-sent ")),
+        )
+        .await
+        .unwrap();
+        assert!(!replaced);
+        assert_eq!(key("fresh").as_deref(), Some("k-sent"));
+        assert_eq!(load(&dir, Some(&vault)).len(), 3);
+    }
+
+    /// The sender side: loopback rows point at the sender and are skipped (a LAN one is sent),
+    /// a named provider with no row is skipped, keys are never in the export.
+    #[test]
+    fn export_skips_loopback_and_unknown_names() {
+        let scratch = crate::test_dir("prov-export");
+        let dir = scratch.path();
+        std::fs::write(
+            dir.join("providers.yaml"),
+            "cloud:\n  base_url: https://c.example/v1/\n  protocol: gemini\n\
+             lan:\n  base_url: http://192.168.1.5:8000/v1/\n  runtime: omlx\n  owns_key: false\n\
+             loop:\n  base_url: http://localhost:11434/v1/\n",
+        )
+        .unwrap();
+        let (rows, skipped) = export(dir, None);
+        assert_eq!(
+            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["cloud", "lan"]
+        );
+        assert!(rows.iter().all(|r| r.key.is_none()));
+        assert_eq!(rows[0].protocol, Some(GatewayProtocol::Gemini));
+        assert!(rows[0].owns_key && !rows[1].owns_key);
+        assert_eq!(rows[1].runtime, Some(LocalRuntime::Omlx));
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(
+            (skipped[0].name.as_str(), skipped[0].status),
+            ("loop", ProviderSyncStatus::Skipped)
+        );
+
+        let (rows, skipped) = export(dir, Some(&["cloud".into(), "nope".into()]));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(skipped[0].name, "nope");
     }
 }
