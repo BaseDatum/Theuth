@@ -41537,6 +41537,26 @@
         },
         "type": "object"
       },
+      "method.agent.input.GatewayProtocol": {
+        "description": "`protocol:` of a `providers.yaml` row: which genai adapter speaks to the endpoint.",
+        "oneOf": [
+          {
+            "const": "openai",
+            "description": "OpenAI chat completions (`…/chat/completions`, Bearer).",
+            "type": "string"
+          },
+          {
+            "const": "gemini",
+            "description": "Gemini generateContent (`…/models/{id}:…`, `x-goog-api-key`).",
+            "type": "string"
+          },
+          {
+            "const": "anthropic",
+            "description": "Anthropic Messages (`…/messages`, `x-api-key`).",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.input.GraphCursor": {
         "description": "208 §4: where a client is in the delta stream.",
         "properties": {
@@ -41913,6 +41933,60 @@
           "id",
           "name",
           "text"
+        ],
+        "type": "object"
+      },
+      "method.agent.input.ProviderRow": {
+        "description": "One `providers.yaml` row as a mesh copy carries it (`sync_providers` → the target's\n`apply_providers`). `key` is sent only when the copy asked for keys; otherwise the target uses\nthe vault secret of `name` it already has (the vault replicates).",
+        "properties": {
+          "base_url": {
+            "description": "Base URL as stored (`https://host/v1/`).",
+            "type": "string"
+          },
+          "key": {
+            "description": "The API key, only when the copy includes keys.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The provider's name (`rwx` → `rwx/model`); also its vault secret's name.",
+            "type": "string"
+          },
+          "owns_key": {
+            "default": false,
+            "description": "R2-3: the vault secret of `name` is this provider's own (its add stored it).",
+            "type": "boolean"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.GatewayProtocol"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The row's hand-set wire protocol; `None`: by host."
+          },
+          "runtime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.LocalRuntime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "177: the runtime preset it was added with."
+          }
+        },
+        "required": [
+          "name",
+          "base_url"
         ],
         "type": "object"
       },
@@ -50025,6 +50099,83 @@
           "assumed_context"
         ],
         "type": "object"
+      },
+      "method.agent.output.ProviderSyncReport": {
+        "description": "Reply of `sync_providers`: the target engine and one result per provider.",
+        "properties": {
+          "results": {
+            "description": "Skipped rows first, then the target's answer per sent row.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.ProviderSyncResult"
+            },
+            "type": "array"
+          },
+          "target": {
+            "description": "The target engine's mesh id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "results"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.ProviderSyncResult": {
+        "description": "One provider's line of a mesh copy report.",
+        "properties": {
+          "detail": {
+            "default": null,
+            "description": "Why it was skipped or failed, or what still needs doing (its key, a failed model listing).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The provider's name.",
+            "type": "string"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.ProviderSyncStatus"
+              }
+            ],
+            "description": "What happened to it."
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.ProviderSyncStatus": {
+        "description": "What a mesh copy did with one provider.",
+        "oneOf": [
+          {
+            "const": "added",
+            "description": "A new row on the target.",
+            "type": "string"
+          },
+          {
+            "const": "updated",
+            "description": "Replaced the target's row of the same name.",
+            "type": "string"
+          },
+          {
+            "const": "skipped",
+            "description": "Not sent (its base URL is loopback, or no such provider here).",
+            "type": "string"
+          },
+          {
+            "const": "error",
+            "description": "The target refused or failed to store it.",
+            "type": "string"
+          }
+        ]
       },
       "method.agent.output.PtyChunk": {
         "description": "One `subscribe_pty` item.",
@@ -60938,6 +61089,82 @@
           "source"
         ],
         "type": "object"
+      },
+      "method.agent.receiver.ProviderSyncReport": {
+        "description": "Reply of `sync_providers`: the target engine and one result per provider.",
+        "properties": {
+          "results": {
+            "description": "Skipped rows first, then the target's answer per sent row.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.ProviderSyncResult"
+            },
+            "type": "array"
+          },
+          "target": {
+            "description": "The target engine's mesh id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "results"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.ProviderSyncResult": {
+        "description": "One provider's line of a mesh copy report.",
+        "properties": {
+          "detail": {
+            "default": null,
+            "description": "Why it was skipped or failed, or what still needs doing (its key, a failed model listing).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The provider's name.",
+            "type": "string"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.ProviderSyncStatus"
+              }
+            ],
+            "description": "What happened to it."
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.ProviderSyncStatus": {
+        "description": "What a mesh copy did with one provider.",
+        "oneOf": [
+          {
+            "const": "added",
+            "description": "A new row on the target.",
+            "type": "string"
+          },
+          {
+            "const": "updated",
+            "description": "Replaced the target's row of the same name.",
+            "type": "string"
+          },
+          {
+            "const": "skipped",
+            "description": "Not sent (its base URL is loopback, or no such provider here).",
+            "type": "string"
+          },
+          {
+            "const": "error",
+            "description": "The target refused or failed to store it.",
+            "type": "string"
+          }
+        ]
       },
       "method.agent.receiver.PtyChunk": {
         "description": "One `subscribe_pty` item.",
@@ -140537,6 +140764,41 @@
       "x-theuth-owner": "app"
     },
     {
+      "name": "apply_providers",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "rows",
+          "required": true,
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/method.agent.input.ProviderRow"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.ProviderSyncResult"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.ProviderSyncResult"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "archive_session",
       "paramStructure": "by-position",
       "params": [
@@ -161190,6 +161452,59 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "mcp-server"
+    },
+    {
+      "name": "sync_providers",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "to",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "names",
+          "required": false,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "include_keys",
+          "required": false,
+          "schema": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "includeKeys"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.ProviderSyncReport"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.ProviderSyncReport"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
     },
     {
       "name": "sync_skills",
