@@ -156,7 +156,7 @@ test('Subagents card: a harness child reads `omp · <model>`, a native one its m
   expect(slots().filter((s) => s === 'omp')).toEqual([])
 })
 
-test('Jobs fetch only while visible and expanded, poll every two seconds, tick, kill, open terminals and open the full sheet', async () => {
+test('Jobs fetch only while visible and expanded, poll every two seconds, tick, kill and open the full sheet; a PTY is never a job row', async () => {
   vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
   populate()
   await mount()
@@ -173,8 +173,10 @@ test('Jobs fetch only while visible and expanded, poll every two seconds, tick, 
   expect(api.list_jobs).toHaveBeenCalledTimes(2)
   await click('Kill')
   expect(api.cancel_job).toHaveBeenCalledWith('s1', 'j1')
-  await run(() => (document.querySelector('a[aria-label="Open terminal j2"]') as HTMLAnchorElement).click())
-  expect(openPopout).toHaveBeenCalledWith({ kind: 'pty', session: 's1', job: 'j2' })
+  // `list_jobs` also returns the PTY j2: it is a terminal, so the Jobs card never lists it.
+  expect(document.querySelector('[title="python3 -q"]')).toBeNull()
+  expect(document.querySelector('a[aria-label="Open terminal j2"]')).toBeNull()
+  expect([...document.querySelectorAll('button')].filter((b) => b.textContent === 'Kill')).toHaveLength(1)
   const opened = vi.fn()
   window.addEventListener('theuth:open', opened)
   await click('All jobs in ⋯ › Jobs')
@@ -361,7 +363,7 @@ test('several whiteboards (created, then another shown) give a dash each in orde
   expect(navigate).toHaveBeenLastCalledWith({ to: '/whiteboards/$id', params: { id: WB2 }, search: { session: 's1' } })
 })
 
-test('kernels left the chat for the bar: K1 dashes after terminals, pulsing while busy; a dash reveals the Kernels card with every row and its actions; the tile toggles it', async () => {
+test('kernels left the chat for the bar: K1 dashes after terminals, pulsing while busy; a dash reveals the Kernels card with every row and its actions; its header toggles it', async () => {
   kernels = [kernel({ type: 'shell', kind: 'zsh', path: '/bin/zsh' }, 'zsh 5.9', 'busy', '/Users/sky/work'), kernel({ type: 'python', path: '/usr/bin/python3' }, '.venv 3.12', 'ready'), kernel({ type: 'monty' }, 'Monty', 'closed')]
   useSessions.getState().ensure('s1')
   await mount()
@@ -387,13 +389,15 @@ test('kernels left the chat for the bar: K1 dashes after terminals, pulsing whil
   expect(section.textContent).not.toContain('Monty')
   expect([...section.querySelectorAll('button')].filter((b) => b.textContent === 'Restart')).toHaveLength(2)
   expect([...section.querySelectorAll('button')].filter((b) => b.textContent === 'Close')).toHaveLength(2)
-  // The card sits between Jobs and Reminders; its header says how many are live and busy.
+  // The card sits before Reminders; its header says how many are live and busy. A lone terminal opens no Jobs card,
+  // and the Kernels card is the category's only row (no duplicate tile).
   const headers = [...panel.querySelectorAll('button[data-slot="collapsible-trigger"]')].map((b) => b.textContent)
-  expect(headers).toEqual(['Jobs1 terminal', 'Kernels2 live · 1 busy', expect.stringMatching(/^Reminders/)])
-  const tile = [...panel.querySelectorAll('[data-tray-tiles] > button')].find((t) => t.textContent?.startsWith('Kernels'))!
-  expect(tile.textContent).toBe('Kernelszsh 5.9 · .venv 3.122')
-  expect(tile.getAttribute('aria-expanded')).toBe('true')
-  await run(() => (tile as HTMLButtonElement).click())
+  expect(headers).toEqual(['Kernels2 live · 1 busy', expect.stringMatching(/^Reminders/)])
+  expect([...panel.querySelectorAll('[data-tray-tiles] > *')].find((t) => t.textContent?.startsWith('Kernels'))).toBeUndefined()
+  expect([...section.querySelectorAll('[data-category-mark]')]).toHaveLength(2)
+  const header = [...panel.querySelectorAll<HTMLButtonElement>('button[data-slot="collapsible-trigger"]')].find((b) => b.textContent?.startsWith('Kernels'))!
+  expect(header.getAttribute('aria-expanded')).toBe('true')
+  await run(() => header.click())
   expect(useSessions.getState().sessions.s1?.kernelsExpanded).toBe(false)
   expect(panel.querySelector('[role="region"][aria-label="Kernels"]')).toBeNull()
 })
@@ -431,4 +435,67 @@ test('Folded Horizon warp: animates in on open, stays mounted through warp-down 
     vi.useRealTimers()
     rect.mockRestore()
   }
+})
+
+test('categories are disjoint: a PTY is only a terminal — never a job dash, job count or Jobs row', async () => {
+  populate()
+  await mount()
+  const groups = [...document.querySelectorAll('[data-dash-row] div[aria-label]')]
+  expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['2 subagents running', '1 jobs', '1 terminals', '1 reminders'])
+  expect(groups[1]!.querySelector('[aria-label^="Job j2"]')).toBeNull()
+  expect(groups[2]!.querySelector('[aria-label^="Terminal j2"]')).not.toBeNull()
+  await click('Show background activity')
+  const panel = document.getElementById('background-s1')!
+  const jobsHeader = [...panel.querySelectorAll<HTMLButtonElement>('button[data-slot="collapsible-trigger"]')].find((b) => b.textContent?.startsWith('Jobs'))!
+  expect(jobsHeader.textContent).toBe('Jobs1 running')
+  await run(() => jobsHeader.click())
+  const jobsBody = jobsHeader.parentElement!
+  expect(jobsBody.textContent).toContain('mbx test -p tools')
+  expect(jobsBody.textContent).not.toContain('python3 -q')
+  // One row per category in the single panel: no category title twice across tiles and card headers.
+  const names = [...panel.querySelectorAll('[data-tray-tiles] > *, button[data-slot="collapsible-trigger"]')].map((r) => r.textContent?.match(/^(To-do|Terminals|Subagents|Jobs|Kernels|Reminders|Artifacts|Browser|Whiteboard|Desktop|Code map)/)?.[0])
+  expect(names.filter(Boolean)).toEqual([...new Set(names.filter(Boolean))])
+  expect(names).toEqual(expect.arrayContaining(['Terminals', 'Subagents', 'Jobs', 'Reminders']))
+})
+
+test('jobRows keeps running non-PTY jobs only', async () => {
+  const { jobRows } = await import('./BackgroundArea')
+  expect(jobRows(jobs).map((j) => j.id)).toEqual(['j1'])
+  expect(jobRows([{ ...jobs[0]!, state: 'finished' }])).toEqual([])
+  expect(jobRows(undefined)).toEqual([])
+})
+
+test('every row of the panel — card headers, tiles and the rows inside cards — has the same vertical colour bar', async () => {
+  populate()
+  await mount()
+  await click('Show background activity')
+  const panel = document.getElementById('background-s1')!
+  for (const h of [...panel.querySelectorAll<HTMLButtonElement>('button[data-slot="collapsible-trigger"]')]) {
+    if (h.getAttribute('aria-expanded') === 'false') await run(() => h.click())
+  }
+  await run(() => undefined)
+  // No horizontal dash or round dot stands in for a marker anywhere in the panel.
+  expect(panel.querySelector('.activity-dash')).toBeNull()
+  expect(panel.querySelector('.subagent-dot')).toBeNull()
+  const marks = [...panel.querySelectorAll('[data-category-mark]')]
+  // Headers: to-do, subagents, jobs, reminders; tile: terminals; rows: 2 subagents, 1 job, 1 reminder.
+  expect(marks.length).toBeGreaterThanOrEqual(9)
+  const shape = (m: Element) => m.className.split(' ').filter((c) => ['h-4', 'w-1', 'rounded-full'].includes(c)).sort()
+  expect(marks.every((m) => shape(m).join() === 'h-4,rounded-full,w-1')).toBe(true)
+  expect(marks.every((m) => !/\b(w-4|w-0\.5|w-\[11px\]|h-\[5px\]|size-2)\b/.test(m.className))).toBe(true)
+  const tile = [...panel.querySelectorAll('[data-tray-tiles] > *')].find((t) => t.textContent?.startsWith('Terminals'))!
+  expect(tile.querySelector('[data-category-mark]')!.className).toContain('border-foreground')
+  const jobsHeader = [...panel.querySelectorAll('button[data-slot="collapsible-trigger"]')].find((b) => b.textContent?.startsWith('Jobs'))!
+  expect(jobsHeader.querySelector('[data-category-mark]')!.className).toContain(backgroundColors.jobs.bg)
+  const jobRow = panel.querySelector('[title="mbx test -p tools"]')!.parentElement!
+  expect(jobRow.querySelector('[data-category-mark]')!.className).toContain(backgroundColors.jobs.bg)
+})
+
+test('the open grabber pill is a lighter gray, never the accent colour', async () => {
+  const { readFileSync } = await import('node:fs')
+  const css = readFileSync(new URL('../../styles.css', import.meta.url), 'utf8')
+  const rule = css.slice(css.indexOf('[data-dash-row][data-open="true"] .tray-grabber-pill {'))
+  const open = rule.slice(0, rule.indexOf('}'))
+  expect(open).not.toMatch(/accent/)
+  expect(open).toContain('background-color: color-mix(in oklab, var(--fg-tertiary) 22%, transparent)')
 })

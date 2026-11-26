@@ -179,9 +179,9 @@ test('the bar fits its pane instead of pushing buttons out: tighter gaps and 32 
   expect(src).toContain("className={cn('mt-1 flex items-center gap-1', barFit(barTight))}")
   expect(src).toContain('const barTight = useNarrow(box, BAR_TIGHT_PX)')
   expect(src).not.toContain('BAR_TINY_PX')
-  // The shield is 28 px wide (the mock), never shed, and only pulses while an approval waits.
+  // The shield shares the row's icon box (shrunk with the rest by `barFit`), is never shed, and only pulses while an approval waits.
   const meta = readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')
-  expect(meta).toContain("'grid h-9 w-7 shrink-0 place-items-center")
+  expect(meta).toContain("className={cn(COMPOSER_ICON_BOX, 'grid place-items-center outline-none")
   expect(meta.match(/animate-pulse/g)).toHaveLength(1)
   expect(meta).toContain("waiting: { icon: Shield, tone: 'text-danger motion-safe:animate-pulse'")
 }, 30_000)
@@ -354,4 +354,23 @@ test('context button: the ring fills with the used share and warns from 80 %, da
   } finally {
     vi.useRealTimers()
   }
+})
+
+test('the composer row\'s icon buttons (+, tools, context, shield) share one box, one glyph size and one stroke', async () => {
+  const { COMPOSER_ICON, COMPOSER_ICON_BOX, COMPOSER_ICON_STROKE } = await import('./composer-icons')
+  expect(COMPOSER_ICON_BOX.split(' ')).toContain('size-9')
+  expect(COMPOSER_ICON).toBe('size-[18px]')
+  expect(COMPOSER_ICON_STROKE).toBe(2)
+  const read = (f: string) => readFileSync(new URL(f, import.meta.url), 'utf8')
+  const composer = read('./Composer.tsx')
+  const mcp = read('./McpMenu.tsx')
+  const meta = read('./ComposerMeta.tsx')
+  expect(composer).toContain('<Plus className={COMPOSER_ICON} strokeWidth={COMPOSER_ICON_STROKE} />')
+  expect(composer).toContain("className={cn(COMPOSER_ICON_BOX, 'text-fg-secondary', stage !== 'idle' && 'hidden')}")
+  expect(mcp).toContain('<Wrench className={COMPOSER_ICON} strokeWidth={COMPOSER_ICON_STROKE} />')
+  expect(mcp).toContain("className={cn(COMPOSER_ICON_BOX, 'text-fg-secondary', className)}")
+  expect(meta).toContain('<Icon className={COMPOSER_ICON} strokeWidth={COMPOSER_ICON_STROKE}')
+  expect(meta).toContain('<ContextRing pct={pct} className={COMPOSER_ICON} />')
+  expect(meta.match(/className=\{cn\(COMPOSER_ICON_BOX, 'grid place-items-center/g)).toHaveLength(2)
+  expect(mcp).not.toMatch(/size-5/)
 })

@@ -1369,7 +1369,8 @@ html .tg-canvas .tg-edge {
 }
 [data-dash-row][data-open="true"] .tray-grabber-pill {
   width: 3.5rem;
-  background-color: color-mix(in oklab, var(--fg-accent) 78%, transparent);
+  /* Open: a lighter gray than the closed pill's `bg-fg-tertiary/40`, no blue. */
+  background-color: color-mix(in oklab, var(--fg-tertiary) 22%, transparent);
 }
 @media (prefers-reduced-motion: no-preference) {
   .horizon-in {

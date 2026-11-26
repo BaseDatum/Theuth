@@ -9,6 +9,8 @@ import { isDesktop } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
+import { backgroundColors } from '@/lib/background-colors'
+import { CategoryMark } from '@/components/chat/CategoryMark'
 import type { Api } from '@/rpc/bindings/client'
 import type { KernelState } from "@/rpc/bindings/method.cells.output"
 import { useConnection } from '@/store/connection'
@@ -30,7 +32,8 @@ export const phaseText = (k: KernelState) => (k.phase === 'ready' ? 'idle' : k.p
  */
 export const kernelName = (k: KernelState) => (k.id.instance > 0 ? `${k.label} #${k.id.instance + 1}` : k.label)
 
-function KernelRow({ kernel, api, onError }: { kernel: KernelState; api: Api; onError(text: string | null): void }) {
+/** `inBar`: a row of the bar's panel, marked like every other row there (`CategoryMark`) instead of the status dot. */
+function KernelRow({ kernel, api, onError, inBar = false }: { kernel: KernelState; api: Api; onError(text: string | null): void; inBar?: boolean }) {
   const act = (f: () => Promise<unknown>) =>
     f().then(
       () => refresh(kernel.id.scope),
@@ -39,10 +42,14 @@ function KernelRow({ kernel, api, onError }: { kernel: KernelState; api: Api; on
   const dataDir = useConnection((s) => s.info?.data_dir)
   return (
     <div className="flex min-w-0 items-center gap-2 text-xs">
-      <span
-        aria-hidden
-        className={cn('size-2 shrink-0 rounded-full', kernel.phase === 'busy' || kernel.phase === 'starting' ? 'bg-fg-accent motion-safe:animate-pulse' : 'bg-success')}
-      />
+      {inBar ? (
+        <CategoryMark color={cn(backgroundColors.kernels.bg, kernel.phase !== 'ready' && 'motion-safe:animate-pulse')} />
+      ) : (
+        <span
+          aria-hidden
+          className={cn('size-2 shrink-0 rounded-full', kernel.phase === 'busy' || kernel.phase === 'starting' ? 'bg-fg-accent motion-safe:animate-pulse' : 'bg-success')}
+        />
+      )}
       <span className="shrink-0 text-fg-secondary">
         {kernelName(kernel)} · {phaseText(kernel)}
       </span>
@@ -121,7 +128,7 @@ export function KernelStrip({ session, inBar = false }: KernelStripProps) {
           </span>
         )}
         {inBar ? (
-          kernels.map((k) => <KernelRow key={JSON.stringify(k.id)} kernel={k} api={api} onError={setEnvError} />)
+          kernels.map((k) => <KernelRow key={JSON.stringify(k.id)} kernel={k} api={api} onError={setEnvError} inBar />)
         ) : kernels.length === 1 && first ? (
           <KernelRow kernel={first} api={api} onError={setEnvError} />
         ) : (

@@ -6,7 +6,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { type ReactNode, useMemo } from 'react'
-import { liveRows } from '@/components/agents/sessions'
 import { requirements as artifactRequirements } from '@/components/artifacts/requirements'
 import { CodeMapButton, useCodemapAvailable } from '@/components/codemap/CodeMapHost'
 import { requirements as codemapRequirements } from '@/components/codemap/requirements'
@@ -24,16 +23,15 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import type { Artifact } from '@/rpc/bindings/method.artifact.output'
 import { supports } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
-import { useScope } from '@/store/engine-scope'
 import { useBrowserBusy, useSessionField, useSessions } from '@/store/sessions'
 import { metaLine } from './ArtifactCard'
 import { type BrowserTarget, BrowserButton, hostOf, openTarget, targetLabel, useBrowserTargets } from './BrowserTargets'
 import { browserRequirements, terminalRequirements } from './requirements'
-import { ActivityDash, SubagentLink, TerminalLink } from './SubagentStrip'
+import { CategoryMark } from './CategoryMark'
+import { TerminalLink } from './SubagentStrip'
 import { TerminalButton, useHasTerminals, useTerminals } from './TerminalViewer'
 import { useOpenWhiteboard } from './WhiteboardViewCard'
 import { type SessionWhiteboard, useSessionWhiteboards } from '@/components/whiteboard/useSessionWhiteboards'
-import { kernelName, useSessionKernels } from '@/components/cells/KernelStrip'
 
 export type Tray = {
   session: string
@@ -170,12 +168,10 @@ function WhiteboardsButton({ tray, className, children }: { tray: Tray; classNam
 const TILE =
   'flex min-h-9 w-full min-w-0 shrink-0 items-center gap-2 rounded-xl border bg-background px-3 py-1.5 text-left outline-none hover:bg-layer-2 focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-expanded:bg-layer-2'
 
-function TileBody({ color, width, name, detail, count }: { color: string; width?: string; name: string; detail: string; count: number }) {
+function TileBody({ color, name, detail, count }: { color: string; name: string; detail: string; count: number }) {
   return (
     <>
-      <span className="flex h-2 shrink-0 items-center" aria-hidden>
-        <ActivityDash color={color} width={width} />
-      </span>
+      <CategoryMark color={color} />
       <span className="shrink-0 font-medium text-foreground">{name}</span>
       <span className="min-w-0 flex-1 truncate text-fg-tertiary">{detail}</span>
       <span className="shrink-0 text-fg-tertiary tabular-nums">{count}</span>
@@ -202,32 +198,17 @@ function TerminalsTile({ session, running }: { session: string; running: string[
 
 /**
  * The opened tray's grid, below the to-dos: one tile per kind with something in it. A tile with one item opens it; one
- * with several opens the list the header used to show (terminals: the viewer; subagents and jobs: their card below).
+ * with several opens the list the header used to show (terminals: the viewer). Subagents, jobs, kernels and reminders
+ * have no tile: their card below is their one row in the panel, so no category is listed twice.
  */
 export function TrayTiles({ tray }: { tray: Tray }) {
   const { session } = tray
-  const { sessions: store } = useScope()
-  const children = useSessionField(session, 'children')
-  const agents = useMemo(() => liveRows(children ?? {}), [children])
-  const jobs = useSessionField(session, 'jobs')
   const ptys = useSessionField(session, 'ptys')
   const terminals = useSessionField(session, 'terminals')
-  const subagentsExpanded = useSessionField(session, 'subagentsExpanded') ?? false
-  const jobsExpanded = useSessionField(session, 'jobsExpanded') ?? false
-  const kernelsExpanded = useSessionField(session, 'kernelsExpanded') ?? false
-  const kernels = useSessionKernels(session)
   const codemap = useSessionField(session, 'codemap')
   const running = useMemo(() => [...new Set([...(terminals ?? []), ...(ptys ?? [])])], [terminals, ptys])
-  const jobCount = jobs?.size ?? 0
   const tiles: ReactNode[] = []
   if (tray.terminals || running.length) tiles.push(<TerminalsTile key="terminals" session={session} running={running} />)
-  if (kernels.length) {
-    tiles.push(
-      <button key="kernels" type="button" className={TILE} aria-expanded={kernelsExpanded} onClick={() => store.getState().setBackgroundExpanded(session, 'kernels', !kernelsExpanded)}>
-        <TileBody color={backgroundColors.kernels.bg} name="Kernels" detail={kernels.map(kernelName).join(' · ')} count={kernels.length} />
-      </button>,
-    )
-  }
   if (tray.browsers.length) {
     tiles.push(
       <BrowserButton key="browser" targets={tray.browsers} busy={tray.browserBusy} onOpen={tray.openBrowser} className={TILE}>
@@ -245,25 +226,8 @@ export function TrayTiles({ tray }: { tray: Tray }) {
   if (tray.artifacts.length) {
     tiles.push(
       <ArtifactsButton key="artifacts" session={session} artifacts={tray.artifacts} className={TILE}>
-        <TileBody color={backgroundColors.artifacts.bg} width={backgroundColors.artifacts.dash} name="Artifacts" detail={tray.artifacts.map((a) => a.title).join(' · ')} count={tray.artifacts.length} />
+        <TileBody color={backgroundColors.artifacts.bg} name="Artifacts" detail={tray.artifacts.map((a) => a.title).join(' · ')} count={tray.artifacts.length} />
       </ArtifactsButton>,
-    )
-  }
-  if (agents.length) {
-    const body = <TileBody color={backgroundColors.subagents.bg} name="Subagents" detail={agents.map((a) => a.name).join(' · ')} count={agents.length} />
-    tiles.push(
-      agents.length === 1 ? (
-        <SubagentLink key="subagents" row={agents[0]!} className={TILE}>{body}</SubagentLink>
-      ) : (
-        <button key="subagents" type="button" className={TILE} aria-expanded={subagentsExpanded} onClick={() => store.getState().setBackgroundExpanded(session, 'subagents', !subagentsExpanded)}>{body}</button>
-      ),
-    )
-  }
-  if (jobCount) {
-    tiles.push(
-      <button key="jobs" type="button" className={TILE} aria-expanded={jobsExpanded} onClick={() => store.getState().setBackgroundExpanded(session, 'jobs', !jobsExpanded)}>
-        <TileBody color={backgroundColors.jobs.bg} name="Jobs" detail={`${jobCount} running`} count={jobCount} />
-      </button>,
     )
   }
   if (tray.vm) {
