@@ -57,7 +57,7 @@ test('foldRuns: a pinned thinking block splits a run like a deliverable; unpinne
 
 test('foldRuns: a deliverable never joins a run — it splits one; a board create still does; no deliverable, no change', () => {
   const [a, b, c, d] = [tool(1), tool(2), tool(3), tool(4)]
-  for (const name of ['show', 'app', 'agent_draft', 'task_draft', 'routine_draft', 'send_message']) {
+  for (const name of ['show', 'app', 'agent_draft', 'task_draft', 'routine_draft', 'send_message', 'show_view']) {
     const s = tool(9, { name })
     expect(isDeliverable(s)).toBe(true)
     expect(foldRuns([a, b, s, c, d])).toEqual([[a, b], s, [c, d]])

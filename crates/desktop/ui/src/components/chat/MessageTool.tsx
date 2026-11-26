@@ -18,6 +18,7 @@ import { NoteViewCard } from './NoteViewCard'
 import { WhiteboardViewCard } from './WhiteboardViewCard'
 import { FileViewCard } from './FileViewCard'
 import { DiffViewCard } from './DiffViewCard'
+import { ViewOpenedCard } from './ViewOpenedCard'
 import { RosterCard, rosterRows } from './RosterCard'
 import { Attachments } from './Attachments'
 import { fenced, plugins, shikiTheme } from './MessageAssistant'
@@ -103,6 +104,8 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
       <WebViewCard tool={tool} session={session} />
     ) : tool.name === 'browser_show_element' ? (
       <ElementFormCard tool={tool} session={session} readOnly={readOnly} />
+    ) : tool.name === 'show_view' ? (
+      <ViewOpenedCard tool={tool} session={session} />
     ) : tool.name === 'show_pty' ? (
       <PtyViewCard tool={tool} />
     ) : tool.name === 'show_note' ? (

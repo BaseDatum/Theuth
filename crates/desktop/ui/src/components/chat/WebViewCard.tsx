@@ -1,13 +1,15 @@
-import { AppWindow, ExternalLink, Globe, Maximize2, PanelRight } from 'lucide-react'
+import { AppWindow, ExternalLink, Globe, Maximize2 } from 'lucide-react'
+import { useTileOpen } from '@/components/tiles/open'
 import { Button } from '@/components/ui/button'
 import { useSidebarIsMobile } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { placeWeb, popOutWeb } from '@/lib/panes'
 import { canPopout } from '@/lib/popout'
 import { nativeWebViews } from '@/lib/web-view-native'
-import { openInBrowser, restoreWeb, useWebViews } from '@/lib/web-views'
+import { openInBrowser, restoreWeb, useWebViews, webLeaf } from '@/lib/web-views'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
+import { OpenLabel, openLabel } from './ViewOpenedCard'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 export type WebCall = { id: string | null; url: string; title: string }
@@ -53,6 +55,7 @@ function popOutCard(session: string, { id, url, title }: { id: string; url: stri
 export function WebViewCard({ tool, session }: { tool: Tool; session: string }) {
   const isMobile = useSidebarIsMobile()
   const call = webCall(tool)
+  const shown = useTileOpen(call.id ? webLeaf(call.id) : '')
   const failed = tool.result?.isError === true
   const running = !tool.interrupted && (tool.pending || !tool.result)
   const id = call.id
@@ -70,8 +73,14 @@ export function WebViewCard({ tool, session }: { tool: Tool; session: string }) 
         {running && <ToolSpinner />}
         {id && !external && (
           <Button variant="outline" size="sm" onClick={() => openWebView(session, { id, url: call.url, title: call.title }, full)}>
-            {full ? <Maximize2 /> : <PanelRight />}
-            Open
+            {full ? (
+              <>
+                <Maximize2 />
+                Open
+              </>
+            ) : (
+              <OpenLabel label={openLabel(true, shown)} />
+            )}
           </Button>
         )}
         {call.url && !failed && (

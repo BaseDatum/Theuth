@@ -1,4 +1,4 @@
-import { ChevronDown, FileDiff, PanelRight } from 'lucide-react'
+import { ChevronDown, FileDiff } from 'lucide-react'
 import { useState } from 'react'
 import { DiffBody, DiffLayoutToggle, INLINE_ROW_CAP, useDiffLayout } from '@/components/code/DiffBody'
 import { openDiffTile } from '@/components/tiles/open'
@@ -9,6 +9,7 @@ import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 import type { Entry } from '@/store/sessions'
 import { DiffStats } from './DiffView'
 import { ToolSpinner } from './Indicators'
+import { OpenLabel, openLabel, useHostTileOpen } from './ViewOpenedCard'
 import { PopoutButton } from './PopoutButton'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
@@ -58,6 +59,7 @@ export function DiffViewCard({ tool, session }: { tool: Tool; session: string })
   const host = useTileHost()
   const [inline, setInline] = useState(false)
   const call = diffCall(tool)
+  const shown = useHostTileOpen(host, 'diff', call.id ?? '')
   const failed = tool.result?.isError === true
   const running = !tool.interrupted && (tool.pending || !tool.result)
   const { id, spec, stats } = call
@@ -80,8 +82,14 @@ export function DiffViewCard({ tool, session }: { tool: Tool; session: string })
         {running && <ToolSpinner />}
         {id && spec && (
           <Button variant="outline" size="sm" aria-expanded={host ? undefined : inline} onClick={() => open(id, spec)}>
-            {host ? <PanelRight /> : <ChevronDown className={cn(inline && 'rotate-180')} />}
-            Open
+            {host ? (
+              <OpenLabel label={openLabel(true, shown)} />
+            ) : (
+              <>
+                <ChevronDown className={cn(inline && 'rotate-180')} />
+                Open
+              </>
+            )}
           </Button>
         )}
         {id && spec && <PopoutButton target={{ kind: 'diff', session, spec }} />}

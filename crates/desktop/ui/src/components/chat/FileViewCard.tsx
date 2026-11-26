@@ -1,4 +1,4 @@
-import { ChevronDown, FileCode, PanelRight } from 'lucide-react'
+import { ChevronDown, FileCode } from 'lucide-react'
 import { useState } from 'react'
 import { FileView, useFileFollow } from '@/components/code/FileView'
 import { openFileTile } from '@/components/tiles/open'
@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
+import { OpenLabel, openLabel, useHostTileOpen } from './ViewOpenedCard'
 import { PopoutButton } from './PopoutButton'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
@@ -51,6 +52,7 @@ export function FileViewCard({ tool, session }: { tool: Tool; session: string })
   const host = useTileHost()
   const [inline, setInline] = useState(false)
   const call = fileCall(tool)
+  const shown = useHostTileOpen(host, 'file', call.id ?? '')
   const failed = tool.result?.isError === true
   const running = !tool.interrupted && (tool.pending || !tool.result)
   const id = call.id
@@ -70,8 +72,14 @@ export function FileViewCard({ tool, session }: { tool: Tool; session: string })
         {running && <ToolSpinner />}
         {id && (
           <Button variant="outline" size="sm" aria-expanded={host ? undefined : inline} onClick={() => open(id)}>
-            {host ? <PanelRight /> : <ChevronDown className={cn(inline && 'rotate-180')} />}
-            Open
+            {host ? (
+              <OpenLabel label={openLabel(true, shown)} />
+            ) : (
+              <>
+                <ChevronDown className={cn(inline && 'rotate-180')} />
+                Open
+              </>
+            )}
           </Button>
         )}
         {id && call.path && <PopoutButton target={{ kind: 'file', session, path: call.path, ...lines(call.line, call.end_line) }} />}

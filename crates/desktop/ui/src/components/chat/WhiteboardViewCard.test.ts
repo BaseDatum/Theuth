@@ -57,7 +57,7 @@ const mount = async (node: ReactNode, host: string | null) => {
   await act(async () => root.render(h(SidebarProvider, null, h(TileHost.Provider, { value: host }, node))))
   return { el, root }
 }
-const openButton = (el: HTMLElement) => [...el.querySelectorAll('button')].find((b) => b.textContent === 'Open')!
+const openButton = (el: HTMLElement) => [...el.querySelectorAll('button')].find((b) => /^(Open|Reopen|Focus)$/.test(b.textContent ?? ''))!
 
 test('the transcript renders a created whiteboard as its card; Open puts the whiteboard tile beside the chat', async () => {
   const { el, root } = await mount(h(MessageTool, { tool: tool({ name: 'wb_create', callId: 'c1.1', child: true, args: { title: 'Checkout ideas' }, result: result(CREATED) }), session: 's1' }), 's1')

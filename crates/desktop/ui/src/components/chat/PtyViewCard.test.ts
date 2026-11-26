@@ -60,7 +60,7 @@ const mount = async (node: ReactNode, host: string | null) => {
   await act(async () => root.render(h(SidebarProvider, null, h(TileHost.Provider, { value: host }, node))))
   return { el, root }
 }
-const openButton = (el: HTMLElement) => [...el.querySelectorAll('button')].find((b) => b.textContent === 'Open')!
+const openButton = (el: HTMLElement) => [...el.querySelectorAll('button')].find((b) => /^(Open|Reopen|Focus)$/.test(b.textContent ?? ''))!
 
 test('Open puts the terminal tile beside the chat where the layout tiles', async () => {
   const { el, root } = await mount(h(PtyViewCard, { tool: tool({ result: result(RECEIPT) }) }), 's1')

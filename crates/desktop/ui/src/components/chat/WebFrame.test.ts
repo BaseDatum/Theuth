@@ -236,7 +236,7 @@ test('the card reads the frame from the receipt, the arguments while pending; Op
   expect(webCall(tool({ pending: true }))).toEqual({ id: null, url: 'localhost:3000', title: 'localhost:3000' })
   expect(webCall(done)).toEqual({ id: ID, url: 'http://localhost:3000/', title: 'Dev server' })
   const { host, root } = await mount(h(WebViewCard, { tool: done, session: 's1' }))
-  const open = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Open')!
+  const open = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Reopen')!
   await act(async () => open.click())
   expect(usePanes.getState().leaves).toEqual(['s1', W])
   expect(useWebViews.getState().views[ID]).toMatchObject({ session: 's1', url: 'http://localhost:3000/', title: 'Dev server' })
@@ -247,7 +247,7 @@ test('after a restart (empty store) the card pop-out records the frame as popped
   const { host, root } = await mount(h(WebViewCard, { tool: done, session: 's1' }))
   await act(async () => button(host, 'Open in new window').click())
   expect(useWebViews.getState().views[ID]).toMatchObject({ session: 's1', popped: true })
-  const open = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Open')!
+  const open = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Reopen')!
   await act(async () => open.click())
   expect(usePanes.getState().leaves).toEqual(['s1'])
   expect(openPopout).toHaveBeenCalledTimes(2)

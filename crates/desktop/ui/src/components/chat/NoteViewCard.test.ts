@@ -49,11 +49,13 @@ const mount = async (node: ReactNode, host: string | null) => {
   await act(async () => root.render(h(SidebarProvider, null, h(TileHost.Provider, { value: host }, node))))
   return { el, root }
 }
-const openButton = (el: HTMLElement) => [...el.querySelectorAll('button')].find((b) => b.textContent === 'Open')!
+const openButton = (el: HTMLElement) => [...el.querySelectorAll('button')].find((b) => /^(Open|Reopen|Focus)$/.test(b.textContent ?? ''))!
 
-test('Open puts the note tile beside the chat where the layout tiles', async () => {
+test('Open puts the note tile beside the chat where the layout tiles; the button reads Reopen, then Focus', async () => {
   const { el, root } = await mount(h(NoteViewCard, { tool: tool({ result: result(RECEIPT) }) }), 's1')
+  expect(openButton(el).textContent).toBe('Reopen')
   await act(async () => openButton(el).click())
+  expect(openButton(el).textContent).toBe('Focus')
   const id = tileId('note', 's1', DOC)
   expect(usePanes.getState().leaves).toEqual(['s1', tileLeaf(id)])
   expect(tileProps(id)).toEqual({ doc: DOC, title: 'Release plan', block: 'b7' })

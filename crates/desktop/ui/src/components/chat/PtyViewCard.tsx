@@ -10,6 +10,7 @@ import { canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
+import { OpenLabel, openLabel, useHostTileOpen } from './ViewOpenedCard'
 import { LiveJob } from './JobsSheet'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
@@ -46,6 +47,7 @@ export function PtyViewCard({ tool }: { tool: Tool }) {
   const navigate = useNavigate()
   const [log, setLog] = useState(false)
   const call = ptyCall(tool)
+  const shown = useHostTileOpen(host, call.pty ? 'job-terminal' : 'job-log', call.job ? `${call.job.session}/${call.job.job}` : '')
   const failed = tool.result?.isError === true
   const running = !tool.interrupted && (tool.pending || !tool.result)
   const job = call.job
@@ -70,8 +72,14 @@ export function PtyViewCard({ tool }: { tool: Tool }) {
         {running && <ToolSpinner />}
         {job && (
           <Button variant="outline" size="sm" aria-expanded={call.pty ? undefined : log} onClick={() => open(job)}>
-            {host || call.pty ? <PanelRight /> : <ChevronDown className={cn(log && 'rotate-180')} />}
-            Open
+            {host ? (
+              <OpenLabel label={openLabel(true, shown)} />
+            ) : (
+              <>
+                {call.pty ? <PanelRight /> : <ChevronDown className={cn(log && 'rotate-180')} />}
+                Open
+              </>
+            )}
           </Button>
         )}
         {job && call.pty && canPopout() && (

@@ -1,5 +1,5 @@
 import { useNavigate } from '@tanstack/react-router'
-import { AppWindow, PanelRight, Presentation } from 'lucide-react'
+import { AppWindow, Presentation } from 'lucide-react'
 import { notify as toast } from '@/lib/notify'
 import { openWhiteboardTile, type WhiteboardProps } from '@/components/tiles/open'
 import { useTileHost } from '@/components/tiles/host'
@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { canPopout, openPopout } from '@/lib/popout'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
+import { OpenLabel, openLabel, useHostTileOpen } from './ViewOpenedCard'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 /** `cards`: the count the receipt carried when the call ran (a summary, not live). */
@@ -67,6 +68,8 @@ export function useOpenWhiteboard(session: string): (props: WhiteboardProps) => 
 export function WhiteboardViewCard({ tool, session }: { tool: Tool; session: string }) {
   const open = useOpenWhiteboard(session)
   const call = whiteboardCall(tool)
+  const host = useTileHost()
+  const shown = useHostTileOpen(host, 'whiteboard', call.doc ?? '')
   const failed = tool.result?.isError === true
   const running = !tool.interrupted && (tool.pending || !tool.result)
   const doc = call.doc
@@ -82,8 +85,7 @@ export function WhiteboardViewCard({ tool, session }: { tool: Tool; session: str
         {running && <ToolSpinner />}
         {doc && (
           <Button variant="outline" size="sm" onClick={() => open(props(doc))}>
-            <PanelRight />
-            Open
+            <OpenLabel label={openLabel(host !== null, shown)} />
           </Button>
         )}
         {doc && canPopout() && (

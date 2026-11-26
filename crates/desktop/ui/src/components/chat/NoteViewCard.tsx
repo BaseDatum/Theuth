@@ -1,5 +1,5 @@
 import { useNavigate } from '@tanstack/react-router'
-import { AppWindow, FileText, PanelRight } from 'lucide-react'
+import { AppWindow, FileText } from 'lucide-react'
 import { notify as toast } from '@/lib/notify'
 import { type NoteProps, openNoteTile } from '@/components/tiles/open'
 import { useTileHost } from '@/components/tiles/host'
@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { canPopout, openPopout } from '@/lib/popout'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
+import { OpenLabel, openLabel, useHostTileOpen } from './ViewOpenedCard'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 export type NoteCall = { title: string; doc: string | null; block?: string }
@@ -35,6 +36,7 @@ export function NoteViewCard({ tool }: { tool: Tool }) {
   const host = useTileHost()
   const navigate = useNavigate()
   const call = noteCall(tool)
+  const shown = useHostTileOpen(host, 'note', call.doc ?? '')
   const failed = tool.result?.isError === true
   const running = !tool.interrupted && (tool.pending || !tool.result)
   const doc = call.doc
@@ -50,8 +52,7 @@ export function NoteViewCard({ tool }: { tool: Tool }) {
         {running && <ToolSpinner />}
         {doc && (
           <Button variant="outline" size="sm" onClick={() => open({ doc, title: call.title, ...(call.block ? { block: call.block } : {}) })}>
-            <PanelRight />
-            Open
+            <OpenLabel label={openLabel(host !== null, shown)} />
           </Button>
         )}
         {doc && canPopout() && (
