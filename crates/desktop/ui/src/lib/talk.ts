@@ -163,6 +163,9 @@ const levelSubs = new Set<(levels: number[]) => void>()
 /** The mic graph of the running talk, if this browser captures it (relay client); else `null`. */
 export const currentTap = (): Tap | null => tap
 
+/** The talk now, outside React (`useTalk` inside). */
+export const currentTalk = (): Talk => talk
+
 /** Each level packet (eight 20 ms RMS values, oldest first) of the talk. Returns the unsubscribe. */
 export function onLevels(cb: (levels: number[]) => void): () => void {
   levelSubs.add(cb)

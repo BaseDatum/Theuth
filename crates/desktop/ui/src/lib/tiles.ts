@@ -102,10 +102,11 @@ export function closeSessionTiles(session: string): void {
   forgetClosed((c) => c.spec.params.session === session)
 }
 
-/** Every tile closed: the engine they belong to was left, or the layout stopped tiling (below 768 px). */
+/** Every tile closed: the engine they belong to was left, or the layout stopped tiling (below 768 px). Neither is the
+ * user closing them (`onPaneClosed` stays quiet: a talk pane's talk keeps running). */
 export function closeAllTiles(): void {
   const { leaves } = usePanes.getState()
-  closeLeaves(leaves.filter((l) => isTile(l)), false)
+  closeLeaves(leaves.filter((l) => isTile(l)), false, true)
 }
 
 /**

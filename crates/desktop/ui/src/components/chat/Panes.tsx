@@ -43,6 +43,8 @@ import { crossLayout } from '@/lib/web-arrival'
 import { useWebViews } from '@/lib/web-views'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { PhoneWebView } from '@/components/chat/PhoneWebView'
+import { talkPaneToKeep } from '@/components/tiles/open'
+import * as talk from '@/lib/talk'
 
 /**
  * Drag a sidebar row onto the panes (`usePressDrag` owns the gesture and its DOM glue): a drop on a pane's edge band
@@ -348,11 +350,16 @@ export function Panes({ session, kinds, icons = NO_ICONS, render }: { session: s
   const focused = usePanes((s) => s.focused)
   const attached = usePanes((s) => s.ws !== null)
   const covered = useWebViews((s) => isMobile && s.front !== null && s.views[s.front] !== undefined)
+  const navigate = useNavigate()
   // The route's chat at the crossing, not on every navigation: `session` is read, not a dependency.
   useEffect(() => {
     if (!isMobile) return
+    // A talk running in its pane keeps running: its view becomes the page, as the pane goes with the other tiles.
+    const t = talk.currentTalk()
+    const talking = talkPaneToKeep(t.phase === 'off' ? null : t.session)
     closeAllTiles()
     crossLayout(true, session)
+    if (talking) void navigate({ to: '/talk/$session', params: { session: talking } })
   }, [isMobile])
   // Back to tiling: the page shown full screen becomes its tile, once the workspace is there to take it.
   useEffect(() => {

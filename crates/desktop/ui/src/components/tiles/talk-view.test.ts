@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { closeLeaves, onPaneClosed, tileLeaf, usePanes } from '@/lib/panes'
 import { tileProps, tiling, unmount, untile } from '@/lib/panes.testing'
-import { tileId } from '@/lib/tiles'
-import { openTalkView } from './open'
+import { closeAllTiles, tileId } from '@/lib/tiles'
+import { openTalkView, talkPaneToKeep } from './open'
 
 const talkLeaf = (session: string) => tileLeaf(tileId('view', '', `/talk/${session}`))
 const tree = () => usePanes.getState().leaves
@@ -68,4 +68,22 @@ test('the workspace unmounting (another page) does not count as the talk pane cl
   onPaneClosed(usePanes.getState().ws!, leaf, ended)
   unmount()
   expect(ended).not.toHaveBeenCalled()
+})
+
+test("crossing into the phone layout closes the talk pane without ending the talk, and names its session for the full view", () => {
+  const leaf = openTalkView('a', 'a', vi.fn())!
+  const ended = vi.fn()
+  const off = onPaneClosed(usePanes.getState().ws!, leaf, ended)
+  expect(talkPaneToKeep(null)).toBeNull()
+  expect(talkPaneToKeep('b')).toBeNull()
+  expect(talkPaneToKeep('a')).toBe('a')
+  closeAllTiles()
+  expect(tree()).toEqual(['a'])
+  expect(ended).not.toHaveBeenCalled()
+  // The next deliberate close is seen again: the layout flag does not stick.
+  off()
+  const again = openTalkView('a', 'a', vi.fn())!
+  onPaneClosed(usePanes.getState().ws!, again, ended)
+  closeLeaves([again])
+  expect(ended).toHaveBeenCalledTimes(1)
 })

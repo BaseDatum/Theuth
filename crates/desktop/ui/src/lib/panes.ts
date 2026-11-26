@@ -340,16 +340,25 @@ export const CLOSED_MAX = 10
 export type ClosedTile = { leaf: string; spec: ViewSpec; title: string; panelId: string; index: number }
 /** Leaves closing without a place in `closed`: a deleted chat's tiles, a draft renamed into its session. */
 const unrecorded = new Set<string>()
+/** True while the layout itself closes leaves (crossing into the phone layout), not the user: `onPaneClosed` stays
+ * quiet. Trellis emits a forced close synchronously, so the flag spans exactly those closes. */
+let relayout = false
 
 /** Close `ids` for good: through the workspace when one is mounted, else in the persisted document. A tile closed
- * through the workspace is remembered (`closed`) unless `remember` is false. */
-export function closeLeaves(ids: readonly string[], remember = true): void {
+ * through the workspace is remembered (`closed`) unless `remember` is false; `byLayout` marks closes the user did not
+ * ask for (the layout stopped tiling), which `onPaneClosed` hooks do not see. */
+export function closeLeaves(ids: readonly string[], remember = true, byLayout = false): void {
   const { ws } = usePanes.getState()
   if (!ws) return forget(ids)
   if (!remember) for (const id of ids) unrecorded.add(id)
-  op(() => {
-    for (const id of ids) void ws.close(id, { force: true })
-  })
+  relayout = byLayout
+  try {
+    op(() => {
+      for (const id of ids) void ws.close(id, { force: true })
+    })
+  } finally {
+    relayout = false
+  }
 }
 
 /** Remembered closed tiles that satisfy `drop` are forgotten (a deleted chat's). */
@@ -533,11 +542,12 @@ export function revealView(leaf: string): void {
   if (selected !== null && selected !== leaf && panel.views.includes(selected)) usePanes.setState({ selected: leaf })
 }
 
-/** `closed` runs when pane `leaf` closes for good (its ×, ⌥⌘W, a layout close) in `ws` — never on the workspace
- * unmounting (another page). Returns the unsubscribe. */
+/** `closed` runs when pane `leaf` is closed for good on purpose (its ×, ⌥⌘W, a layout op) in `ws` — never on the
+ * workspace unmounting (another page) nor the layout closing it (`closeLeaves`' `byLayout`: the phone layout). Returns
+ * the unsubscribe. */
 export function onPaneClosed(ws: WorkspaceHandle, leaf: string, closed: () => void): () => void {
   return ws.on('close', (v: ViewInfo) => {
-    if (v.id === leaf) closed()
+    if (v.id === leaf && !relayout) closed()
   })
 }
 

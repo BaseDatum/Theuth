@@ -181,6 +181,16 @@ export function openTalkView(session: string, host: string | null, navigate: (se
 }
 
 /**
+ * Crossing into the phone layout, before the tiles close: `live` (the running talk's session, `null` when none) when
+ * its talk pane is open, else `null`. The caller then shows that talk view full screen: the pane goes with the other
+ * tiles, the talk keeps running (`closeAllTiles` is no deliberate close).
+ */
+export function talkPaneToKeep(live: string | null): string | null {
+  if (live === null) return null
+  return usePanes.getState().leaves.includes(tileLeaf(tileId('view', '', `/talk/${encodeURIComponent(live)}`))) ? live : null
+}
+
+/**
  * A chat card's Open for a `show_view` call: an open `view` tile for `props.path` is revealed and selected; else it opens
  * with `show_view`'s placement (`applyLayoutOp` `open_view`): default `beside` joins the panel holding view tiles, else
  * right of `session`'s chat (default: the focused one); `replace` alone takes over `target`. Never closes another tile.
