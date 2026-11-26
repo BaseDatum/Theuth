@@ -10683,6 +10683,32 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.agent_2eprojects.output.ProjectsChanged": {
+        "description": "Event: a project row changed (create, update, style, delete), here or on another machine of the\nmesh. No body: reload with `projects_list` / `list_project_styles`.",
+        "properties": {
+          "type": {
+            "const": "ProjectsChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.agent_2eprojects.receiver.ProjectsChanged": {
+        "description": "Event: a project row changed (create, update, style, delete), here or on another machine of the\nmesh. No body: reload with `projects_list` / `list_project_styles`.",
+        "properties": {
+          "type": {
+            "const": "ProjectsChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
       "event.agent_2esuffixes.output.SuffixesChanged": {
         "description": "Event: the saved suffixes or a chat's \"every message\" suffix changed, here or on another\nmachine of the mesh. No body: reload with `list_suffixes` / `session_suffix`.",
         "properties": {
@@ -41939,9 +41965,23 @@
       "method.agent.input.ProviderRow": {
         "description": "One `providers.yaml` row as a mesh copy carries it (`sync_providers` → the target's\n`apply_providers`). `key` is sent only when the copy asked for keys; otherwise the target uses\nthe vault secret of `name` it already has (the vault replicates).",
         "properties": {
+          "account_of": {
+            "description": "An account instance of this login kind (`anthropic`), not a gateway.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "base_url": {
             "description": "Base URL as stored (`https://host/v1/`).",
             "type": "string"
+          },
+          "grant": {
+            "description": "An account's login grant (`oauth/<name>`, JSON), only when the copy includes keys.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "key": {
             "description": "The API key, only when the copy includes keys.",
@@ -49747,6 +49787,113 @@
         ],
         "type": "object"
       },
+      "method.agent.output.Project": {
+        "description": "One project as `projects_list` shows it.",
+        "properties": {
+          "color": {
+            "description": "Palette key (allow-listed, `project::COLORS`), `None` for the client's default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_ms": {
+            "description": "When the row was created, unix ms; `None` for a pre-223 style row or an implicit project.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "description": {
+            "description": "What the project is about.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icon": {
+            "description": "Lucide icon name (allow-listed, `project::ICONS`), `None` for the client's default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "implicit": {
+            "description": "No row: only the label exists, on sessions, tasks, docs, notebooks or meetings.",
+            "type": "boolean"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Free string → string metadata (repo URL, default cwd, links …).",
+            "type": "object"
+          },
+          "name": {
+            "description": "The label sessions, tasks, docs, notebooks and meetings carry; the key.",
+            "type": "string"
+          },
+          "status": {
+            "description": "`active` | `archived`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "status",
+          "icon",
+          "color",
+          "created_ms",
+          "metadata",
+          "implicit"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.ProjectDeleted": {
+        "description": "What `project_delete` detached, per store. A store that failed counts what it achieved.",
+        "properties": {
+          "docs": {
+            "description": "Notes and boards whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "meetings": {
+            "description": "Meetings whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "notebooks": {
+            "description": "Notebooks whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sessions": {
+            "description": "Root sessions whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tasks": {
+            "description": "Tasks whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions",
+          "tasks",
+          "docs",
+          "notebooks",
+          "meetings"
+        ],
+        "type": "object"
+      },
       "method.agent.output.ProjectStyle": {
         "description": "A project's icon and colour (51 §3 as-built): one row per styled project,\nkeyed by the label; both fields are allow-listed keys ([`project::ICONS`],\n[`project::COLORS`]) that every client maps through its own theme.",
         "properties": {
@@ -49880,6 +50027,14 @@
       "method.agent.output.ProviderInfo": {
         "description": "One provider row of the Connections view: a built-in or a custom provider.",
         "properties": {
+          "account_of": {
+            "default": null,
+            "description": "An account instance (`anthropic-work`) of this built-in login kind (`anthropic`):\nits key is the vault secret of its name, its login `oauth/<name>`; removable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "base_url": {
             "description": "OpenAI-compatible base URL (the fixed upstream URL for a built-in).",
             "type": "string"
@@ -49930,6 +50085,11 @@
             ],
             "default": null,
             "description": "177: the runtime preset the provider was added with, if any."
+          },
+          "supports_login": {
+            "default": false,
+            "description": "`login`/`logout` take this name (a subscription kind or one of its accounts).",
+            "type": "boolean"
           }
         },
         "required": [
@@ -49941,7 +50101,9 @@
           "refreshable",
           "local",
           "runtime",
-          "has_key"
+          "has_key",
+          "account_of",
+          "supports_login"
         ],
         "type": "object"
       },
@@ -60751,6 +60913,109 @@
         ],
         "type": "object"
       },
+      "method.agent.receiver.Project": {
+        "description": "One project as `projects_list` shows it.",
+        "properties": {
+          "color": {
+            "description": "Palette key (allow-listed, `project::COLORS`), `None` for the client's default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_ms": {
+            "description": "When the row was created, unix ms; `None` for a pre-223 style row or an implicit project.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "description": {
+            "description": "What the project is about.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icon": {
+            "description": "Lucide icon name (allow-listed, `project::ICONS`), `None` for the client's default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "implicit": {
+            "description": "No row: only the label exists, on sessions, tasks, docs, notebooks or meetings.",
+            "type": "boolean"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Free string → string metadata (repo URL, default cwd, links …).",
+            "type": "object"
+          },
+          "name": {
+            "description": "The label sessions, tasks, docs, notebooks and meetings carry; the key.",
+            "type": "string"
+          },
+          "status": {
+            "description": "`active` | `archived`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "metadata",
+          "implicit"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.ProjectDeleted": {
+        "description": "What `project_delete` detached, per store. A store that failed counts what it achieved.",
+        "properties": {
+          "docs": {
+            "description": "Notes and boards whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "meetings": {
+            "description": "Meetings whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "notebooks": {
+            "description": "Notebooks whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sessions": {
+            "description": "Root sessions whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tasks": {
+            "description": "Tasks whose label was cleared.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions",
+          "tasks",
+          "docs",
+          "notebooks",
+          "meetings"
+        ],
+        "type": "object"
+      },
       "method.agent.receiver.ProjectStyle": {
         "description": "A project's icon and colour (51 §3 as-built): one row per styled project,\nkeyed by the label; both fields are allow-listed keys ([`project::ICONS`],\n[`project::COLORS`]) that every client maps through its own theme.",
         "properties": {
@@ -60882,6 +61147,14 @@
       "method.agent.receiver.ProviderInfo": {
         "description": "One provider row of the Connections view: a built-in or a custom provider.",
         "properties": {
+          "account_of": {
+            "default": null,
+            "description": "An account instance (`anthropic-work`) of this built-in login kind (`anthropic`):\nits key is the vault secret of its name, its login `oauth/<name>`; removable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "base_url": {
             "description": "OpenAI-compatible base URL (the fixed upstream URL for a built-in).",
             "type": "string"
@@ -60932,6 +61205,11 @@
             ],
             "default": null,
             "description": "177: the runtime preset the provider was added with, if any."
+          },
+          "supports_login": {
+            "default": false,
+            "description": "`login`/`logout` take this name (a subscription kind or one of its accounts).",
+            "type": "boolean"
           }
         },
         "required": [
@@ -112116,6 +112394,14 @@
       "method.roster.input.TaskPatch": {
         "description": "`task_update` patch: `Some` = set, `None` = leave. Guarded transitions\n(`state` under a checkout, `done` needing a reviewer) are checked by the actor.",
         "properties": {
+          "accent": {
+            "default": null,
+            "description": "Accent colour: a name from [`ACCENTS`]; `\"\"` or `\"none\"` clears it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "attachments": {
             "default": null,
             "description": "Attached references, replaced whole; each added/removed one is an `attached`/`detached` event.",
@@ -112197,6 +112483,14 @@
             "default": null,
             "description": "Owner."
           },
+          "parent": {
+            "default": null,
+            "description": "Parent task id (the untyped hierarchy: any task may be a parent and a child, at any\ndepth); `\"\"` or `\"none\"` clears it. A parent that would make the task its own\nancestor is refused.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "priority": {
             "anyOf": [
               {
@@ -112211,7 +112505,7 @@
           },
           "project": {
             "default": null,
-            "description": "Project label.",
+            "description": "Project label; `\"\"` clears it.",
             "type": [
               "string",
               "null"
@@ -114479,6 +114773,14 @@
       "method.roster.output.Task": {
         "description": "The task record (67 §7.1).",
         "properties": {
+          "accent": {
+            "default": null,
+            "description": "Accent colour, a palette name from [`ACCENTS`]; `None` = no accent. Display only\n(graph cards, board cards); a child without one may show its nearest ancestor's.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "attachments": {
             "default": [],
             "description": "Things attached to the task (70 TASK-ATTACHMENTS): the same references a chat\nmessage carries (design 66) — notes, knowledge, artifacts, chats, meetings. A desk\nsees them as `[attached …]` lines under the brief and reads them with the per-kind tools.",
@@ -114712,7 +115014,8 @@
           "done_when",
           "attachments",
           "priority",
-          "home"
+          "home",
+          "accent"
         ],
         "type": "object"
       },
@@ -116899,6 +117202,14 @@
       "method.roster.receiver.Task": {
         "description": "The task record (67 §7.1).",
         "properties": {
+          "accent": {
+            "default": null,
+            "description": "Accent colour, a palette name from [`ACCENTS`]; `None` = no accent. Display only\n(graph cards, board cards); a child without one may show its nearest ancestor's.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "attachments": {
             "default": [],
             "description": "Things attached to the task (70 TASK-ATTACHMENTS): the same references a chat\nmessage carries (design 66) — notes, knowledge, artifacts, chats, meetings. A desk\nsees them as `[attached …]` lines under the brief and reads them with the per-kind tools.",
@@ -136405,6 +136716,14 @@
       "method.tasks.output.Task": {
         "description": "The task record (67 §7.1).",
         "properties": {
+          "accent": {
+            "default": null,
+            "description": "Accent colour, a palette name from [`ACCENTS`]; `None` = no accent. Display only\n(graph cards, board cards); a child without one may show its nearest ancestor's.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "attachments": {
             "default": [],
             "description": "Things attached to the task (70 TASK-ATTACHMENTS): the same references a chat\nmessage carries (design 66) — notes, knowledge, artifacts, chats, meetings. A desk\nsees them as `[attached …]` lines under the brief and reads them with the per-kind tools.",
@@ -136638,7 +136957,8 @@
           "done_when",
           "attachments",
           "priority",
-          "home"
+          "home",
+          "accent"
         ],
         "type": "object"
       },
@@ -136905,6 +137225,14 @@
       "method.tasks.receiver.Task": {
         "description": "The task record (67 §7.1).",
         "properties": {
+          "accent": {
+            "default": null,
+            "description": "Accent colour, a palette name from [`ACCENTS`]; `None` = no accent. Display only\n(graph cards, board cards); a child without one may show its nearest ancestor's.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "attachments": {
             "default": [],
             "description": "Things attached to the task (70 TASK-ATTACHMENTS): the same references a chat\nmessage carries (design 66) — notes, knowledge, artifacts, chats, meetings. A desk\nsees them as `[attached …]` lines under the brief and reads them with the per-kind tools.",
@@ -139629,6 +139957,51 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "roster"
+    },
+    {
+      "name": "add_account",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "suffix",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "key",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.ProviderInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.ProviderInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
     },
     {
       "name": "add_acp",
@@ -145210,6 +145583,32 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "roster"
+    },
+    {
+      "name": "device_delete",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "nodes"
     },
     {
       "name": "device_pair_start",
@@ -154564,6 +154963,212 @@
       "x-theuth-owner": "secrets"
     },
     {
+      "name": "project_create",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "description",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "icon",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "color",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "metadata",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.Project"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.Project"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "project_delete",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.ProjectDeleted"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.ProjectDeleted"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "project_update",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "description",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "status",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "icon",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "color",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "metadata",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.Project"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.Project"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "projects_list",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.Project"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.Project"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "promote_answer",
       "paramStructure": "by-position",
       "params": [
@@ -155010,6 +155615,29 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "refresh_all_models",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.RefreshedModels"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.RefreshedModels"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "refresh_provider_models",
       "paramStructure": "by-position",
       "params": [
@@ -155404,6 +156032,41 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.agent.receiver.PromptSection"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "reset_provider_models",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.RefreshedModels"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.RefreshedModels"
+          },
+          "type": "array"
         }
       },
       "x-theuth-audience": "owner",
@@ -163834,6 +164497,17 @@
           "$ref": "#/components/schemas/event.agent_2epeer_2dmessage.output.PeerMessageChanged"
         },
         "topic": "agent.peer-message",
+        "version": 1
+      },
+      {
+        "exposure": "public",
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.agent_2eprojects.receiver.ProjectsChanged"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.agent_2eprojects.output.ProjectsChanged"
+        },
+        "topic": "agent.projects",
         "version": 1
       },
       {
