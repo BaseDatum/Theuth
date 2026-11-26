@@ -1,6 +1,6 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Radar, RefreshCw, Trash2 } from 'lucide-react'
+import { ChevronRight, Copy, Radar, RefreshCw, Trash2 } from 'lucide-react'
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import {
@@ -47,13 +47,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
+import { machineRows, type MachineRow } from '@/components/chat/NewChatPane'
+import { useMesh } from '@/components/tasks/queries'
 import type { LocalServer } from "@/rpc/bindings/method.agent.output"
 import type { ProviderInfo } from "@/rpc/bindings/method.agent.output"
 import type { ProviderModel } from "@/rpc/bindings/method.agent.output"
 import type { LoginInfo } from "@/rpc/bindings/method.agent.output"
+import type { ProviderSyncReport, ProviderSyncStatus } from "@/rpc/bindings/method.agent.output"
 import { on } from '@/store/sessions'
 
 /** 188 A6: Settings › Models › Providers — every model provider with its key or login, then the AWS profile Bedrock signs with. */
@@ -275,7 +279,7 @@ function ProviderList() {
   )
 
   return (
-    <Section title="Providers">
+    <Section title="Providers" actions={custom.length + local.length > 0 && <CopyProviders />}>
       {rows.filter((p) => p.builtin).map(row)}
       {paired.alone.map((l) => (
         <Row
@@ -302,6 +306,87 @@ function ProviderList() {
       {providers.data && custom.length === 0 && <Empty>No custom providers yet.</Empty>}
       <CustomProviderForm form={form} names={names} onChange={setForm} pending={add.isPending} onSubmit={() => add.mutate(form)} />
     </Section>
+  )
+}
+
+const SYNC_STATUS: Record<ProviderSyncStatus, string> = { added: 'added', updated: 'updated', skipped: 'skipped', error: 'failed' }
+
+/**
+ * Copy providers to…: this engine's custom and local providers onto another mesh engine (`sync_providers`; the target
+ * upserts them by name). Keys stay here unless asked: the vault replicates, so the target normally has them already.
+ * Offline engines are listed but cannot be picked; the answer is one line per provider.
+ */
+export function CopyProviders() {
+  const canSync = useQuerySupport(['sync_providers'])
+  const api = useApi()
+  const machines = machineRows(useMesh().data).filter((m): m is MachineRow & { id: string } => m.id !== null)
+  const [open, setOpen] = useState(false)
+  const [withKeys, setWithKeys] = useState(false)
+  const [report, setReport] = useState<{ name: string; report: ProviderSyncReport } | null>(null)
+  const copy = useAction((m: { id: string; name: string }) => api.sync_providers(m.id, null, withKeys), {
+    onSuccess: (r, m) => setReport({ name: m.name, report: r }),
+  })
+  if (!canSync || machines.length === 0) return null
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o)
+        if (!o) setReport(null)
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button size="sm" variant="outline">
+          <Copy /> Copy providers to…
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[min(380px,calc(100vw-2rem))] space-y-3">
+        {report ? (
+          <>
+            <p className="text-sm font-medium">{`Copied to ${report.name}`}</p>
+            {report.report.results.length === 0 ? (
+              <p className="text-sm text-fg-tertiary">No providers to copy.</p>
+            ) : (
+              <ul className="space-y-1 text-sm">
+                {report.report.results.map((r) => (
+                  <li key={r.name}>
+                    <span className="font-mono">{r.name}</span> · <span className={r.status === 'error' ? 'text-destructive' : undefined}>{SYNC_STATUS[r.status]}</span>
+                    {r.detail && <span className="block text-[13px] text-fg-tertiary">{r.detail}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex justify-end">
+              <Button size="sm" variant="ghost" onClick={() => setReport(null)}>
+                Back
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-fg-secondary">Copy this engine's custom and local providers to another engine. Same-named providers there are replaced; others stay.</p>
+            <div className="space-y-1">
+              {machines.map((m) => (
+                <Button key={m.id} variant="ghost" className="h-auto w-full justify-between py-1.5" disabled={!m.online || copy.isPending} onClick={() => copy.mutate({ id: m.id, name: m.name })}>
+                  <span className="flex items-center gap-2">
+                    <Dot on={m.online} />
+                    {m.name}
+                  </span>
+                  <span className="text-[13px] text-fg-tertiary">{copy.isPending && copy.variables?.id === m.id ? 'Copying…' : m.status}</span>
+                </Button>
+              ))}
+            </div>
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={withKeys} onChange={(e) => setWithKeys(e.currentTarget.checked)} />
+              <span>
+                Include API keys
+                <span className="block text-[13px] text-fg-tertiary">Keys normally reach every engine through the vault; send them only if the target lacks them.</span>
+              </span>
+            </label>
+          </>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }
 
