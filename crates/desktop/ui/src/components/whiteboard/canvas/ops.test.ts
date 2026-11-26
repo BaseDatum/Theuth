@@ -5,7 +5,7 @@ import { pack, type Pt } from '../ink/pack'
 import { buildStrokes } from '../ink/stroke'
 import { hundredCards, strokes as fillStrokes } from './fixtures/generate'
 import { ENGINE, LOCAL, OWNER, readBoard } from './model'
-import { addCard, addStrokes, chunked, eraseStrokes, holdGroup, moveItems, patchCard, pinMark, pushVersion, removeFrame, addFrame, setSticky, dim, archive, restore } from './ops'
+import { addCard, addLink, addStrokes, chunked, eraseStrokes, holdGroup, moveItems, patchCard, pinMark, pushVersion, removeFrame, removeLink, addFrame, setSticky, dim, archive, restore } from './ops'
 import { createUndo } from './undo'
 import { dragEnd } from './binding'
 
@@ -192,6 +192,36 @@ describe('owner ops (§8.3, §2.9)', () => {
     expect(Object.keys(readBoard(doc).ink)).toHaveLength(5)
     undo.undo()
     expect(Object.keys(readBoard(doc).ink)).toHaveLength(4) // the strokes were drawn one undo step each
+  })
+
+  it("deleting an agent's frame and link with a card (a held group) is one undo step; the frame's cards come back framed", () => {
+    const doc = new Y.Doc()
+    const undo = createUndo(doc)
+    const engine = new Y.Doc()
+    const cards = Array.from({ length: 70 }, (_, i) => addCard(engine, { kind: 'sticky', title: `c${i}`, x: i * 10, y: 0, w: 10, h: 10 }))
+    const f = addFrame(engine, { title: 'agent', x: 0, y: 0, w: 800, h: 100, cards })
+    const l = addLink(engine, { from: cards[0]!, to: cards[1]! })
+    engine.transact(() => engine.getMap<Y.Map<unknown>>('frames').get(f)!.set('by', 'session:s'))
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(engine), ENGINE)
+    const loose = addCard(doc, { kind: 'sticky', title: 'mine', x: 0, y: 500, w: 10, h: 10 })
+    undo.stopCapturing()
+    const release = holdGroup()
+    archive(doc, [loose])
+    removeFrame(doc, f) // 71 writes: two transactions
+    removeLink(doc, l)
+    release()
+    let b = readBoard(doc)
+    expect([b.frames[f], b.links[l], b.cards[loose]!.state]).toEqual([undefined, undefined, 'archived'])
+    expect(cards.every((c) => b.cards[c]!.frame === undefined && b.cards[c]!.state === 'live')).toBe(true)
+    undo.undo()
+    b = readBoard(doc)
+    expect(b.frames[f]).toMatchObject({ by: 'session:s' })
+    expect(b.links[l]).toBeDefined()
+    expect(b.cards[loose]!.state).toBe('live')
+    expect(cards.every((c) => b.cards[c]!.frame === f)).toBe(true)
+    undo.redo()
+    b = readBoard(doc)
+    expect([b.frames[f], b.links[l], b.cards[loose]!.state]).toEqual([undefined, undefined, 'archived'])
   })
 
   it('pin / unpin a mark', () => {

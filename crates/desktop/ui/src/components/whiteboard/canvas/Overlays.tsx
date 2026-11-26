@@ -45,12 +45,19 @@ export function SelectionBar(p: {
   const [tagging, setTagging] = useState(false)
   const [tag, setTag] = useState('')
   const cards = p.selection.filter((id) => p.board.cards[id]).length
+  const frames = p.selection.filter((id) => p.board.frames[id]).length
+  const links = p.selection.filter((id) => p.board.links[id]).length
   const marks = p.selection.filter((id) => p.board.marks[id])
   const pinned = marks.length > 0 && marks.every((id) => p.board.marks[id]!.state === 'pinned')
   const parts = [
     cards && `${cards} card${cards === 1 ? '' : 's'}`,
+    frames && `${frames} frame${frames === 1 ? '' : 's'}`,
+    links && `${links} link${links === 1 ? '' : 's'}`,
     p.ink.length && `${p.ink.length} stroke${p.ink.length === 1 ? '' : 's'}`,
   ].filter(Boolean)
+  // Cards are archived (restorable); frames (their cards stay), links and ink are removed.
+  const rest = frames + links + p.ink.length > 0
+  const deleteLabel = cards ? (rest ? 'Archive cards, delete the rest' : 'Archive cards') : 'Delete selection'
   return (
     <div className="wb-menu" style={{ left: '50%', top: 'calc(var(--safe-top, 0px) + 16px)', transform: 'translateX(-50%)' }}>
       {tagging ? (
@@ -82,7 +89,7 @@ export function SelectionBar(p: {
               {pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
             </button>
           )}
-          <button type="button" aria-label={cards ? 'Archive cards, erase ink' : 'Erase ink'} onClick={p.onDelete}>
+          <button type="button" aria-label={deleteLabel} title={deleteLabel} onClick={p.onDelete}>
             {cards ? <Archive className="size-4" /> : <Trash2 className="size-4" />}
           </button>
           <button type="button" aria-label="Clear selection" onClick={p.onClear}>

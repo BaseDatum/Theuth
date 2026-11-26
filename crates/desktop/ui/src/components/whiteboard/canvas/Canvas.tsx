@@ -5,7 +5,7 @@ import './canvas.css'
 import {
   Background, BackgroundVariant, ConnectionMode, MarkerType, Panel, ReactFlow, ReactFlowProvider, SelectionMode,
   useReactFlow, useViewport, ViewportPortal,
-  type Edge, type FinalConnectionState, type Node, type OnConnect, type OnNodesChange, type Viewport,
+  type Edge, type FinalConnectionState, type Node, type OnConnect, type OnEdgesChange, type OnNodesChange, type Viewport,
 } from '@xyflow/react'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useStore as useZustand } from 'zustand'
@@ -329,7 +329,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   }, [derived])
   // `deleteKeyCode` is off, so no remove changes arrive: deletion is the owner's archive (keyboard/toolbar).
   const onNodesChange: OnNodesChange = useCallback((changes) => setNodes((ns) => changes.applyTo(ns)), [])
-  const edges = useMemo(
+  const derivedEdges = useMemo(
     () =>
       edgesOf(board, selection).map((e): Edge => {
         const arrow = e.data.link.arrow
@@ -338,6 +338,11 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       }),
     [board, selection],
   )
+  // Edges are controlled as nodes are: React Flow's select changes (a click on a link) must land, or the click selects
+  // nothing and `onSelectionChange` never sees the link.
+  const [edges, setEdges] = useState<Edge[]>(derivedEdges)
+  useEffect(() => setEdges(derivedEdges), [derivedEdges])
+  const onEdgesChange: OnEdgesChange = useCallback((changes) => setEdges((es) => changes.applyTo(es)), [])
 
   // ---- owner actions shared with nodes ----
   const enter = useCallback((id: Id | null) => {
@@ -901,13 +906,14 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     return () => ro.disconnect()
   }, [])
 
-  // ---- keyboard (full window only). The shell owns V P E L F N O, ⌘0, ⌘↵ and Esc for cards/composer/cluster (and,
-  // first, in a capture listener, Shift+P and Esc for Present: this never sees them while presenting);
-  // the canvas owns undo/redo, Enter (enter the selected card), Delete (archive / remove / erase) and Esc for its
-  // own modes and selection. ----
+  // ---- keyboard (full window; a tile only while focused). The shell owns V P E L F N O, ⌘0, ⌘↵ and Esc for
+  // cards/composer/cluster (and, first, in a capture listener, Shift+P and Esc for Present: this never sees them while
+  // presenting); the canvas owns undo/redo, Enter (enter the selected card), Delete (archive cards, remove frames and
+  // links, erase ink) and Esc for its own modes and selection. ----
   useEffect(() => {
-    if (embedded) return
     const onKey = (e: KeyboardEvent) => {
+      // A tile (embedded) shares the window with other tiles: its keys work only while the focus is on this canvas.
+      if (embedded && !wrap.current?.contains(document.activeElement)) return
       const t = e.target
       if (t instanceof HTMLElement && (t.isContentEditable || t.closest('input, textarea, select, [role="dialog"]'))) return
       const s = store.getState()
@@ -944,7 +950,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         enter(s.selection[0]!)
         return
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && (s.selection.length || inkSelRef.current.length) && !readOnly) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && (s.selection.length || inkSelRef.current.length) && !readOnly && !s.present) {
         e.preventDefault()
         deleteSelection()
       }
@@ -1155,6 +1161,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
           nodeTypes={NODE_TYPES}
           edgeTypes={EDGE_TYPES}
           onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
           onInit={onInit}
           onMove={onMove}
           onMoveEnd={onMoveEnd}

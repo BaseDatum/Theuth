@@ -27,7 +27,7 @@ export type WhiteboardCanvasProps = {
   store: WbStore
   host: CanvasHost
   readOnly?: boolean          // phone canvas, viewers: no ink, no edits
-  embedded?: boolean          // inside a tile: no window-level key handlers
+  embedded?: boolean          // inside a tile: the canvas keys only while the focus is inside it
   className?: string
   /** Things B4 pins to a card (the reply bubble): rendered at the card's right-top, flipped when clipped; `card: null` is not rendered. */
   anchored?: { key: string; card: Id | null; node: ReactNode }[]
