@@ -201,8 +201,9 @@ pub enum Source {
         /// Session id.
         session: String,
     },
-    /// A live app view: one of the app's view routes (`/tasks/graph?project=…`, `/tasks`, `/agents`), rendered
-    /// live and interactive inside the card.
+    /// A live app view: one of the app's view routes (`/tasks/graph?project=…`, `/tasks`, `/tasks/<id>`, `/agents`),
+    /// rendered live and interactive inside the card. A task the user opens in a graph or board card becomes its own
+    /// `/tasks/<id>` view card beside it, titled with the task and linked (dashed) from the card it came from.
     View {
         /// The route path, with its query.
         path: String,

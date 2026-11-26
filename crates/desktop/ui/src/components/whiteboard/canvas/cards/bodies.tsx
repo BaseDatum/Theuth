@@ -261,7 +261,7 @@ export function LiveBody({ card, source, editing }: { card: Card; source: Source
       // Live and shielded on the canvas; entered, the view takes pointer, wheel and keys (pan, zoom, click in the graph).
       return (
         <Suspense fallback={<Pending />}>
-          <ViewCard path={source.path} interactive={editing} />
+          <ViewCard path={source.path} interactive={editing} card={card} />
         </Suspense>
       )
   }

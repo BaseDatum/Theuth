@@ -172,7 +172,7 @@ A `source` is `{"t": <kind>, …}` and `t` must equal the card's kind:
 | `terminal` | `{"t": "terminal", "job": "j3"}` |
 | `web` | `{"t": "web", "url": "https://…"}` |
 | `session` | `{"t": "session", "session": "<session id>"}` |
-| `view` | `{"t": "view", "path": "/tasks/graph?project=<project>"}` — a live app view: the task graph, the task board (`/tasks`), agents (`/agents`), any app view path (`pane_list` lists them; not `/whiteboards/<id>`). It stays live and the user works in it; `wb_crop` shows its last stored snapshot, which can lag the live data |
+| `view` | `{"t": "view", "path": "/tasks/graph?project=<project>"}` — a live app view: the task graph, the task board (`/tasks`), one task (`/tasks/<id>`), agents (`/agents`), any app view path (`pane_list` lists them; not `/whiteboards/<id>`). It stays live and the user works in it; `wb_crop` shows its last stored snapshot, which can lag the live data. A task the user opens from a graph or board card lands as its own `/tasks/<id>` view card beside it, titled with the task's title and joined by a dashed link labelled the same — so `view "Fix login" · /tasks/T12` in the outline is a task the user is inspecting; read it with the task tools, not `wb_card` |
 
 `session` defaults to yours on `page`, `diff`, `terminal` and `image`.
 
