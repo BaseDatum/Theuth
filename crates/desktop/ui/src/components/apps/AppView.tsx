@@ -1,6 +1,7 @@
 import { Suspense, lazy } from "react";
 import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import type { AppDraft } from "@/store/sessions";
+import { RenderBoundary } from "./RenderBoundary";
 
 /** The OpenUI runtime, component library and its CSS load on the first preview/open (46 §7), not with the chat. */
 const load = () => import("./AppHost");
@@ -21,17 +22,22 @@ export type AppViewProps = {
   className?: string;
 };
 
-/** One app view: the chat panel and the explorer both render through it; `AppHost` carries the runtime. */
+/**
+ * One app view: the chat panel and the explorer both render through it; `AppHost` carries the runtime. A render failure
+ * stays inside the view with a Retry (a remount); another record or draft delta retries on its own.
+ */
 export function AppView(props: AppViewProps) {
   return (
     <div className={props.className}>
-      <Suspense
-        fallback={
-          <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
-        }
-      >
-        <Host {...props} />
-      </Suspense>
+      <RenderBoundary resetKey={props.artifact?.call_id ?? props.draft?.source}>
+        <Suspense
+          fallback={
+            <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
+          }
+        >
+          <Host {...props} />
+        </Suspense>
+      </RenderBoundary>
     </div>
   );
 }

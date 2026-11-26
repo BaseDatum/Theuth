@@ -17,6 +17,7 @@ import type { CustomRendererProps } from 'streamdown'
 import { copyToClipboard } from '@/components/apps/openui-actions'
 import { OpenUITheme } from '@/components/apps/openui-theme'
 import { useDark } from '@/components/apps/theme'
+import { RenderBoundary } from '@/components/apps/RenderBoundary'
 import { Button } from '@/components/ui/button'
 import { useApi } from '@/lib/rpc'
 import { useSnapshot } from '@/lib/snapshot-mode'
@@ -70,11 +71,16 @@ export async function openAsApp(api: Pick<Api, 'publish_app'>, session: string, 
   }
 }
 
-/** The fence's disclosures (`Show source`) are scoped by the fence (`FenceScope`, 171F B13). */
+/**
+ * The fence's disclosures (`Show source`) are scoped by the fence (`FenceScope`, 171F B13). A render failure stays
+ * inside the block (`RenderBoundary`); the next source delta retries it.
+ */
 export function OpenUIFence(props: CustomRendererProps) {
   return (
     <FenceScope code={props.code}>
-      <OpenUI {...props} />
+      <RenderBoundary resetKey={props.code}>
+        <OpenUI {...props} />
+      </RenderBoundary>
     </FenceScope>
   )
 }
@@ -94,7 +100,16 @@ function OpenUI({ code, isIncomplete }: CustomRendererProps) {
     () => (isIncomplete ? undefined : check(code, []).diagnostics.find((d) => d.code !== 'tool-unknown')?.message),
     [code, isIncomplete],
   )
+  // Every hook runs before the fallback return: a fence that streamed (no check) and then closed on a program that
+  // fails the check must render the same hooks, or React throws #300 ("Rendered fewer hooks than expected").
+  const enterRef = useRef<boolean | null>(null)
   if (error !== undefined) return <FenceFallback error={error} source={code} title="App unavailable" />
+  if (enterRef.current === null) {
+    enterRef.current =
+      motionAllowed() && !bare && !snap && !ctx.readOnly && ctx.running
+        ? claimSurfaceEntrance(`ou:${ctx.session ?? ''}:${ctx.entry ?? ''}:${code.slice(0, 64)}`)
+        : false
+  }
   const publish = async () => {
     setBusy(true)
     try {
@@ -102,13 +117,6 @@ function OpenUI({ code, isIncomplete }: CustomRendererProps) {
     } finally {
       setBusy(false)
     }
-  }
-  const enterRef = useRef<boolean | null>(null)
-  if (enterRef.current === null) {
-    enterRef.current =
-      motionAllowed() && !bare && !snap && !ctx.readOnly && ctx.running
-        ? claimSurfaceEntrance(`ou:${ctx.session ?? ''}:${ctx.entry ?? ''}:${code.slice(0, 64)}`)
-        : false
   }
   return (
     <div className={cn(bare ? 'group relative h-full overflow-auto text-sm' : 'group relative my-4 text-sm', enterRef.current && 'paper-surface-enter')} data-streamdown="openui" data-bare={bare || undefined}>
