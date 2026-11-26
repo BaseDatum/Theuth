@@ -164,6 +164,23 @@ export function openViewTile(
 }
 
 /**
+ * The composer's Talk (76 §0.12): `session`'s talk view (`/talk/$session`) in a pane titled Talk, split right of the
+ * chat in leaf `host`, so the chat stays on screen; a talk pane already open for that session is revealed and selected
+ * instead of a second one. Where nothing tiles (a phone, no pane `host`, no workspace) it `navigate`s to the talk view
+ * as the whole page, as before. Returns the tile's leaf, or `null` when it navigated.
+ */
+export function openTalkView(session: string, host: string | null, navigate: (session: string) => void): string | null {
+  const id = host && !isMobileLayout() ? openViewTile({ path: `/talk/${encodeURIComponent(session)}`, title: 'Talk' }, { host }) : null
+  if (id === null) {
+    navigate(session)
+    return null
+  }
+  const leaf = tileLeaf(id)
+  usePanes.getState().select(leaf)
+  return leaf
+}
+
+/**
  * A chat card's Open for a `show_view` call: an open `view` tile for `props.path` is revealed and selected; else it opens
  * with `show_view`'s placement (`applyLayoutOp` `open_view`): default `beside` joins the panel holding view tiles, else
  * right of `session`'s chat (default: the focused one); `replace` alone takes over `target`. Never closes another tile.

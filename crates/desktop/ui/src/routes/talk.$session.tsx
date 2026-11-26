@@ -2,11 +2,12 @@ import { withCapability } from '@/rpc/capabilities'
 import { requirements } from '@/components/talk/requirements'
 // 76 §0.12 / §5.2: the talk view. Centre: the orb (the state) and two subtitle lines. Left: the session's
 // transcript, collapsed by default, remembered per session. Right: every panel a session has, from `Header`
-// exactly as in `/c/$session`. Phones: the transcript is a sheet. Leaving the view does not stop the talk.
+// exactly as in `/c/$session`. Phones: the transcript is a sheet. Leaving the view does not stop the talk. In a pane
+// beside the chat (the composer's Talk, `openTalkView`): the orb alone, and the talk ending closes the pane.
 
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, MessageSquareText } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { Transcript } from '@/components/chat/Transcript'
@@ -15,6 +16,7 @@ import { Orb } from '@/components/talk/Orb'
 import { VoiceWave } from '@/components/voice/VoiceWave'
 import { useTalkWave } from '@/components/talk/wave'
 import { Subtitles } from '@/components/talk/Subtitles'
+import { useInsideTile, useTileClose } from '@/components/tiles/tile-context'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -57,9 +59,12 @@ function TalkRoute() {
   useSessionLoad(session)
   const [open, setOpen] = useState(() => transcriptPref(session))
   useEffect(() => saveTranscriptPref(session, open), [session, open])
+  // In a pane (`openTalkView`) the chat beside it owns the window: its transcript, its header and the window title.
+  const inTile = useInsideTile()
+  const closePane = useTileClose()
   useEffect(() => {
-    document.title = `Talk${title ? ` · ${title}` : ''}`
-  }, [title])
+    if (!inTile) document.title = `Talk${title ? ` · ${title}` : ''}`
+  }, [title, inTile])
 
   // Item 7: `?sim=…` drives the store with a scripted sequence; the import is dead code in production.
   useEffect(() => {
@@ -86,22 +91,35 @@ function TalkRoute() {
     else if (!elsewhere) void talk.start(api, session)
   }
 
+  // In a pane, the conversation ending here (the orb, the chat's End talk, ⌘T) closes the pane: the chat beside it stays.
+  const was = useRef(here)
+  useEffect(() => {
+    if (was.current && !here) closePane?.()
+    was.current = here
+  }, [here, closePane])
+
   useEffect(() => {
     const onStop = () => {
       if (here) void talk.stop(api)
     }
-    const onTranscript = () => setOpen((o) => !o)
+    const onTranscript = () => {
+      if (!inTile) setOpen((o) => !o)
+    }
     // §5.2: Esc while the agent thinks or speaks is the agent's cancel, as in the chat; the talk goes on listening.
     // TALK-UI-B B3: any other Esc leaves the view for the same session's chat (the talk keeps running there) — never a
     // blank view. Decided after the other Esc owners (a sheet, a dialog, a recording, dictation) had their turn.
+    // In a pane the listener is window-wide but the view is not the window: only an Esc from inside the view counts,
+    // and it only cancels — the chat is already beside it.
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
       const el = e.target
+      if (inTile && !(el instanceof Node && centre.current?.contains(el))) return
       if (el instanceof HTMLElement && (el.isContentEditable || el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return
       if (here && state !== 'listening' && state !== 'idle') {
         void api.cancel(session)
         return
       }
+      if (inTile) return
       window.setTimeout(() => {
         if (e.defaultPrevented || (mobile && open) || document.querySelector(':is([role="dialog"], [role="alertdialog"], [role="menu"])[data-state="open"]')) return
         void navigate({ to: '/c/$session', params: { session } })
@@ -115,7 +133,7 @@ function TalkRoute() {
       window.removeEventListener('theuth:talk-transcript', onTranscript)
       window.removeEventListener('keydown', onKey)
     }
-  }, [api, here, session, state, navigate, open, mobile])
+  }, [api, here, session, state, navigate, open, mobile, inTile])
 
   // The orb is the centre at every width: 60 % of the narrower side of its pane, 160–440 px.
   const centre = useRef<HTMLDivElement>(null)
@@ -144,16 +162,18 @@ function TalkRoute() {
     </>
   )
 
+  // In a pane the chat beside it already shows the header, the transcript and the CodeMap: the view is the orb alone.
+  const Shell = inTile ? Bare : CodeMapPane
   return (
-    <CodeMapPane session={session}>
-      <Header session={session} popout={{ kind: 'talk', session }} />
+    <Shell session={session}>
+      {!inTile && <Header session={session} popout={{ kind: 'talk', session }} />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-row">
-        {!mobile && open && (
+        {!mobile && !inTile && open && (
           <aside className="flex min-h-0 w-[min(440px,42vw)] shrink-0 flex-col border-r border-border-subtle" aria-label="Transcript">
             {transcript}
           </aside>
         )}
-        {!mobile && (
+        {!mobile && !inTile && (
           <button
             type="button"
             aria-label={open ? 'Hide transcript' : 'Show transcript'}
@@ -213,6 +233,10 @@ function TalkRoute() {
           </SheetContent>
         </Sheet>
       )}
-    </CodeMapPane>
+    </Shell>
   )
+}
+
+function Bare({ children }: { session: string; children: ReactNode }) {
+  return <>{children}</>
 }

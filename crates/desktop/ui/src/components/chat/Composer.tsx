@@ -99,6 +99,8 @@ import { QueuedChips, withdrawInto } from './QueuedChips'
 import { COMMANDS, type Ctx, FRESH, type HarnessMenu, type SlashItem, draftSkill, isCommand, run, sendRaw, slashMenu } from './slash'
 import { PluginCommandCard } from '@/components/plugins/PluginSurface'
 import { usePluginCommands } from '@/lib/plugins'
+import { openTalkView } from '@/components/tiles/open'
+import { useTileHost } from '@/components/tiles/host'
 
 /** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory. */
 export type DraftCreate = { private: boolean; project: string | null; endless: boolean }
@@ -407,6 +409,9 @@ export function Composer({
   const hostFiles = isDesktop() && active === LOCAL
   const fileInput = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
+  // 76 §0.12: Talk opens the talk view in a pane beside this chat where the layout tiles; else the whole page.
+  const tileHost = useTileHost()
+  const showTalk = (target: string) => openTalkView(target, tileHost, (s) => void navigate({ to: '/talk/$session', params: { session: s } }))
   const turnRunning = useSessionField(session ?? '', 'running') ?? false
   const activity = useSessionField(session ?? '', 'activity')
   // A `/compact` mini-turn owns the session without a `TurnStarted` (07 §8.6): a plain send
@@ -1771,7 +1776,7 @@ export function Composer({
                     variant="ghost"
                     className="size-9 shrink-0 rounded-full text-fg-accent"
                     aria-label="Talk running — open"
-                    onClick={() => void navigate({ to: '/talk/$session', params: { session } })}
+                    onClick={() => session && showTalk(session)}
                   >
                     <TalkLiveGlyph className="size-5" source={talkSource} active={talkWaveState === 'listening' || talkWaveState === 'speaking'} />
                   </Button>
@@ -1797,10 +1802,7 @@ export function Composer({
                   aria-disabled={talkElsewhere}
                   disabled={busy || !!note}
                   onClick={() =>
-                    void talk.open(api, session).then(
-                      (target) => navigate({ to: '/talk/$session', params: { session: target } }),
-                      (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)),
-                    )
+                    void talk.open(api, session).then(showTalk, (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
                   }
                 >
                   <TalkGlyph className="size-5" />

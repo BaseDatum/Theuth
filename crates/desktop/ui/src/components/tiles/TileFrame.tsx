@@ -125,7 +125,7 @@ export function TileFrame({
         )}
       </header>
       <div className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t', className)}>
-        <InsideTileProvider>{children}</InsideTileProvider>
+        <InsideTileProvider onClose={onClose}>{children}</InsideTileProvider>
       </div>
     </div>
   )
