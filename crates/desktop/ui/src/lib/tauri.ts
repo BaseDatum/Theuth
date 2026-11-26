@@ -59,6 +59,8 @@ export type StartupStatus = {
   seq: number
   /** Bumped every second while `running` (liveness). */
   hb_ms: number
+  /** When the current phase began (epoch ms); absent from engines before the 222 amendment. */
+  phase_ms?: number | null
   state: 'running' | 'ready' | 'failed' | (string & {})
   /** `lock`, `config`, `runtime-init`, `plugin:<name>`, `migrate:<db>`, `rpc-listen`, `ready`, … */
   phase: string

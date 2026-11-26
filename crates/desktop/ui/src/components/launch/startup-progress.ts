@@ -141,9 +141,9 @@ function phaseView(i: StartupInput, p: StartupProgress, s: StartupStatus, error:
   if (s.state === 'failed') {
     steps.push({ id: 'phase', label: s.label, status: 'failed', detail: s.error ?? error })
   } else if (running) {
-    // The phase began when the last one finished: the boot's start plus the finished durations (gaps between phases
-    // and a `done` list cut at 200 make it an estimate).
-    const since = s.started_ms + done.reduce((sum, d) => sum + d.ms, 0)
+    // `phase_ms` when the engine writes it; else the boot's start plus the finished durations (an estimate: gaps
+    // between phases and a `done` list cut at 200 shorten it).
+    const since = s.phase_ms ?? s.started_ms + done.reduce((sum, d) => sum + d.ms, 0)
     const step = s.step && s.step.of > 0 ? { n: Math.min(s.step.n, s.step.of), of: s.step.of } : undefined
     steps.push({ id: 'phase', label: s.label, status: 'active', meta: formatTimer(i.now - since), progress: step })
   }

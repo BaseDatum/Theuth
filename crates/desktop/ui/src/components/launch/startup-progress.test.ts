@@ -120,6 +120,12 @@ test('a phase without a step has no bar; an unknown state reads as running', () 
   expect(v.steps[3]).toMatchObject({ label: 'Starting mesh', status: 'active', progress: undefined })
 })
 
+test('the active timer counts from `phase_ms` when the engine writes it (the estimate ignores gaps between phases)', () => {
+  // The estimate says 7 s; the engine says the phase began 3 s ago (4 s went between phases).
+  expect(view({ now: NOW, progress: progress({ phase_ms: NOW - 3_000 }) }).steps[3]!.meta).toBe('3 s')
+  expect(view({ now: NOW, progress: progress({ phase_ms: null }) }).steps[3]!.meta).toBe('7 s')
+})
+
 test('more than six finished phases: the earlier ones fold into one row with their total', () => {
   const done = Array.from({ length: 10 }, (_, k) => ({ phase: `plugin:p${k}`, label: `Plugin ${k}`, ms: 100 * (k + 1) }))
   const rows = phaseRows({ progress: progress({ done }), now: T0 + 60_000 })
