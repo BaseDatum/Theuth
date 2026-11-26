@@ -97,6 +97,8 @@
 /* Hand pans: hovering a card shows nothing (no caption, no link ports); `data-mode` is on the `.wb-canvas` wrapper. */
 .wb-canvas[data-mode='hand'] .wb-card.bare:not(.selected):hover > .wb-caption { opacity: 0; }
 .wb-card.spot { box-shadow: 0 0 0 4px var(--wb-accent), 0 0 40px color-mix(in oklab, var(--wb-accent) 45%, transparent); }
+/* The outline panel's row under the pointer (store `hover`): a lighter ring than the selection's. */
+.wb-card.hover:not(.selected):not(.entered) { outline: 2.5px solid color-mix(in oklab, var(--wb-accent) 55%, transparent); outline-offset: 3px; }
 
 .wb-head {
   display: flex;
@@ -208,6 +210,7 @@
   position: relative;
 }
 .wb-frame.selected { border-style: solid; border-color: var(--wb-accent); }
+.wb-frame.hover:not(.selected) { border-color: color-mix(in oklab, var(--wb-accent) 70%, transparent); }
 /* A frame is grabbed by its title or its border: the node is click-through (its interior is canvas: pan, lasso, ink,
  * frame drawing and the cards inside all pass), and a hit band `--wb-hit` wide on screen straddles the outline.
  * `--wb-zoom` is the viewport zoom (Canvas sets it on `.wb-canvas`), so the band stays 12 px (20 px for a finger)
