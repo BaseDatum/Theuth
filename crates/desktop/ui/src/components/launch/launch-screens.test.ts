@@ -8,7 +8,8 @@ import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import { type Engine, useEngines } from '@/link/engines'
 import { QuitOverlay, useQuit } from './QuitOverlay'
 import { LocalStartupView, StartupScreen } from './StartupScreen'
-import { STUCK_MS, type StartupInput, startupView } from './startup-progress'
+import { STALLED, STUCK_MS, type StartupInput, startupView } from './startup-progress'
+import type { StartupStatus } from '@/lib/tauri'
 
 // The overlay portals into `<body>`; render it in place.
 vi.mock('react-dom', async (original) => ({ ...(await original<typeof ReactDom>()), createPortal: (node: unknown) => node }))
@@ -44,7 +45,7 @@ test('the quit overlay markup is unchanged by the shared launch card (snapshot t
 // ------------------------------------------------------------------------------------------------- the local startup
 
 const LOG = 'Last login: Tue Nov 17 on ttys004\r\n\u001b[1;32mtheuth\u001b[0m 2.31.0\r\nopening store\r\n'
-const BASE: StartupInput = { started: false, owned: null, state: 'connecting', info: false, log: LOG, waited: 0 }
+const BASE: StartupInput = { started: false, owned: null, state: 'connecting', info: false, log: LOG, waited: 0, progress: null, now: 0 }
 const local = (over: Partial<StartupInput> = {}) => {
   const input = { ...BASE, ...over }
   return renderToStaticMarkup(h(LocalStartupView, { view: startupView(input), log: input.log, onQuit() {}, onRelaunch() {} }))
@@ -83,15 +84,65 @@ test('reconnecting: its title, Relaunch offered, the log still collapsed', () =>
 })
 
 test('failed: danger header and step, the error as its detail, the log open, Relaunch', () => {
-  const html = local({ error: 'The engine did not open its port within 15 s' })
+  const html = local({ error: 'The engine did not open its port within 60 s' })
   expect(html).toContain('>theuth could not start</h2>')
   expect(html).not.toContain(SPINNER)
   expect(count(html, DANGER)).toBe(2)
   expect(html).toContain('<p class="text-sm text-danger">Starting the engine<span class="sr-only">, failed</span></p>')
-  expect(html).toContain('<p class="text-xs text-fg-secondary">The engine did not open its port within 15 s</p>')
+  expect(html).toContain('<p class="text-xs text-fg-secondary">The engine did not open its port within 60 s</p>')
   expect(html).toContain('Hide launch log')
   expect(html).toMatch(/<pre[^>]*>Last login: Tue Nov 17 on ttys004\ntheuth 2.31.0\nopening store\n<\/pre>/)
   expect(html).toContain('Relaunch')
+})
+
+// 222: an engine writing `startup.json`.
+const T0 = 1_764_160_000_000
+const MIGRATING: StartupStatus = {
+  v: 1,
+  pid: 4242,
+  started_ms: T0,
+  seq: 9,
+  hb_ms: T0,
+  state: 'running',
+  phase: 'migrate:agent',
+  label: 'Migrating agent.db',
+  step: { n: 3, of: 78 },
+  done: [
+    { phase: 'config', label: 'Reading config', ms: 12 },
+    { phase: 'runtime-init', label: 'Starting the runtime', ms: 1_450 },
+  ],
+  error: null,
+}
+const phases = (stalled = false, over: Partial<StartupInput> = {}) =>
+  local({ progress: { status: MIGRATING, alive: true, stalled, waited_ms: 8_000 }, now: T0 + 1_462 + 65_000, ...over })
+
+test('migrating: done phases with durations, the active one with its bar, n/of and timer, the total; Quit only', () => {
+  const html = phases()
+  expect(html).toContain('<span class="min-w-0 flex-1 truncate">Reading config</span><span class="sr-only">, done</span><span class="shrink-0 text-xs text-fg-secondary tabular-nums">12 ms</span>')
+  expect(html).toContain('<span class="min-w-0 flex-1 truncate">Migrating agent.db</span><span class="sr-only">, in progress</span><span class="shrink-0 text-xs text-fg-secondary tabular-nums">1:05</span>')
+  expect(html).toContain('role="progressbar" aria-label="Migrating agent.db" aria-valuemin="0" aria-valuemax="78" aria-valuenow="3"')
+  expect(html).toContain('>3 / 78</span>')
+  expect(html).toContain('>Elapsed 1:06</p>')
+  expect(html).not.toContain(STALLED)
+  expect(html).not.toContain('Relaunch')
+  expect(html).not.toContain('<pre')
+})
+
+test('stalled: the note under the steps, the log open, Relaunch offered', () => {
+  const html = phases(true)
+  expect(html).toContain(`<p class="text-xs text-fg-secondary">${STALLED}</p>`)
+  expect(html).toContain('<pre')
+  expect(html).toContain('>Relaunch</button>')
+})
+
+test('a refused relaunch: the confirm instead of Relaunch, no failure', () => {
+  const html = phases(false, { error: 'starting: Migrating agent.db (3/78)' })
+  expect(html).toContain('role="alert"')
+  expect(html).toContain('Still Migrating agent.db (3/78); relaunching will interrupt it')
+  expect(html).toContain('>Keep waiting</button>')
+  expect(html).toContain('>Relaunch anyway</button>')
+  expect(html).not.toContain('>Relaunch</button>')
+  expect(html).not.toContain(DANGER)
 })
 
 test('stuck past 8 s: the log opens itself; a reader who closed it keeps it closed', () => {

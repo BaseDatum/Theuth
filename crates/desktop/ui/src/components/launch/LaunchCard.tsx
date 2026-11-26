@@ -13,6 +13,8 @@ export type LaunchStep = {
   detail?: string
   /** Keep the detail to one line (a launch-log line), ellipsised. */
   clip?: boolean
+  /** Right of the label, tabular: a finished phase's duration, the active one's running timer (222). */
+  meta?: string
   /** Sub-items ticked as they finish (the quit's draining turns). */
   items?: { id: string; label: string; done: boolean }[]
 }
@@ -60,9 +62,15 @@ export function StepRow({ step, children }: { step: LaunchStep; children?: React
         <CircleIcon className="mt-0.5 size-4 shrink-0 text-fg-tertiary" aria-hidden />
       )}
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <p className={step.status === 'pending' ? 'text-sm text-fg-tertiary' : step.status === 'failed' ? 'text-sm text-danger' : 'text-sm'}>
-          {step.label}
+        <p
+          className={cn(
+            step.status === 'pending' ? 'text-sm text-fg-tertiary' : step.status === 'failed' ? 'text-sm text-danger' : 'text-sm',
+            step.meta && 'flex items-baseline gap-2',
+          )}
+        >
+          {step.meta ? <span className="min-w-0 flex-1 truncate">{step.label}</span> : step.label}
           <span className="sr-only">, {STATUS_TEXT[step.status]}</span>
+          {step.meta && <span className="shrink-0 text-xs text-fg-secondary tabular-nums">{step.meta}</span>}
         </p>
         {step.detail && <p className={step.clip ? 'truncate text-xs text-fg-secondary' : 'text-xs text-fg-secondary'}>{step.detail}</p>}
         {step.items && (

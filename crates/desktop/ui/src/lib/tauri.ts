@@ -43,9 +43,37 @@ export const connection = (): Promise<Connection> =>
 export const launchLog = (): Promise<string> =>
   isTauri() ? invoke<string>('launch_log') : Promise.resolve('')
 
-/** Stop the daemon we own (if any) and connect again. */
-export const relaunch = (): Promise<Connection> =>
-  isTauri() ? invoke<Connection>('relaunch') : Promise.resolve(devConnection())
+/**
+ * Stop the daemon we own (if any) and connect again. 222: a non-forced relaunch of an engine still making progress
+ * rejects with `starting: <label>` and leaves it running; `force` stops it anyway.
+ */
+export const relaunch = (force = false): Promise<Connection> =>
+  isTauri() ? invoke<Connection>('relaunch', { force }) : Promise.resolve(devConnection())
+
+/** 222: the engine's `<data_dir>/startup.json`; readers tolerate unknown states, phases and fields. */
+export type StartupStatus = {
+  v: number
+  pid: number
+  started_ms: number
+  /** Bumped on a phase or step change only (progress). */
+  seq: number
+  /** Bumped every second while `running` (liveness). */
+  hb_ms: number
+  state: 'running' | 'ready' | 'failed' | (string & {})
+  /** `lock`, `config`, `runtime-init`, `plugin:<name>`, `migrate:<db>`, `rpc-listen`, `ready`, … */
+  phase: string
+  label: string
+  step?: { n: number; of: number } | null
+  /** Finished phases in order, with their duration. */
+  done: { phase: string; label: string; ms: number }[]
+  error?: string | null
+}
+/** 222: the shell's tailer of `startup.json`; `status` is `null` while there is none for this engine (an older one). */
+export type StartupProgress = { status: StartupStatus | null; alive: boolean; stalled: boolean; waited_ms: number }
+
+/** The last `startup-progress` payload, for a screen mounted after the start began; `null` off Tauri. */
+export const startupStatus = (): Promise<StartupProgress | null> =>
+  isTauri() ? invoke<StartupProgress>('startup_status') : Promise.resolve(null)
 
 /** The webview finished its part of the quit sequence; the shell's quit worker takes it from here (163). */
 export const quitAck = (): Promise<void> =>
@@ -55,6 +83,8 @@ const on = <T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> =>
   isTauri() ? listen<T>(event, (e) => cb(e.payload)) : Promise.resolve(() => {})
 
 export const onLaunchLog = (cb: (chunk: string) => void) => on<string>('launch-log', cb)
+/** 222: the shell's `startup.json` tailer, every change (250 ms poll). */
+export const onStartupProgress = (cb: (p: StartupProgress) => void) => on<StartupProgress>('startup-progress', cb)
 /** Tray menu / app menu: show the window and go to `path` (`/`, `/knowledge`, `/settings/appearance`). */
 export const onNavigate = (cb: (path: string) => void) => on<string>('navigate', cb)
 /** 210 §7.4 item 2: the tray's "Stop public sharing (N)" item, shown while `live > 0` (`commands::share_tray`). */

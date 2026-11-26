@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { ATTENTION_KEY } from '@/components/hud/queries'
 import { QuitOverlay, useQuit } from '@/components/launch/QuitOverlay'
 import { PreQuit, confirmQuit, tauriShellQuit } from '@/components/cells/QuitSheet'
-import { StartupScreen } from '@/components/launch/StartupScreen'
+import { type RelaunchHow, StartupScreen } from '@/components/launch/StartupScreen'
 import { PairScreen } from '@/components/link/PairScreen'
 import { AlertNotifier } from '@/lib/alerts'
 import { describe } from '@/lib/describe'
@@ -721,7 +721,7 @@ function useEventFocus(st: Stores): void {
  * `refused` needs the user (re-pair or forget), so that still gets the screen. The local engine stays
  * for `ROUTER_GRACE_MS` (176 U3): a short drop shows only the chat's "Reconnecting…" strip.
  */
-function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(): void }) {
+function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(how?: RelaunchHow): void }) {
   const refused = useEngines((s) => s.presence[engine] === 'refused')
   const ready = useConnection((s) => routerMounted(s, engine === LOCAL, refused))
   useInvalidateOn()
@@ -763,7 +763,8 @@ export function App() {
 }
 
 function Main() {
-  const [attempt, setAttempt] = useState(0)
+  // 222: the first boot and a `join` connect (joining a start in flight); `relaunch` asks the shell, `force` insists.
+  const [attempt, setAttempt] = useState<{ how: 'connect' | RelaunchHow }>({ how: 'connect' })
   const hydrated = useEngines((s) => s.hydrated)
   const engines = useEngines((s) => s.engines)
   const active = useEngines((s) => s.active)
@@ -797,7 +798,8 @@ function Main() {
   useEffect(() => {
     if (!hasLocal()) return
     const ctl = new AbortController()
-    const get = attempt === 0 ? connection : relaunch
+    const { how } = attempt
+    const get = how === 'connect' || how === 'join' ? connection : () => relaunch(how === 'force')
     boot(
       scope(LOCAL),
       async () => {
@@ -870,7 +872,7 @@ function Main() {
         <PairScreen />
       ) : engine === null ? null : (
         <EngineProvider key={engine} engine={engine}>
-          <Shell engine={engine} onRelaunch={() => setAttempt((n) => n + 1)} />
+          <Shell engine={engine} onRelaunch={(how = 'relaunch') => setAttempt({ how })} />
         </EngineProvider>
       )}
       {/* 209 §9: an agent acting on a tile no frame of this window shows, in the windows `startWebViewAgent` runs in. */}

@@ -7,15 +7,18 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { INITIAL, diagnostics } from '@/lib/link-status'
-import { connection, launchLog, onLaunchLog } from '@/lib/tauri'
+import { type StartupProgress, connection, launchLog, onLaunchLog, onStartupProgress, startupStatus } from '@/lib/tauri'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { LOCAL, hasLocal, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { LaunchCard, StepList, StepRow } from './LaunchCard'
-import { STUCK_MS, type StartupView, cleanLog, startupView } from './startup-progress'
+import { type StartupView, cleanLog, startupView } from './startup-progress'
+
+/** Relaunch (a plain one: refused while the engine still makes progress), `force` it anyway, or `join` the start in flight (222). */
+export type RelaunchHow = 'relaunch' | 'force' | 'join'
 
 type Props = {
-  onRelaunch: () => void
+  onRelaunch: (how?: RelaunchHow) => void
   onQuit: () => void
 }
 
@@ -98,6 +101,7 @@ function LocalStartup({ onRelaunch, onQuit }: Props) {
   const error = useConnection((s) => s.error)
   const [log, setLog] = useState('')
   const [owned, setOwned] = useState<boolean | null>(null)
+  const [progress, setProgress] = useState<StartupProgress | null>(null)
   const [since] = useState(Date.now)
   const [now, setNow] = useState(since)
 
@@ -107,6 +111,21 @@ function LocalStartup({ onRelaunch, onQuit }: Props) {
     void launchLog().then((initial) => {
       if (live) setLog(initial)
     })
+    return () => {
+      live = false
+      void unlisten.then((f) => f())
+    }
+  }, [])
+
+  // 222: the shell's tailer of `startup.json`; the command answers what was emitted before this screen mounted.
+  useEffect(() => {
+    let live = true
+    let heard = false
+    const unlisten = onStartupProgress((p) => {
+      heard = true
+      setProgress(p)
+    })
+    startupStatus().then((p) => live && !heard && setProgress(p), () => undefined)
     return () => {
       live = false
       void unlisten.then((f) => f())
@@ -124,22 +143,29 @@ function LocalStartup({ onRelaunch, onQuit }: Props) {
     }
   }, [started])
 
-  // One tick at `STUCK_MS` while the engine step is active; `waited` keeps it after, so the log stays open.
+  // A tick a second while the engine step is active (the phase timers, `STUCK_MS`); `waited` keeps its value after,
+  // so a log that opened itself stays open.
   useEffect(() => {
     if (started) return
-    const t = setTimeout(() => setNow(Date.now()), Math.max(0, since + STUCK_MS - Date.now()))
-    return () => clearTimeout(t)
-  }, [started, since])
+    const t = setInterval(() => setNow(Date.now()), 1_000)
+    return () => clearInterval(t)
+  }, [started])
 
-  const view = startupView({ started, owned, state, info, error, log, waited: now - since })
+  const view = startupView({ started, owned, state, info, error, log, waited: now - since, progress, now })
+  // A refused relaunch is moot once the engine is up: connect to it.
+  const ready = progress?.status?.state === 'ready'
+  useEffect(() => {
+    if (view.interrupt !== undefined && ready) onRelaunch('join')
+  }, [view.interrupt, ready, onRelaunch])
+
   return (
     <LocalStartupView
       view={view}
       log={log}
       onQuit={onQuit}
-      onRelaunch={() => {
-        setLog('')
-        onRelaunch()
+      onRelaunch={(how) => {
+        if (how !== 'join') setLog('')
+        onRelaunch(how)
       }}
     />
   )
@@ -166,9 +192,12 @@ export function LocalStartupView({ view, log, onQuit, onRelaunch }: { view: Star
       <LaunchCard role="region" aria-labelledby={titleId} title={view.title} titleId={titleId} failed={view.failed}>
         <StepList>
           {view.steps.map((step) => (
-            <StepRow key={step.id} step={step} />
+            <StepRow key={step.id} step={step}>
+              {step.progress && <PhaseBar label={step.label} {...step.progress} />}
+            </StepRow>
           ))}
         </StepList>
+        {view.note && <p className="text-xs text-fg-secondary">{view.note}</p>}
         {text && (
           <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col gap-2">
             <CollapsibleTrigger className="flex w-fit items-center gap-1 text-[13px] text-fg-secondary [&[data-state=open]>svg]:rotate-90">
@@ -185,13 +214,44 @@ export function LocalStartupView({ view, log, onQuit, onRelaunch }: { view: Star
             </CollapsibleContent>
           </Collapsible>
         )}
-        <div className="flex justify-end gap-2">
+        {view.interrupt !== undefined && (
+          <div role="alert" className="flex flex-col gap-3 rounded-md bg-layer-2 p-3">
+            <p className="text-sm">{`Still ${view.interrupt}; relaunching will interrupt it`}</p>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => onRelaunch('join')}>
+                Keep waiting
+              </Button>
+              <Button onClick={() => onRelaunch('force')}>Relaunch anyway</Button>
+            </div>
+          </div>
+        )}
+        <div className="flex items-center justify-end gap-2">
+          {view.elapsed && <p className="mr-auto text-xs text-fg-secondary tabular-nums">{`Elapsed ${view.elapsed}`}</p>}
           <Button variant="ghost" onClick={onQuit}>
             Quit
           </Button>
-          {view.relaunch && <Button onClick={onRelaunch}>Relaunch</Button>}
+          {view.relaunch && <Button onClick={() => onRelaunch()}>Relaunch</Button>}
         </div>
       </LaunchCard>
+    </div>
+  )
+}
+
+/** The active phase's `n` of `of` (222): a migration, a plugin. */
+function PhaseBar({ label, n, of }: { label: string; n: number; of: number }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={of}
+        aria-valuenow={n}
+        className="h-1 flex-1 overflow-hidden rounded-full bg-layer-2"
+      >
+        <div className="h-full bg-fg-accent transition-[width]" style={{ width: `${(n / of) * 100}%` }} />
+      </div>
+      <span className="shrink-0 text-xs text-fg-secondary tabular-nums">{`${n} / ${of}`}</span>
     </div>
   )
 }
