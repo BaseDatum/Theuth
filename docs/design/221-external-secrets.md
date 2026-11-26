@@ -677,6 +677,19 @@ Vaultwarden 1.37.5. Where the subsections below differ, the as-built doc wins:
     form);
   - a private CA must be in the OS trust store;
   - the HTTP client is not injectable (only `with_middleware`), so §6.2's CA-file idea is dropped.
+- **Client headers.** theuth's `ClientSettings` set `device_type` to the CLI type of this OS and
+  `bitwarden_client_version` to `BW_CLIENT_VERSION` (`crates/secrets-bitwarden/src/lib.rs`). The SDK
+  puts them into both HTTP clients' default headers: `Device-Type`, `Bitwarden-Client-Name: cli`
+  (derived from the device type), `Bitwarden-Client-Version`, `User-Agent: theuth`
+  (`sdk@2b06afa:crates/bitwarden-core/src/client/builder.rs#L206-L257`). theuth's own requests
+  (prelogin, grants, SSO prevalidate, email code) go through `BwBackend::request` on the SDK's
+  identity client, so they carry the same headers. Bitwarden cloud refuses a token request without
+  `Bitwarden-Client-Version` (`bitwarden/server:src/Identity/IdentityServer/RequestValidators/ClientVersionValidator.cs#L31-L54`)
+  and, for V2-encryption accounts, one below 2026.10.1 (`src/Core/KeyManagement/Constants.cs#L5`;
+  `invalid_client_version` reads "This Bitwarden account needs a newer client than this theuth build
+  speaks …"). Vaultwarden checks neither. `BW_CLIENT_VERSION` is the client release of the SDK pin
+  (`BW_SDK_REV`; 2b06afa = `@bitwarden/sdk-internal@0.2.0-main.1259`, the 2026.11.1 line) and is
+  bumped with sdk-internal; a unit test fails when the workspace rev moves without it.
 
 ### 5.2 Login
 
