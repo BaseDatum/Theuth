@@ -4,9 +4,30 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import type { Contact } from "@/rpc/bindings/method.a2a.output"
 import type { Export } from "@/rpc/bindings/method.a2a.output"
 import type { Risk } from "@/rpc/bindings/method.agent.output"
+import type { ContactTarget } from '@/rpc/bindings/method.a2a.input'
 
 /** §12.7: a cap in words, for history only (190: no share is capped): old contact wrapper cards say it. */
 export const CAP: Record<Risk, string> = { read_only: 'read only', mutating: 'can change things', destructive: 'destructive' }
+
+/** What a scanned QR code that is neither a contact ticket nor a card URL reads as. */
+export const NOT_A_CONTACT = 'That QR code is not a theuth contact code. Scan the one under Add contact › Invite on their theuth.'
+
+/**
+ * 191: what a scanned contact code dials: Add contact › Invite's `theuth-contact:` ticket, or an http(s) agent-card URL
+ * (another vendor's agent). `null`: anything else — a web page's QR, or a device pairing key (`https://relay…/link#1.…`,
+ * an https URL too, but never a card).
+ */
+export function contactTarget(raw: string): ContactTarget | null {
+  const v = raw.trim()
+  if (/^theuth-contact:\S+$/.test(v)) return { kind: 'ticket', ticket: v }
+  try {
+    const u = new URL(v)
+    if ((u.protocol === 'http:' || u.protocol === 'https:') && !u.hash.startsWith('#1.')) return { kind: 'card_url', url: v }
+  } catch {
+    // not a URL
+  }
+  return null
+}
 
 /** 183 W-27: what each first-contact answer does, one sentence per button (the Attention screen and the HUD row). */
 export const FIRST_ANSWERS = 'Allow once lets this message through. Always lets every later message to this export through. Block blocks this contact entirely.'

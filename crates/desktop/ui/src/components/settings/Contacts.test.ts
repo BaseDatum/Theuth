@@ -10,7 +10,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type * as Engines from '@/link/engines'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
-import { accessFocus, contactFirstOf, exportName, fingerprint, focusedContact, names, sharedLabel, sharingOf } from '@/lib/contacts'
+import { NOT_A_CONTACT, accessFocus, contactFirstOf, exportName, fingerprint, focusedContact, names, sharedLabel, sharingOf } from '@/lib/contacts'
 import { ContactFirstScreen } from '@/components/attention/PlainScreens'
 import { KindActions } from '@/components/attention/actions'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
@@ -38,6 +38,26 @@ const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => navigate, Link: ({ children }: { children: ReactNode }) => children }))
 const local = vi.hoisted(() => ({ on: true }))
 vi.mock('@/link/engines', async (original) => ({ ...(await original<typeof Engines>()), hasLocal: () => local.on }))
+// The iOS shell's barcode scanner: `ios` puts the UI there; `scan` answers `content` (or hangs until `cancel`).
+const scanner = vi.hoisted(() => ({ ios: false, perm: 'granted', content: 'theuth-contact:1.SCANNED', hang: false }))
+vi.mock('@/lib/platform', async (original) => ({ ...(await original<object>()), container: () => (scanner.ios ? 'ios' : 'web') }))
+const plugin = vi.hoisted(() => {
+  let stop: ((e: Error) => void) | null = null
+  const hang = () => {
+    const { promise, reject } = Promise.withResolvers<{ content: string }>()
+    stop = reject
+    return promise
+  }
+  return {
+    Format: { QRCode: 'QR_CODE' },
+    checkPermissions: vi.fn(async () => scanner.perm),
+    requestPermissions: vi.fn(async () => scanner.perm),
+    scan: vi.fn(() => (scanner.hang ? hang() : Promise.resolve({ content: scanner.content }))),
+    cancel: vi.fn(async () => stop?.(new Error('cancelled'))),
+    openAppSettings: vi.fn(async () => undefined),
+  }
+})
+vi.mock('@tauri-apps/plugin-barcode-scanner', () => plugin)
 // Menus render their items in place (a click is a select); a select registers its setter under its trigger's label.
 vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenu: (p: { children: ReactNode }) => p.children,
@@ -172,6 +192,7 @@ const click = (label: string) =>
 beforeEach(() => {
   vi.clearAllMocks()
   local.on = true
+  Object.assign(scanner, { ios: false, perm: 'granted', content: 'theuth-contact:1.SCANNED', hang: false })
   useConnection.setState(useConnection.getInitialState())
   api.contact_nearby.mockResolvedValue(NEARBY)
   api.mesh_nearby.mockResolvedValue([])
@@ -474,6 +495,65 @@ test('Invite: the ticket as text and QR, Copy; pasting a ticket or a card URL st
   expect(api.contact_pair).toHaveBeenCalledWith({ kind: 'ticket', ticket: 'theuth-contact:1.THEIRS' })
 })
 
+test('Invite: no Scan QR code where the scanner does not run (desktop, browser)', async () => {
+  await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn(), tab: 'invite' }))
+  expect(button('Connect')).toBeDefined()
+  expect(button('Scan QR code')).toBeUndefined()
+})
+
+test('Invite on iOS: Scan QR code asks for the camera, scans a QR, and a scanned ticket dials exactly as a pasted one', async () => {
+  scanner.ios = true
+  await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn(), tab: 'invite' }))
+  await click('Scan QR code')
+  expect(plugin.checkPermissions).toHaveBeenCalled()
+  expect(plugin.scan).toHaveBeenCalledWith({ windowed: true, formats: ['QR_CODE'] })
+  await vi.waitFor(() => expect(api.contact_pair).toHaveBeenCalledWith({ kind: 'ticket', ticket: 'theuth-contact:1.SCANNED' }))
+  expect(document.documentElement.dataset.qrScanning).toBeUndefined()
+  // The ceremony follows, as after a paste.
+  await vi.waitFor(() => expect(document.querySelector('[role=group][aria-label="Contact code"]')?.textContent).toBe('482 913'))
+})
+
+test('Invite on iOS: a QR that is not a contact code (a pairing key) dials nothing and says so; Scan stays', async () => {
+  scanner.ios = true
+  scanner.content = 'https://relay.theuth.io/link#1.abcdef'
+  await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn(), tab: 'invite' }))
+  await click('Scan QR code')
+  expect(body()).toContain(NOT_A_CONTACT)
+  expect(api.contact_pair).not.toHaveBeenCalled()
+  expect(button('Scan QR code')).toBeDefined()
+})
+
+test('Invite on iOS: camera refused → no scan, an Open Settings hint', async () => {
+  scanner.ios = true
+  scanner.perm = 'denied'
+  await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn(), tab: 'invite' }))
+  await click('Scan QR code')
+  expect(plugin.requestPermissions).toHaveBeenCalled()
+  expect(plugin.scan).not.toHaveBeenCalled()
+  expect(body()).toContain('Camera access is off for theuth.')
+  await click('Open Settings')
+  expect(plugin.openAppSettings).toHaveBeenCalled()
+})
+
+test('Invite on iOS: while scanning only the scan UI paints; Cancel and closing mid-scan both stop the camera and restore the page', async () => {
+  scanner.ios = true
+  scanner.hang = true
+  const { unmount } = await mount(createElement(AddContact, { onClose: vi.fn(), onAccess: vi.fn(), tab: 'invite' }))
+  await click('Scan QR code')
+  expect(document.documentElement.dataset.qrScanning).toBe('')
+  expect(document.querySelector('.qr-scan-ui')).not.toBeNull()
+  await click('Cancel')
+  expect(plugin.cancel).toHaveBeenCalledTimes(1)
+  expect(document.documentElement.dataset.qrScanning).toBeUndefined()
+  expect(button('Scan QR code')).toBeDefined()
+  expect(api.contact_pair).not.toHaveBeenCalled()
+  await click('Scan QR code')
+  expect(document.documentElement.dataset.qrScanning).toBe('')
+  await unmount()
+  expect(plugin.cancel).toHaveBeenCalledTimes(2)
+  expect(document.documentElement.dataset.qrScanning).toBeUndefined()
+})
+
 test('ceremony: the code and the check line, Cancel focused (never Accept); Accept → waiting; paired → added; Done closes', async () => {
   const onClose = vi.fn()
   const { qc } = await mount(createElement(AddContact, { onClose, onAccess: vi.fn() }))
@@ -693,14 +773,16 @@ test('Stop sharing is absent for a chat nobody can message', async () => {
   expect(body()).not.toContain('Stop sharing')
 })
 
-test('lifted 2026-11-17: on a phone or iPad (no local engine) Contacts lists every contact with Rename · Block · Remove, Access and its shares; Add contact stays on the machine', async () => {
+test('lifted 2026-11-17, 2026-11-26: on a phone or iPad (no local engine) Contacts lists every contact with Rename · Block · Remove, Access and its shares, and Add contact opens on Invite', async () => {
   local.on = false
   await mount(createElement(ContactsTab, { focus: null } as never))
   await vi.waitFor(() => expect(body()).toContain("Bob's MacBook"))
   expect(body()).toContain('studio')
-  expect(button('Add contact…')).toBeUndefined()
   expect(button('Share with bob…')).toBeDefined()
   expect(button('bob: Rename · Block · Remove')).toBeDefined()
+  await click('Add contact…')
+  expect(document.querySelector('[aria-label="Invite ticket"]')?.textContent).toBe('theuth-contact:1.MFRGGZDFMZTWQ2LK')
+  await click('Close')
   await click('Remove…')
   await click('Remove')
   await vi.waitFor(() => expect(api.contact_remove).toHaveBeenCalledWith('bob', false))

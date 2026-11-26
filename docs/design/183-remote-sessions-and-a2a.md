@@ -1076,7 +1076,7 @@ For a session owned here the same four settings appear above the existing items.
 
 Same React app over the link transport (`crates/desktop/ui/src/rpc/client.ts`). Everything in §12.1–§12.5 works unchanged because the hub's front door forwards (§4.7). Settings › Network on a device is read-only except Rename, and Contacts are hidden: pairing needs the machine's own screen.
 
-Lifted 2026-11-17: phones and iPads share through the connected engine (capability-gated). Settings › Contacts shows there too; Add contact stays on the machine's own screen.
+Lifted 2026-11-17: phones and iPads share through the connected engine (capability-gated). Settings › Contacts shows there too. Lifted 2026-11-26: Add contact too — the phone or iPad opens the connected engine's contact window, shows its code, and its Invite tab adds "Scan QR code" (the camera reads the other side's `theuth-contact:` ticket or an http(s) card URL; anything else is refused as not a contact code). Nearby there lists the engine's network, not the phone's.
 
 ### 12.9 Unpair and vault-key rotation (D7)
 

@@ -7,7 +7,7 @@ import type { SettingsCategory } from '@/components/settings/types'
 // 213 §2: Settings › Sharing is where the things being shared are managed; Network keeps the switches and access.
 // 210 §7.4 item 4: on every client (iOS and web get it from the same bundle, item 10). Each tab hides on an engine
 // without its methods; Overview hides on one without `sharing_list`, so Contacts leads there.
-// 191: a phone or web client with no local node sees Contacts (the mesh's); Add contact stays on the machine's own screen.
+// 191: a phone or web client with no local node sees Contacts (the mesh's) and adds them through the engine it controls.
 export const sharing: SettingsCategory = {
   id: 'sharing',
   label: 'Sharing',

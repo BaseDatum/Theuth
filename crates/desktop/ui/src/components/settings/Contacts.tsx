@@ -1,12 +1,13 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Bot, CircleCheck, Copy, MessageSquare, MoreHorizontal, Plus, ShieldAlert, X } from 'lucide-react'
+import { Bot, CircleCheck, Copy, MessageSquare, MoreHorizontal, Plus, ScanLine, ShieldAlert, X } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Fragment, type ReactNode, type Ref, useCallback, useEffect, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { type PairView, pairView, spaced } from '@/components/settings/PairDialog'
 import { Empty, RenameInput, Section, errorText, useAction } from '@/components/settings/shared'
+import { CameraOff, ScanningView, scannerAvailable, useQrScan } from '@/components/link/QrScan'
 import type { TabProps } from '@/components/settings/types'
 import { useAgents, useMesh } from '@/components/tasks/queries'
 import {
@@ -27,7 +28,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { FULL_ACCESS_SPREAD, PAIRED_RULE, SHARE_RULE, type Sharing, accessFocus, exportName, fingerprint, focusedContact, fullAccessFrom, fullAccessOff, fullAccessOn, fullAccessSaid, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { FULL_ACCESS_SPREAD, NOT_A_CONTACT, PAIRED_RULE, SHARE_RULE, type Sharing, accessFocus, contactTarget, exportName, fingerprint, focusedContact, fullAccessFrom, fullAccessOff, fullAccessOn, fullAccessSaid, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { hasLocal } from '@/link/engines'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
@@ -245,12 +246,11 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
     <Section
       title="Contacts"
       actions={
-        // 183 §12.8: the code check needs the machine's own screen, and Nearby browses its network, not a phone's.
-        hasLocal() && (
-          <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
-            <Plus /> Add contact…
-          </Button>
-        )
+        // 183 §12.8 (lifted for contacts): a phone or iPad adds a contact through the engine it controls — it opens that
+        // engine's window, shows its code, and scans the other side's invite with the camera.
+        <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
+          <Plus /> Add contact…
+        </Button>
       }
     >
       <p className="text-[13px] text-fg-secondary">Other people's machines. {SHARE_RULE}</p>
@@ -493,18 +493,22 @@ function windowCall<T>(call: () => Promise<T>): Promise<T> {
  * that arrives while the window is open, replaces the tabs with the code until it ends.
  * "Choose what … may reach" calls `onAccess` with the new contact's endpoint id.
  */
-export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { onClose: () => void; onAccess: (peer: string | undefined) => void; tab?: 'nearby' | 'invite' }) {
+export function AddContact({ onClose, onAccess, tab: initialTab = hasLocal() ? 'nearby' : 'invite' }: { onClose: () => void; onAccess: (peer: string | undefined) => void; tab?: 'nearby' | 'invite' }) {
   const canQuery1 = useQuerySupport(["contact_nearby"])
   const canMeshNearby = useQuerySupport(["mesh_nearby", "mesh_nearby_watch"])
   const api = useApi()
   const qc = useQueryClient()
   const connected = useConnection((c) => c.state === 'open')
+  const engineName = useConnection((c) => c.info?.name)
   const mesh = useMesh()
   const contacts = useContacts()
   const [tab, setTab] = useState(initialTab)
   const [win, setWin] = useState<ContactWindow | null>(null)
   const [winError, setWinError] = useState<string | null>(null)
   const [paste, setPaste] = useState('')
+  const qr = useQrScan()
+  const canScan = scannerAvailable()
+  const [scanError, setScanError] = useState<string | null>(null)
   const [cer, setCer] = useState<Cer | null>(null)
   const [seen, setSeen] = useState<readonly string[]>([])
   // §7.1: Nearby hints whose card failed verification on click: shown "unverified", Add refused.
@@ -607,10 +611,20 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
     leave()
     onClose()
   }
+  /** Paste and scan dial alike: a ticket names "the invite", a card URL itself. */
+  const startTarget = (target: ContactTarget) => start(target, target.kind === 'ticket' ? 'the invite' : target.kind === 'card_url' ? target.url : '', '')
   const connect = () => {
     const v = paste.trim()
-    if (!v) return
-    start(v.startsWith('theuth-contact:') ? { kind: 'ticket', ticket: v } : { kind: 'card_url', url: v }, v.startsWith('theuth-contact:') ? 'the invite' : v, '')
+    // A pasted string that is not a ticket goes to the engine as a card URL, which says what is wrong with it.
+    if (v) startTarget(contactTarget(v) ?? { kind: 'card_url', url: v })
+  }
+  const scanTheirs = async () => {
+    setScanError(null)
+    const text = await qr.scan()
+    if (text === null) return
+    const target = contactTarget(text)
+    if (target) startTarget(target)
+    else setScanError(NOT_A_CONTACT)
   }
   // Theuth agents first (verified cards before the rest), then other vendors (§12.7).
   const agents = [...(nearby.data ?? [])].sort((a, b) => Number(!a.eid) - Number(!b.eid) || Number(!a.verified) - Number(!b.verified))
@@ -623,7 +637,13 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
   return (
     <Dialog open onOpenChange={(o) => !o && close()}>
       <DialogContent
-        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg"
+        className={cn(
+          'max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg',
+          // A phone: a full-screen sheet clear of the notch and the home indicator, as tall as the band above the keyboard.
+          !qr.scanning && 'max-sm:inset-x-0 max-sm:top-0 max-sm:h-band max-sm:max-h-none max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:content-start max-sm:rounded-none max-sm:border-0 max-sm:pt-[max(1.5rem,var(--safe-top))] max-sm:pb-[max(1.5rem,var(--safe-bottom))] max-sm:[&>[data-slot=dialog-close]]:top-[max(1rem,var(--safe-top))]',
+          // Scanning: the whole screen, its hint and Cancel at the bottom over the camera (QrScan.tsx).
+          qr.scanning && 'inset-0 max-h-none max-w-none translate-x-0 translate-y-0 overflow-hidden rounded-none sm:max-w-none',
+        )}
         aria-describedby={view === 'code' || view === 'waiting' ? LIMITED_ID : undefined}
         onOpenAutoFocus={(e) => {
           if (!cer) return
@@ -631,7 +651,12 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
           cancelRef.current?.focus()
         }}
       >
-        {cer && view ? (
+        {qr.scanning ? (
+          <>
+            <DialogTitle className="sr-only">Scan their QR code</DialogTitle>
+            <ScanningView hint="Point the camera at the QR code under Add contact › Invite on their theuth" onCancel={() => void qr.cancel()} className="pb-[var(--safe-bottom)]" />
+          </>
+        ) : cer && view ? (
           <CeremonyBody
             name={cer.name}
             detail={cer.detail}
@@ -710,13 +735,16 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
                       </div>
                     </div>
                   ))}
-                  <p className="pt-2 text-[13px] text-fg-tertiary">This machine is visible on the network only while this window is open.</p>
+                  <p className="pt-2 text-[13px] text-fg-tertiary">
+                    {hasLocal() ? 'This machine is visible on the network only while this window is open.' : `${engineName ?? 'The machine this device controls'} lists the agents on its own network, and is visible there only while this window is open.`}
+                  </p>
                 </TabsContent>
                 <TabsContent value="invite" className="flex flex-col gap-4 pt-2">
                   {win ? (
-                    <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
+                    <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start ios:sm:flex-col ios:sm:items-center">
+                      {/* ~220 px on a phone or iPad, big enough for another phone's camera at arm's length. */}
                       <div className="shrink-0 rounded-lg bg-white p-2">
-                        <QRCodeSVG value={win.ticket} size={148} />
+                        <QRCodeSVG value={win.ticket} size={220} className="size-[220px] sm:size-[148px] ios:sm:size-[220px]" />
                       </div>
                       <div className="flex min-w-0 flex-1 flex-col gap-2">
                         <p className="text-[13px] text-fg-secondary">Send this invite to the other person. It works once, until {new Date(win.expires_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, and grants nothing until you both accept the same code.</p>
@@ -735,6 +763,19 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
                     </div>
                   ) : (
                     <Empty>Creating an invite…</Empty>
+                  )}
+                  {canScan && (
+                    <div className="flex flex-col gap-2 border-t border-border-subtle pt-3">
+                      <Button type="button" variant="outline" className="min-h-11" onClick={() => void scanTheirs()}>
+                        <ScanLine /> Scan QR code
+                      </Button>
+                      {qr.denied && <CameraOff />}
+                      {scanError && (
+                        <p role="alert" className="text-[13px] text-danger">
+                          {scanError}
+                        </p>
+                      )}
+                    </div>
                   )}
                   <form
                     className="flex flex-col gap-2 border-t border-border-subtle pt-3"

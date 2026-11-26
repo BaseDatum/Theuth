@@ -1,4 +1,4 @@
-import { Format, cancel, checkPermissions, requestPermissions, scan } from '@tauri-apps/plugin-barcode-scanner'
+import { CameraOff, ScanningView, scannerAvailable, useQrScan } from '@/components/link/QrScan'
 import { ChevronLeft, Loader2, QrCode } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
@@ -30,9 +30,10 @@ function takeHashKey(): string | null {
 export function PairScreen({ replace, onPaired, onBack }: { replace?: Engine; onPaired?: () => void; onBack?: () => void }) {
   const [key, setKey] = useState('')
   const [pairingWith, setPairingWith] = useState<string | null>(null)
-  const [scanning, setScanning] = useState(false)
+  const qr = useQrScan()
   const [choice, setChoice] = useState<{ key: string; name: string } | null>(null)
   const ios = container() === 'ios'
+  const canScan = scannerAvailable()
   const parent = useEngines((s) => (s.nodes[s.active] ? s.active : null))
   const infoName = useConnection((s) => s.info?.name)
   const storedName = useEngines((s) => s.engines.find((h) => h.id === s.active)?.name)
@@ -91,56 +92,15 @@ export function PairScreen({ replace, onPaired, onBack }: { replace?: Engine; on
     if (auto) void start(auto)
   }, [])
 
-  // The camera preview sits behind the webview: everything from `<body>` down goes transparent while scanning.
-  useEffect(() => {
-    if (!scanning) return
-    const root = document.getElementById('pair-screen')
-    const saved: [HTMLElement, string][] = []
-    for (let el: HTMLElement | null = root; el; el = el.parentElement) {
-      saved.push([el, el.style.background])
-      el.style.background = 'transparent'
-    }
-    return () => {
-      for (const [el, bg] of saved) el.style.background = bg
-    }
-  }, [scanning])
-
   const scanQr = async () => {
-    let perm = await checkPermissions()
-    if (perm !== 'granted') perm = await requestPermissions()
-    if (perm !== 'granted') {
-      toast.error('Camera access is off for this app')
-      return
-    }
-    setScanning(true)
-    try {
-      const { content } = await scan({ windowed: true, formats: [Format.QRCode] })
-      setScanning(false)
-      await start(content)
-    } catch {
-      // cancelled (or the plugin failed): back to the form
-      setScanning(false)
-    }
+    const content = await qr.scan()
+    if (content !== null) await start(content)
   }
 
-  const cancelScan = async () => {
-    await cancel()
-    setScanning(false)
-  }
-
-  if (scanning) {
-    return (
-      <div id="pair-screen" className="flex h-band flex-col items-center justify-end p-6 pb-[max(1.5rem,var(--safe-bottom))]">
-        <Button variant="secondary" className="min-h-11 w-full max-w-sm" onClick={() => void cancelScan()}>
-          Cancel
-        </Button>
-      </div>
-    )
-  }
+  if (qr.scanning) return <ScanningView className="h-band p-6 pb-[max(1.5rem,var(--safe-bottom))]" onCancel={() => void qr.cancel()} />
 
   return (
     <div
-      id="pair-screen"
       className="flex h-band flex-col items-center gap-6 overflow-y-auto px-6 pt-[max(1.5rem,var(--safe-top))] pb-[max(1.5rem,var(--safe-bottom))]"
     >
       {/* Auto margins, not `justify-center`: they centre without clipping the top when the keyboard shrinks the band. */}
@@ -158,11 +118,12 @@ export function PairScreen({ replace, onPaired, onBack }: { replace?: Engine; on
           </p>
         ) : (
           <>
-            {ios && (
+            {canScan && (
               <Button className="min-h-11 w-full" onClick={() => void scanQr()}>
                 <QrCode className="size-5" /> Scan QR
               </Button>
             )}
+            {canScan && qr.denied && <CameraOff />}
             <label className="flex flex-col gap-2">
               <span className="text-sm text-fg-secondary">Paste key</span>
               <Textarea
@@ -176,7 +137,7 @@ export function PairScreen({ replace, onPaired, onBack }: { replace?: Engine; on
                 className="font-mono text-xs"
               />
             </label>
-            <Button variant={ios ? 'secondary' : 'default'} className="min-h-11 w-full" disabled={key.trim() === ''} onClick={() => void start(key)}>
+            <Button variant={canScan ? 'secondary' : 'default'} className="min-h-11 w-full" disabled={key.trim() === ''} onClick={() => void start(key)}>
               Pair
             </Button>
           </>
