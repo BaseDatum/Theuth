@@ -1,10 +1,11 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Copy, Radar, RefreshCw, RotateCcw, Trash2, UserPlus } from 'lucide-react'
+import { ChevronRight, Copy, MoreHorizontal, Radar, RefreshCw, RotateCcw, Trash2, UserPlus } from 'lucide-react'
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { copyToClipboard } from '@/lib/code-copy'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import {
   accountDraft,
   accountLabel,
@@ -25,6 +26,8 @@ import {
   orderProviders,
   pairLogins,
   presetForm,
+  primaryAction,
+  type RowAction,
   probeForm,
   probeState,
   refreshedText,
@@ -41,7 +44,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -142,33 +144,76 @@ function LoginSuffix({ l, logins, hint }: { l: LoginInfo | undefined; logins: Lo
   )
 }
 
-function LoginButton({ l, logins }: { l: LoginInfo | undefined; logins: Logins }) {
-  if (!l) return null
+/**
+ * One provider row (a provider, or a login with no provider): line 1 is the name with its tag and, on the right, the
+ * row's one primary action and the ⋯ menu; line 2, full width, the id, model count and key or login state.
+ */
+function ProviderRow({ id, on, label, tag, actions, detail, children }: { id: string; on: boolean; label: string; tag: string; actions: ReactNode; detail: ReactNode; children?: ReactNode }) {
   return (
-    <Button variant="outline" size="sm" disabled={logins.login.isPending || logins.logout.isPending} onClick={() => (l.logged_in ? logins.logout.mutate(l.name) : logins.login.mutate(l.name))}>
-      {l.logged_in ? 'Log out' : 'Log in'}
-    </Button>
+    <div data-settings-row="" data-provider={id} className="border-b border-border-subtle py-3 last:border-0">
+      <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+          <Dot on={on} />
+          <span className="truncate" title={label}>
+            {label}
+          </span>
+          <Badge variant="outline" className="shrink-0 font-normal">
+            {tag}
+          </Badge>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">{actions}</div>
+      </div>
+      <div className="mt-1 text-xs text-fg-secondary">{detail}</div>
+      {children}
+    </div>
   )
 }
 
-/** Refresh models (`refresh_provider_models`): the spinner turns on the row being refreshed only. */
-function RefreshButton({ name, refresh }: { name: string; refresh: Action<string, unknown> }) {
-  return (
-    <Button size="sm" variant="outline" disabled={refresh.isPending} onClick={() => refresh.mutate(name)}>
-      <RefreshCw className={refresh.isPending && refresh.variables === name ? 'animate-spin' : undefined} /> Refresh models
-    </Button>
-  )
+/** The row's primary action as a small button: Set key…, Log in, or Refresh models (spinning on its own row only). */
+function PrimaryButton({ action, name, logins, refresh, onKey }: { action: RowAction | null; name: string; logins: Logins; refresh: Action<string, unknown>; onKey?(): void }) {
+  if (action === 'key')
+    return (
+      <Button size="xs" variant="outline" onClick={onKey}>
+        Set key…
+      </Button>
+    )
+  if (action === 'login')
+    return (
+      <Button size="xs" variant="outline" disabled={logins.login.isPending || logins.logout.isPending} onClick={() => logins.login.mutate(name)}>
+        Log in
+      </Button>
+    )
+  if (action === 'refresh')
+    return (
+      <Button size="xs" variant="outline" disabled={refresh.isPending} onClick={() => refresh.mutate(name)}>
+        <RefreshCw className={refresh.isPending && refresh.variables === name ? 'animate-spin' : undefined} /> Refresh models
+      </Button>
+    )
+  return null
 }
 
-/** Reset models (`reset_provider_models`), after a confirmation: drops what listings added, back to the built-in catalog. */
-export function ResetModels({ name, label, reset }: { name: string; label: string; reset: Action<string, unknown> }) {
+/** The ⋯ menu of a row: every action but the primary one; nothing when it would be empty. */
+function RowMenu({ name, items }: { name: string; items: ReactNode[] }) {
+  if (items.length === 0) return null
   return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button size="sm" variant="ghost" aria-label={`Reset models of ${name}`} disabled={reset.isPending}>
-          <RotateCcw /> Reset models
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size="icon-xs" variant="ghost" aria-label={`More actions for ${name}`}>
+          <MoreHorizontal />
         </Button>
-      </AlertDialogTrigger>
+      </DropdownMenuTrigger>
+      {/* An item that moved focus (the key field, a dialog) keeps it; otherwise focus returns to ⋯. */}
+      <DropdownMenuContent align="end" onCloseAutoFocus={(e) => document.activeElement && document.activeElement !== document.body && e.preventDefault()}>
+        {items}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+/** Reset models (`reset_provider_models`), after this confirmation: drops what listings added, back to the built-in catalog. */
+function ResetModels({ name, label, reset, onClose }: { name: string; label: string; reset: Action<string, unknown>; onClose(): void }) {
+  return (
+    <AlertDialog open onOpenChange={(o) => !o && onClose()}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{`Reset ${label}'s models?`}</AlertDialogTitle>
@@ -183,43 +228,47 @@ export function ResetModels({ name, label, reset }: { name: string; label: strin
   )
 }
 
+/** Remove a custom or local provider, or an account, after this confirmation. */
+function RemoveProvider({ name, account, remove, onClose }: { name: string; account: boolean; remove: Action<string, unknown>; onClose(): void }) {
+  return (
+    <AlertDialog open onOpenChange={(o) => !o && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{`Remove ${name}?`}</AlertDialogTitle>
+          <AlertDialogDescription>{account ? 'Its key, login, model list and any limits you set are deleted.' : 'Its model list and any limits you set are deleted.'}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => remove.mutate(name)}>Remove</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
 /**
  * Add another account… of a built-in kind (`add_account`): a suffix (`[a-z0-9_-]`, checked as typed) names it
  * `<kind>-<suffix>`; an optional API key, else (for a kind with a login) Log in right after.
  */
-export function AddAccount({ kind, supportsLogin, names, onLogin }: { kind: string; supportsLogin: boolean; names: readonly string[]; onLogin(name: string): void }) {
+export function AddAccount({ kind, supportsLogin, names, onLogin, onClose }: { kind: string; supportsLogin: boolean; names: readonly string[]; onLogin(name: string): void; onClose(): void }) {
   const api = useApi()
   const label = BUILTIN_LABEL[kind] ?? kind
-  const [open, setOpen] = useState(false)
   const [suffix, setSuffix] = useState('')
   const [key, setKey] = useState('')
   const [loginAfter, setLoginAfter] = useState(true)
   const draft = accountDraft(kind, suffix, names)
   // A stored key wins over a login (the engine uses a login only while the account has no key).
   const login = supportsLogin && loginAfter && !key.trim()
-  const close = (o: boolean) => {
-    setOpen(o)
-    if (!o) {
-      setSuffix('')
-      setKey('')
-      setLoginAfter(true)
-    }
-  }
   const add = useAction((v: { suffix: string; key: string; login: boolean }) => api.add_account(kind, v.suffix, v.key || null), {
     keys: [queryKeys.providers, queryKeys.models, queryKeys.logins],
     onSuccess: (p, v) => {
-      close(false)
+      onClose()
       toast.success(`Added ${p.name}`)
       if (v.login) onLogin(p.name)
     },
   })
   return (
-    <Dialog open={open} onOpenChange={close}>
-      <DialogTrigger asChild>
-        <Button size="sm" variant="ghost" aria-label={`Add another ${label} account`}>
-          <UserPlus /> Add another account…
-        </Button>
-      </DialogTrigger>
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{`Add another ${label} account`}</DialogTitle>
@@ -256,7 +305,7 @@ export function AddAccount({ kind, supportsLogin, names, onLogin }: { kind: stri
             </label>
           )}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => close(false)}>
+            <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" disabled={!draft.ready || add.isPending}>
@@ -333,102 +382,139 @@ function ProviderList() {
   })
   const remove = useAction((name: string) => api.remove_provider(name), { keys })
   const names = rows.map((p) => p.name)
+  // The confirmation or form a menu item opened; mounted only while open.
+  const [dialog, setDialog] = useState<{ kind: 'reset' | 'account' | 'remove'; name: string } | null>(null)
+  const target = dialog && rows.find((p) => p.name === dialog.name)
 
-  const row = (p: ProviderInfo) => (
-    <Fragment key={p.name}>
-      <Row
-        label={
-          <span className="flex items-center gap-2">
-            {/* A keyless local server is as ready as a keyed one, a logged-in provider too. */}
-            <Dot on={p.configured || p.local || !!paired.byProvider.get(p.name)?.logged_in} />
-            {BUILTIN_LABEL[p.name] ?? p.name}
-            <Badge variant="outline" className="font-normal">
-              {p.account_of ? accountLabel(p.account_of) : p.builtin ? 'built-in' : p.local ? 'local' : 'custom'}
-            </Badge>
-          </span>
-        }
-        description={
-          <>
-            {p.runtime && `${runtimeLabel(p.runtime)} · `}
-            <span className="font-mono">{p.name}/…</span> · {p.models} models ·{' '}
-            {!isBuiltinRow(p) ? (
-              <span className="font-mono">{p.base_url}</span>
-            ) : p.configured ? (
-              'key set'
-            ) : (
-              `no key (secret \`${p.name}\`)`
-            )}
-            <LoginSuffix l={paired.byProvider.get(p.name)} logins={logins} hint={multi.has(p.name)} />
-          </>
-        }
-      >
-        {open === p.name ? (
-          <form
-            className="flex items-center gap-2"
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (value.trim()) store.mutate({ name: p.name, value: value.trim() })
-            }}
-          >
-            <Input
-              type="password"
-              autoComplete="off"
-              autoFocus
-              className="min-w-48"
-              aria-label={`value of ${p.name}`}
-              placeholder="Paste the key"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-            />
-            <Button type="submit" size="sm" disabled={!value.trim() || store.isPending}>
-              Store
-            </Button>
-            <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(null)}>
-              Cancel
-            </Button>
-          </form>
-        ) : (
-          <span className="flex flex-wrap items-center justify-end gap-2">
-            {!isBuiltinRow(p) && (
-              <Button size="sm" variant="ghost" aria-expanded={expanded === p.name} aria-label={`Model limits of ${p.name}`} onClick={() => setExpanded(expanded === p.name ? null : p.name)}>
-                <ChevronRight className={expanded === p.name ? 'rotate-90 transition-transform' : 'transition-transform'} /> Limits
+  // The ⋯ menu of a row: every action it has but its primary one, Remove last behind a separator.
+  const menu = (name: string, o: { primary: RowAction | null; refreshable: boolean; resettable: boolean; key: string | null; login: LoginInfo | undefined; account: boolean; removable: boolean }) => {
+    const label = BUILTIN_LABEL[name] ?? name
+    const items: ReactNode[] = []
+    if (o.refreshable && o.primary !== 'refresh')
+      items.push(
+        <DropdownMenuItem key="refresh" disabled={refresh.isPending} onSelect={() => refresh.mutate(name)}>
+          <RefreshCw className={refresh.isPending && refresh.variables === name ? 'animate-spin' : undefined} /> Refresh models
+        </DropdownMenuItem>,
+      )
+    if (o.resettable)
+      items.push(
+        <DropdownMenuItem key="reset" aria-label={`Reset models of ${name}`} disabled={reset.isPending} onSelect={() => setDialog({ kind: 'reset', name })}>
+          <RotateCcw /> Reset models…
+        </DropdownMenuItem>,
+      )
+    if (o.key && o.primary !== 'key')
+      items.push(
+        <DropdownMenuItem key="key" onSelect={() => setOpen(name)}>
+          {o.key}
+        </DropdownMenuItem>,
+      )
+    const l = o.login
+    if (l && o.primary !== 'login')
+      items.push(
+        <DropdownMenuItem key="login" disabled={logins.login.isPending || logins.logout.isPending} onSelect={() => (l.logged_in ? logins.logout.mutate(l.name) : logins.login.mutate(l.name))}>
+          {l.logged_in ? 'Log out' : 'Log in'}
+        </DropdownMenuItem>,
+      )
+    if (o.account)
+      items.push(
+        <DropdownMenuItem key="account" aria-label={`Add another ${label} account`} onSelect={() => setDialog({ kind: 'account', name })}>
+          <UserPlus /> Add another account…
+        </DropdownMenuItem>,
+      )
+    if (o.removable) {
+      if (items.length > 0) items.push(<DropdownMenuSeparator key="sep" />)
+      items.push(
+        <DropdownMenuItem key="remove" variant="destructive" aria-label={`Remove ${name}`} disabled={remove.isPending} onSelect={() => setDialog({ kind: 'remove', name })}>
+          <Trash2 /> Remove…
+        </DropdownMenuItem>,
+      )
+    }
+    return items
+  }
+
+  const row = (p: ProviderInfo) => {
+    const l = paired.byProvider.get(p.name)
+    const keyed = isBuiltinRow(p)
+    // An engine with Reset models refreshes every built-in kind and account (a listing, or back to the catalog).
+    const refreshable = p.refreshable || (canReset && keyed)
+    // A keyless local server is as ready as a keyed one, a logged-in provider too.
+    const ready = p.configured || p.local || !!l?.logged_in
+    const primary = primaryAction({ ready, keyed, login: l, refreshable })
+    const items = menu(p.name, {
+      primary,
+      refreshable,
+      resettable: canReset && keyed,
+      key: keyed ? (p.configured ? 'Replace key…' : 'Set key…') : null,
+      login: l,
+      account: canAddAccount && p.builtin && !p.account_of,
+      removable: !p.builtin || !!p.account_of,
+    })
+    return (
+      <Fragment key={p.name}>
+        <ProviderRow
+          id={p.name}
+          on={ready}
+          label={BUILTIN_LABEL[p.name] ?? p.name}
+          tag={p.account_of ? accountLabel(p.account_of) : p.builtin ? 'built-in' : p.local ? 'local' : 'custom'}
+          actions={
+            <>
+              {!keyed && (
+                <Button size="xs" variant="ghost" aria-expanded={expanded === p.name} aria-label={`Model limits of ${p.name}`} onClick={() => setExpanded(expanded === p.name ? null : p.name)}>
+                  <ChevronRight className={expanded === p.name ? 'rotate-90 transition-transform' : 'transition-transform'} /> Limits
+                </Button>
+              )}
+              <PrimaryButton action={primary} name={p.name} logins={logins} refresh={refresh} onKey={() => setOpen(p.name)} />
+              <RowMenu name={p.name} items={items} />
+            </>
+          }
+          detail={
+            <>
+              {p.runtime && `${runtimeLabel(p.runtime)} · `}
+              <span className="font-mono">{p.name}</span> · {p.models} models ·{' '}
+              {!keyed ? (
+                <span className="break-all font-mono">{p.base_url}</span>
+              ) : p.configured ? (
+                'key set'
+              ) : (
+                <>
+                  no key — secret <span className="font-mono">{p.name}</span>
+                </>
+              )}
+              <LoginSuffix l={l} logins={logins} hint={multi.has(p.name)} />
+            </>
+          }
+        >
+          {open === p.name && (
+            <form
+              className="mt-2 flex flex-wrap items-center gap-2"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (value.trim()) store.mutate({ name: p.name, value: value.trim() })
+              }}
+            >
+              <Input
+                type="password"
+                autoComplete="off"
+                autoFocus
+                className="h-8 min-w-48 max-w-sm flex-1"
+                aria-label={`value of ${p.name}`}
+                placeholder="Paste the key"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+              />
+              <Button type="submit" size="sm" disabled={!value.trim() || store.isPending}>
+                Store
               </Button>
-            )}
-            {/* An engine with Reset models refreshes every built-in kind and account (a listing, or back to the catalog). */}
-            {(p.refreshable || (canReset && isBuiltinRow(p))) && <RefreshButton name={p.name} refresh={refresh} />}
-            {canReset && isBuiltinRow(p) && <ResetModels name={p.name} label={BUILTIN_LABEL[p.name] ?? p.name} reset={reset} />}
-            <LoginButton l={paired.byProvider.get(p.name)} logins={logins} />
-            {isBuiltinRow(p) && (
-              <Button size="sm" variant="outline" onClick={() => setOpen(p.name)}>
-                {p.configured ? 'Replace key…' : 'Set key…'}
+              <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(null)}>
+                Cancel
               </Button>
-            )}
-            {canAddAccount && p.builtin && !p.account_of && <AddAccount kind={p.name} supportsLogin={p.supports_login} names={names} onLogin={(n) => logins.login.mutate(n)} />}
-            {(!p.builtin || p.account_of) && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" aria-label={`Remove ${p.name}`} disabled={remove.isPending}>
-                    <Trash2 />
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>{`Remove ${p.name}?`}</AlertDialogTitle>
-                    <AlertDialogDescription>{p.account_of ? 'Its key, login, model list and any limits you set are deleted.' : 'Its model list and any limits you set are deleted.'}</AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => remove.mutate(p.name)}>Remove</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            )}
-          </span>
-        )}
-      </Row>
-      {expanded === p.name && <ModelLimits provider={p.name} />}
-    </Fragment>
-  )
+            </form>
+          )}
+        </ProviderRow>
+        {expanded === p.name && <ModelLimits provider={p.name} />}
+      </Fragment>
+    )
+  }
 
   return (
     <Section
@@ -445,27 +531,29 @@ function ProviderList() {
       }
     >
       {rows.filter(isBuiltinRow).map(row)}
-      {paired.alone.map((l) => (
-        <Row
-          key={l.name}
-          label={
-            <span className="flex items-center gap-2">
-              <Dot on={l.logged_in} />
-              {BUILTIN_LABEL[l.name] ?? l.name}
-              <Badge variant="outline" className="font-normal">
-                built-in
-              </Badge>
-            </span>
-          }
-          description={<LoginState l={l} logins={logins} />}
-        >
-          <span className="flex flex-wrap items-center justify-end gap-2">
-            {canReset && <RefreshButton name={l.name} refresh={refresh} />}
-            {canReset && <ResetModels name={l.name} label={BUILTIN_LABEL[l.name] ?? l.name} reset={reset} />}
-            <LoginButton l={l} logins={logins} />
-          </span>
-        </Row>
-      ))}
+      {paired.alone.map((l) => {
+        const primary = primaryAction({ ready: l.logged_in, keyed: false, login: l, refreshable: canReset })
+        return (
+          <ProviderRow
+            key={l.name}
+            id={l.name}
+            on={l.logged_in}
+            label={BUILTIN_LABEL[l.name] ?? l.name}
+            tag="built-in"
+            actions={
+              <>
+                <PrimaryButton action={primary} name={l.name} logins={logins} refresh={refresh} />
+                <RowMenu name={l.name} items={menu(l.name, { primary, refreshable: canReset, resettable: canReset, key: null, login: l, account: false, removable: false })} />
+              </>
+            }
+            detail={
+              <>
+                <span className="font-mono">{l.name}</span> · <LoginState l={l} logins={logins} />
+              </>
+            }
+          />
+        )
+      })}
       <LocalServers names={names} empty={!!providers.data && local.length === 0}>
         {local.map(row)}
       </LocalServers>
@@ -473,6 +561,11 @@ function ProviderList() {
       {custom.map(row)}
       {providers.data && custom.length === 0 && <Empty>No custom providers yet.</Empty>}
       <CustomProviderForm form={form} names={names} onChange={setForm} pending={add.isPending} onSubmit={() => add.mutate(form)} />
+      {dialog?.kind === 'reset' && <ResetModels name={dialog.name} label={BUILTIN_LABEL[dialog.name] ?? dialog.name} reset={reset} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'account' && target && (
+        <AddAccount kind={target.name} supportsLogin={target.supports_login} names={names} onLogin={(n) => logins.login.mutate(n)} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === 'remove' && <RemoveProvider name={dialog.name} account={!!target?.account_of} remove={remove} onClose={() => setDialog(null)} />}
     </Section>
   )
 }

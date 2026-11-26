@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createElement, type ReactElement } from 'react'
+import { createElement, type ReactElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
@@ -26,6 +26,7 @@ import {
   orderProviders,
   pairLogins,
   presetForm,
+  primaryAction,
   probeForm,
   probeLine,
   probeState,
@@ -34,6 +35,14 @@ import {
 } from './providers'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
+// The ⋯ menus render open, their items as buttons, so the static markup shows every row action.
+vi.mock('@/components/ui/dropdown-menu', () => ({
+  DropdownMenu: ({ children }: { children?: ReactNode }) => children,
+  DropdownMenuTrigger: ({ children }: { children?: ReactNode }) => children,
+  DropdownMenuContent: ({ children }: { children?: ReactNode }) => createElement('div', { role: 'menu' }, children),
+  DropdownMenuSeparator: () => createElement('hr'),
+  DropdownMenuItem: ({ children, 'aria-label': label }: { children?: ReactNode; 'aria-label'?: string }) => createElement('button', { role: 'menuitem', 'aria-label': label }, children),
+}))
 
 const row = (name: string, builtin: boolean, configured: boolean, refreshable = false, local = false): ProviderInfo => ({
   name,
@@ -102,7 +111,7 @@ test('one Providers section: rows in order with tags, Refresh models only where 
   expect(t).toContain('custom')
   expect(t).toContain('https://rwx/v1/')
   expect(t).toContain('key set')
-  expect(t).toContain('no key (secret `openrouter`)')
+  expect(t).toContain('no key — secret openrouter')
   // opencode and rwx are refreshable; openrouter (no key) is not.
   expect(t.match(/Refresh models/g)).toHaveLength(2)
   expect(html).toContain('aria-label="Remove rwx"')
@@ -128,7 +137,7 @@ test('built-in labels and key notes', () => {
 test('Google: a built-in row keyed by the `google` secret, labelled, first in engine order', () => {
   const t = text(render([row('google', true, false), row('opencode', true, true, true), row('openrouter', true, false)]))
   expect(t).toContain('Google')
-  expect(t).toContain('no key (secret `google`)')
+  expect(t).toContain('no key — secret google')
   expect(t.indexOf('Google')).toBeLessThan(t.indexOf('OpenCode Zen'))
   expect(builtinKeyNote('google')).toBe('Google key (Settings > Models > Providers)')
 })
@@ -137,7 +146,7 @@ test('OpenCode Go: a built-in row between Zen and OpenRouter, keyed by the `open
   const t = text(render([row('opencode', true, true, true), row('opencode-go', true, false, true), row('openrouter', true, false, false)]))
   expect(t.indexOf('OpenCode Zen')).toBeLessThan(t.indexOf('OpenCode Go'))
   expect(t.indexOf('OpenCode Go')).toBeLessThan(t.indexOf('OpenRouter'))
-  expect(t).toContain('no key (secret `opencode-go`)')
+  expect(t).toContain('no key — secret opencode-go')
   expect(t.match(/Refresh models/g)).toHaveLength(2)
   expect(builtinKeyNote('opencode-go')).toBe('OpenCode Go key (Settings > Models > Providers)')
 })
@@ -154,6 +163,15 @@ test('188 A6: a login pairs with the provider row of its name; the rest stand al
   expect([loginText(login('a', false, 'x')), loginText(login('a', true)), loginText(login('a', true, 'me@x.io'))]).toEqual(['not logged in', 'logged in', 'logged in (me@x.io)'])
 })
 
+test('a row’s primary action: the way in until usable (Log in over Set key…), then Refresh models where it refreshes', () => {
+  const out = login('anthropic', false)
+  expect(primaryAction({ ready: false, keyed: true, login: undefined, refreshable: true })).toBe('key')
+  expect(primaryAction({ ready: false, keyed: true, login: out, refreshable: true })).toBe('login')
+  expect(primaryAction({ ready: false, keyed: false, login: out, refreshable: false })).toBe('login')
+  expect(primaryAction({ ready: true, keyed: true, login: login('anthropic', true), refreshable: true })).toBe('refresh')
+  expect(primaryAction({ ready: true, keyed: false, login: undefined, refreshable: false })).toBeNull()
+})
+
 test('188 A6: no Accounts section — a paired login sits on its provider row, a lone login gets a built-in row after the built-ins', () => {
   const html = withCache(createElement(ModelProviders), (qc) => {
     qc.setQueryData(queryKeys.providers, [row('opencode', true, true), row('rwx', false, true)])
@@ -161,8 +179,10 @@ test('188 A6: no Accounts section — a paired login sits on its provider row, a
   })
   const t = text(html)
   expect(t).not.toContain('Accounts')
-  expect(t).toMatch(/rwx custom rwx\/… · 1 models · https:\/\/rwx\/v1\/ · not logged in/)
-  expect(t).toMatch(/Anthropic built-in logged in \(me@x\.io\) Log out/)
+  expect(t).toMatch(/rwx custom .*rwx · 1 models · https:\/\/rwx\/v1\/ · not logged in/)
+  // Not refreshable here: its only action, Log out, is in its ⋯ menu.
+  expect(t).toMatch(/Anthropic built-in Log out anthropic · logged in \(me@x\.io\)/)
+  expect(html).toContain('aria-label="More actions for anthropic"')
   expect(t.indexOf('OpenCode Zen')).toBeLessThan(t.indexOf('Anthropic'))
   expect(t.indexOf('Anthropic')).toBeLessThan(t.indexOf('Local servers'))
   expect(t.match(/Log in/g)).toHaveLength(1)
@@ -176,11 +196,12 @@ test('177 U1: Local servers sits between the built-ins and the custom providers;
   expect(t.indexOf(' mlx ')).toBeLessThan(t.indexOf('Custom providers'))
   expect(t.indexOf('Custom providers')).toBeLessThan(t.indexOf(' rwx '))
   expect(t).toContain('Find running servers')
-  expect(t).toMatch(/mlx local omlx · mlx\/… · 1 models · http:\/\/127\.0\.0\.1:8080\/v1\//)
+  expect(t).toContain('mlx local')
+  expect(t).toContain('omlx · mlx · 1 models · http://127.0.0.1:8080/v1/')
   expect(t.match(/Refresh models/g)).toHaveLength(3)
   expect(html).toContain('aria-label="Remove mlx"')
-  // R1-9: Remove opens a confirmation first (the dialog's trigger), it does not remove on click.
-  expect(html).toMatch(/<button[^>]*aria-haspopup="dialog"[^>]*aria-label="Remove mlx"|<button[^>]*aria-label="Remove mlx"[^>]*aria-haspopup="dialog"/)
+  // R1-9: Remove sits in the row's ⋯ menu; it opens a confirmation (ModelProviders.accounts.test), it does not remove on click.
+  expect(html).toMatch(/<button role="menuitem" aria-label="Remove mlx">/)
   // Custom and local rows expand to their model limits; built-ins do not.
   expect(html).toContain('aria-label="Model limits of mlx"')
   expect(html).toContain('aria-label="Model limits of rwx"')
