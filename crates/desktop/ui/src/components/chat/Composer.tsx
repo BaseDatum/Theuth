@@ -18,12 +18,12 @@ import {
 import {
   type ClipboardEvent,
   type DragEvent,
-  Fragment,
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
   type SyntheticEvent,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -35,6 +35,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DictionarySuggestion } from '@/components/ui/DictionarySuggestion'
 import * as dictation from '@/lib/dictation'
+import * as dictationBuffer from '@/lib/dictation-buffer'
 import { extFor, putAttachment, seedFile } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
 import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRef } from '@/lib/attach'
@@ -538,14 +539,21 @@ export function Composer({
   const [owner, setOwner] = useState(false)
   const ownerRef = useRef(owner)
   ownerRef.current = owner
-  /** Ours is running: the box is read-only and renders §5.1's spans. */
+  /** Ours is running: the box stays editable and lands each utterance at the caret (`lib/dictation-buffer`). */
   const dictating = owner && dict.active !== null
   const dictReason =
     dictation.reason(dict) ?? (dict.active !== null && !owner ? 'Dictating in another pane' : null)
   // 82 §B: the pill's wave — the dictation tap's analyser (remote engine) or frames from the engine's level packets.
   const dictSource = useVoiceSource(dictating && dict.phase === 'dictating', () => tapOrLevels(dictation.tap(), dictation.onLevels))
-  /** Caret to place once the textarea is back after a dictation — with the dictated `text` to land there first (138 UNDO). */
+  /** Caret to place once a dictation has landed — with the dictated `text` to land first when it could not be followed live. */
   const [pending, setPending] = useState<{ text?: string; caret: number } | null>(null)
+  /** The dictation this box is following live: the caret, the span still being heard, the undo steps; `null` otherwise. */
+  const [buf, setBuf] = useState<dictationBuffer.DictBuffer | null>(null)
+  const bufRef = useRef(buf)
+  /** The span still being heard (display coordinates), drawn muted by `HeardMirror`; `null` when none. */
+  const heard = buf && dictationBuffer.volatileRange(buf)
+  /** The copy of the text over the box while a span is heard, the only place it can be styled. */
+  const mirror = useRef<HTMLDivElement>(null)
   /** 138 UNDO D3: text blocks whose token an undo or a chip ✕ took, waiting for a redo to bring the token back. Per draft. */
   const shelf = useRef<Shelf>(new Map())
   useEffect(() => {
@@ -624,6 +632,9 @@ export function Composer({
     if (dict.phase !== 'idle') return
     const ta = ref.current
     const at = ta?.selectionStart ?? text.length
+    const b = dictationBuffer.begin(text, at, ta?.selectionEnd ?? at)
+    bufRef.current = b
+    setBuf(b)
     setOwner(true)
     void dictation.start(api, text.slice(0, at), text.slice(at), useEngines.getState().active !== LOCAL, false, dictationCommands(harnessCommands))
   }
@@ -659,7 +670,19 @@ export function Composer({
     () =>
       dictation.onFinish(({ value, caret, id, send }) => {
         if (!ownerRef.current) return
-        setPending({ text: value, caret })
+        const b = bufRef.current
+        if (b) {
+          // Esc hands back an empty id (§6.1 reports nothing for a discard).
+          const f = dictationBuffer.end(b, id === '')
+          bufRef.current = null
+          setBuf(null)
+          value = f.value
+          caret = f.sel.end
+          // One native undo step per landed utterance and per edit, replayed from the box before the dictation.
+          const ta = ref.current
+          if (!ta || (touch() && document.activeElement !== ta) || !dictationBuffer.replayInto(ta, f.origin, f.steps)) writeRef.current(value)
+          setPending({ caret })
+        } else setPending({ text: value, caret })
         lastDictation.current = id || null
         const pendingSend = sendAfterDictate.current
         sendAfterDictate.current = null
@@ -667,6 +690,54 @@ export function Composer({
       }),
     [],
   )
+  /** The box says `v` as a plain store write (no undo step). */
+  const write = (v: string) => {
+    setText(v)
+    reconcileHeld(v)
+  }
+  const writeRef = useRef(write)
+  writeRef.current = write
+  /** Make `b` the dictation's state and the box's text. */
+  const putBuf = (b: dictationBuffer.DictBuffer) => {
+    bufRef.current = b
+    setBuf(b)
+    write(dictationBuffer.display(b))
+  }
+  const putBufRef = useRef(putBuf)
+  putBufRef.current = putBuf
+  // Each utterance as the engine sends it: partials restyle the span at its anchor, a final lands it as plain text.
+  useEffect(
+    () =>
+      dictation.onText((utt, u) => {
+        const b = bufRef.current
+        if (!ownerRef.current || !b) return
+        const raw = dictation.shown(u)
+        putBufRef.current(u.final ? dictationBuffer.final(b, utt, raw) : dictationBuffer.partial(b, utt, raw))
+      }),
+    [],
+  )
+  // The buffer owns the caret while it follows: React's value write moves the DOM caret to the end, put it back.
+  useLayoutEffect(() => {
+    const ta = ref.current
+    if (!buf || !ta || ta.value !== dictationBuffer.display(buf)) return
+    if (ta.selectionStart !== buf.sel.start || ta.selectionEnd !== buf.sel.end) ta.setSelectionRange(buf.sel.start, buf.sel.end)
+    if (mirror.current) mirror.current.scrollTop = ta.scrollTop
+  }, [buf, text])
+  // The span still being heard is not the user's to edit: cancel what would touch it; ⌘Z walks the dictation's steps.
+  useEffect(() => {
+    const ta = ref.current
+    if (!dictating || !ta) return
+    const onBefore = (e: InputEvent) => {
+      const b = bufRef.current
+      if (!b) return
+      if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
+        e.preventDefault()
+        putBufRef.current(e.inputType === 'historyUndo' ? dictationBuffer.undo(b) : dictationBuffer.redo(b))
+      } else if (dictationBuffer.locked(b, ta.selectionStart, ta.selectionEnd, e.inputType)) e.preventDefault()
+    }
+    ta.addEventListener('beforeinput', onBefore)
+    return () => ta.removeEventListener('beforeinput', onBefore)
+  }, [dictating])
   // The spoken "send it" fires once the landed text is the box's text — the same path as ⏎, exactly once.
   useEffect(() => {
     const r = spokenSend(autoSend, text)
@@ -680,6 +751,8 @@ export function Composer({
     if (dict.phase === 'idle') {
       setOwner(false)
       sendAfterDictate.current = null
+      bufRef.current = null
+      setBuf(null)
     }
   }, [dict.phase])
   /** The chips `next` still carries, through the shelf (138 UNDO D3): a text block whose token left waits there for a redo. */
@@ -1169,12 +1242,8 @@ export function Composer({
   }
 
   // The composer's phase and its two gestures (`lib/composer-state`): Enter / the button, and ⌘↩ / a long press.
-  const dictatedFilled = Boolean(
-    dictating &&
-      dict.active &&
-      (dict.active.before.trim() || dict.active.after.trim() || dict.active.utts.some((u) => dictation.shown(u).trim() !== '')),
-  )
-  const filled = Boolean(text.trim() || skills.length || held || dictatedFilled || carries)
+  // While dictating, the heard words are in `text` already (`lib/dictation-buffer`).
+  const filled = Boolean(text.trim() || skills.length || held || carries)
   const at = phase(Boolean(session && running), queued?.length ?? 0)
   const stopping = at !== 'idle' && !!session && !playing
   // The Stop→Send hand-off (`SendButton`'s `arrive`), decided in render so Send's first frame is already Stop's red
@@ -1321,6 +1390,13 @@ export function Composer({
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // ⌘Z / ⇧⌘Z while dictating: the dictation's own steps (a landed utterance is one); the native stack lost its place.
+    const b = bufRef.current
+    if (b && (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') {
+      e.preventDefault()
+      putBuf(e.shiftKey ? dictationBuffer.redo(b) : dictationBuffer.undo(b))
+      return
+    }
     if (slash && slashWord) {
       const list = slashItems
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -1487,58 +1563,84 @@ export function Composer({
         <div className="relative min-w-0">
           {/* 82 §C: while a voice note records the wave is the box; the textarea stays mounted underneath. */}
           <RecordingBox recording={recording} source={noteSource}>
-            {dictating && dict.active ? (
-              // 94 DICTATION-LAYOUT: text on top at full width, the voice bar (wave + stop) spread underneath.
-              <div className="flex flex-col">
-                <DictatedText
-                  before={dict.active.before}
-                  after={dict.active.after}
-                  utts={dict.active.utts}
-                  className={cn(BOX, textMax)}
+            {/* 94 DICTATION-LAYOUT: while dictating, the text on top at full width, the voice bar (wave + stop) spread
+                underneath. The textarea stays the box throughout: the caret moves, the finished words are editable. */}
+            <div className={dictating && dict.active ? 'flex flex-col' : undefined}>
+              <div className="relative">
+                <Textarea
+                  readOnly={readOnly}
+                  dictate={false}
+                  ref={ref}
+                  value={text}
+                  onChange={(e) => {
+                    const b = bufRef.current
+                    if (b) {
+                      const t = e.target
+                      const d = dictationBuffer.inputEdit(dictationBuffer.display(b), t.value, t.selectionEnd)
+                      const next = d && dictationBuffer.edit(b, d.start, d.end, d.text, { start: t.selectionStart, end: t.selectionEnd })
+                      if (d && !next) {
+                        // It reached the span still being heard: React puts the controlled value back; the caret too.
+                        setBuf({ ...b })
+                        return
+                      }
+                      if (next) {
+                        bufRef.current = next
+                        setBuf(next)
+                      }
+                    }
+                    setText(e.target.value)
+                    reconcileHeld(e.target.value)
+                    setSelected(0)
+                    changed(e.target.value, e.target.selectionStart)
+                    pathChanged(e.target.value, e.target.selectionStart)
+                  }}
+                  onSelect={(e) => {
+                    const b = bufRef.current
+                    if (!b) return
+                    const next = dictationBuffer.select(b, e.currentTarget.selectionStart, e.currentTarget.selectionEnd)
+                    if (next === b) return
+                    bufRef.current = next
+                    setBuf(next)
+                  }}
+                  onScroll={(e) => {
+                    if (mirror.current) mirror.current.scrollTop = e.currentTarget.scrollTop
+                  }}
+                  onKeyDown={onKeyDown}
+                  onPaste={onPaste}
+                  rows={1}
+                  placeholder={placeholderFor({ readOnly, running, exports: exports.length > 0, skill: skills.join(', ') || undefined, runsOn, short: isMobile || touch() || narrow })}
+                  // ponytail: `field-sizing: content` grows the box to `textMax` (less the meta row's 16 px when it shows), then scrolls; older WebKit keeps one line.
+                  // While a span is heard the mirror paints the glyphs (the span muted); the textarea keeps the caret and the selection.
+                  className={cn(BOX, textMax, heard && '[-webkit-text-fill-color:transparent]')}
                 />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className="mt-1 flex h-9 w-full items-center overflow-hidden rounded-lg bg-transparent px-1 text-fg-secondary"
-                      aria-label="Stop dictation"
-                      onClick={dictate}
-                    >
-                      <VoiceWave state="listening" source={dictSource} label="Dictation level" className="h-full flex-1" />
-                      <span className="flex size-8 shrink-0 items-center justify-center rounded-full hover:bg-surface-hover">
-                        <Square className="size-4 fill-current" />
-                      </span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
-                </Tooltip>
-                {dict.active.device && (
-                  <p role="status" className="mt-1 px-2 text-xs text-fg-tertiary">
-                    {dict.active.device.state === 'lost' ? 'mic lost — reconnecting…' : `mic changed → ${dict.active.device.name ?? 'default'}`}
-                  </p>
-                )}
+                {buf && heard && <HeardMirror ref={mirror} text={dictationBuffer.display(buf)} span={heard} />}
               </div>
-            ) : (
-              <Textarea
-                readOnly={readOnly}
-                dictate={false}
-                ref={ref}
-                value={text}
-                onChange={(e) => {
-                  setText(e.target.value)
-                  reconcileHeld(e.target.value)
-                  setSelected(0)
-                  changed(e.target.value, e.target.selectionStart)
-                  pathChanged(e.target.value, e.target.selectionStart)
-                }}
-                onKeyDown={onKeyDown}
-                onPaste={onPaste}
-                rows={1}
-                placeholder={placeholderFor({ readOnly, running, exports: exports.length > 0, skill: skills.join(', ') || undefined, runsOn, short: isMobile || touch() || narrow })}
-                // ponytail: `field-sizing: content` grows the box to `textMax` (less the meta row's 16 px when it shows), then scrolls; older WebKit keeps one line.
-                className={cn(BOX, textMax)}
-              />
-            )}
+              {dictating && dict.active && (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="mt-1 flex h-9 w-full items-center overflow-hidden rounded-lg bg-transparent px-1 text-fg-secondary"
+                        aria-label="Stop dictation"
+                        onClick={dictate}
+                      >
+                        <VoiceWave state="listening" source={dictSource} label="Dictation level" className="h-full flex-1" />
+                        <span className="flex size-8 shrink-0 items-center justify-center rounded-full hover:bg-surface-hover">
+                          <Square className="size-4 fill-current" />
+                        </span>
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
+                  </Tooltip>
+                  {dict.active.device && (
+                    <p role="status" className="mt-1 px-2 text-xs text-fg-tertiary">
+                      {dict.active.device.state === 'lost' ? 'mic lost — reconnecting…' : `mic changed → ${dict.active.device.name ?? 'default'}`}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
           </RecordingBox>
           {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
         </div>
@@ -1761,41 +1863,18 @@ export function Composer({
 }
 
 /**
- * The read-only box while dictating (54 §5.1): `before`, a separating space when `before` does not end in one,
- * each utterance's shaped text (153 §3.1; muted until the VAD closes it), a space when `after` does not start with
- * one or punctuation, `after`. The spacing rules mirror `splice()`; the caret is hidden and nothing here takes input.
+ * The box's text painted over the textarea while an utterance is heard (54 §5.1): the same box metrics, the span
+ * still being heard muted as before, the rest as the textarea would draw it. Takes no input; the textarea under it
+ * keeps the caret, the selection and the scroll (mirrored by the composer).
  */
-function DictatedText({
-  before,
-  after,
-  utts,
-  className,
-}: {
-  before: string
-  after: string
-  utts: dictation.Utt[]
-  className: string
-}) {
-  const spoken = utts.filter((u) => dictation.shown(u) !== '')
-  const lead = spoken.length && before && !/\s$/.test(before) ? ' ' : ''
-  const trail = spoken.length && after && !/^[\s.,;:!?)]/.test(after) ? ' ' : ''
+function HeardMirror({ ref, text, span }: { ref: RefObject<HTMLDivElement | null>; text: string; span: dictationBuffer.Sel }) {
   return (
-    <div
-      role="textbox"
-      aria-readonly
-      aria-live="polite"
-      className={cn(className, 'overflow-y-auto whitespace-pre-wrap break-words')}
-    >
-      {before}
-      {lead}
-      {spoken.map((u, i) => (
-        <Fragment key={i}>
-          {i > 0 && ' '}
-          <span className={cn('transition-colors duration-150', !u.final && 'text-fg-tertiary')}>{dictation.shown(u)}</span>
-        </Fragment>
-      ))}
-      {trail}
-      {after}
+    <div ref={ref} aria-hidden className={cn(BOX, 'pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words')}>
+      {text.slice(0, span.start)}
+      <span className="text-fg-tertiary transition-colors duration-150">{text.slice(span.start, span.end)}</span>
+      {/* A trailing newline needs a glyph after it to take its line, as in the textarea. */}
+      {text.slice(span.end)}
+      {'\u200b'}
     </div>
   )
 }

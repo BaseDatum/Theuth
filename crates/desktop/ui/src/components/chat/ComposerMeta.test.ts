@@ -205,13 +205,13 @@ test('the box never clips its own content: no max height or overflow on the box,
   expect(box).not.toMatch(/overflow-hidden|max-h-/)
   // The max height is the text's alone (its own scroll area); the held strip and the top row add to the box.
   expect(src).toMatch(/const BOX =\n\s+'min-h-8 /)
-  expect(src.match(/className=\{cn\(BOX, textMax\)\}/g)).toHaveLength(2)
+  expect(src.match(/className=\{cn\(BOX, textMax[,)]/g)).toHaveLength(1)
 })
 
 /** The bottom bar's source: from its opening tag to the end of the box. */
 function barSource(): string {
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
-  return src.slice(src.indexOf('<div data-composer-bar=""'), src.indexOf('function DictatedText'))
+  return src.slice(src.indexOf('<div data-composer-bar=""'), src.indexOf('function HeardMirror'))
 }
 
 test('the model picker is on the bar, right before talk · mic · send, and not in the top row', () => {

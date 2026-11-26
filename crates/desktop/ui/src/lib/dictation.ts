@@ -1,8 +1,8 @@
 // 54 §5: live dictation into the composer. The daemon owns the model and, for the desktop, the mic;
 // a relay-linked client streams its own mic instead (§4.5). This module keeps the caret anchor
 // (`before`/`after`), the utterances the daemon sends, the lifecycle, and the browser capture graph,
-// and hands the composer the spliced value when a dictation ends. Insert-only: `before` and `after`
-// are never touched.
+// and hands a surface the spliced value when a dictation ends. The chat composer instead follows each
+// utterance as it arrives (`onText`) and lands it at its live caret (`lib/dictation-buffer`).
 
 import { type RefObject, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { notify as toast } from '@/lib/notify'
@@ -313,6 +313,10 @@ function handle(e: VoiceEvent): void {
   const next = applyEvent(prev, e)
   set(next)
   if (e.type === 'DictationLevel' && prev.active?.id === e.id) for (const cb of levelSubs) cb(e.levels)
+  if (e.type === 'DictationText' && next.active?.id === e.id) {
+    const u = next.active.utts[e.utterance]
+    if (u) for (const cb of textSubs) cb(e.utterance, u)
+  }
   if (e.type !== 'DictationFinished' || !prev.active || next.active) return
   teardownCapture()
   const r = finish(prev.active, discarding)
@@ -342,6 +346,15 @@ export function onFinish(cb: (r: Finish) => void): () => void {
   finishers.add(cb)
   return () => {
     finishers.delete(cb)
+  }
+}
+
+const textSubs = new Set<(utterance: number, u: Utt) => void>()
+/** Each `DictationText` of our dictation, in arrival order, after the store took it. Returns the unsubscribe. */
+export function onText(cb: (utterance: number, u: Utt) => void): () => void {
+  textSubs.add(cb)
+  return () => {
+    textSubs.delete(cb)
   }
 }
 
