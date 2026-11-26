@@ -324,6 +324,7 @@ fetch_windows() { # optional on a release (absent → key omitted, one WARN each
   fi
 }
 if [[ -n "$ADD" ]]; then
+  LINUX_TGZ=()
   for p in "${ADDS[@]}"; do
     case "$p" in
       linux-*)
@@ -453,7 +454,7 @@ if [[ -z "$ADD" ]]; then
     cp "$ROOT/$f" "$DIST/$f"
   done
 fi
-sha_of() { awk -v f="$1" '$2 == f {print $1}' "$DIST/SHA256SUMS"; }
+sha_of() { awk -v f="$1" '$2 == f {print $1; exit}' "$DIST/SHA256SUMS"; }
 s3_cp() { # src dest — content type from the destination key; DRY_RUN prints
   local ct
   case "$2" in
