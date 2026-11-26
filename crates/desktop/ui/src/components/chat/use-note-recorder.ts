@@ -24,7 +24,7 @@ export type NoteRecorder = {
   dropWave(): void
 }
 
-export function useNoteRecorder(onNote: (blob: Blob) => void): NoteRecorder {
+export function useNoteRecorder(onNote: (blob: Blob, ms: number) => void): NoteRecorder {
   const latest = useRef(onNote)
   latest.current = onNote
   const recorder = useRef<{ rec: MediaRecorder; discard: boolean } | null>(null)
@@ -75,8 +75,9 @@ export function useNoteRecorder(onNote: (blob: Blob) => void): NoteRecorder {
         setRecording(false)
         if (discard) return
         // 89 VOICE-HOLD: a release within `MIN_NOTE_MS` of the start is a slip, not a message — no upload.
-        if (performance.now() - startedAt < MIN_NOTE_MS) toast('Hold to record, release to send', { duration: 2000 })
-        else deliver(new Blob(chunks, { type: rec.mimeType }))
+        const ms = performance.now() - startedAt
+        if (ms < MIN_NOTE_MS) toast('Hold to record, release to send', { duration: 2000 })
+        else deliver(new Blob(chunks, { type: rec.mimeType }), ms)
       }
       // 82 §C: a dedicated context for the wave (speech.ts owns the audio session); closed with the recording.
       const actx = new AudioContext()

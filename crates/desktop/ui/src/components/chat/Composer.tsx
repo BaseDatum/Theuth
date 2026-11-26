@@ -63,6 +63,7 @@ import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 import { SendMark } from '@/components/Mark'
 import { noteText } from '@/lib/voice-note'
+import { type NoteEvent, usePendingNotes } from '@/lib/voice-pending'
 import { stripRows } from '@/lib/session-tree'
 import { type Act as StopAct, IDLE as STOP_IDLE, type Stop as StopState, progress as stopProgress, step as stepStop } from '@/lib/stop-gesture'
 import type { CancelScope } from '@/rpc/bindings/method.agent.input'
@@ -82,6 +83,7 @@ import { useNoteRecorder } from './use-note-recorder'
 import { StopButton } from './StopButton'
 import { CancelHint, DeleteNote, RecordingMeta, reduced, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
+import { PendingNoteBubble } from './PendingNote'
 import { type Uploaded, uploadWait, useUploads } from './uploads'
 import { McpMenu } from './McpMenu'
 import { COMPOSER_ICON, COMPOSER_ICON_BOX, COMPOSER_ICON_STROKE } from './composer-icons'
@@ -511,7 +513,7 @@ export function Composer({
   const creatingOn = busy && pickedEngine && pickedEngine !== mesh?.self_id ? engineLabel(pickedEngine, mesh?.peers) : null
   const voice = speech.useVoice()
   // 45 §7.2 / 89 VOICE-HOLD: the voice-note recorder (shared with the whiteboard pill, 218); the note is transcribed and sent.
-  const { recording, source: noteSource, record, stop: stopRecording, dropWave: dropNoteWave } = useNoteRecorder((blob) => void sendNote(blob))
+  const { recording, source: noteSource, record, stop: stopRecording, dropWave: dropNoteWave } = useNoteRecorder((blob, ms) => sendNote(blob, ms))
   const [secs, setSecs] = useState(0)
   /** 89 VOICE-HOLD: what the mic gesture wants the row to show (held: dot + timer + hint; locked: Delete … Send). */
   const [stage, setStage] = useState<Stage>('idle')
@@ -525,8 +527,11 @@ export function Composer({
   const talkTitle = useSessionField(talking.session ?? '', 'title')
   /** The running talk's live frames, for the indicator's waveform (as the talk view's band). */
   const { wave: talkWaveState, source: talkSource } = useTalkWave(talkHere, talking.state)
-  /** Uploading + transcribing a finished note. */
-  const [transcribing, setTranscribing] = useState(false)
+  /** 45 §7.2: where this composer's voice note waits on its way (`lib/voice-pending`): a chat's own session — every
+   * composer of the chat runs and shows it alike — or, for a draft or a `deliver` host, this draft. */
+  const noteKey = !deliver && session ? session : draftKey
+  /** The note uploading / transcribing / failed: shown as a pending bubble; the mic waits for it. */
+  const note = usePendingNotes((s) => s.by[noteKey])
   const ref = useRef<HTMLTextAreaElement>(null)
   const dict = dictation.useDictation()
   /** This pane pressed start: the store is shared by every mounted composer, only the owner renders and finishes it. */
@@ -1133,6 +1138,11 @@ export function Composer({
       refocus()
     }
   }
+  /** The latest `submit` and its refusal, for a voice note whose transcript arrives renders after its recording. */
+  const submitNow = useRef(submit)
+  submitNow.current = submit
+  const sendBlocked = useRef(false)
+  sendBlocked.current = busy || !!starting || !!uploading
 
   /** Item 8: ⌘↩ / a long press with an empty box while steers are queued — cancel the turn and deliver them now,
    * in order, as the next input. Withdraw before cancel: cancel's epoch bump would stale them where they stand. */
@@ -1241,22 +1251,35 @@ export function Composer({
     setRing(0)
   }, [running])
 
-  // Mic (45 §7.2): click to record, click again to upload → `transcribe` → send as `[voice note, N s] …`; Escape discards.
-  const sendNote = async (blob: Blob) => {
-    setTranscribing(true)
-    try {
-      const t = await api.transcribe(await putAttachment(api, blob, extFor(blob)))
-      if (!t.text.trim()) {
-        toast('Nothing recognized')
-        return
-      }
-      await submit(noteText(t.text, Number(t.duration_ms)))
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    } finally {
-      setTranscribing(false)
-    }
+  // Mic (45 §7.2): hold to record, release → a pending note (`lib/voice-pending`) shown at once: upload → `transcribe` →
+  // send as `[voice note, N s] …`. A failure keeps the recording behind Retry; Escape while recording discards.
+  const sendNote = (blob: Blob, ms: number) => {
+    const into = !deliver && session ? session : null
+    if (!usePendingNotes.getState().start(noteKey, { blob, ms, session: into })) toast.error('A voice note is still on its way')
   }
+  // Each attempt (the first, every Retry) runs once, in whichever mounted composer of the chat claims it.
+  useEffect(() => {
+    if (!note || note.phase !== 'uploading') return
+    const { id, attempt, blob } = note
+    if (!usePendingNotes.getState().claim(noteKey, id, attempt)) return
+    const key = noteKey
+    const step = (e: NoteEvent) => usePendingNotes.getState().apply(key, id, attempt, e)
+    const failed = (error: string) => step({ type: 'failed', error, at: Date.now() })
+    void (async () => {
+      try {
+        const path = await putAttachment(api, blob, extFor(blob))
+        step({ type: 'uploaded', at: Date.now() })
+        const t = await api.transcribe(path)
+        if (!t.text.trim()) return failed('nothing recognized')
+        if (sendBlocked.current) return failed('another send was in progress')
+        // The row `submit` shows (or its unsent banner, the line kept in the box) takes over from the bubble.
+        step({ type: 'landed' })
+        await submitNow.current(noteText(t.text, Number(t.duration_ms)))
+      } catch (e) {
+        failed(e instanceof Error ? e.message : String(e))
+      }
+    })()
+  }, [note, noteKey, api])
 
   useEffect(() => {
     if (!recording) return
@@ -1399,6 +1422,8 @@ export function Composer({
         </div>
       )}
       {session && <QueuedChips session={session} onEdit={editQueued} />}
+      {/* 45 §7.2: no transcript here to land in (a new chat, a `deliver` host): the note waits over the box. */}
+      {note && note.session === null && <PendingNoteBubble noteKey={noteKey} note={note} />}
       <PluginCommandCard session={session} />
       {/* 215 C2/G5: skills and the prompt suffix share one left-aligned, wrapping row. */}
       <PillRow
@@ -1668,7 +1693,7 @@ export function Composer({
                   className={cn('size-9 shrink-0 rounded-full', talkElsewhere && 'opacity-50')}
                   aria-label="Talk"
                   aria-disabled={talkElsewhere}
-                  disabled={busy || transcribing}
+                  disabled={busy || !!note}
                   onClick={() =>
                     void talk.open(api, session).then(
                       (target) => navigate({ to: '/talk/$session', params: { session: target } }),
@@ -1690,7 +1715,7 @@ export function Composer({
               source={noteSource}
               hint={hint}
               onStage={setStage}
-              disabled={busy || transcribing}
+              disabled={busy || !!note}
               reason={dictReason}
               onTap={dictate}
               onRecord={() => void record()}

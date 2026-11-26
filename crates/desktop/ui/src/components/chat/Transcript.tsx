@@ -31,6 +31,8 @@ import { ToolRunCard } from './ToolRunCard'
 import { settleOn, takeJump, useTranscriptJump } from './jump'
 import { followContent, followViewport } from './viewport-follow'
 import { NextSteps, useNextPick, useNextSteps } from './NextSteps'
+import { notesFor, usePendingNotes } from '@/lib/voice-pending'
+import { PendingNoteBubble } from './PendingNote'
 
 const PAGE = 60
 /** Distance from the bottom (px) within which new content keeps the view pinned. */
@@ -177,6 +179,9 @@ export function Transcript({ session, compact = false, next: suggest = false }: 
   const statusText = useSessionField(session, 'statusText')
   const children = useSessionField(session, 'children')
   const suggestions = useNextSteps(session, !suggest)
+  // 45 §7.2: voice notes on their way into this chat (upload → transcribe) — read here so their arrival re-pins the view.
+  const notesBy = usePendingNotes((s) => s.by)
+  const notes = useMemo(() => notesFor(notesBy, session), [notesBy, session])
   // This engine's store, read after the await: a page landing after a switch must not touch another engine's slice.
   const { sessions: store } = useScope()
   const ref = useRef<HTMLDivElement>(null)
@@ -579,6 +584,9 @@ export function Transcript({ session, compact = false, next: suggest = false }: 
             </div>
           </MeasuredContext>
         </div>
+        {notes.map(([key, n]) => (
+          <PendingNoteBubble key={n.id} noteKey={key} note={n} className={cn('w-full', compact ? 'px-2' : 'mx-auto md:max-w-[768px] px-4')} />
+        ))}
         {suggestions && (
           <div data-next-slot="" className={cn('w-full pt-1 pb-3', compact ? 'px-2' : 'mx-auto md:max-w-[768px] px-4')}>
             <NextSteps items={suggestions} onPick={(text) => useNextPick.getState().pick(session, text)} />
