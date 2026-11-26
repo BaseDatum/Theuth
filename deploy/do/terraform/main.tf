@@ -133,3 +133,17 @@ resource "digitalocean_firewall" "host" {
     }
   }
 }
+# Pin everything to the DigitalOcean project explicitly (today it is the account's default project, renamed
+# "theuth" on 2026-11-26), so a later change of the default project does not move or orphan the infra.
+data "digitalocean_project" "this" {
+  name = var.project
+}
+
+resource "digitalocean_project_resources" "this" {
+  project = data.digitalocean_project.this.id
+  resources = [
+    digitalocean_droplet.host.urn,
+    digitalocean_volume.data.urn,
+    digitalocean_reserved_ip.public.urn,
+  ]
+}

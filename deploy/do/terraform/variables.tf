@@ -49,3 +49,8 @@ variable "volume_size_gib" {
   type        = number
   default     = 10
 }
+variable "project" {
+  description = "DigitalOcean project the droplet, volume and reserved IP belong to."
+  type        = string
+  default     = "theuth"
+}
