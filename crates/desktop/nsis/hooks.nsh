@@ -25,3 +25,13 @@
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "TheuthCompanion"
   ${EndIf}
 !macroend
+
+; Windows caches a shortcut's icon by target path + index (IconCache.db), so after a brand change an
+; in-place update keeps drawing the old icon on every shortcut that points at the same exe — even a
+; fresh one — while Explorer shows the exe itself with the new resource. Tell the shell that
+; associations/icons changed (SHCNE_ASSOCCHANGED) and ask it to rebuild its icon cache.
+!macro NSIS_HOOK_POSTINSTALL
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  nsExec::ExecToLog '"$SYSDIR\ie4uinit.exe" -show'
+  Pop $0
+!macroend
