@@ -2791,6 +2791,13 @@ pub struct ProviderInfo {
     /// 177: a key is stored (vault or env); `false` for a keyless local provider.
     #[serde(default)]
     pub has_key: bool,
+    /// An account instance (`anthropic-work`) of this built-in login kind (`anthropic`):
+    /// its key is the vault secret of its name, its login `oauth/<name>`; removable.
+    #[serde(default)]
+    pub account_of: Option<String>,
+    /// `login`/`logout` take this name (a subscription kind or one of its accounts).
+    #[serde(default)]
+    pub supports_login: bool,
 }
 
 /// 177: a local model runtime preset. `openai` = a generic OpenAI-compatible local server.
@@ -2858,19 +2865,47 @@ pub struct AddProvider {
     pub runtime: Option<LocalRuntime>,
 }
 
-/// `ask` → `Result<(), String>`: delete a custom provider's url, key, and catalog models.
+/// `ask` → `Result<(), String>`: delete a custom provider's url, key, and catalog models;
+/// an account instance's login grant too.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemoveProvider {
-    /// Custom provider name.
+    /// Custom provider or account instance name.
     pub name: String,
+}
+
+/// `ask` → `Result<ProviderInfo, String>`: add account instance `<kind>-<suffix>` of a
+/// built-in login kind (`anthropic`, `openai`, `xai`, `cursor`), with an optional API key.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddAccount {
+    /// The login kind.
+    pub kind: String,
+    /// `[a-z0-9_-]+`; the instance is `<kind>-<suffix>`.
+    pub suffix: String,
+    /// API key, stored as the vault secret of the instance's name; `None`: log in instead.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 /// `ask` → `Result<RefreshedModels, String>`: list the provider's models again (162 D3/D4).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RefreshProviderModels {
-    /// A custom provider, `opencode`, or `openrouter`.
+    /// Any provider row's name: a built-in, custom provider, or account instance.
     pub name: String,
 }
+
+/// `ask` → `Result<Vec<RefreshedModels>, String>`: drop the user `models.json` block of
+/// `name` (`None`: every provider row's) and reload the catalog — back to the bundled list.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResetProviderModels {
+    /// One provider; `None`: all.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// `ask` → `Vec<RefreshedModels>`: refresh every refreshable provider row, each listing
+/// bounded by its timeout; a failed one is logged and left out.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct RefreshAllModels;
 
 /// Reply of [`RefreshProviderModels`]: the row after the refresh and the ids it added or removed.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -2922,9 +2957,15 @@ pub struct ProviderRow {
     /// R2-3: the vault secret of `name` is this provider's own (its add stored it).
     #[serde(default)]
     pub owns_key: bool,
+    /// An account instance of this login kind (`anthropic`), not a gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_of: Option<String>,
     /// The API key, only when the copy includes keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// An account's login grant (`oauth/<name>`, JSON), only when the copy includes keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<String>,
 }
 
 impl fmt::Debug for ProviderRow {
@@ -2935,7 +2976,9 @@ impl fmt::Debug for ProviderRow {
             .field("runtime", &self.runtime)
             .field("protocol", &self.protocol)
             .field("owns_key", &self.owns_key)
+            .field("account_of", &self.account_of)
             .field("key", &self.key.as_ref().map(|_| "<redacted>"))
+            .field("grant", &self.grant.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }

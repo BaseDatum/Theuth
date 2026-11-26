@@ -8,7 +8,7 @@
 //! work here, and [`DecideYield`] is answered from that state alone.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 use genai::adapter::AdapterKind;
 use genai::chat::{BinarySource, ChatMessage, ChatRole, ContentPart};
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
-use genai::{Client, Headers, ModelIden, ServiceTarget};
+use genai::{Client, ModelIden, ServiceTarget};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::error::SendError;
 use kameo::message::{Context, Message};
@@ -10643,16 +10643,25 @@ impl Message<ListModels> for Agents {
                     })
             })
             .collect();
-        // Cursor is not in models.dev: ask the backend what the account may use.
-        if self.auth.login("cursor") {
-            match self.auth.oauth.access(&oauth::CURSOR).await {
+        // Cursor is not in models.dev: ask the backend what each account may use
+        // (the `cursor` login, then its account instances).
+        let cursors = std::iter::once("cursor".to_owned()).chain(self.auth.instances_of("cursor"));
+        for name in cursors.filter(|n| self.auth.login(n)) {
+            let p = match self.auth.login_provider(&name) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("{e}");
+                    continue;
+                }
+            };
+            match self.auth.oauth.access(&p).await {
                 Ok(t) => match crate::backend::cursor_models(&t.access_token).await {
                     Ok(models) => out.extend(
                         models
                             .into_iter()
-                            .map(|m| cursor_model_info(&self.catalog, m)),
+                            .map(|m| cursor_model_info(&self.catalog, m, &name)),
                     ),
-                    Err(e) => tracing::warn!("cursor models: {e}"),
+                    Err(e) => tracing::warn!("{name} models: {e}"),
                 },
                 Err(e) => tracing::warn!("{e}"),
             }
@@ -10680,13 +10689,14 @@ fn google_shadowed(gateways: &HashMap<String, crate::providers::Gateway>) -> boo
             .any(|g| crate::backend::gemini_api_host(&g.base_url))
 }
 
-/// A Cursor listing row, its limits borrowed from the closest catalog
+/// A Cursor listing row of account `provider` (`cursor` or a Cursor account
+/// instance), its limits borrowed from the closest catalog
 /// sibling. 194: only a family whose wire takes a `reasoning` parameter
 /// (`cursor::takes_reasoning`) offers the sibling's efforts — the rest carry
 /// their thinking in the id, so the picker shows no chips it cannot honour.
-fn cursor_model_info(catalog: &Catalog, m: cursor::Model) -> ModelInfo {
-    let id = format!("cursor/{}", m.id);
-    let near = catalog.closest(&id);
+fn cursor_model_info(catalog: &Catalog, m: cursor::Model, provider: &str) -> ModelInfo {
+    let near = catalog.closest(&format!("cursor/{}", m.id));
+    let id = format!("{provider}/{}", m.id);
     let tunable = near.filter(|_| cursor::takes_reasoning(&m.id));
     ModelInfo {
         context: near.map_or(0, |n| n.limit.context),
@@ -10699,7 +10709,7 @@ fn cursor_model_info(catalog: &Catalog, m: cursor::Model) -> ModelInfo {
         budget_max: tunable.and_then(|n| n.budget()).and_then(|b| b.1),
         id,
         name: m.name,
-        provider: "cursor".into(),
+        provider: provider.into(),
         local: false,
     }
 }
@@ -11310,13 +11320,14 @@ impl Message<ListLogins> for Agents {
     ) -> Vec<LoginInfo> {
         oauth::PROVIDERS
             .iter()
-            .map(|p| {
-                let t = self.auth.oauth.load(&p.ns);
+            .flat_map(|p| std::iter::once(p.ns.to_string()).chain(self.auth.instances_of(&p.ns)))
+            .map(|name| {
+                let t = self.auth.oauth.load(&name);
                 LoginInfo {
-                    name: p.ns.to_string(),
                     logged_in: t.is_some(),
                     expires_at: t.as_ref().map(|t| t.expires_at),
                     account: t.and_then(|t| t.account_id),
+                    name,
                 }
             })
             .collect()
@@ -11327,9 +11338,18 @@ impl Message<Login> for Agents {
     type Reply = Result<String, String>;
 
     async fn handle(&mut self, m: Login, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let p = login_provider(&m.provider)?;
-        let (url, finish) = self.auth.oauth.login(p).await?;
-        oauth::open_browser(&url);
+        let p = self.auth.login_provider(&m.provider)?;
+        let (url, finish) = self.auth.oauth.login(&p).await?;
+        // The browser's session decides which account signs in: once a kind has
+        // accounts, the default browser would finish at once with whichever is signed
+        // in there, so the URL is only returned (to open in a private window).
+        let kind = self
+            .auth
+            .instance(&m.provider)
+            .map_or(m.provider.as_str(), |k| &k.ns);
+        if self.auth.instances_of(kind).is_empty() {
+            oauth::open_browser(&url);
+        }
         let rt = self.rt.clone();
         tokio::spawn(async move {
             let error = finish.await.err();
@@ -11351,7 +11371,7 @@ impl Message<Logout> for Agents {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: Logout, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let p = login_provider(&m.provider)?;
+        let p = self.auth.login_provider(&m.provider)?;
         self.auth.oauth.remove(&p.ns).await
     }
 }
@@ -11372,10 +11392,18 @@ impl Agents {
     /// removed providers.yaml row (e.g. an old `gemini` gateway) is not listed.
     fn listed_providers(&self) -> Vec<&models::Provider> {
         // `configured` reads the gateways too: take what is needed and release the lock.
-        let (hide_google, custom): (bool, HashSet<String>) = {
+        let (hide_google, mut custom): (bool, HashSet<String>) = {
             let gateways = self.auth.gateways.read().unwrap_or_else(|e| e.into_inner());
             (google_shadowed(&gateways), gateways.keys().cloned().collect())
         };
+        custom.extend(
+            self.auth
+                .instances
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .cloned(),
+        );
         self.catalog
             .providers()
             .filter(|p| Catalog::is_bundled(&p.id) || custom.contains(&p.id))
@@ -11384,8 +11412,27 @@ impl Agents {
             .collect()
     }
 
-    /// The Connections row of built-in or custom provider `name` (85 §0.9, 162 D6);
-    /// `None` for a name that is neither.
+    /// The login kind (`anthropic`, `openai`, `xai`, `cursor`) row `name` is, or is an
+    /// account instance of; a hand-written providers.yaml row of a kind's name is custom.
+    fn login_kind(&self, name: &str) -> Option<&'static oauth::Provider> {
+        oauth::provider(name)
+            .filter(|_| self.auth.gateway(name).is_none())
+            .or_else(|| self.auth.instance(name))
+    }
+
+    /// The API key of login kind row `name`: the vault secret of its name, else (the
+    /// kind itself) its adapter's env var.
+    fn login_kind_key(&self, name: &str) -> Option<String> {
+        self.auth.key(name).filter(|k| !k.is_empty()).or_else(|| {
+            oauth::provider(name)?;
+            AdapterKind::from_lower_str(name)?
+                .default_key_env_name()
+                .and_then(env_key)
+        })
+    }
+
+    /// The Connections row of built-in or custom provider `name` (85 §0.9, 162 D6),
+    /// a login kind, or an account instance; `None` for a name that is none of them.
     fn provider_info(&self, name: &str) -> Option<ProviderInfo> {
         let models = self
             .catalog
@@ -11394,6 +11441,7 @@ impl Agents {
             .map_or(0, |p| {
                 p.models.keys().filter(|id| !go_free(name, id)).count() as u32
             });
+        let login_kind = self.login_kind(name);
         let (base_url, builtin, configured, has_key, gw) = match name {
             "opencode" => {
                 let k = self.auth.opencode_key().is_some();
@@ -11413,10 +11461,24 @@ impl Agents {
                 let k = self.auth.google_key().is_some();
                 (GOOGLE_ENDPOINT.to_owned(), true, k, k, None)
             }
-            _ => {
-                let g = self.auth.gateway(name)?;
-                (g.base_url.clone(), false, true, !g.key.is_empty(), Some(g))
-            }
+            _ => match login_kind {
+                Some(kind) => {
+                    let (base_url, _) = crate::providers::account_endpoint(&kind.ns)?;
+                    let k = self.login_kind_key(name).is_some();
+                    let primary = oauth::provider(name).is_some();
+                    (
+                        base_url.to_owned(),
+                        primary,
+                        k || self.auth.login(name),
+                        k,
+                        None,
+                    )
+                }
+                None => {
+                    let g = self.auth.gateway(name)?;
+                    (g.base_url.clone(), false, true, !g.key.is_empty(), Some(g))
+                }
+            },
         };
         Some(ProviderInfo {
             name: name.to_owned(),
@@ -11424,11 +11486,14 @@ impl Agents {
             models,
             builtin,
             configured,
-            // Go lists its models publicly, keyed or not.
-            refreshable: configured || name == "opencode-go",
+            // Go lists its models publicly, keyed or not; a login kind or account
+            // refreshes (lists with its key, else resets to the bundled list) anyway.
+            refreshable: configured || name == "opencode-go" || login_kind.is_some(),
             local: gw.as_ref().is_some_and(|g| g.local()),
             runtime: gw.and_then(|g| g.runtime),
             has_key,
+            account_of: self.auth.instance(name).map(|k| k.ns.to_string()),
+            supports_login: login_kind.is_some(),
         })
     }
 
@@ -11527,8 +11592,30 @@ impl Agents {
     }
 
     /// 162 D3: ask `name`'s model-list endpoint again, merge the ids into
-    /// `models.json` (D4), and reload the catalog and costs' price table.
+    /// `models.json` (D4), and reload the catalog and costs' price table. A login
+    /// kind or account with an API key lists with it; without one (a subscription
+    /// login) its listed extras are dropped back to the bundled list; Cursor lists
+    /// live on every `list_models`, so only the catalog reloads.
     async fn refresh_provider_models(&mut self, name: &str) -> Result<RefreshedModels, String> {
+        if let Some(kind) = self.login_kind(name) {
+            let key = self.login_kind_key(name);
+            let (adapter, endpoint) = match (&*kind.ns, &key) {
+                ("cursor", _) => {
+                    self.reload_catalog().await;
+                    return self.refreshed(name, vec![], vec![]);
+                }
+                (_, None) => {
+                    let mut reset = self.reset_provider_models(Some(name)).await?;
+                    return reset.pop().ok_or_else(|| format!("no provider {name}"));
+                }
+                ("anthropic", Some(_)) => (AdapterKind::Anthropic, "https://api.anthropic.com/v1/"),
+                ("xai", Some(_)) => (AdapterKind::Xai, "https://api.x.ai/v1/"),
+                (_, Some(_)) => (AdapterKind::OpenAI, "https://api.openai.com/v1/"),
+            };
+            return self
+                .list_builtin(name, adapter, endpoint.to_owned(), key)
+                .await;
+        }
         let (kind, endpoint, key) = match name {
             "opencode" => (
                 AdapterKind::OpenAI,
@@ -11565,7 +11652,6 @@ impl Agents {
                         ));
                     }
                     None if self.catalog.providers().any(|p| p.id == name)
-                        || oauth::provider(name).is_some()
                         || AdapterKind::from_lower_str(name).is_some() =>
                     {
                         return Err(format!("{name}'s models come from the built-in catalog"));
@@ -11573,16 +11659,21 @@ impl Agents {
                     None => return Err(format!("no provider {name}")),
                 };
                 self.reload_catalog().await;
-                let provider = self
-                    .provider_info(name)
-                    .ok_or_else(|| format!("no provider {name}"))?;
-                return Ok(RefreshedModels {
-                    provider,
-                    added,
-                    removed,
-                });
+                return self.refreshed(name, added, removed);
             }
         };
+        self.list_builtin(name, kind, endpoint, key).await
+    }
+
+    /// List built-in `name`'s models at `endpoint` with `key` (none: only Go, whose
+    /// listing is public) and add the ids the catalog lacks (162 D4).
+    async fn list_builtin(
+        &mut self,
+        name: &str,
+        kind: AdapterKind,
+        endpoint: String,
+        key: Option<String>,
+    ) -> Result<RefreshedModels, String> {
         let auth = match key.filter(|k| !k.is_empty()) {
             Some(k) => AuthData::Key(k),
             None if name == "opencode-go" => AuthData::None,
@@ -11609,6 +11700,16 @@ impl Agents {
             crate::providers::Listing::Builtin(&catalog),
         )?;
         self.reload_catalog().await;
+        self.refreshed(name, added, removed)
+    }
+
+    /// The reply of a refresh or reset of `name`: its row now and the ids that changed.
+    fn refreshed(
+        &self,
+        name: &str,
+        added: Vec<String>,
+        removed: Vec<String>,
+    ) -> Result<RefreshedModels, String> {
         let provider = self
             .provider_info(name)
             .ok_or_else(|| format!("no provider {name}"))?;
@@ -11619,8 +11720,60 @@ impl Agents {
         })
     }
 
-    /// Settings › Models › Providers: the built-ins first, then the custom
-    /// providers by name (a legacy `google` row stands in for the built-in).
+    /// Drop the user `models.json` block of `name` — `None`: of every built-in and
+    /// account row (a custom provider's list is its listing: name it to relist it) —
+    /// and reload the catalog. One row per provider, with the ids that went or came.
+    async fn reset_provider_models(
+        &mut self,
+        name: Option<&str>,
+    ) -> Result<Vec<RefreshedModels>, String> {
+        let names: Vec<String> = match name {
+            Some(n) => {
+                self.provider_info(n)
+                    .ok_or_else(|| format!("no provider {n}"))?;
+                vec![n.to_owned()]
+            }
+            None => self
+                .list_providers()
+                .into_iter()
+                .filter(|p| p.builtin || p.account_of.is_some())
+                .map(|p| p.name)
+                .collect(),
+        };
+        let ids = |cat: &Catalog, n: &str| -> BTreeSet<String> {
+            cat.providers()
+                .find(|p| p.id == n)
+                .map(|p| p.models.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        let before: Vec<BTreeSet<String>> = names.iter().map(|n| ids(&self.catalog, n)).collect();
+        for n in &names {
+            crate::providers::remove_models(&self.rt.data_dir, n)?;
+        }
+        // A custom provider's models are only its listing: list it again.
+        for n in &names {
+            if let Some(g) = self.auth.gateway(n)
+                && let Err(e) = self.list_gateway(n, &g).await
+            {
+                tracing::warn!(provider = %n, "{e}");
+            }
+        }
+        self.reload_catalog().await;
+        names
+            .iter()
+            .zip(before)
+            .map(|(n, before)| {
+                let after = ids(&self.catalog, n);
+                let added = after.difference(&before).cloned().collect();
+                let removed = before.difference(&after).cloned().collect();
+                self.refreshed(n, added, removed)
+            })
+            .collect()
+    }
+
+    /// Settings › Models › Providers: the built-in key providers, then the login kinds
+    /// each followed by its account instances, then the custom providers by name (a
+    /// legacy `google` row stands in for the built-in).
     fn list_providers(&self) -> Vec<ProviderInfo> {
         let mut custom: Vec<String> = self
             .auth
@@ -11632,9 +11785,15 @@ impl Agents {
             .cloned()
             .collect();
         custom.sort();
+        let logins: Vec<String> = oauth::PROVIDERS
+            .iter()
+            .filter(|p| !custom.iter().any(|c| *c == p.ns))
+            .flat_map(|p| std::iter::once(p.ns.to_string()).chain(self.auth.instances_of(&p.ns)))
+            .collect();
         BUILTIN_KEY_PROVIDERS
             .map(str::to_owned)
             .into_iter()
+            .chain(logins)
             .chain(custom)
             .filter_map(|name| self.provider_info(&name))
             .collect()
@@ -11650,6 +11809,84 @@ impl Message<ListProviders> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Vec<ProviderInfo> {
         self.list_providers()
+    }
+}
+
+impl Message<crate::AddAccount> for Agents {
+    type Reply = Result<ProviderInfo, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::AddAccount,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<ProviderInfo, String> {
+        let name = crate::providers::account_name(&m.kind, &m.suffix)?;
+        let kind = oauth::provider(&m.kind).ok_or_else(|| format!("no login kind {}", m.kind))?;
+        if self.auth.gateway(&name).is_some() || self.auth.instance(&name).is_some() {
+            return Err(format!("a provider `{name}` already exists"));
+        }
+        let secrets = crate::providers::secrets_actor()?;
+        crate::providers::save_account(
+            &self.rt.data_dir,
+            &secrets,
+            &m.kind,
+            &name,
+            m.key.as_deref(),
+        )
+        .await?;
+        self.auth
+            .instances
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.clone(), kind);
+        self.reload_catalog().await;
+        self.provider_info(&name)
+            .ok_or_else(|| format!("no provider {name}"))
+    }
+}
+
+impl Message<crate::ResetProviderModels> for Agents {
+    type Reply = Result<Vec<RefreshedModels>, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::ResetProviderModels,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.reset_provider_models(m.name.as_deref()).await
+    }
+}
+
+impl Message<crate::RefreshAllModels> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Vec<RefreshedModels>>;
+
+    /// One `RefreshProviderModels` per refreshable row from a task, so the mailbox
+    /// serves other messages between listings (each bounded by `LISTING_TIMEOUT`).
+    async fn handle(
+        &mut self,
+        _: crate::RefreshAllModels,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let me = ctx.actor_ref().clone();
+        let names: Vec<String> = self
+            .list_providers()
+            .into_iter()
+            .filter(|p| p.refreshable)
+            .map(|p| p.name)
+            .collect();
+        tokio::spawn(async move {
+            let mut out = Vec::with_capacity(names.len());
+            for name in names {
+                match me.ask(RefreshProviderModels { name: name.clone() }).await {
+                    Ok(r) => out.push(r),
+                    Err(e) => tracing::warn!(provider = %name, "refresh: {e}"),
+                }
+            }
+            tx.send(out);
+        });
+        reply
     }
 }
 
@@ -11725,6 +11962,14 @@ impl Message<ExportProviders> for Agents {
         if m.include_keys {
             for r in &mut rows {
                 r.key = self.auth.key(&r.name).filter(|k| !k.is_empty());
+                // An account's login travels with the keys: the target uses it as its own.
+                if r.account_of.is_some() {
+                    r.grant = self
+                        .auth
+                        .oauth
+                        .load(&r.name)
+                        .and_then(|t| serde_json::to_string(&t).ok());
+                }
             }
         }
         let favorites = m.include_favorites.then(|| self.favorite_models.clone());
@@ -11762,6 +12007,14 @@ impl Message<ApplyProviders> for Agents {
             };
             match applied {
                 Err(e) => results.push(line(&row.name, ProviderSyncStatus::Error, Some(e))),
+                Ok((replaced, _)) if row.account_of.is_some() => {
+                    let status = if replaced {
+                        ProviderSyncStatus::Updated
+                    } else {
+                        ProviderSyncStatus::Added
+                    };
+                    results.push(line(&row.name, status, self.apply_account(row).await));
+                }
                 Ok((replaced, mut g)) => {
                     let status = if replaced {
                         ProviderSyncStatus::Updated
@@ -11853,8 +12106,50 @@ impl Message<RemoveProvider> for Agents {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&m.name);
+        let account = self
+            .auth
+            .instances
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&m.name);
+        if account.is_some()
+            && let Err(e) = self.auth.oauth.remove(&m.name).await
+        {
+            tracing::warn!(provider = %m.name, "removing its login: {e}");
+        }
         self.reload_catalog().await;
         Ok(())
+    }
+}
+
+impl Agents {
+    /// A mesh-copied account row on this engine: live as an instance, its sent login
+    /// stored as this engine's. `Some`: what it still needs, or why the login failed.
+    async fn apply_account(&mut self, row: &crate::ProviderRow) -> Option<String> {
+        let kind = oauth::provider(row.account_of.as_deref()?)?;
+        self.auth
+            .instances
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(row.name.clone(), kind);
+        if let Some(grant) = row.grant.as_deref() {
+            let stored = match serde_json::from_str::<oauth::Tokens>(grant) {
+                Ok(t) => self.auth.oauth.save(&row.name, &t).await,
+                Err(e) => Err(e.to_string()),
+            };
+            if let Err(e) = stored {
+                return Some(format!("saved; its login was not: {e}"));
+            }
+        }
+        let key = crate::providers::sent_key(row).is_some()
+            || self.auth.key(&row.name).is_some_and(|k| !k.is_empty());
+        (!key && !self.auth.login(&row.name)).then(|| {
+            format!(
+                "saved, not active: no `{}` key or login here yet; log in to it here, or \
+                 copy again with API keys",
+                row.name
+            )
+        })
     }
 }
 
@@ -12177,14 +12472,6 @@ impl Message<ListRegistry> for Agents {
     }
 }
 
-/// [`oauth::provider`] with a user-facing error listing the choices.
-fn login_provider(ns: &str) -> Result<&'static oauth::Provider, String> {
-    oauth::provider(ns).ok_or_else(|| {
-        let all: Vec<&str> = oauth::PROVIDERS.iter().map(|p| &*p.ns).collect();
-        format!("unknown provider `{ns}`; providers: {}", all.join(", "))
-    })
-}
-
 impl ModelInfo {
     fn new(provider: &str, m: &models::Model) -> Self {
         let budget = m.budget();
@@ -12490,6 +12777,9 @@ pub(crate) struct Auth {
     pub(crate) oauth: oauth::Store,
     /// Named OpenAI-compatible gateways; interior-mutable so `/provider add` is live.
     pub(crate) gateways: Arc<RwLock<HashMap<String, crate::providers::Gateway>>>,
+    /// Account instances (`anthropic-work`) by name, with their login kind
+    /// (`providers::accounts`); interior-mutable so `add_account` is live.
+    pub(crate) instances: Arc<RwLock<HashMap<String, &'static oauth::Provider>>>,
     /// Shared by every inference client; never mutates the process's AWS environment.
     aws_profile: Arc<parking_lot::RwLock<Option<String>>>,
     /// `agent.openrouter` (85 §0.6), applied by the backend to OpenRouter requests.
@@ -12504,6 +12794,7 @@ impl Auth {
             vault: None,
             oauth: oauth::Store::new(dir),
             gateways: Arc::new(RwLock::new(HashMap::new())),
+            instances: Arc::default(),
             aws_profile: Arc::new(parking_lot::RwLock::new(None)),
             openrouter: Arc::default(),
         }
@@ -12553,10 +12844,51 @@ impl Auth {
             .or_else(|| env_key("GOOGLE_GENERATIVE_AI_API_KEY"))
     }
 
-    /// A login is in force for genai namespace `ns`: no key in the vault and
-    /// tokens on disk.
+    /// A login is in force for genai namespace `ns` (a login kind or an account
+    /// instance's name): no key in the vault and tokens on disk.
     pub(crate) fn login(&self, ns: &str) -> bool {
-        self.key(ns).is_none() && oauth::provider(ns).is_some() && self.oauth.load(ns).is_some()
+        self.key(ns).is_none()
+            && (oauth::provider(ns).is_some() || self.instance(ns).is_some())
+            && self.oauth.load(ns).is_some()
+    }
+
+    /// The login kind of account instance `name` (`anthropic-work` → `oauth::ANTHROPIC`).
+    pub(crate) fn instance(&self, name: &str) -> Option<&'static oauth::Provider> {
+        self.instances.read().ok()?.get(name).copied()
+    }
+
+    /// Account instances of login kind `kind`, sorted.
+    pub(crate) fn instances_of(&self, kind: &str) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .instances
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, k)| k.ns == kind)
+            .map(|(n, _)| n.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// A login of kind `kind` is in force for the kind itself or one of its account instances.
+    pub(crate) fn any_login(&self, kind: &str) -> bool {
+        self.login(kind) || self.instances_of(kind).iter().any(|n| self.login(n))
+    }
+
+    /// The login `name` names: a kind's own, or an account instance's (its grant `oauth/<name>`).
+    pub(crate) fn login_provider(&self, name: &str) -> Result<oauth::Provider, String> {
+        if let Some(p) = oauth::provider(name) {
+            return Ok(p.clone());
+        }
+        if let Some(kind) = self.instance(name) {
+            return Ok(oauth::instance(kind, name));
+        }
+        let all: Vec<&str> = oauth::PROVIDERS.iter().map(|p| &*p.ns).collect();
+        Err(format!(
+            "unknown provider `{name}`; providers: {} (or one of their accounts)",
+            all.join(", ")
+        ))
     }
 
     /// The custom provider (OpenAI-compatible gateway) for user-facing provider id `ns`.
@@ -12682,53 +13014,14 @@ pub(crate) fn client(auth: Auth) -> anyhow::Result<Client> {
                             };
                         }
                         AdapterKind::OpenAI | AdapterKind::OpenAIResp if auth.login("openai") => {
-                            let t = auth
-                                .oauth
-                                .access(&oauth::OPENAI)
-                                .await
-                                .map_err(genai::resolver::Error::Custom)?;
-                            target.model.adapter_kind = AdapterKind::OpenAIResp;
-                            target.endpoint =
-                                Endpoint::from_static("https://chatgpt.com/backend-api/codex/");
-                            target.auth = AuthData::RequestOverride {
-                                url: "https://chatgpt.com/backend-api/codex/responses".into(),
-                                headers: Headers::from(vec![
-                                    ("Authorization", format!("Bearer {}", t.access_token)),
-                                    ("chatgpt-account-id", t.account_id.unwrap_or_default()),
-                                    ("OpenAI-Beta", "responses=v1".to_owned()),
-                                    ("originator", "codex_cli_rs".to_owned()),
-                                ]),
-                            };
+                            login_target(&mut target, "openai", &oauth::OPENAI, &auth).await?;
                         }
                         AdapterKind::Anthropic if auth.login("anthropic") => {
-                            let t = auth
-                                .oauth
-                                .access(&oauth::ANTHROPIC)
-                                .await
-                                .map_err(genai::resolver::Error::Custom)?;
-                            let cc = crate::claude_code::global().current();
-                            target.auth = AuthData::RequestOverride {
-                                url: "https://api.anthropic.com/v1/messages?beta=true".into(),
-                                headers: Headers::from(vec![
-                                    ("Authorization", format!("Bearer {}", t.access_token)),
-                                    ("anthropic-version", "2023-06-01".to_owned()),
-                                    ("User-Agent", cc.user_agent()),
-                                    ("anthropic-beta", cc.betas),
-                                    ("x-app", "cli".to_owned()),
-                                    (
-                                        "anthropic-dangerous-direct-browser-access",
-                                        "true".to_owned(),
-                                    ),
-                                ]),
-                            };
+                            login_target(&mut target, "anthropic", &oauth::ANTHROPIC, &auth)
+                                .await?;
                         }
                         AdapterKind::Xai if auth.login("xai") => {
-                            let t = auth
-                                .oauth
-                                .access(&oauth::XAI)
-                                .await
-                                .map_err(genai::resolver::Error::Custom)?;
-                            target.auth = AuthData::Key(t.access_token);
+                            login_target(&mut target, "xai", &oauth::XAI, &auth).await?;
                         }
                         _ => {}
                     }
@@ -12739,13 +13032,38 @@ pub(crate) fn client(auth: Auth) -> anyhow::Result<Client> {
         .build()?)
 }
 
+/// Rewrite `target` to the kind's own login ([`crate::backend::oauth_target`]).
+async fn login_target(
+    target: &mut ServiceTarget,
+    family: &str,
+    p: &oauth::Provider,
+    auth: &Auth,
+) -> genai::resolver::Result<()> {
+    let t = crate::backend::oauth_target(family, p, &auth.oauth)
+        .await
+        .map_err(genai::resolver::Error::Custom)?;
+    target.model.adapter_kind = t.kind;
+    target.endpoint = t.endpoint;
+    target.auth = t.auth;
+    Ok(())
+}
+
 /// The merged catalog with every local custom provider marked (177 E7:
-/// assumed windows, no cloud siblings).
+/// assumed windows, no cloud siblings), and an alias block per account instance.
 fn load_catalog(data_dir: &Path, auth: &Auth) -> Catalog {
     let gateways = auth.gateways.read().unwrap_or_else(|e| e.into_inner());
-    Catalog::load_with(data_dir, &|p| {
-        gateways.get(p).is_some_and(|g| g.on_this_machine())
-    })
+    let accounts: Vec<(String, String)> = auth
+        .instances
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(n, k)| (n.clone(), k.ns.to_string()))
+        .collect();
+    Catalog::load_accounts(
+        data_dir,
+        &|p| gateways.get(p).is_some_and(|g| g.on_this_machine()),
+        &accounts,
+    )
 }
 
 /// The auth-resolver rule as a predicate over genai namespaces: a key in
@@ -12963,6 +13281,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .with_grants(vault.clone().map(|v| v as Arc<dyn oauth::Grants>)),
         vault,
         gateways: Arc::new(RwLock::new(gateways)),
+        instances: Arc::new(RwLock::new(crate::providers::accounts(&rt.data_dir))),
         aws_profile: Arc::new(parking_lot::RwLock::new(cfg.aws_profile.clone())),
         openrouter: Arc::new(cfg.openrouter.clone()),
     };
@@ -14497,6 +14816,7 @@ pub(crate) mod tests {
             vault: None,
             oauth: oauth::Store::new(Path::new("/unused")),
             gateways: Arc::new(RwLock::new(HashMap::new())),
+            instances: Arc::default(),
             aws_profile: Arc::new(parking_lot::RwLock::new(Some("work".into()))),
             openrouter: Arc::default(),
         };
@@ -14634,7 +14954,17 @@ pub(crate) mod tests {
                 .map(|p| p.name)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(names(&a), ["google", "opencode", "opencode-go", "openrouter"]);
+        let all = [
+            "google",
+            "opencode",
+            "opencode-go",
+            "openrouter",
+            "openai",
+            "anthropic",
+            "cursor",
+            "xai",
+        ];
+        assert_eq!(names(&a), all);
         let row = a.provider_info("google").unwrap();
         assert_eq!(row.base_url, GOOGLE_ENDPOINT);
         assert!(row.builtin && row.models > 0);
@@ -14659,7 +14989,7 @@ pub(crate) mod tests {
                 protocol: None,
             },
         );
-        assert_eq!(names(&a), ["google", "opencode", "opencode-go", "openrouter"]);
+        assert_eq!(names(&a), all);
         let row = a.provider_info("google").unwrap();
         assert!(!row.builtin && row.base_url == "https://gw.example/v1/");
     }
@@ -16426,6 +16756,7 @@ pub(crate) mod tests {
                     name: id.into(),
                     max_mode: false,
                 },
+                "cursor",
             )
         };
         let sibling = |id: &str| cat.closest(&format!("cursor/{id}")).unwrap().efforts();
@@ -24824,8 +25155,8 @@ done
         );
 
         assert_eq!(
-            a.refresh_provider_models("anthropic").await.unwrap_err(),
-            "anthropic's models come from the built-in catalog"
+            a.refresh_provider_models("deepseek").await.unwrap_err(),
+            "deepseek's models come from the built-in catalog"
         );
         assert_eq!(
             a.refresh_provider_models("nope").await.unwrap_err(),
@@ -24849,6 +25180,80 @@ done
             .unwrap();
         let or = a.provider_info("openrouter").unwrap();
         assert!(or.builtin && or.configured && or.refreshable);
+    }
+
+    /// Feature A/B: every login kind has a built-in row with login and refresh; an
+    /// account instance's row follows its kind and carries its models; without a key
+    /// a refresh (and a reset) drops listed extras back to the bundled list; Cursor
+    /// only reloads.
+    #[tokio::test]
+    async fn login_kinds_and_accounts_refresh_and_reset() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        let vault = Arc::new(
+            secrets::Vault::open(&dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        a.auth.vault = Some(vault.clone());
+        for kind in ["openai", "anthropic", "cursor", "xai"] {
+            let row = a.provider_info(kind).unwrap();
+            assert!(
+                row.builtin && row.supports_login && row.refreshable && row.account_of.is_none(),
+                "{kind}"
+            );
+        }
+        a.auth
+            .instances
+            .write()
+            .unwrap()
+            .insert("anthropic-work".into(), &oauth::ANTHROPIC);
+        a.reload_catalog().await;
+        let names: Vec<String> = a.list_providers().into_iter().map(|p| p.name).collect();
+        let at = |n: &str| names.iter().position(|x| x == n).unwrap();
+        assert_eq!(at("anthropic-work"), at("anthropic") + 1, "{names:?}");
+        let row = a.provider_info("anthropic-work").unwrap();
+        assert_eq!(row.account_of.as_deref(), Some("anthropic"));
+        assert!(!row.builtin && row.supports_login && row.refreshable && !row.configured);
+        assert_eq!(row.models, a.provider_info("anthropic").unwrap().models);
+        assert!(a.catalog.get("anthropic-work/claude-opus-5-5").is_some());
+        vault.set("anthropic-work", "k", None, "test").await.unwrap();
+        assert!(a.provider_info("anthropic-work").unwrap().configured);
+        vault.delete("anthropic-work").await.unwrap();
+
+        // A listed extra goes on reset, on the kind and on its account alike.
+        let listed = |a: &mut Agents, name: &str| {
+            let catalog = a.catalog.clone();
+            crate::providers::write_models(
+                &dir,
+                name,
+                &["zz-listed".into()],
+                crate::providers::Listing::Builtin(&catalog),
+            )
+            .unwrap();
+        };
+        listed(&mut a, "anthropic-work");
+        a.reload_catalog().await;
+        assert!(a.catalog.get("anthropic-work/zz-listed").is_some());
+        let r = a.reset_provider_models(Some("anthropic-work")).await.unwrap();
+        assert_eq!((r.len(), r[0].removed.as_slice()), (1, &["zz-listed".to_owned()][..]));
+        assert!(a.catalog.get("anthropic-work/zz-listed").is_none());
+        // No key: a refresh is that reset.
+        listed(&mut a, "anthropic-work");
+        a.reload_catalog().await;
+        let r = a.refresh_provider_models("anthropic-work").await.unwrap();
+        assert_eq!(r.removed, ["zz-listed"]);
+        assert!(a.catalog.get("anthropic-work/zz-listed").is_none());
+        // `None` resets every built-in and account row; a custom provider keeps its list.
+        listed(&mut a, "anthropic-work");
+        a.reload_catalog().await;
+        let r = a.reset_provider_models(None).await.unwrap();
+        assert!(r.iter().any(|r| r.provider.name == "cursor"));
+        assert!(r.iter().any(|r| r.provider.name == "anthropic-work" && !r.removed.is_empty()));
+        assert!(a.reset_provider_models(Some("nope")).await.is_err());
+        // Cursor lists live: a refresh only reloads.
+        let r = a.refresh_provider_models("cursor").await.unwrap();
+        assert!(r.added.is_empty() && r.removed.is_empty());
     }
 
     /// OpenCode Go is a built-in Providers row: Go's base, the bundled models,
@@ -25014,6 +25419,8 @@ done
                 local: false,
                 runtime: None,
                 has_key: true,
+                account_of: None,
+                supports_login: false,
             },
             added: vec!["a".into(), "b".into()],
             removed: vec!["c".into()],

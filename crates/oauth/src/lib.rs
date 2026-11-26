@@ -299,6 +299,15 @@ pub fn provider(ns: &str) -> Option<&'static Provider> {
     PROVIDERS.iter().find(|p| p.ns == ns)
 }
 
+/// Account instance `ns` (`anthropic-work`) of login kind `kind`: the same client and
+/// flow, its grant stored under `oauth/<ns>` so it logs in and refreshes on its own.
+pub fn instance(kind: &Provider, ns: &str) -> Provider {
+    Provider {
+        ns: Cow::Owned(ns.to_owned()),
+        ..kind.clone()
+    }
+}
+
 /// What a login leaves on disk.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tokens {

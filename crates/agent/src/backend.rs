@@ -59,8 +59,12 @@ pub(crate) enum Backend {
     /// or a named OpenAI-compatible gateway (05 §3) — the last two looked up
     /// in `auth` per call so `/provider add` and a new key are live.
     Genai { client: Client, auth: Auth },
-    /// Cursor's AgentService (05 §2.5); the bearer is the login's token.
-    Cursor { oauth: oauth::Store },
+    /// Cursor's AgentService (05 §2.5); the bearer is `login`'s token (the `cursor`
+    /// login, or a Cursor account instance's).
+    Cursor {
+        oauth: oauth::Store,
+        login: oauth::Provider,
+    },
 }
 
 /// 85 §2: a genai `ServiceTarget` theuth chooses instead of letting genai
@@ -70,21 +74,149 @@ pub(crate) struct ProtocolTarget {
     pub kind: AdapterKind,
     pub endpoint: Endpoint,
     pub auth: AuthData,
+    /// An account instance logged in to this login kind: `auth` is filled per call
+    /// from the instance's grant ([`oauth_target`]).
+    pub login: Option<&'static oauth::Provider>,
 }
+
+/// The OpenAI API, where an OpenAI account's key goes.
+const OPENAI_API: &str = "https://api.openai.com/v1/";
+/// The Anthropic API (keys and Claude subscriptions alike).
+const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/";
+/// The xAI API (keys and SuperGrok logins alike).
+const XAI_API: &str = "https://api.x.ai/v1/";
+/// A ChatGPT subscription's Responses backend (design doc 05 §2.3).
+const CODEX_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/";
 
 /// The target for a Zen model (`opencode/*` with a key: kind from the catalog
 /// protocol, else the prefix guess), a Go model (`opencode-go/*` with a key,
-/// [`go_target`]) or a user gateway ([`gateway_kind`]); `None` lets genai
-/// resolve the id itself.
+/// [`go_target`]), an account instance ([`account_target`]) or a user gateway
+/// ([`gateway_kind`]); `None` lets genai resolve the id itself.
 pub(crate) fn target_for(resolved: &Resolved, auth: &Auth) -> Option<ProtocolTarget> {
     let provider = resolved.provider.as_deref()?;
     if provider == "opencode-go" {
         return auth.opencode_go_key().map(|k| go_target(resolved, k));
     }
+    if let Some(kind) = auth.instance(provider) {
+        return account_target(resolved, kind, auth.key(provider), auth.login(provider));
+    }
     let zen = (provider == "opencode")
         .then(|| auth.opencode_key())
         .flatten();
     protocol_target(resolved, zen, auth.gateway(provider))
+}
+
+/// An account instance's target (`anthropic-work`): its key on the kind's API (a key
+/// beats a login, as for the kind itself), else its login's shape with `login` set so
+/// [`genai_request`] fills the auth per call, else the kind's API with no auth
+/// ([`genai_request`] refuses it). Never `None` (genai would infer the kind's own
+/// account) except for a Cursor account, which has its own backend.
+fn account_target(
+    resolved: &Resolved,
+    kind: &'static oauth::Provider,
+    key: Option<String>,
+    logged_in: bool,
+) -> Option<ProtocolTarget> {
+    let family = &*kind.ns;
+    if family == "cursor" {
+        return None;
+    }
+    if let Some(key) = key.filter(|k| !k.is_empty()) {
+        let (adapter, endpoint) = match family {
+            "anthropic" => (AdapterKind::Anthropic, ANTHROPIC_API),
+            "xai" => (AdapterKind::Xai, XAI_API),
+            _ => (openai_kind(resolved), OPENAI_API),
+        };
+        return Some(ProtocolTarget {
+            kind: adapter,
+            endpoint: Endpoint::from_static(endpoint),
+            auth: AuthData::Key(key),
+            login: None,
+        });
+    }
+    let (adapter, endpoint) = match family {
+        "anthropic" => (AdapterKind::Anthropic, ANTHROPIC_API),
+        "xai" => (AdapterKind::Xai, XAI_API),
+        _ => (AdapterKind::OpenAIResp, CODEX_ENDPOINT),
+    };
+    Some(ProtocolTarget {
+        kind: adapter,
+        endpoint: Endpoint::from_static(endpoint),
+        auth: AuthData::None,
+        login: logged_in.then_some(kind),
+    })
+}
+
+/// The adapter an OpenAI key speaks for `resolved`: its catalog protocol, else genai's
+/// own pick for the slug (Responses for `gpt-5`, `o3`, `*-codex` …, else chat completions).
+fn openai_kind(resolved: &Resolved) -> AdapterKind {
+    resolved
+        .model
+        .as_ref()
+        .and_then(|m| m.protocol)
+        .map_or_else(
+            || match AdapterKind::from_model(slug(resolved)) {
+                Ok(AdapterKind::OpenAIResp) => AdapterKind::OpenAIResp,
+                _ => AdapterKind::OpenAI,
+            },
+            kind_of,
+        )
+}
+
+/// The target a subscription login speaks (design doc 05 §2.3), its token from `p`'s grant
+/// (refreshed when due): OpenAI → the ChatGPT Codex backend, Anthropic → the Messages API
+/// with the Claude Code bearer and betas, xAI → the token as the key. Shared by the kinds'
+/// own logins (`supervisor::client`'s resolver) and their account instances.
+pub(crate) async fn oauth_target(
+    family: &str,
+    p: &oauth::Provider,
+    store: &oauth::Store,
+) -> Result<ProtocolTarget, String> {
+    let t = store.access(p).await?;
+    let (kind, endpoint, auth) = match family {
+        "openai" => (
+            AdapterKind::OpenAIResp,
+            CODEX_ENDPOINT,
+            AuthData::RequestOverride {
+                url: format!("{CODEX_ENDPOINT}responses"),
+                headers: Headers::from(vec![
+                    ("Authorization", format!("Bearer {}", t.access_token)),
+                    ("chatgpt-account-id", t.account_id.unwrap_or_default()),
+                    ("OpenAI-Beta", "responses=v1".to_owned()),
+                    ("originator", "codex_cli_rs".to_owned()),
+                ]),
+            },
+        ),
+        "anthropic" => {
+            let cc = crate::claude_code::global().current();
+            (
+                AdapterKind::Anthropic,
+                ANTHROPIC_API,
+                AuthData::RequestOverride {
+                    url: format!("{ANTHROPIC_API}messages?beta=true"),
+                    headers: Headers::from(vec![
+                        ("Authorization", format!("Bearer {}", t.access_token)),
+                        ("anthropic-version", "2023-06-01".to_owned()),
+                        ("User-Agent", cc.user_agent()),
+                        ("anthropic-beta", cc.betas),
+                        ("x-app", "cli".to_owned()),
+                        (
+                            "anthropic-dangerous-direct-browser-access",
+                            "true".to_owned(),
+                        ),
+                    ]),
+                },
+            )
+        }
+        "xai" => (AdapterKind::Xai, XAI_API, AuthData::Key(t.access_token)),
+        other => return Err(format!("{other}: no model API for its login")),
+    };
+    Ok(ProtocolTarget {
+        kind,
+        endpoint: Endpoint::from_static(endpoint),
+        auth,
+        login: None,
+    })
 }
 
 /// [`target_for`] with its key sources resolved (testable without a vault).
@@ -101,6 +233,7 @@ fn protocol_target(
             kind: kind_of(protocol.unwrap_or_else(|| Protocol::guess(slug(resolved)))),
             endpoint: Endpoint::from_static(ZEN_ENDPOINT),
             auth: AuthData::Key(key),
+            login: None,
         });
     }
     let gw = gateway?;
@@ -121,6 +254,7 @@ fn protocol_target(
         kind,
         endpoint: Endpoint::from_owned(endpoint),
         auth: AuthData::Key(key),
+        login: None,
     })
 }
 
@@ -185,6 +319,7 @@ fn go_target(resolved: &Resolved, key: String) -> ProtocolTarget {
         kind,
         endpoint: Endpoint::from_static(go_endpoint(kind)),
         auth: AuthData::Key(key),
+        login: None,
     }
 }
 
@@ -351,12 +486,18 @@ impl ChatFrameSink for GoCost {
 }
 
 impl Backend {
-    /// The `cursor` namespace is the one id genai cannot serve; everything
-    /// else, gateways included, goes through the genai client.
+    /// The `cursor` namespace (the `cursor` login, or a Cursor account instance's, whose
+    /// ids the catalog routes there) is the one id genai cannot serve; everything else,
+    /// gateways included, goes through the genai client.
     pub(crate) fn for_model(resolved: &Resolved, client: &Client, auth: &Auth) -> Backend {
         if ns(&resolved.genai) == "cursor" {
+            let login = match resolved.provider.as_deref() {
+                Some(p) if auth.instance(p).is_some() => oauth::instance(&oauth::CURSOR, p),
+                _ => oauth::CURSOR,
+            };
             Backend::Cursor {
                 oauth: auth.oauth.clone(),
+                login,
             }
         } else {
             Backend::Genai {
@@ -431,8 +572,11 @@ impl Backend {
         let (bytes, flat) = crate::tokens::request_size(&req);
         let id = resolved.id.clone();
         match self {
-            Backend::Cursor { oauth: store } => {
-                let t = store.access(&oauth::CURSOR).await?;
+            Backend::Cursor {
+                oauth: store,
+                login,
+            } => {
+                let t = store.access(login).await?;
                 // 194: the request's explicit effort (no default is set for
                 // Cursor, `frame::default_effort`) replaces the slug's reasoning.
                 let effort = opts.reasoning_effort.as_ref();
@@ -516,8 +660,8 @@ impl Backend {
 }
 
 /// The client and spec `stream` sends, with the existing limits attribution,
-/// and whether the call goes out on the Anthropic subscription — the
-/// condition under which `supervisor::client`'s resolver swaps in its bearer.
+/// and whether the call goes out on an Anthropic subscription — the kind's own
+/// (`supervisor::client`'s resolver swaps in its bearer) or an account instance's.
 async fn genai_request<'a>(
     client: &'a Client,
     resolved: &Resolved,
@@ -526,12 +670,33 @@ async fn genai_request<'a>(
     // 160 §5.4: `limit_auth` names the provider row the response headers feed.
     match target_for(resolved, auth) {
         Some(t) => {
+            let account = resolved
+                .provider
+                .as_deref()
+                .filter(|p| auth.instance(p).is_some());
+            let logged_in = t.login.is_some();
+            let t = match (t.login, account) {
+                (Some(kind), Some(name)) => {
+                    oauth_target(&kind.ns, &oauth::instance(kind, name), &auth.oauth).await?
+                }
+                (None, Some(name)) if matches!(t.auth, AuthData::None) => {
+                    return Err(format!(
+                        "{name} has no API key or login: add a key or log in under Settings › Model providers"
+                    ));
+                }
+                _ => t,
+            };
             let label = connection_label(resolved, t.kind);
-            let limit_auth = if matches!(label.as_str(), "opencode" | "opencode-go") {
+            let limit_auth = if account.is_some() {
+                crate::limits::auth_mode(t.kind, &t.auth, logged_in)
+            } else if matches!(label.as_str(), "opencode" | "opencode-go") {
                 "api_key"
             } else {
                 "gateway"
             };
+            let subscription = account.is_some()
+                && t.kind == AdapterKind::Anthropic
+                && matches!(t.auth, AuthData::RequestOverride { .. });
             Ok((
                 crate::supervisor::protocol_client()?,
                 ServiceTarget {
@@ -542,7 +707,7 @@ async fn genai_request<'a>(
                 .into(),
                 label,
                 limit_auth,
-                false,
+                subscription,
             ))
         }
         None => {
@@ -1008,6 +1173,160 @@ mod tests {
         let target = routed_target(&resolved, &auth).await;
         assert_eq!(target.model.adapter_kind, AdapterKind::Xai);
         assert!(matches!(&target.auth, AuthData::Key(k) if k == "xai-oauth-token"));
+    }
+
+    /// [`oauth_auth`] (every kind's own login in force) plus account instance `name` of
+    /// `kind` with `key` as its vault secret, else a login of its own; and a catalog
+    /// that knows the instance.
+    async fn account_auth(
+        kind: &'static oauth::Provider,
+        name: &str,
+        key: Option<&str>,
+    ) -> (crate::TestDir, Auth, models::Catalog) {
+        let (scratch, auth) = oauth_auth().await;
+        auth.instances.write().unwrap().insert(name.into(), kind);
+        match key {
+            Some(k) => {
+                let vault = auth.vault.as_ref().unwrap();
+                vault.set(name, k, None, "test").await.unwrap();
+            }
+            None => auth
+                .oauth
+                .save(
+                    name,
+                    &oauth::Tokens {
+                        access_token: format!("{name}-oauth-token"),
+                        refresh_token: None,
+                        expires_at: 4_102_444_800,
+                        account_id: Some("work-account".into()),
+                    },
+                )
+                .await
+                .unwrap(),
+        }
+        let catalog = models::Catalog::load_accounts(
+            scratch.path(),
+            &|_| false,
+            &[(name.to_owned(), kind.ns.to_string())],
+        );
+        (scratch, auth, catalog)
+    }
+
+    /// The routed target of account model `id`, with its limits attribution and
+    /// whether it is shaped as a Claude subscription call.
+    async fn account_route(
+        auth: &Auth,
+        catalog: &models::Catalog,
+        id: &str,
+    ) -> (ServiceTarget, String, &'static str, bool) {
+        let resolved = catalog.resolve(id, &|_| true).unwrap();
+        assert!(
+            target_for(&resolved, auth).is_some(),
+            "{id} must never reach genai's inference"
+        );
+        let shared = crate::supervisor::client(auth.clone()).unwrap();
+        let (client, spec, label, limit_auth, subscription) =
+            genai_request(&shared, &resolved, auth).await.unwrap();
+        let target = client.resolve_service_target(spec).await.unwrap();
+        (target, label, limit_auth, subscription)
+    }
+
+    fn bearer(auth: &AuthData) -> Option<&str> {
+        match auth {
+            AuthData::RequestOverride { headers, .. } => headers
+                .iter()
+                .find(|(k, _)| *k == "Authorization")
+                .map(|(_, v)| v.as_str()),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn account_anthropic_key_routes_to_the_api_with_its_own_key() {
+        let (_s, auth, catalog) =
+            account_auth(&oauth::ANTHROPIC, "anthropic-work", Some("work-key")).await;
+        let (t, label, limit_auth, subscription) =
+            account_route(&auth, &catalog, "anthropic-work/claude-opus-5-5").await;
+        assert_eq!(t.model.adapter_kind, AdapterKind::Anthropic);
+        assert_eq!(t.endpoint.base_url(), ANTHROPIC_API);
+        assert_eq!(t.model.model_name.to_string(), "claude-opus-5-5");
+        assert!(matches!(&t.auth, AuthData::Key(k) if k == "work-key"));
+        assert_eq!(
+            (label.as_str(), limit_auth, subscription),
+            ("anthropic-work", "api_key", false)
+        );
+    }
+
+    #[tokio::test]
+    async fn account_anthropic_login_is_a_subscription_call_on_its_own_grant() {
+        let (_s, auth, catalog) = account_auth(&oauth::ANTHROPIC, "anthropic-work", None).await;
+        let (t, label, limit_auth, subscription) =
+            account_route(&auth, &catalog, "anthropic-work/claude-opus-5-5").await;
+        assert_eq!(t.model.adapter_kind, AdapterKind::Anthropic);
+        assert!(matches!(&t.auth, AuthData::RequestOverride { url, .. }
+                if url == "https://api.anthropic.com/v1/messages?beta=true"));
+        // Its own token, never the kind's (`anthropic-oauth-token`).
+        assert_eq!(bearer(&t.auth), Some("Bearer anthropic-work-oauth-token"));
+        assert_eq!(
+            (label.as_str(), limit_auth, subscription),
+            ("anthropic-work", "oauth", true)
+        );
+    }
+
+    #[tokio::test]
+    async fn account_openai_login_routes_to_codex_on_its_own_grant() {
+        let (_s, auth, catalog) = account_auth(&oauth::OPENAI, "openai-work", None).await;
+        let (t, _, limit_auth, subscription) =
+            account_route(&auth, &catalog, "openai-work/gpt-5.6-sol").await;
+        assert_eq!(t.model.adapter_kind, AdapterKind::OpenAIResp);
+        assert_eq!(t.endpoint.base_url(), CODEX_ENDPOINT);
+        assert!(matches!(&t.auth, AuthData::RequestOverride { url, headers }
+                if url == "https://chatgpt.com/backend-api/codex/responses"
+                    && headers.iter().any(|(k, v)| k == "chatgpt-account-id" && v == "work-account")));
+        assert_eq!(bearer(&t.auth), Some("Bearer openai-work-oauth-token"));
+        assert_eq!((limit_auth, subscription), ("oauth", false));
+    }
+
+    #[tokio::test]
+    async fn account_xai_login_sends_its_token_as_the_key() {
+        let (_s, auth, catalog) = account_auth(&oauth::XAI, "xai-two", None).await;
+        let (t, _, limit_auth, _) = account_route(&auth, &catalog, "xai-two/grok-9-fast").await;
+        assert_eq!(t.model.adapter_kind, AdapterKind::Xai);
+        assert!(matches!(&t.auth, AuthData::Key(k) if k == "xai-two-oauth-token"));
+        assert_eq!(limit_auth, "oauth");
+    }
+
+    #[tokio::test]
+    async fn account_without_key_or_login_is_refused_not_sent_as_the_kind() {
+        let (_s, auth, catalog) = account_auth(&oauth::ANTHROPIC, "anthropic-work", None).await;
+        auth.oauth.remove("anthropic-work").await.unwrap();
+        let resolved = catalog
+            .resolve("anthropic-work/claude-opus-5-5", &|_| true)
+            .unwrap();
+        let shared = crate::supervisor::client(auth.clone()).unwrap();
+        let Err(e) = genai_request(&shared, &resolved, &auth).await else {
+            panic!("an account with no credentials must not be sent");
+        };
+        assert!(e.contains("no API key or login"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn account_cursor_streams_on_its_own_login() {
+        let (_s, auth, catalog) = account_auth(&oauth::CURSOR, "cursor-two", None).await;
+        let resolved = catalog.resolve("cursor-two/auto", &|_| true).unwrap();
+        let Backend::Cursor { login, .. } =
+            Backend::for_model(&resolved, &Client::new().unwrap(), &auth)
+        else {
+            panic!("a Cursor account streams through the Cursor backend");
+        };
+        assert_eq!(login.ns, "cursor-two");
+        let resolved = catalog.resolve("cursor/auto", &|_| true).unwrap();
+        let Backend::Cursor { login, .. } =
+            Backend::for_model(&resolved, &Client::new().unwrap(), &auth)
+        else {
+            panic!("cursor");
+        };
+        assert_eq!(login.ns, "cursor");
     }
 
     fn zen(resolved: &Resolved) -> ProtocolTarget {

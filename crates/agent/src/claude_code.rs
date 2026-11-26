@@ -316,7 +316,7 @@ pub(crate) fn start(data_dir: &Path, auth: Auth, shutdown: tokio_util::sync::Can
     };
     tokio::spawn(async move {
         loop {
-            if auth.login("anthropic")
+            if auth.any_login("anthropic")
                 && let Some(v) = npm_latest(&http).await
             {
                 GLOBAL.offer_npm(v);

@@ -278,16 +278,20 @@ pub trait AgentSettingsApi {
     /// The ACP agent registry (cached for a day; offline returns the cache).
     #[method(name = "list_acp_registry")]
     async fn list_acp_registry(&self) -> RpcResult<Vec<acp::registry::RegistryAgent>>;
-    /// Providers a user can log in to (design doc 05), with their status.
+    /// Providers a user can log in to (design doc 05), with their status; account
+    /// instances (`anthropic-work`) follow their kinds.
     #[method(name = "list_logins")]
     async fn list_logins(&self) -> RpcResult<Vec<LoginInfo>>;
-    /// Start a provider login; returns the URL to open. Ends with a `LoginFinished` event.
+    /// Start a provider login (a kind or an account instance's name); returns the URL to
+    /// open. Ends with a `LoginFinished` event.
     #[method(name = "login")]
     async fn login(&self, provider: String) -> RpcResult<String>;
-    /// Forget a provider login.
+    /// Forget a provider login (a kind or an account instance's name).
     #[method(name = "logout")]
     async fn logout(&self, provider: String) -> RpcResult<()>;
-    /// The Connections providers: built-ins (`opencode`, `openrouter`) first, then custom providers (`/provider`).
+    /// The Connections providers: built-ins (key providers, then login kinds `anthropic`,
+    /// `openai`, `xai`, `cursor`, each followed by its account instances) first, then
+    /// custom providers (`/provider`).
     #[method(name = "list_providers")]
     async fn list_providers(&self) -> RpcResult<Vec<ProviderInfo>>;
     /// Persist a custom provider (url + optional key + optional local runtime preset);
@@ -302,12 +306,32 @@ pub trait AgentSettingsApi {
         key: Option<String>,
         runtime: Option<agent::LocalRuntime>,
     ) -> RpcResult<ProviderInfo>;
-    /// Forget a custom provider.
+    /// Forget a custom provider, or an account instance (its row, key, login and models).
     #[method(name = "remove_provider")]
     async fn remove_provider(&self, name: String) -> RpcResult<()>;
-    /// List a provider's models again (custom: `GET {base}models`; opencode/openrouter: their list) and reload the catalog (162).
+    /// Add account instance `<kind>-<suffix>` of a login kind (`anthropic`, `openai`, `xai`,
+    /// `cursor`): `suffix` is `[a-z0-9_-]+`; an existing name is refused. `key` is stored as
+    /// the vault secret of the instance's name; without one, `login` it. Its models are
+    /// `<kind>-<suffix>/<model>`, the kind's.
+    #[method(name = "add_account")]
+    async fn add_account(
+        &self,
+        kind: String,
+        suffix: String,
+        key: Option<String>,
+    ) -> RpcResult<ProviderInfo>;
+    /// List a provider's models again (custom: `GET {base}models`; a built-in with a key:
+    /// its list; a login-only built-in: back to the bundled list) and reload the catalog (162).
     #[method(name = "refresh_provider_models")]
     async fn refresh_provider_models(&self, name: String) -> RpcResult<RefreshedModels>;
+    /// Drop what listings added to provider `name`'s models (`None`: every provider's) so
+    /// the bundled catalog's list is back; one row per provider reset.
+    #[method(name = "reset_provider_models")]
+    async fn reset_provider_models(&self, name: Option<String>) -> RpcResult<Vec<RefreshedModels>>;
+    /// Refresh every refreshable provider (10 s per listing at most); a failed one is
+    /// left out of the reply.
+    #[method(name = "refresh_all_models")]
+    async fn refresh_all_models(&self) -> RpcResult<Vec<RefreshedModels>>;
     /// Copy this engine's custom providers (`providers.yaml` rows; `names`: only those) to mesh
     /// engine `to`, whose `apply_providers` upserts them by name. Keys stay here unless
     /// `include_keys` (the vault replicates; the target uses its own copy). A row whose address
@@ -850,8 +874,25 @@ impl AgentSettingsApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, RemoveProvider { name }).await
     }
 
+    async fn add_account(
+        &self,
+        kind: String,
+        suffix: String,
+        key: Option<String>,
+    ) -> RpcResult<ProviderInfo> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::AddAccount { kind, suffix, key }).await
+    }
+
     async fn refresh_provider_models(&self, name: String) -> RpcResult<RefreshedModels> {
         ask::<Agents, _>(agent::AGENT_ACTOR, RefreshProviderModels { name }).await
+    }
+
+    async fn reset_provider_models(&self, name: Option<String>) -> RpcResult<Vec<RefreshedModels>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::ResetProviderModels { name }).await
+    }
+
+    async fn refresh_all_models(&self) -> RpcResult<Vec<RefreshedModels>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::RefreshAllModels).await
     }
 
     async fn sync_providers(

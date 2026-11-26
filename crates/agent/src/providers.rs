@@ -87,6 +87,11 @@ struct Entry {
     /// Wire protocol (hand-set); absent: OpenAI, or Gemini on a Google AI host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     protocol: Option<GatewayProtocol>,
+    /// An account instance of this login kind (`anthropic`): not a gateway — its
+    /// key is the vault secret of its name, its login the grant `oauth/<name>`.
+    /// `base_url`/`protocol` keep the kind's endpoint so an older build reads it as a gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_of: Option<String>,
 }
 
 impl Entry {
@@ -164,10 +169,13 @@ pub fn normalize_url(raw: &str) -> Result<String, String> {
 
 /// Gateways with a `providers.yaml` row and a key in the vault, plus local rows
 /// with no key (keyless, 177 E4). `vault: None` (the vault failed to open)
-/// yields only the keyless local ones.
+/// yields only the keyless local ones. Account rows are [`accounts`], never gateways.
 pub(crate) fn load(data_dir: &Path, vault: Option<&secrets::Vault>) -> HashMap<String, Gateway> {
     let mut out = HashMap::new();
     for (name, entry) in read_file(data_dir) {
+        if entry.account_of.is_some() {
+            continue;
+        }
         // Rows are hand-editable, so `validate_name` never ran on them; a
         // shadowing row still loads (existing files keep working).
         if shadows_adapter(&name, entry.local()) {
@@ -194,6 +202,103 @@ pub(crate) fn load(data_dir: &Path, vault: Option<&secrets::Vault>) -> HashMap<S
         );
     }
     out
+}
+
+/// The kind's endpoint and wire protocol an account row records: what an older build,
+/// which reads the row as a gateway, would call — and what a listing with its key asks.
+pub(crate) fn account_endpoint(kind: &str) -> Option<(&'static str, Option<GatewayProtocol>)> {
+    Some(match kind {
+        "anthropic" => (
+            "https://api.anthropic.com/v1/",
+            Some(GatewayProtocol::Anthropic),
+        ),
+        "openai" => ("https://api.openai.com/v1/", Some(GatewayProtocol::Openai)),
+        "xai" => ("https://api.x.ai/v1/", Some(GatewayProtocol::Openai)),
+        "cursor" => ("https://api2.cursor.sh/", None),
+        _ => return None,
+    })
+}
+
+/// Account instances (`anthropic-work`) by name, each with its login kind; a row whose
+/// kind is not a login provider is skipped with a warning. Live whatever their
+/// credentials: an instance without a key or login is listed, just not configured.
+pub(crate) fn accounts(data_dir: &Path) -> HashMap<String, &'static oauth::Provider> {
+    read_file(data_dir)
+        .into_iter()
+        .filter_map(|(name, e)| {
+            let kind = e.account_of?;
+            match oauth::provider(&kind) {
+                Some(p) => Some((name, p)),
+                None => {
+                    tracing::warn!("providers.yaml: `{name}` is an account of unknown `{kind}`");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// The name of account `suffix` of login kind `kind` (`anthropic` + `work` →
+/// `anthropic-work`), or why it is refused.
+pub fn account_name(kind: &str, suffix: &str) -> Result<String, String> {
+    if oauth::provider(kind).is_none() {
+        let all: Vec<&str> = oauth::PROVIDERS.iter().map(|p| &*p.ns).collect();
+        return Err(format!(
+            "`{kind}` takes no extra accounts; kinds: {}",
+            all.join(", ")
+        ));
+    }
+    if suffix.is_empty()
+        || !suffix
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Err("account name: 1 or more of a-z, 0-9, _ or -".into());
+    }
+    let name = format!("{kind}-{suffix}");
+    validate_name(&name, false)?;
+    Ok(name)
+}
+
+/// Persist account instance `name` of login kind `kind`: its row (the kind's endpoint,
+/// `account_of`) and, when given, its key as the vault secret of its name. An existing
+/// row of that name is refused.
+pub async fn save_account(
+    data_dir: &Path,
+    actor: &ActorRef<secrets::SecretsActor>,
+    kind: &str,
+    name: &str,
+    key: Option<&str>,
+) -> Result<(), String> {
+    let mut rows = read_file(data_dir);
+    if rows.contains_key(name) {
+        return Err(format!("a provider `{name}` already exists"));
+    }
+    let (base_url, protocol) =
+        account_endpoint(kind).ok_or_else(|| format!("`{kind}` takes no extra accounts"))?;
+    let key = key.map(str::trim).filter(|k| !k.is_empty());
+    if let Some(key) = key {
+        actor
+            .ask(secrets::Set {
+                name: name.to_owned(),
+                value: key.to_owned(),
+                note: Some(format!("{kind} account {name} key")),
+                source: "provider add".into(),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    rows.insert(
+        name.to_owned(),
+        Entry {
+            base_url: base_url.to_owned(),
+            runtime: None,
+            owns_key: Some(key.is_some()),
+            protocol,
+            account_of: Some(kind.to_owned()),
+        },
+    );
+    write_file(data_dir, rows)
 }
 
 /// `name` is a genai adapter's namespace ([`validate_name`] refuses it on add),
@@ -418,7 +523,8 @@ pub fn set_limits(
     Ok(m)
 }
 
-fn remove_models(data_dir: &Path, name: &str) -> Result<(), String> {
+/// Drop `name`'s block from the user `models.json` (reset to what the bundled catalog has).
+pub(crate) fn remove_models(data_dir: &Path, name: &str) -> Result<(), String> {
     let path = data_dir.join("models.json");
     let Ok(s) = std::fs::read_to_string(&path) else {
         return Ok(());
@@ -454,6 +560,9 @@ pub async fn save(
     let key = key.trim();
     let mut rows = read_file(data_dir);
     let base_url = normalize_url(base_url)?;
+    if rows.get(name).is_some_and(|r| r.account_of.is_some()) {
+        return Err(format!("`{name}` is an account; pick another name"));
+    }
     // A re-add of the same endpoint (a new key) keeps the row's hand-set protocol.
     let protocol = rows
         .get(name)
@@ -464,6 +573,7 @@ pub async fn save(
         runtime,
         owns_key: Some(!key.is_empty()),
         protocol,
+        account_of: None,
     };
     validate_name(name, entry.local())?;
     if key.is_empty() {
@@ -506,7 +616,8 @@ pub async fn remove(
         return Err(format!("no provider `{name}`"));
     };
     write_file(data_dir, rows)?;
-    if entry.owns_key()
+    // An account's secret of its name is its own, whoever stored it.
+    if (entry.owns_key() || entry.account_of.is_some())
         && let Err(e) = actor
             .ask(secrets::Delete {
                 name: name.to_owned(),
@@ -555,7 +666,9 @@ pub(crate) fn export(
             base_url: entry.base_url,
             runtime: entry.runtime,
             protocol: entry.protocol,
+            account_of: entry.account_of,
             key: None,
+            grant: None,
         });
     }
     (out, skipped)
@@ -569,8 +682,15 @@ fn merge(rows: &mut BTreeMap<String, Entry>, row: &ProviderRow) -> Result<bool, 
         runtime: row.runtime,
         owns_key: Some(row.owns_key || sent_key(row).is_some()),
         protocol: row.protocol,
+        account_of: row.account_of.clone(),
     };
     validate_name(&row.name, entry.local())?;
+    if let Some(kind) = &entry.account_of {
+        let suffix = row.name.strip_prefix(&format!("{kind}-")).unwrap_or("");
+        if account_name(kind, suffix).as_deref() != Ok(row.name.as_str()) {
+            return Err(format!("`{}` is not an account of `{kind}`", row.name));
+        }
+    }
     Ok(rows.insert(row.name.clone(), entry).is_some())
 }
 
@@ -1023,7 +1143,9 @@ mod tests {
             runtime: None,
             protocol: None,
             owns_key: true,
+            account_of: None,
             key: key.map(Into::into),
+            grant: None,
         }
     }
 
@@ -1138,5 +1260,56 @@ mod tests {
         let (rows, skipped) = export(dir, Some(&["cloud".into(), "nope".into()]));
         assert_eq!(rows.len(), 1);
         assert_eq!(skipped[0].name, "nope");
+    }
+
+    /// `add_account` names: `<kind>-<suffix>` of a login kind, a legal suffix, never an
+    /// adapter's or a built-in's name.
+    #[test]
+    fn account_name_validation() {
+        assert_eq!(account_name("anthropic", "work").unwrap(), "anthropic-work");
+        assert_eq!(account_name("cursor", "a_2-b").unwrap(), "cursor-a_2-b");
+        let long = "x".repeat(40);
+        for (kind, suffix) in [
+            ("anthropic", ""),
+            ("anthropic", "Work"),
+            ("anthropic", "a b"),
+            ("anthropic", "a/b"),
+            ("google", "work"),
+            ("openrouter", "x"),
+            ("nope", "x"),
+            ("anthropic", long.as_str()),
+        ] {
+            assert!(account_name(kind, suffix).is_err(), "{kind}-{suffix}");
+        }
+    }
+
+    /// An account row is not a gateway (loaded keyless as an account instead), a mesh
+    /// copy keeps it an account, and one whose name is not its kind's is refused.
+    #[test]
+    fn account_rows_load_export_and_merge() {
+        let scratch = crate::test_dir("prov-accounts");
+        let dir = scratch.path();
+        std::fs::write(
+            dir.join("providers.yaml"),
+            "anthropic-work:\n  base_url: https://api.anthropic.com/v1/\n  protocol: anthropic\n  \
+             owns_key: false\n  account_of: anthropic\n\
+             odd:\n  base_url: https://x.example/v1/\n  account_of: nope\n",
+        )
+        .unwrap();
+        assert!(load(dir, None).is_empty(), "accounts are never gateways");
+        let acc = accounts(dir);
+        assert_eq!(acc.len(), 1);
+        assert_eq!(acc["anthropic-work"].ns, "anthropic");
+        let (rows, _) = export(dir, Some(&["anthropic-work".into()]));
+        assert_eq!(rows[0].account_of.as_deref(), Some("anthropic"));
+        let mut merged = BTreeMap::new();
+        assert!(!merge(&mut merged, &rows[0]).unwrap());
+        assert_eq!(
+            merged["anthropic-work"].account_of.as_deref(),
+            Some("anthropic")
+        );
+        let mut wrong = rows[0].clone();
+        wrong.account_of = Some("openai".into());
+        assert!(merge(&mut merged, &wrong).is_err());
     }
 }

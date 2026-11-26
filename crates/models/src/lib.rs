@@ -286,6 +286,9 @@ pub struct Resolved {
 #[derive(Clone, Debug)]
 pub struct Catalog {
     providers: BTreeMap<String, Provider>,
+    /// Account instances (`anthropic-work` → `anthropic`): blocks copied from their
+    /// kind's, routed to the kind's genai namespace, never a bare id's hit.
+    aliases: BTreeMap<String, String>,
 }
 
 /// models.dev provider ids we bundle: the ones genai can route (`just models` keeps only
@@ -371,6 +374,17 @@ impl Catalog {
     /// carry [`Limit::assumed`] for memory budgets, never a cloud sibling's
     /// window, and they are never anyone's sibling.
     pub fn load_with(data_dir: &Path, local: &dyn Fn(&str) -> bool) -> Catalog {
+        Self::load_accounts(data_dir, local, &[])
+    }
+
+    /// [`Catalog::load_with`], plus one alias block per account instance `(instance, kind)`:
+    /// the kind's merged block (bundled and user, so listed extras come along) under the
+    /// instance's id, overlaid with the instance's own `models.json` block.
+    pub fn load_accounts(
+        data_dir: &Path,
+        local: &dyn Fn(&str) -> bool,
+        accounts: &[(String, String)],
+    ) -> Catalog {
         let mut providers = BUNDLED.clone();
         let path = data_dir.join("models.json");
         match std::fs::read_to_string(&path) {
@@ -385,6 +399,24 @@ impl Catalog {
                 tracing::warn!(path = %path.display(), error = %e, "ignoring unreadable models.json")
             }
         }
+        let mut aliases = BTreeMap::new();
+        for (instance, kind) in accounts {
+            let own = providers.remove(instance);
+            let mut block = providers.get(kind).cloned().unwrap_or_else(|| Provider {
+                id: String::new(),
+                name: String::new(),
+                env: vec![],
+                local: false,
+                models: BTreeMap::new(),
+            });
+            block.id = instance.clone();
+            block.name = instance.clone();
+            if let Some(own) = own {
+                block.models.extend(own.models);
+            }
+            providers.insert(instance.clone(), block);
+            aliases.insert(instance.clone(), kind.clone());
+        }
         for (pid, p) in &mut providers {
             p.local |= local(pid);
             if p.local {
@@ -393,7 +425,7 @@ impl Catalog {
                 }
             }
         }
-        let mut cat = Catalog { providers };
+        let mut cat = Catalog { providers, aliases };
         let fills: Vec<(String, String, Model)> = cat
             .providers
             .iter()
@@ -420,6 +452,16 @@ impl Catalog {
     /// block for any other id belongs to a custom provider, live or removed).
     pub fn is_bundled(provider: &str) -> bool {
         BUNDLED.contains_key(provider)
+    }
+
+    /// The kind (`anthropic`) account instance `provider` (`anthropic-work`) copies.
+    pub fn alias_of(&self, provider: &str) -> Option<&str> {
+        self.aliases.get(provider).map(String::as_str)
+    }
+
+    /// The genai namespace of `provider`: an account instance's kind's, else [`Catalog::adapter`].
+    fn namespace<'a>(&'a self, provider: &'a str) -> &'a str {
+        Self::adapter(self.alias_of(provider).unwrap_or(provider))
     }
 
     /// genai adapter namespace for a models.dev provider id; unknown ids pass through unchanged,
@@ -486,8 +528,9 @@ impl Catalog {
         let vendor = vendor_of(family);
         self.providers
             .iter()
-            // 177 E7: a local server's model (an assumed window) is nobody's sibling.
-            .filter(|(_, p)| !p.local)
+            // 177 E7: a local server's model (an assumed window) is nobody's sibling;
+            // an account's block only repeats its kind's.
+            .filter(|(pid, p)| !p.local && !self.aliases.contains_key(*pid))
             .flat_map(|(pid, p)| p.models.values().map(move |m| (pid, m)))
             .filter_map(|(pid, m)| {
                 let have: Vec<&str> = tokens(&m.id).collect();
@@ -522,7 +565,7 @@ impl Catalog {
             let exact = self.get(id).is_some();
             return Ok(Resolved {
                 id: id.to_owned(),
-                genai: format!("{}::{model}", Self::adapter(provider)),
+                genai: format!("{}::{model}", self.namespace(provider)),
                 provider: Some(provider.to_owned()),
                 model: self.closest(id).cloned().map(|mut m| {
                     if !exact {
@@ -536,6 +579,8 @@ impl Catalog {
         let hits: Vec<(&String, &Model)> = self
             .providers
             .iter()
+            // An account instance repeats its kind's ids: a bare id means the kind's.
+            .filter(|(pid, _)| !self.aliases.contains_key(*pid))
             .filter(|(pid, _)| configured(Self::adapter(pid)))
             .filter_map(|(pid, p)| p.models.get(id).map(|m| (pid, m)))
             .collect();
@@ -641,6 +686,7 @@ mod tests {
 
     fn fixture() -> Catalog {
         Catalog {
+            aliases: BTreeMap::new(),
             providers: BTreeMap::from([
                 provider("anthropic", &[("claude-sonnet-4-5", 200_000)]),
                 provider("openrouter", &[("anthropic/claude-sonnet-4-5", 1_000_000)]),
@@ -776,6 +822,7 @@ mod tests {
     #[test]
     fn closest_matches_cursor_slugs_against_bundled_catalog() {
         let c = Catalog {
+            aliases: BTreeMap::new(),
             providers: BUNDLED.clone(),
         };
         // Vertex/openrouter spell ids `vendor/model`; `closest` is for limits, so
@@ -813,6 +860,7 @@ mod tests {
     #[test]
     fn closest_prefers_vendor_on_tie_in_bundled_catalog() {
         let c = Catalog {
+            aliases: BTreeMap::new(),
             providers: BUNDLED.clone(),
         };
         let pid_of = |hit: &Model| {
@@ -843,6 +891,7 @@ mod tests {
     #[test]
     fn closest_vendor_bit_is_below_score_and_absent_without_row() {
         let c = Catalog {
+            aliases: BTreeMap::new(),
             providers: BTreeMap::from([
                 provider("anthropic", &[("claude-sonnet-4", 200_000)]),
                 provider("openrouter", &[("anthropic/claude-sonnet-4-5", 1_000_000)]),
@@ -855,6 +904,7 @@ mod tests {
         assert_eq!(hit("gw/claude-sonnet-4-5").limit.context, 1_000_000);
         assert_eq!(hit("gw/llama-4").limit.context, 200_000, "larger context");
         let c2 = Catalog {
+            aliases: BTreeMap::new(),
             providers: BTreeMap::from([
                 provider("meta", &[("llama-4", 100_000)]),
                 provider("groq", &[("llama-4", 100_000)]),
@@ -994,6 +1044,7 @@ mod tests {
     #[test]
     fn bundled_zen_protocols_and_sibling_strip() {
         let cat = Catalog {
+            aliases: BTreeMap::new(),
             providers: BUNDLED.clone(),
         };
         let p = |id: &str| cat.get(id).unwrap().1.protocol;
@@ -1076,5 +1127,46 @@ mod tests {
             LimitSource::Unknown
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn account_alias_copies_its_kind_and_routes_to_its_namespace() {
+        let dir = std::env::temp_dir().join(format!("models-acct-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("models.json"),
+            r#"{"anthropic":{"models":{"zz-extra":{"id":"zz-extra","name":"zz-extra","limit":{"context":7,"output":1}}}},
+                "anthropic-work":{"models":{"zz-own":{"id":"zz-own","name":"zz-own","limit":{"context":9,"output":1}}}}}"#,
+        )
+        .unwrap();
+        let accounts = [
+            ("anthropic-work".to_owned(), "anthropic".to_owned()),
+            ("cursor-two".to_owned(), "cursor".to_owned()),
+        ];
+        let c = Catalog::load_accounts(&dir, &|_| false, &accounts);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let kind = c.providers().find(|p| p.id == "anthropic").unwrap();
+        let inst = c.providers().find(|p| p.id == "anthropic-work").unwrap();
+        assert_eq!(
+            inst.models.len(),
+            kind.models.len() + 1,
+            "kind's models + its own"
+        );
+        assert!(inst.models.contains_key("zz-extra") && inst.models.contains_key("zz-own"));
+        assert_eq!(c.alias_of("anthropic-work"), Some("anthropic"));
+        let r = c
+            .resolve("anthropic-work/claude-sonnet-4-5", &|_| true)
+            .unwrap();
+        assert_eq!(r.genai, "anthropic::claude-sonnet-4-5");
+        assert_eq!(r.provider.as_deref(), Some("anthropic-work"));
+        assert!(r.model.is_some());
+        // No bundled cursor block: still an alias, routed to the cursor namespace.
+        let r = c.resolve("cursor-two/auto", &|_| true).unwrap();
+        assert_eq!(r.genai, "cursor::auto");
+        // A bare id is the kind's, never ambiguous with its accounts.
+        let r = c
+            .resolve("claude-sonnet-4-5", &|ns| ns.starts_with("anthropic"))
+            .unwrap();
+        assert_eq!(r.provider.as_deref(), Some("anthropic"));
     }
 }
