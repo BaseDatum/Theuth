@@ -27,6 +27,7 @@ import { LedgerTable } from './LedgerTable'
 import { LimitsPanel } from './LimitsPanel'
 import { SubscriptionValue } from './SubscriptionValue'
 import { RangeBar } from './RangeBar'
+import { RefreshButton } from './Refresh'
 import { SessionsTable } from './SessionsTable'
 import { type ChartView, SpendChart } from './SpendChart'
 import { Tokens, When } from './When'
@@ -181,6 +182,7 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
           {meta.engine && ` · ${meta.engine}`}
         </span>
         <div className="flex-1" />
+        <RefreshButton visible={visible} />
         <Button variant="outline" size="sm" onClick={exportCsv} disabled={!out.rows.length} title="Export the chart's buckets × series as CSV">
           <Download />
           CSV

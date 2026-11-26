@@ -3,11 +3,12 @@ import { useQuerySupport } from '@/rpc/capabilities'
 // IndexedDB snapshot, fetches `cost_cube`, follows `CostCubeChanged` with deltas and writes the merged cube back at idle;
 // the page reads it synchronously through `useCostIndex`. `?sim=costs` serves the synthetic fixture instead.
 
-import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, type QueryClient, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRouter } from '@tanstack/react-router'
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { costCallsFixture, costsFixture, limitsFixture } from '@/dev/costs-fixture'
-import { useApi } from '@/lib/rpc'
+import { queryKeys, useApi } from '@/lib/rpc'
+import type { Api } from '@/rpc/bindings/client'
 import type { CostCallsQuery } from '@/rpc/bindings/method.agent.input'
 import type { CostCallsPage } from "@/rpc/bindings/method.agent.output"
 import type { CostCube } from "@/rpc/bindings/method.agent.output"
@@ -98,7 +99,7 @@ export function CostsPrefetch() {
       idle(() => void qc.prefetchQuery({ queryKey: LIMITS_KEY, queryFn: () => api.usage_limits() }))
       return () => void (live = false)
     }
-    let inFlight = false
+    let flight: Promise<void> | null = null
     let again = false
     let save: ReturnType<typeof setTimeout> | undefined
     const held = () => qc.getQueryData<CostCube>(CUBE_KEY)
@@ -106,28 +107,39 @@ export function CostsPrefetch() {
       clearTimeout(save)
       save = setTimeout(() => idle(() => void (held()?.epoch && saveCube(engine, held()!).catch(() => undefined))), 2_000)
     }
-    const fetchCube = async (): Promise<void> => {
-      if (inFlight) return void (again = true)
-      inFlight = true
-      try {
-        const h = held()
-        const answer = await api.cost_cube(h?.epoch ? { epoch: h.epoch, rev: h.rev } : null)
-        const next = merge(held(), answer) ?? merge(undefined, await api.cost_cube(null))
-        // An engine still building answers an empty full cube: keep what we hold (§3.3).
-        if (!live || !next || next === held() || (answer.full && !answer.cells.hour.length && held()?.cells.hour.length)) return
-        qc.setQueryData(CUBE_KEY, next)
-        void qc.invalidateQueries({ queryKey: CALLS_KEY })
-        persist()
-      } catch {
-        // An engine without the method (pre-160) or a dropped socket: keep the held cube; the next change retries.
-      } finally {
-        inFlight = false
+    const fetchCube = (): Promise<void> => {
+      if (flight) {
+        again = true
+        return flight
+      }
+      const run = (async () => {
+        try {
+          const h = held()
+          const answer = await api.cost_cube(h?.epoch ? { epoch: h.epoch, rev: h.rev } : null)
+          const next = merge(held(), answer) ?? merge(undefined, await api.cost_cube(null))
+          // An engine still building answers an empty full cube: keep what we hold (§3.3).
+          if (!live || !next || next === held() || (answer.full && !answer.cells.hour.length && held()?.cells.hour.length)) return
+          qc.setQueryData(CUBE_KEY, next)
+          void qc.invalidateQueries({ queryKey: CALLS_KEY })
+          persist()
+        } catch {
+          // An engine without the method (pre-160) or a dropped socket: keep the held cube; the next change retries.
+        }
+      })()
+      flight = run
+      // Cleared in a later microtask, so a fetch that fails synchronously never leaves `flight` set.
+      void run.then(() => {
+        flight = null
         if (again && live) {
           again = false
           void fetchCube()
         }
-      }
+      })
+      return run
     }
+    // The page's refresh button: a fetch that starts after any one in flight, so it sees everything up to the click.
+    const refresh = (): Promise<void> => (flight ?? Promise.resolve()).then(fetchCube)
+    cubeRefresh = refresh
     void loadCube(engine).then((disk) => {
       if (live && disk && !held()) qc.setQueryData(CUBE_KEY, disk)
       if (live) void fetchCube()
@@ -143,10 +155,44 @@ export function CostsPrefetch() {
     return () => {
       live = false
       clearTimeout(save)
+      if (cubeRefresh === refresh) cubeRefresh = null
       for (const off of offs) off()
     }
   }, [api, qc, router, engine])
   return null
+}
+
+/** The live bridge's "fetch the cube now" (`CostsPrefetch` sets it while mounted against an engine). */
+let cubeRefresh: (() => Promise<void>) | null = null
+
+/** How long the refresh button waits for the kicked limit pollers before reading the snapshot once more. */
+const SETTLE_MS = 2_000
+
+/**
+ * The costs page's refresh: kicks the engine's limit pollers (`usage_limits_refresh`, `kick` false = skip; per-source
+ * spacing applies engine-side), fetches the cube delta and refetches every active query the page shows — limits
+ * snapshot, ledger pages, logins, providers — at once. Resolves when all have answered; one more limits read follows
+ * after the kicked pollers had `SETTLE_MS`.
+ */
+export async function refreshCosts(qc: QueryClient, api: Pick<Api, 'usage_limits_refresh'>, kick: boolean): Promise<void> {
+  const limits = () => qc.refetchQueries({ queryKey: LIMITS_KEY, type: 'active' })
+  await Promise.all([
+    kick ? api.usage_limits_refresh(null).catch(() => undefined) : undefined,
+    cubeRefresh?.(),
+    limits(),
+    qc.refetchQueries({ queryKey: CALLS_KEY, type: 'active' }),
+    qc.refetchQueries({ queryKey: queryKeys.logins, type: 'active' }),
+    qc.refetchQueries({ queryKey: queryKeys.providers, type: 'active' }),
+  ])
+  if (kick) setTimeout(() => void limits(), SETTLE_MS)
+}
+
+/** `refreshCosts` bound to this engine (no kick under `?sim=costs` or on an engine without `usage_limits_refresh`). */
+export function useRefreshCosts(): () => Promise<void> {
+  const api = useApi()
+  const qc = useQueryClient()
+  const canKick = useQuerySupport(['usage_limits_refresh'])
+  return useCallback(() => refreshCosts(qc, api, canKick && costsSim() !== 'costs'), [api, qc, canKick])
 }
 
 /**
