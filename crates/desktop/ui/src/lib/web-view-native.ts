@@ -1,6 +1,7 @@
 // The shell's native web views (205 §4.3, §9): every `invoke`/`listen` for them lives here, so tests mock one module
-// and a container without the native layer (a browser) never reaches Tauri. Coordinates are logical px relative to the
-// window's content area: the placeholder's `getBoundingClientRect()`.
+// and a container without the native layer (a browser) never reaches Tauri. Coordinates are logical px in the page's
+// viewport (the placeholder's `getBoundingClientRect()`), sent with the viewport's height (`viewportHeight`): the
+// desktop shell finds where that viewport sits in the window (below a pop-out's title bar), the iOS shell ignores it.
 //
 // Tauri runs async commands concurrently, so calls for one label are serialised here on one promise chain, in issue
 // order; a rejected call does not break the chain. Visibility and bounds are desired state: a call records it and the
@@ -31,7 +32,7 @@ export const webLabel = (id: string): string => `web-${id}`
 export const labelId = (label: string): string => label.replace(/^web-/, '')
 
 /** What this window wants of a view it hosts, and what the shell last got. `owned`: attached here, not yet hidden for good. */
-type State = { owned: boolean; visible: boolean; rect: Rect; sent: { visible: boolean; rect: Rect | null } }
+type State = { owned: boolean; visible: boolean; rect: Rect; sent: { visible: boolean; rect: Rect | null; viewport: number | null } }
 const states = new Map<string, State>()
 const chains = new Map<string, Promise<unknown>>()
 /** Views whose last attach landed in this window and that were not closed or taken since (209 §4.7): a frame that
@@ -51,6 +52,10 @@ function queue<T>(label: string, step: () => Promise<T>): Promise<T> {
 
 const same = (a: Rect, b: Rect | null) => b !== null && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
 
+/** The page's viewport height, sent with every rectangle: the desktop shell places a view in the window's content view,
+ * where a pop-out's viewport starts below the title bar (its page spans the bar; `webview.rs::viewport_origin`). */
+export const viewportHeight = (): number => (typeof window === 'undefined' ? 0 : window.innerHeight)
+
 /** Send what differs between `label`'s desired and sent state: hide before a move, move before a show. */
 async function apply(label: string): Promise<void> {
   const s = states.get(label)
@@ -59,10 +64,12 @@ async function apply(label: string): Promise<void> {
     await invoke<void>('web_view_visible', { label, visible: false })
     s.sent.visible = false
   }
-  if (!same(s.rect, s.sent.rect)) {
+  const viewport = viewportHeight()
+  if (!same(s.rect, s.sent.rect) || viewport !== s.sent.viewport) {
     const r = s.rect
-    await invoke<void>('web_view_bounds', { label, x: r.x, y: r.y, width: r.width, height: r.height })
+    await invoke<void>('web_view_bounds', { label, x: r.x, y: r.y, width: r.width, height: r.height, viewport })
     s.sent.rect = r
+    s.sent.viewport = viewport
   }
   if (s.visible && !s.sent.visible) {
     await invoke<void>('web_view_visible', { label, visible: true })
@@ -74,12 +81,13 @@ async function apply(label: string): Promise<void> {
 export function attach(id: string, url: string, r: Rect): Promise<void> {
   if (!nativeWebViews()) return Promise.resolve()
   const label = webLabel(id)
-  const s: State = { owned: false, visible: true, rect: r, sent: { visible: false, rect: null } }
+  const s: State = { owned: false, visible: true, rect: r, sent: { visible: false, rect: null, viewport: null } }
   states.set(label, s)
   return queue(label, async () => {
     const at = s.rect
+    const viewport = viewportHeight()
     try {
-      await invoke<void>('web_view_attach', { label, url, x: at.x, y: at.y, width: at.width, height: at.height })
+      await invoke<void>('web_view_attach', { label, url, x: at.x, y: at.y, width: at.width, height: at.height, viewport })
     } catch (e) {
       held.delete(label)
       throw e
@@ -87,7 +95,7 @@ export function attach(id: string, url: string, r: Rect): Promise<void> {
     held.add(label)
     if (states.get(label) !== s) return
     s.owned = true
-    s.sent = { visible: true, rect: at }
+    s.sent = { visible: true, rect: at, viewport }
     await apply(label)
   })
 }

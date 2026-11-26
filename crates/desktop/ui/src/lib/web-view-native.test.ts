@@ -114,3 +114,26 @@ test('this window holds a view once its attach landed here, still after the fram
     expect(native.holds('a4')).toBe(false)
   }
 })
+
+test('every rectangle goes out with the viewport height; a viewport change alone moves the view again', async () => {
+  // A pop-out's title bar: the shell places the view by where the viewport sits in the window (`viewport_origin`).
+  vi.stubGlobal('window', { innerHeight: 468 })
+  try {
+    const attached = native.attach('a5', 'https://example.com/', R)
+    await attaching()
+    shell.attach!.resolve()
+    await attached
+    const calls = (cmd: string) =>
+      vi.mocked(invoke).mock.calls.filter((c) => c[0] === cmd).map((c) => c[1]).filter((a) => typeof a === 'object' && a !== null && 'label' in a && a.label === 'web-a5')
+    expect(calls('web_view_attach').at(-1)).toMatchObject({ y: 52, height: 480, viewport: 468 })
+    await native.bounds('a5', R)
+    expect(calls('web_view_bounds')).toEqual([])
+    // The title bar went away (full screen) and the placeholder did not move: the view still has to.
+    vi.stubGlobal('window', { innerHeight: 500 })
+    await native.bounds('a5', R)
+    expect(calls('web_view_bounds')).toEqual([{ label: 'web-a5', ...R, viewport: 500 }])
+  } finally {
+    vi.unstubAllGlobals()
+    await native.close('a5')
+  }
+})
