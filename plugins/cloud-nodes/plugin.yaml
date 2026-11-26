@@ -12,7 +12,7 @@ version: 0.1.0
 description: Hosted theuth nodes on DigitalOcean, Fly.io or Kubernetes, joined to this mesh.
 protocol: 1
 run: [python3, main.py]
-watch: [main.py, cloud_nodes.py, theuth_plugin.py]
+watch: [main.py, cloud_nodes.py, theuth_plugin.py, vm/vm-cloud-init.sh, vm/theuth-install.sh, vm/pubkey.txt]
 tools:
   - name: providers
     description: >-
@@ -22,10 +22,12 @@ tools:
     annotations: {readOnlyHint: true}
   - name: create
     description: >-
-      Create a hosted theuth node: a volume plus an instance running the theuth engine container,
-      which joins this mesh with a one-time pairing ticket and restarts always. dry_run (default
-      true) returns the plan and the estimated monthly cost without creating anything; billing
-      starts only with dry_run false. Kubernetes runs `t mesh add --k8s`; AWS is a dry run only.
+      Create a hosted theuth node: a volume plus an instance running a headless theuth engine
+      (DigitalOcean: installed natively under systemd, no Docker; Fly.io and Kubernetes: the
+      engine image), which joins this mesh with a one-time pairing ticket and restarts always.
+      dry_run (default true) returns the plan and the estimated monthly cost without creating
+      anything; billing starts only with dry_run false. Kubernetes runs `t mesh add --k8s`; AWS
+      is a dry run only.
     input_schema:
       type: object
       required: [provider, name]
@@ -35,7 +37,7 @@ tools:
         region: {type: string, description: "lon1 (DigitalOcean), lhr (Fly), eu-west-2 (AWS) by default."}
         size: {type: string, description: "s-1vcpu-1gb (DigitalOcean), shared-cpu-1x (Fly), micro_3_0 (AWS) by default."}
         volume_gb: {type: integer, minimum: 1, default: 10}
-        image: {type: string, description: "Engine image; default ghcr.io/basedatum/theuth/engine:latest. DigitalOcean also takes `build` (build deploy/computer on the Droplet)."}
+        image: {type: string, description: "Fly.io and Kubernetes: engine image (default ghcr.io/basedatum/theuth/engine:latest). Not for DigitalOcean, which installs natively."}
         ssh_cidr: {type: string, description: "DigitalOcean: allow tcp/22 from this CIDR only (default: no inbound at all)."}
         ssh_key: {type: string, description: "DigitalOcean SSH key id or fingerprint."}
         context: {type: string, description: "Kubernetes: kubeconfig context."}

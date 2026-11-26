@@ -38,8 +38,18 @@ pub const SCHEMA: &str = "1";
 
 const DOCKERFILE: &str = include_str!("../../../deploy/computer/Dockerfile");
 const DOCKERFILE_DEV: &str = include_str!("../../../deploy/computer/Dockerfile.dev");
-/// The release image's entrypoint (224 §5): installs the newest signed `t` into /data/bin.
-const ENTRYPOINT: &str = include_str!("../../../deploy/computer/entrypoint.sh");
+/// The release image's entrypoint and the install/pair script it shares with native VM nodes
+/// (224 §5, §9): the newest signed `t` into /data/bin, then the mesh join.
+const RELEASE_FILES: [(&str, &[u8]); 2] = [
+    (
+        "entrypoint.sh",
+        include_bytes!("../../../deploy/computer/entrypoint.sh"),
+    ),
+    (
+        "theuth-install.sh",
+        include_bytes!("../../../deploy/computer/theuth-install.sh"),
+    ),
+];
 
 enum Image {
     /// A pre-built ref, pulled when absent.
@@ -150,10 +160,7 @@ impl DockerSandbox {
             }
             Image::Release => {
                 let tag = format!("theuth-engine:{}", platform::version::get());
-                (
-                    tag,
-                    tar_context(DOCKERFILE, &[("entrypoint.sh", ENTRYPOINT.as_bytes())]),
-                )
+                (tag, tar_context(DOCKERFILE, &RELEASE_FILES))
             }
             Image::Dev(p) => {
                 let t = std::fs::read(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
@@ -450,11 +457,8 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            names(tar_context(
-                DOCKERFILE,
-                &[("entrypoint.sh", ENTRYPOINT.as_bytes())]
-            )),
-            ["Dockerfile", "entrypoint.sh"]
+            names(tar_context(DOCKERFILE, &RELEASE_FILES)),
+            ["Dockerfile", "entrypoint.sh", "theuth-install.sh"]
         );
         assert_eq!(
             names(tar_context(DOCKERFILE_DEV, &[("t", b"ELF")])),
@@ -464,6 +468,7 @@ mod tests {
         assert!(
             DOCKERFILE.contains("minisign -Vq")
                 && DOCKERFILE.contains("COPY entrypoint.sh")
+                && DOCKERFILE.contains("COPY theuth-install.sh")
                 && DOCKERFILE_DEV.contains("COPY t /usr/local/bin/t")
         );
     }

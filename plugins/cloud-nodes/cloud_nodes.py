@@ -249,93 +249,34 @@ def mesh_peer(name, run=subprocess.run):
                  if p.get("name") == name), None)
 
 
-# --- cloud-init (DigitalOcean; the AWS plan reuses it) -------------------------------------------
+# --- native VM install (DigitalOcean; Hetzner and Lightsail would reuse it) ----------------------
+
+# Copies of deploy/computer/vm-cloud-init.sh, deploy/computer/theuth-install.sh and
+# crates/update/pubkey.txt (an installed plugin has no repo beside it; the tests check the copies).
+VM_DIR = Path(__file__).resolve().parent / "vm"
 
 
-def engine_context():
-    """deploy/computer for `image: build`: $CLOUD_NODES_ENGINE_CONTEXT, else the repo this file is in."""
-    env = os.environ.get("CLOUD_NODES_ENGINE_CONTEXT")
-    p = Path(env) if env else Path(__file__).resolve().parent.parent.parent / "deploy/computer"
-    if not (p / "Dockerfile").is_file() or not (p / "entrypoint.sh").is_file():
-        raise CloudError(f"image 'build' needs deploy/computer (Dockerfile + entrypoint.sh): not at {p}; "
-                         "set CLOUD_NODES_ENGINE_CONTEXT or pass an image ref")
-    return p
-
-
-def user_data(name, volume, image, ticket, version=None, pubkey=None, context=None):
-    """The Droplet's first-boot script: swap, mount the volume at /mnt/theuth (formatted only when
-    blank), drop the ticket on it, install docker, build or pull, `docker run --restart always
-    --init`. No `set -x`: the ticket must not reach a log."""
+def user_data(name, data_dev, ticket, manifest=MANIFEST):
+    """The VM's first-boot script (design doc 224 §9): user `engine`, the volume at /data, the
+    runtime libraries, the newest signed `t` into /data/bin (theuth-install.sh: minisign against
+    the release key), the ticket at /data/pair-ticket, systemd units theuth-engine (Restart=always)
+    and theuth-join. No Docker."""
     if ticket and not TICKET_RE.match(ticket):
         raise CloudError("not a pairing ticket")
-    if image == "build":
-        ctx = context or engine_context()
-        b64 = {f: base64.b64encode((ctx / f).read_bytes()).decode() for f in ("Dockerfile", "entrypoint.sh")}
-        image_steps = (
-            "mkdir -p /opt/theuth-engine\n"
-            f"echo '{b64['Dockerfile']}' | base64 -d >/opt/theuth-engine/Dockerfile\n"
-            f"echo '{b64['entrypoint.sh']}' | base64 -d >/opt/theuth-engine/entrypoint.sh\n"
-            f"docker build -q --build-arg THEUTH_VERSION='{version}' --build-arg THEUTH_PUBKEY='{pubkey}' "
-            "-t theuth-engine:local /opt/theuth-engine\nIMAGE=theuth-engine:local"
-        )
-    else:
-        if not re.match(r"^[A-Za-z0-9./:@_-]+$", image):
-            raise CloudError(f"image {image!r}: not an image reference")
-        image_steps = f"docker pull '{image}'\nIMAGE='{image}'"
-    pair = ""
-    if ticket:
-        pair = ("if [ ! -e /mnt/theuth/data/.theuth-paired ]; then\n"
-                f"\t(umask 077 && printf '%s\\n' '{ticket}' >/mnt/theuth/data/pair-ticket)\n"
-                "\tchown 1000:1000 /mnt/theuth/data/pair-ticket\nfi")
-    return f"""#!/bin/bash
-# theuth hosted node (design doc 224 §9). No `set -x`: the ticket must not reach a log.
-set -euo pipefail
-exec >>/var/log/theuth-node.log 2>&1
-echo "theuth-node: boot $(date -u +%FT%TZ)"
-printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' >/etc/ssh/sshd_config.d/00-theuth.conf
-systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
-if [ ! -f /swapfile ]; then
-\tfallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-\techo '/swapfile none swap sw 0 0' >>/etc/fstab
-fi
-dev=/dev/disk/by-id/scsi-0DO_Volume_{volume}
-for _ in $(seq 1 90); do [ -e "$dev" ] && break; sleep 2; done
-[ -e "$dev" ] || {{ echo "theuth-node: volume $dev missing"; exit 1; }}
-blkid "$dev" >/dev/null || mkfs.ext4 -q -L theuth-data "$dev"
-mkdir -p /mnt/theuth
-grep -q ' /mnt/theuth ' /etc/fstab || echo "$dev /mnt/theuth ext4 defaults,nofail,discard,noatime 0 2" >>/etc/fstab
-mountpoint -q /mnt/theuth || mount /mnt/theuth
-mkdir -p /mnt/theuth/data /mnt/theuth/workspace
-chown 1000:1000 /mnt/theuth/data /mnt/theuth/workspace
-{pair}
-if ! command -v docker >/dev/null; then
-\tapt-get update -q
-\tDEBIAN_FRONTEND=noninteractive apt-get install -y -q docker.io
-fi
-systemctl enable --now docker
-{image_steps}
-docker rm -f theuth-engine 2>/dev/null || true
-docker run -d --name theuth-engine --restart always --init --hostname '{name}' \\
-\t-e THEUTH_NODE_NAME='{name}' \\
-\t-v /mnt/theuth/data:/data -v /mnt/theuth/workspace:/workspace \\
-\t--log-opt max-size=10m --log-opt max-file=3 \\
-\t"$IMAGE"
-echo "theuth-node: container started $(date -u +%FT%TZ)"
-"""
-
-
-def release_version(fetch=None):
-    fetch = fetch or (lambda: json.load(urllib.request.urlopen(MANIFEST, timeout=30)))
-    return fetch()["version"]
-
-
-def baked_pubkey():
-    """crates/update/pubkey.txt beside the engine context (the key the image verifies with)."""
-    ctx = engine_context()
-    p = ctx.parent.parent / "crates/update/pubkey.txt"
-    if not p.is_file():
-        raise CloudError(f"image 'build' needs crates/update/pubkey.txt: not at {p}")
-    return p.read_text().strip()
+    if not re.match(r"^[A-Za-z0-9/_.:-]+$", data_dev) or not re.match(r"^https://[A-Za-z0-9/_.:-]+$", manifest):
+        raise CloudError("bad device path or manifest URL")
+    subs = {
+        "__NAME__": check_name(name),
+        "__DATA_DEV__": data_dev,
+        "__TICKET__": ticket or "",
+        "__MANIFEST__": manifest,
+        "__PUBKEY__": (VM_DIR / "pubkey.txt").read_text().strip(),
+        "__INSTALL_SH__": base64.b64encode((VM_DIR / "theuth-install.sh").read_bytes()).decode(),
+    }
+    text = (VM_DIR / "vm-cloud-init.sh").read_text()
+    for k, v in subs.items():
+        text = text.replace(k, v)
+    return text
 
 
 # --- DigitalOcean --------------------------------------------------------------------------------
@@ -370,8 +311,7 @@ class DigitalOcean:
         fws = self.api.call("GET", "/firewalls?per_page=200").get("firewalls", [])
         return next((f for f in fws if f["name"] == f"theuth-{name}"), None)
 
-    def create(self, name, region, size, volume_gb, image, ticket, ssh_cidr=None, ssh_key=None,
-               version=None, pubkey=None, context=None):
+    def create(self, name, region, size, volume_gb, ticket, ssh_cidr=None, ssh_key=None, manifest=MANIFEST):
         if self.droplet(name):
             raise CloudError(f"a Droplet tagged {tag_node(name)} exists; destroy it first")
         for t in (TAG_MANAGED, tag_node(name)):
@@ -395,13 +335,15 @@ class DigitalOcean:
                 "name": f"theuth-{name}-data", "region": region, "size_gigabytes": volume_gb,
                 "filesystem_type": "ext4", "filesystem_label": "theuth-data",
                 "tags": [TAG_MANAGED, tag_node(name)],
-                "description": "theuth node /data and /workspace (design doc 224)",
+                "description": "theuth node /data (design doc 224)",
             })["volume"]
         body = {
-            "name": f"theuth-{name}", "region": region, "size": size, "image": "ubuntu-24-04-x64",
+            "name": f"theuth-{name}", "region": region, "size": size,
+            # vm-cloud-init.sh names Ubuntu 24.04's packages.
+            "image": "ubuntu-24-04-x64",
             "volumes": [vol["id"]], "tags": [TAG_MANAGED, tag_node(name)], "ipv6": True,
             "monitoring": False,
-            "user_data": user_data(name, f"theuth-{name}-data", image, ticket, version, pubkey, context),
+            "user_data": user_data(name, f"/dev/disk/by-id/scsi-0DO_Volume_theuth-{name}-data", ticket, manifest),
         }
         if ssh_key:
             body["ssh_keys"] = [int(ssh_key) if str(ssh_key).isdigit() else ssh_key]
@@ -510,8 +452,6 @@ class Fly:
         return round(1.94 * g["cpus"] + 5.0 * extra_gb + FLY_VOLUME_GB * volume_gb, 2)
 
     def create(self, name, region, size, volume_gb, image, ticket):
-        if image == "build":
-            raise CloudError("Fly pulls a published image; pass an image ref (image: build is DigitalOcean only)")
         app = self.app(name)
         self.api.call("POST", "/apps", {"app_name": app, "org_slug": self.org})
         vol = self.api.call("POST", f"/apps/{app}/volumes", {
@@ -627,17 +567,21 @@ def create(args, transport=http, run=subprocess.run, sleep=time.sleep):
                 "estimated_monthly_usd": round(AWS_SIZES[size] + AWS_VOLUME_GB * volume_gb, 2),
                 "implemented": False,
                 "plan": ["lightsail CreateDisk theuth-<name>-data (tags theuth-managed, theuth-node:<name>)",
-                         ("lightsail CreateInstances ubuntu_24_04, bundle <size>, user-data = the DigitalOcean "
-                          "cloud-init with the disk at /dev/nvme1n1"),
+                         ("lightsail CreateInstances ubuntu_24_04, bundle <size>, user-data = vm/vm-cloud-init.sh "
+                          "(native install, as DigitalOcean) with the disk at /dev/nvme1n1"),
                          ("lightsail AttachDisk; PutInstancePublicPorts [] (no inbound; 22 from one CIDR "
                           "if asked)")]}
         if not dry_run:
             raise CloudError("AWS create is not implemented yet (design doc 224 §10); dry run: " + json.dumps(plan))
         return plan
 
+    # VM providers install natively; container providers run the engine image (224 §2).
+    if provider == "digitalocean" and args.get("image"):
+        raise CloudError("DigitalOcean installs t natively (no Docker); `image` is for fly and kubernetes")
     est = DigitalOcean.estimate(size, volume_gb) if provider == "digitalocean" else Fly.estimate(size, volume_gb)
     summary = {"provider": provider, "name": name, "region": region, "size": size, "volume_gb": volume_gb,
-               "image": image, "estimated_monthly_usd": est, "dry_run": dry_run,
+               "install": "native: systemd unit theuth-engine, user engine" if provider == "digitalocean" else image,
+               "estimated_monthly_usd": est, "dry_run": dry_run,
                "inbound": f"tcp/22 from {args['ssh_cidr']}" if args.get("ssh_cidr") else "none"}
     if dry_run:
         summary["next"] = "call create again with dry_run: false to make it (billing starts then)"
@@ -645,12 +589,8 @@ def create(args, transport=http, run=subprocess.run, sleep=time.sleep):
 
     ticket = mint_ticket(run)
     if provider == "digitalocean":
-        version = pubkey = None
-        if image == "build":
-            version, pubkey = release_version(), baked_pubkey()
         do = DigitalOcean(transport)
-        made = do.create(name, region, size, volume_gb, image, ticket, args.get("ssh_cidr"),
-                         args.get("ssh_key"), version, pubkey)
+        made = do.create(name, region, size, volume_gb, ticket, args.get("ssh_cidr"), args.get("ssh_key"))
         made["ip"] = do.wait_active(made["droplet_id"], sleep=sleep)
     else:
         made = Fly(transport).create(name, region, size, volume_gb, image, ticket)

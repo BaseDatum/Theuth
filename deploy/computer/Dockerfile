@@ -5,16 +5,17 @@
 #   docker build --build-arg THEUTH_VERSION=2.31.2 --build-arg THEUTH_PUBKEY="$(cat crates/update/pubkey.txt)" \
 #     -t theuth-engine:2.31.2 deploy/computer
 #
-# `t mesh add --docker` builds it with this binary's version and pubkey (context: this file and
-# entrypoint.sh). The baked binary lives in /usr/local/lib/theuth; entrypoint.sh copies the newest
-# signed `t` into /data/bin on every start and runs that one, so the engine's own updater can
+# `t mesh add --docker` builds it with this binary's version and pubkey (context: this file,
+# entrypoint.sh and theuth-install.sh). The baked binary lives in /usr/local/lib/theuth;
+# theuth-install.sh (shared with the native VM install, 224 §9) copies the newest signed `t` into
+# /data/bin on every start and the entrypoint runs that one, so the engine's own updater can
 # replace it in place (uid 1000 owns /data) and a recreated container keeps the newer version.
 FROM ubuntu:24.04
 
 ARG THEUTH_VERSION
 # crates/update/pubkey.txt: Tauri's base64 of the minisign public key file.
 ARG THEUTH_PUBKEY
-# The manifest entrypoint.sh checks at start (release.yml passes latest-prerelease.json for prereleases).
+# The manifest theuth-install.sh checks at start (release.yml passes latest-prerelease.json for prereleases).
 ARG THEUTH_MANIFEST=https://s3.rwx.dev/theuth/releases/latest.json
 
 # libgbm1 … libpipewire: the shared libraries the Linux `t` links (`ldd` on 2.31.2: without them it
@@ -26,7 +27,7 @@ RUN apt-get update \
 
 # theuth_<version>_linux-<arch>.tar.gz + .sig from the release bucket, verified
 # with minisign before anything is extracted (39 §5.1). The key stays in the
-# image: entrypoint.sh verifies later releases against it.
+# image: theuth-install.sh verifies later releases against it.
 RUN set -eu; \
     case "$(dpkg --print-architecture)" in amd64) a=x86_64 ;; arm64) a=aarch64 ;; *) echo "unsupported arch" >&2; exit 1 ;; esac; \
     f="theuth_${THEUTH_VERSION}_linux-${a}.tar.gz"; \
@@ -43,7 +44,8 @@ RUN set -eu; \
     rm -f "/tmp/$f" /tmp/t.sig /tmp/t.minisig
 
 COPY entrypoint.sh /usr/local/bin/theuth-entrypoint
-RUN chmod 755 /usr/local/bin/theuth-entrypoint
+COPY theuth-install.sh /usr/local/lib/theuth-install.sh
+RUN chmod 755 /usr/local/bin/theuth-entrypoint /usr/local/lib/theuth-install.sh
 
 # uid 1000 so files the parent uploads (owned 1000) are the engine's.
 RUN userdel -r ubuntu 2>/dev/null || true; \

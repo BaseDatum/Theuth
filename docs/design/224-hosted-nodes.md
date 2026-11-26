@@ -13,7 +13,9 @@ Branch `feat/cloud-node`. Nothing here has created a cloud resource yet; §14 li
 
 | Piece | Where | What |
 |---|---|---|
-| Engine image | `deploy/computer/Dockerfile`, `entrypoint.sh` | the published `ghcr.io/basedatum/theuth/engine`; on every start installs the newest signed `t` into `/data/bin` and runs that one (§5) |
+| Install script | `deploy/computer/theuth-install.sh` | one script for both kinds of node: `install` (newest signed `t` into `/data/bin`), `config`, `join` (the ticket loop) (§5) |
+| VM install | `deploy/computer/vm-cloud-init.sh` | native node on a VM: user `engine`, `/data` volume, runtime libs, systemd units (§9) |
+| Engine image | `deploy/computer/Dockerfile`, `entrypoint.sh` | the published `ghcr.io/basedatum/theuth/engine` for container providers; its entrypoint runs `theuth-install.sh` (§5) |
 | Remote pairing | `t mesh pair --remote`, `scripts/cloud-node-ticket.sh` | a one-time ticket without the vault key (§4) |
 | Kubernetes | `deploy/computer/k8s/`, `crates/sandbox/src/k8s.rs`, `crates/theuth/src/k8s_cli.rs` | `t mesh add --k8s …`, `t mesh k8s list\|status\|destroy\|storage-classes` (§7) |
 | Plugin | `plugins/cloud-nodes/` | tools `providers`, `create`, `status`, `list`, `destroy` over DigitalOcean, Fly.io, Kubernetes (via `t`), AWS (dry run) |
@@ -25,12 +27,20 @@ Every resource carries `theuth-managed` plus `theuth-node:<name>` (DO tags), the
 
 ## 2. Providers, and why these
 
-- **DigitalOcean: a Droplet running the container.** `s-1vcpu-1gb` Ubuntu 24.04, cloud-init
-  installs Docker and runs the image with `--restart always --init`; `/data` and `/workspace` on an
-  attached Block Storage Volume; a Cloud Firewall with no inbound rule (optional tcp/22 from one
-  CIDR). **Not App Platform**: it has no persistent volumes (an App's filesystem is ephemeral and
-  lost on every deploy or restart), so the vault, sessions and `/data/bin/t` would be lost, and it
-  expects an HTTP service with a health check, which an outbound-only engine is not.
+**Rule (owner, 2026-11-26): VM providers install natively; container providers use the image.**
+DigitalOcean, Hetzner, EC2/Lightsail instances get `t` under systemd with no Docker (one less
+daemon, no image registry in the path, the updater's file is just a file); Fly.io, Kubernetes and
+RunPod run `ghcr.io/basedatum/theuth/engine`. Both paths share `theuth-install.sh`.
+
+- **DigitalOcean: a Droplet with a native install.** `s-1vcpu-1gb` Ubuntu 24.04; cloud-init
+  (`vm-cloud-init.sh`) creates user `engine` (uid 1000), mounts the Block Storage Volume at
+  `/data`, installs the libraries `t` links, writes the release key and `theuth-install.sh`, and
+  starts `theuth-engine.service` (`User=engine`, `Restart=always`, `RestartSec=5`, `ExecStartPre=
+  theuth-install.sh install`) and `theuth-join.service`; a Cloud Firewall with no inbound rule
+  (optional tcp/22 from one CIDR). **Not App Platform**: it has no persistent volumes (an App's
+  filesystem is ephemeral and lost on every deploy or restart), so the vault, sessions and
+  `/data/bin/t` would be lost, and it expects an HTTP service with a health check, which an
+  outbound-only engine is not.
 - **Fly.io: one App + one Volume + one Machine** (Machines API). A real container with a
   volume at `/data`, restart policy `always`. Fly allows one volume per Machine, so `/workspace` is
   the image's directory (scratch, lost when the Machine is replaced); repos meant to last go under
@@ -42,7 +52,8 @@ Every resource carries `theuth-managed` plus `theuth-node:<name>` (DO tags), the
   subnets, security group, IAM execution role, EFS filesystem + mount targets + access point: nine
   kinds of resource for one container, and SQLite on NFS is a known way to corrupt a database),
   plain EC2 + EBS (VPC/subnet/security group/AMI lookups; workable but more surface for the same
-  result). Lightsail is flat-priced, one API, and takes the DigitalOcean cloud-init unchanged.
+  result). Lightsail is flat-priced, one API, and takes `vm-cloud-init.sh` unchanged but for the
+  disk's device path.
 
 ## 3. Credentials: discovery and storage
 
@@ -99,79 +110,97 @@ scripts/cloud-node-ticket.sh                # any t: uses --remote when present,
 THEUTH_T="docker exec engine t" scripts/cloud-node-ticket.sh   # an engine in a container
 ```
 
-**Delivery** (the image reads, in order: `/data/pair-ticket`, `$THEUTH_PAIR_TICKET_FILE` (default
-`/run/theuth/pair/ticket`), `$THEUTH_PAIR_TICKET`):
+**Delivery** (`theuth-install.sh join` reads, in order: `/data/pair-ticket`,
+`$THEUTH_PAIR_TICKET_FILE` (default `/run/theuth/pair/ticket`), `$THEUTH_PAIR_TICKET`):
 
 | Provider | How | Visible to |
 |---|---|---|
-| DigitalOcean | cloud-init writes `/mnt/theuth/data/pair-ticket` (0600, uid 1000) | the Droplet's metadata service (user-data stays there), the DO account |
+| DigitalOcean | cloud-init writes `/data/pair-ticket` (0600, user `engine`) | the Droplet's metadata service (user-data stays there), the DO account |
 | Fly.io | Machine `files:` entry at `/run/theuth/pair/ticket` | the Machine config, the Fly org |
 | Kubernetes | Secret `theuth-<name>-pair` mounted at `/run/theuth/pair` (0440, fsGroup 1000, `optional`); `t mesh add --k8s` deletes it once the node joined or the wait ended | the namespace's Secret readers |
 
-**Joining.** `entrypoint.sh` starts a helper (double-forked, so PID 1 reaps it) that, until
-`/data/.theuth-paired` exists, runs `t --data-dir /data mesh add <ticket>` every 10 s. Success:
-the marker is written and `/data/pair-ticket` deleted. "invalid or expired" / "refused": that
-ticket is not retried, a log line says to write a fresh one to `/data/pair-ticket`, and the loop
-keeps watching the file — so a node that missed its 5 minutes is re-paired by dropping a new
+**Joining.** `theuth-install.sh join` — `theuth-join.service` on a VM (`ConditionPathExists=
+!/data/.theuth-paired`), a double-forked helper of the image's entrypoint (so PID 1 reaps it) —
+runs `t --data-dir /data mesh add <ticket>` every 10 s until `/data/.theuth-paired` exists.
+Success: the marker is written and `/data/pair-ticket` deleted. "invalid or expired" / "refused":
+that ticket is not retried, a log line says to write a fresh one to `/data/pair-ticket`, and the
+loop keeps watching the file — so a node that missed its 5 minutes is re-paired by dropping a new
 ticket in (`cloud-node-do-test.sh ticket` over SSH; `kubectl cp`/`exec` on Kubernetes). A node
 re-created on a kept volume has the marker and does not try again.
 
-**The 5-minute window** is the main operational risk: a Droplet that has to install Docker and
-build the image takes ~3–4 min from mint to join [INFERENCE: not measured on DO]. Mint in the same
-command line as the create, so the clock starts at the create; the published image (pull instead of
-build) and a Docker 1-click Droplet image shorten it. A longer TTL needs a parameter on
-`mesh_pairing_string` (a wire change); not done here because the live test runs against the
-installed `t`, which would not have it.
+**What runs where (release compatibility).** Reading `/data/pair-ticket` is the shell script's job,
+not `t`'s; `t` only runs `mesh add <string>`, which every 67+ release has. So the **released
+2.31.2** both joins (node) and accepts (owner) a key-less ticket: the owner's `PairAck` carries the
+keyring since 183 (2026-11-09), and 2.31.2 is from 2026-11-26. Verified with release binaries on
+both sides (§14). Only `t mesh pair --remote` and `t mesh add --k8s` need a `t` from this branch;
+`scripts/cloud-node-ticket.sh` stands in for the former with any `t`. An owner older than 183
+still pairs, but sends no keyring, so the node's replicated secrets would not open.
 
-## 5. The image and updates
+**The 5-minute window** is the main operational risk: a VM node has to boot, install packages
+and download a ~450 MB tarball before `t` dials [INFERENCE: ~2–3 min on a DO Droplet, not
+measured]. Mint in the same command line as the create, so the clock starts at the create; a late
+node is re-paired with a fresh ticket (above). A longer TTL needs a parameter on
+`mesh_pairing_string` (a wire change); not done here because the live test runs against the
+installed release, which would not have it.
+
+## 5. Install, image and updates
 
 Problem: the release binary was baked into root-owned `/usr/local/bin`, so the engine's own
 updater (crates/update) found its directory unwritable (`Outcome::Available`, "`sudo t
 --update` installs it"), and a recreated container reverted to the baked version.
 
-`deploy/computer/Dockerfile` now: verifies the release tarball with minisign as before and unpacks
-it into `/usr/local/lib/theuth` (+ `/usr/local/bin/t` symlink); keeps the public key at
-`/usr/local/share/theuth/pubkey.txt`; adds `tini`, `util-linux` (`setpriv`) and the shared
+**`deploy/computer/theuth-install.sh`** (POSIX sh; the one place that downloads and verifies):
+
+- `install`: `$THEUTH_BAKED_DIR` (the image's build-time-verified release; unset on a VM) when it
+  is newer than `/data/bin/t` (or nothing is there) → copied in (helpers first, `t` last, renames
+  on one filesystem — the order crates/update uses). Then, unless `THEUTH_BOOT_UPDATE=0`, read
+  `$THEUTH_MANIFEST` (default `latest.json`; release.yml passes `latest-prerelease.json` for
+  prerelease images): if it names a newer version (of the same major, when one is installed) for
+  `cli-linux-<arch>`, download the tarball, verify the manifest's signature with minisign against
+  `$THEUTH_PUBKEY_FILE` (the release key, `/usr/local/share/theuth/pubkey.txt`), require the
+  trusted comment to name that file (`file:theuth_<v>_linux-<arch>.tar.gz`) and the unpacked
+  `t --version` to equal `<v>`, then install it. Any failure leaves `/data/bin` as it was; exit 1
+  only when no `t` is installed afterwards. Never a downgrade.
+- `config NAME KIND`: first start only — `config.yaml` gets `mesh: {name, class: KIND, nearby:
+  false}` (`container` in the image, `server` on a VM); the engine's first run appends its own
+  defaults below.
+- `join`: §4.
+
+**The image** (`deploy/computer/Dockerfile`): verifies the release tarball with minisign as before
+and unpacks it into `/usr/local/lib/theuth` (+ `/usr/local/bin/t` symlink); keeps the public key
+at `/usr/local/share/theuth/pubkey.txt`; adds `tini`, `util-linux` (`setpriv`) and the shared
 libraries the Linux `t` links (`libgbm1 libwayland-client0 libxcb1 libasound2t64
 libpipewire-0.3-0t64` — without them 2.31.2 exits 127 before `main`, which the old Dockerfile
-did not install either); `PATH=/data/bin:…`; `ENTRYPOINT ["theuth-entrypoint"]`, extra arguments
-passed on to `t --headless --data-dir /data`. `t mesh add --docker` builds the same file and now
-sends `entrypoint.sh` in its build context (`crates/sandbox/src/docker.rs`).
-
-`entrypoint.sh`, every start:
+did not install either); `theuth-install.sh` at `/usr/local/lib/`; `PATH=/data/bin:…`;
+`ENTRYPOINT ["theuth-entrypoint"]`, extra arguments passed on to `t --headless --data-dir /data`.
+`t mesh add --docker` builds the same file and now sends `entrypoint.sh` and `theuth-install.sh`
+in its build context (`crates/sandbox/src/docker.rs`). `entrypoint.sh`, every start:
 
 1. **root** (a Fly volume is root-owned): chown `/data` and `/workspace` to 1000 if needed, then
    `setpriv` to uid/gid 1000 with no capabilities. Docker and Kubernetes start it as 1000 already.
 2. **PID 1** (Kubernetes, `docker run` without `--init`): re-exec under `tini`, so `t`'s parent is
-   PID 1 (step 6 depends on it).
-3. **The binary.** Baked version newer than `/data/bin/t` (or none there) → copy it in (helpers
-   first, `t` last, renames on one filesystem — the order crates/update uses). Then, unless
-   `THEUTH_BOOT_UPDATE=0`, read `$THEUTH_MANIFEST` (default `latest.json`; release.yml passes
-   `latest-prerelease.json` for prerelease images): if it names a newer version of the same major
-   for `cli-linux-<arch>`, download the tarball, verify the manifest's signature with minisign
-   against the baked key, require the trusted comment to name that file (`file:theuth_<v>_linux-<arch>.tar.gz`)
-   and the unpacked `t --version` to equal `<v>`, then install it. Any failure leaves `/data/bin`
-   as it was and the engine starts on what is there; an unreachable manifest is a log line.
-   Never a downgrade: only strictly newer versions are installed.
-4. First start with `THEUTH_NODE_NAME`: `config.yaml` gets `mesh: {name, class: container,
-   nearby: false}` (the engine's first run appends its own defaults below).
-5. The join helper (§4).
+   PID 1 (the updater's restart depends on it).
+3. `theuth-install.sh install` with `THEUTH_BAKED_DIR=/usr/local/lib/theuth`.
+4. `theuth-install.sh config $THEUTH_NODE_NAME container`.
+5. `theuth-install.sh join`, double-forked, until paired.
 6. `exec /data/bin/t --headless --data-dir /data`.
 
+**A VM** (§9) runs the same `install` as `ExecStartPre` of `theuth-engine.service` (`User=engine`),
+`config … server` once from cloud-init, and `join` as `theuth-join.service`.
 **The updater needs no change.** Checked in `crates/update/src/lib.rs`: the target is
 `std::env::current_exe()` canonicalized → `/data/bin/t`; step 4 tests that its directory is
 writable (it is, uid 1000 owns `/data`) and installs in place with the same signature check; the
 tick loop runs in release builds that are not an app sidecar (first check 60 s after start, then
 every 6 h ± 5 min). It exits for a restart (`EXIT_RESTART = 75`) only when all of:
 `platform::service::managed()` (parent PID is 1, or systemd's `INVOCATION_ID`), no external wire
-client attached, and 10 min without a turn. In the image the parent is PID 1 everywhere:
-`docker run --init` (docker-init), Kubernetes (tini via step 2), Fly (its init). The restart policy
-(`always`; Kubernetes `restartPolicy: Always`; Fly `restart.policy: always`) starts the container
-again, step 3 finds `/data/bin/t` already newest, and the new version runs. A recreated container
-on the same volume keeps the updated binary.
+client attached, and 10 min without a turn. On a VM systemd sets `INVOCATION_ID`; in the image the
+parent is PID 1 everywhere: `docker run --init` (docker-init), Kubernetes (tini via step 2), Fly
+(its init). The restart (`Restart=always`; Kubernetes `restartPolicy: Always`; Fly
+`restart.policy: always`) runs `install` again, which finds `/data/bin/t` already newest, and the
+new version runs. A recreated VM or container on the same volume keeps the updated binary.
 
 Known noise (pre-existing, not changed): the Linux `t` logs a PipeWire `client.conf` warning every
-5 s in a container without PipeWire; the DO run caps Docker logs at 3 × 10 MB.
+5 s on a host without PipeWire (journald rate-limits it on a VM).
 
 ## 6. Lifecycle
 
@@ -238,65 +267,81 @@ plugins/cloud-nodes`, then the owner presses the card (`t plugin approve cloud-n
   namespace?, storage_class?, deny_cluster_network?, dry_run = true)`: the dry run returns the plan
   and `estimated_monthly_usd` and touches nothing; `dry_run: false` mints the ticket (`t mesh pair
   --remote`, or strips it itself for an older `t`; `--data-dir` is derived from
-  `THEUTH_PLUGIN_DATA`) and creates. DigitalOcean also takes `image: build` (builds
-  `deploy/computer` on the Droplet; needs the repo or `CLOUD_NODES_ENGINE_CONTEXT`). Kubernetes runs
-  `t mesh add --k8s`. AWS answers with the §10 plan and a cost, and refuses `dry_run: false`.
+  `THEUTH_PLUGIN_DATA`) and creates. DigitalOcean installs natively and refuses `image`.
+  Kubernetes runs `t mesh add --k8s`. AWS answers with the §10 plan and a cost, and refuses
+  `dry_run: false`.
 - `status(name, provider)`, `list()` (every configured provider; one failing provider is reported
   in `errors`, not fatal), `destroy(name, provider, keep_volume = true)`.
 - `create` and `destroy` carry `destructiveHint` (they spend or delete), so `tools.policy` asks.
-- Checks: `plugins/cloud-nodes/check.sh` (py_compile, ruff, 15 unit tests with a fake HTTP transport
+- `vm/` holds copies of `deploy/computer/vm-cloud-init.sh`, `deploy/computer/theuth-install.sh` and
+  `crates/update/pubkey.txt` (an installed plugin has no repo beside it); `watch:` lists them so the
+  code hash covers them, and a test fails when a copy drifts from the repo.
+- Checks: `plugins/cloud-nodes/check.sh` (py_compile, ruff, 16 unit tests with a fake HTTP transport
   and a fake `t`: request order and bodies, firewall before Droplet, no inbound rule, the vault key
-  never sent, the ticket only in user-data, user-data valid bash in both image modes, destroy
-  keeping/deleting the volume, Fly config, the `t` argv for Kubernetes, the SDK `tools/call` path
-  and `--theuth-manifest` against `plugin.yaml`).
+  never sent, the ticket only in user-data, user-data valid bash with no Docker and the install
+  script embedded byte for byte, injection refused, the vendored copies, destroy keeping/deleting
+  the volume, Fly config, the `t` argv for Kubernetes, the SDK `tools/call` path and
+  `--theuth-manifest` against `plugin.yaml`).
 
-The DigitalOcean cloud-init exists twice — `cloud_nodes.user_data` and
-`scripts/cloud-node-do-test.sh` — because the script must run without the plugin; the plugin's is
-canonical and the step 13 move deletes both for the Rust one.
+The VM template is one file (`deploy/computer/vm-cloud-init.sh`); the script and the plugin only
+fill its placeholders.
 
 ## 9. DigitalOcean in detail, and the live test
 
-cloud-init (bash, no `set -x`): `PasswordAuthentication no`; 1 GiB swap (a 1 GiB Droplet and a
-1.2 GB binary); wait for `/dev/disk/by-id/scsi-0DO_Volume_theuth-<name>-data`, `mkfs.ext4` only
-when `blkid` finds no filesystem, mount at `/mnt/theuth` (fstab `nofail`), `data/` and
-`workspace/` owned 1000; the ticket file; `docker.io` unless Docker is there; build or pull; `docker
-run -d --name theuth-engine --restart always --init --hostname <name> -e THEUTH_NODE_NAME=<name>
--v /mnt/theuth/data:/data -v /mnt/theuth/workspace:/workspace --log-opt max-size=10m
---log-opt max-file=3`. Its log: `/var/log/theuth-node.log`.
+`vm-cloud-init.sh` (bash, no `set -x`, log `/var/log/theuth-node.log`): `PasswordAuthentication
+no`; 1 GiB swap when the host allows it (a 1 GiB Droplet and a 1.2 GB binary); user `engine`
+(uid 1000); wait for `/dev/disk/by-id/scsi-0DO_Volume_theuth-<name>-data`, `mkfs.ext4` only when
+`blkid` finds no filesystem, mount at `/data` (fstab `nofail`), owned by `engine`; `apt-get install`
+`ca-certificates curl git python3 ripgrep tar zstd minisign` and the five libraries `t` links;
+`/usr/local/share/theuth/pubkey.txt` and `/usr/local/lib/theuth-install.sh` from the template;
+`/data/bin` on login `PATH`; the ticket at `/data/pair-ticket` (0600); `config.yaml` (`class:
+server`); then two units, enabled and started without blocking cloud-init:
 
-`ENGINE_IMAGE=build` is the script's default: `ghcr.io/basedatum/theuth/engine` is not
-anonymously pullable today (`docker manifest inspect` → `manifest unknown`, token endpoint 403),
-and no published tag has this entrypoint yet. Build bakes `latest.json`'s version.
+- `theuth-engine.service`: `User=engine`, `Environment=THEUTH_DATA_DIR=/data THEUTH_MANIFEST=…`,
+  `ExecStartPre=theuth-install.sh install` (first start: download + minisign; later starts: a
+  manifest check), `ExecStart=/data/bin/t --headless --data-dir /data`, `Restart=always`,
+  `RestartSec=5`, `TimeoutStartSec=1200`, `StartLimitIntervalSec=0`, `RequiresMountsFor=/data`.
+- `theuth-join.service`: `User=engine`, `ExecStart=theuth-install.sh join`,
+  `ConditionPathExists=!/data/.theuth-paired`, `Restart=on-failure`.
 
-**Live test (orchestrator, on the Mac whose engine the node joins):**
+The node downloads whatever `latest.json` names; `MANIFEST=` points it elsewhere. No image, no
+registry: the private ghcr package does not matter here.
+
+**Which binary runs where for the live test: release binaries only.** The Droplet installs the
+released `t` 2.31.2 from `latest.json`; this Mac's engine is the app's 2.31.2 sidecar
+(`~/.theuth/engine.json`: `version 2.31.2`); the ticket is minted by `scripts/cloud-node-ticket.sh`
+through that engine's `mesh_pairing_string` RPC. No branch build is involved (§4).
+
+**Live test (orchestrator, on this Mac):**
 
 ```sh
-cd ../theuth-wt/cloud-node
-export DIGITALOCEAN_TOKEN=…                           # never echoed by the script
-t mesh status >/dev/null                              # the engine is up
-# optional, recommended for the first run: SSH for logs and ticket re-delivery
-export SSH_KEY=<DO key id or fingerprint> SSH_CIDR="$(curl -fsS https://api.ipify.org)/32"
+cd /Users/sky/Develop/skymoore/theuth-wt/cloud-node
+export DIGITALOCEAN_TOKEN=…                                    # never echoed by the script
+export THEUTH_T=/Applications/theuth.app/Contents/MacOS/t      # the 2.31.2 that matches the engine
+"$THEUTH_T" mesh status >/dev/null                             # the engine is up
+# recommended for the first run: SSH for logs and ticket re-delivery
+export SSH_KEY=<id or fingerprint from `doctl compute ssh-key list`> SSH_CIDR="$(curl -fsS https://api.ipify.org)/32"
 THEUTH_PAIR_TICKET="$(scripts/cloud-node-ticket.sh)" scripts/cloud-node-do-test.sh create
-#   → plan + ≈$7/month, firewall, volume, droplet active at <ip>, then waits ≤10 min for the
+#   → plan + ≈$7/month, firewall, volume, Droplet active at <ip>, then waits ≤10 min for the
 #     peer 'theuth-test' in `t mesh status`
-t mesh status                                         # peer theuth-test, reachable: true
-scripts/cloud-node-do-test.sh status                  # Droplet/volume/firewall (+ node log with SSH)
+"$THEUTH_T" mesh status                                        # peer theuth-test, reachable: true
+scripts/cloud-node-do-test.sh status     # Droplet/volume/firewall; with SSH: units, t --version, journal
 # missed the 5 minutes (SSH mode):
 THEUTH_PAIR_TICKET="$(scripts/cloud-node-ticket.sh)" scripts/cloud-node-do-test.sh ticket
-scripts/cloud-node-do-test.sh destroy                 # everything; --keep-volume keeps the $1/mo disk
-t mesh status   # then: t mesh remove <id of theuth-test>
+scripts/cloud-node-do-test.sh destroy    # everything; --keep-volume keeps the $1/mo disk
+"$THEUTH_T" mesh status                  # then: "$THEUTH_T" mesh remove <id of theuth-test>
 ```
 
-Persistence check (optional, before destroy): `destroy --keep-volume`, `create` again (no ticket
-needed — the marker is on the volume; `THEUTH_PAIR_TICKET` can be any placeholder only if
-`SSH_CIDR` is set, otherwise mint one), and the same peer id reappears in `t mesh status`.
+Persistence check (optional, before destroy): `destroy --keep-volume`, then `create` again with a
+fresh ticket (the script requires one without `SSH_CIDR`; the node ignores it: the marker on the
+volume says it is paired), and the same peer id reappears in `t mesh status`.
 
 ## 10. AWS plan (not implemented)
 
 Lightsail, region default `eu-west-2`, bundle `micro_3_0` (2 vCPU burst, 1 GiB, $7/mo):
 `CreateDisk theuth-<name>-data` (tags `theuth-managed`, `theuth-node:<name>`) →
-`CreateInstances` (blueprint `ubuntu_24_04`, user-data = the DigitalOcean cloud-init with the
-device `/dev/nvme1n1` instead of the DO by-id path, same tags) → `AttachDisk` →
+`CreateInstances` (blueprint `ubuntu_24_04`, user-data = `vm-cloud-init.sh` with `/dev/nvme1n1`
+as the data device, same tags) → `AttachDisk` →
 `PutInstancePublicPorts []` (no inbound; tcp/22 from one CIDR if asked). Credentials from the
 discovered profile (SigV4 via botocore if present, else the `aws` CLI). `destroy`:
 `DeleteInstance`, `DetachDisk`/`DeleteDisk` unless kept. `providers()` and the dry run (with cost)
@@ -353,7 +398,20 @@ needs a pullable image (no `build`).
   (`THEUTH_T="docker exec cn1 t"`) stripped it (payload keys `addrs, id, name, relay, token`);
   container B started with it as `THEUTH_PAIR_TICKET` and logged `joined the mesh` within ~15 s;
   A's `t mesh status` listed `cn-two`, reachable; B logged `adopted the vault keyring from cn-test`;
-  `/data/pair-ticket` gone, marker present, the helper reaped.
+  `/data/pair-ticket` gone, marker present, the helper reaped. (These two ran the entrypoint
+  before `theuth-install.sh` was split out; after the split the image was rebuilt and an engine
+  started from it: baked `t` installed into `/data/bin`, `config.yaml` written, `t` under tini,
+  the join helper reparented to PID 1.)
+- Native VM path, emulated: the rendered `vm-cloud-init.sh` (from `cloud-node-do-test.sh
+  user-data`, the device swapped for a 4 GiB file) ran in a privileged `ubuntu:24.04` container
+  with a stub `systemctl`: exit 0; user `engine` uid 1000; the file formatted and mounted at
+  `/data` owned by `engine`; packages installed; `config.yaml` with `class: server`;
+  `/data/pair-ticket` 0600; both unit files written; swap refused by the container and skipped.
+  Then the units' commands by hand as `engine`: `theuth-install.sh install` downloaded 2.31.2 from
+  `latest.json`, verified it and installed `/data/bin/t`; `t --headless` (with `INVOCATION_ID`)
+  and `theuth-install.sh join` → `joined the mesh`, `adopted the vault keyring from owner`, the
+  owner engine (the rebuilt image, release 2.31.2) listed `vm-node` reachable. Release binaries
+  on both sides. Not covered: real systemd, a DO volume device, cloud-init itself.
 - Kubernetes: the overlay rendered with `kubectl kustomize` and `kubectl apply --dry-run=client`
   against the local cluster (context `k8s.rwx.dev`): ServiceAccount, Secret, 2 PVCs, Deployment,
   NetworkPolicy created (dry run). Pod CIDRs (`10.244.x.0/24` per node) and the ServiceCIDR

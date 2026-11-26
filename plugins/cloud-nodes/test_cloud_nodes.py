@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -145,8 +146,12 @@ class DigitalOceanCreate(Env):
         d = fake.bodies("POST", "/droplets")[0]
         self.assertEqual(d["volumes"], ["vol-1"])
         self.assertEqual(d["tags"], ["theuth-managed", "theuth-node:lab"])
-        self.assertIn("docker run -d --name theuth-engine --restart always --init", d["user_data"])
-        self.assertIn("/mnt/theuth/data/pair-ticket", d["user_data"])
+        ud = d["user_data"]
+        self.assertIn("ExecStart=/data/bin/t --headless --data-dir /data", ud)
+        self.assertIn("Restart=always", ud)
+        self.assertIn("/dev/disk/by-id/scsi-0DO_Volume_theuth-lab-data", ud)
+        self.assertIn("ticket='1.", ud)
+        self.assertNotIn("docker", ud)
         self.assertNotIn("SECRETKEY", json.dumps(fake.calls))
         self.assertNotIn("T0KEN", json.dumps(out))
 
@@ -162,17 +167,29 @@ class DigitalOceanCreate(Env):
             cn.create({"provider": "digitalocean", "name": "lab", "dry_run": False},
                       transport=Fake(busy), run=fake_t(pairing_with_key()))
 
-    def test_user_data_is_valid_bash_in_both_image_modes(self):
-        for image in ("ghcr.io/basedatum/theuth/engine:2.31.2", "build"):
-            ud = cn.user_data("lab", "theuth-lab-data", image, TICKET, "2.31.2", "PUBKEY",
-                              context=HERE.parent.parent / "deploy/computer")
-            r = subprocess.run(["bash", "-n"], check=False, input=ud, text=True, capture_output=True)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertNotRegex(ud, r"(?m)^\s*set -[a-z]*x")
+    def test_user_data_is_valid_bash_carries_the_install_script_and_rejects_injection(self):
+        ud = cn.user_data("lab", "/dev/disk/by-id/scsi-0DO_Volume_theuth-lab-data", TICKET)
+        r = subprocess.run(["bash", "-n"], check=False, input=ud, text=True, capture_output=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotRegex(ud, r"(?m)^\s*set -[a-z]*x")
+        self.assertNotRegex(ud, r"__[A-Z_]+__")
+        embedded = re.search(r"echo '([A-Za-z0-9+/=]+)' \| base64 -d >/usr/local/lib/theuth-install.sh", ud)
+        self.assertEqual(base64.b64decode(embedded.group(1)), (cn.VM_DIR / "theuth-install.sh").read_bytes())
         with self.assertRaises(cn.CloudError):
-            cn.user_data("lab", "v", "img; rm -rf /", None)
+            cn.user_data("lab", "/dev/x; reboot", None)
         with self.assertRaises(cn.CloudError):
-            cn.user_data("lab", "v", "img", "'; reboot; '")
+            cn.user_data("lab", "/dev/x", "'; reboot; '")
+        with self.assertRaises(cn.CloudError):
+            cn.create({"provider": "digitalocean", "name": "lab", "image": "x"})
+
+    def test_vendored_vm_files_match_the_repo(self):
+        repo = HERE.parent.parent
+        if not (repo / "deploy/computer/vm-cloud-init.sh").is_file():
+            self.skipTest("not in the theuth repo")
+        for vendored, source in (("vm-cloud-init.sh", "deploy/computer/vm-cloud-init.sh"),
+                                 ("theuth-install.sh", "deploy/computer/theuth-install.sh"),
+                                 ("pubkey.txt", "crates/update/pubkey.txt")):
+            self.assertEqual((cn.VM_DIR / vendored).read_bytes(), (repo / source).read_bytes(), vendored)
 
 
 class DigitalOceanDestroy(Env):
