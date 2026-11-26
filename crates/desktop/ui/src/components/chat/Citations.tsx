@@ -10,6 +10,7 @@ import { type ComponentProps, type MouseEvent, type ReactNode, createContext, us
 import { useNotebookChat } from '@/components/notebooks/NotebookContext'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { openRoute } from '@/components/tiles/open'
 import { type Cite, collectCitations, locatorLabel, parseTheuthHref, routeOf } from '@/lib/citations'
 import { notebookKeys, notebooksApi } from '@/lib/notebooks-rpc'
 import type { Citation } from "@/rpc/bindings/method.agent.output"
@@ -47,14 +48,16 @@ export function CitationsProvider({ text, children }: { text: string; children: 
 /**
  * Navigate to a citation's target; a no-op where there is no router (the `/d` guest container). In a notebook chat
  * the route carries `?nb`. `moved` (the id is gone, the text was found elsewhere) opens the document itself: the
- * resolver does not name the new block yet, and the old id would only pulse nothing.
+ * resolver does not name the new block yet, and the old id would only pulse nothing. A popped window (`openRoute`)
+ * opens the target in a window of its own rather than navigating away from its chat.
  */
 export function useOpenCite(): (cite: Cite, c?: Citation) => void {
   const router = useRouter({ warn: false }) as AnyRouter | undefined
   const nb = useNotebookChat()?.notebook
   return (cite, c) => {
-    const route = routeOf(cite, nb)
-    void router?.navigate((c?.status === 'moved' ? { ...route, hash: undefined } : route) as never)
+    if (!router) return
+    const route = (c?.status === 'moved' ? { ...routeOf(cite, nb), hash: undefined } : routeOf(cite, nb)) as never
+    openRoute(router.buildLocation(route).href, () => void router.navigate(route))
   }
 }
 

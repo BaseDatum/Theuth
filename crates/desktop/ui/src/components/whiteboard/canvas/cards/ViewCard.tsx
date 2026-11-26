@@ -9,7 +9,7 @@ import { RouterProvider, createMemoryHistory, createRouter, useNavigate } from '
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { ChevronLeft, ExternalLink, LayoutDashboard } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { openViewFromCard } from '@/components/tiles/open'
+import { openRoute, openViewFromCard } from '@/components/tiles/open'
 import { InsideTileProvider } from '@/components/tiles/tile-context'
 import { usePanes } from '@/lib/panes'
 import { routeTree } from '@/routeTree.gen'
@@ -99,7 +99,7 @@ function Live({ path, interactive, onTask }: ViewCardProps & { onTask?(task: str
       return true
     }
     if (to.kind === 'chat') usePanes.getState().show(to.session)
-    void outer.current({ href: to.href })
+    openRoute(to.href, (h) => void outer.current({ href: h }))
     return true
   })
 

@@ -240,6 +240,28 @@ export const POPOUT: PopoutTarget | null = typeof location === 'undefined' ? nul
 export const isPopout = (): boolean => POPOUT !== null
 
 /**
+ * The window app route `href` opens in from a popped window, which has no pane workspace to open it into and must not
+ * navigate itself away from what it shows: its subject's own window where the route has one (a chat, a note, …), else
+ * a page window on the route. `/` and `/new` are a New chat window. The hash is dropped (`popoutUrl` appends
+ * `?window=` to the path, so a hash before it would swallow the label).
+ */
+export function routeWindow(href: string): PopoutTarget {
+  const path = href.split('#')[0] ?? href
+  const [pathname = '/'] = path.split('?')
+  const [, head, raw, sub] = pathname.split('/')
+  const id = raw ? decodeURIComponent(raw) : ''
+  if (pathname === '/' || head === 'new') return { kind: 'page', path: head === 'new' ? path : '/new' }
+  if (id && head === 'c') return { kind: 'chat', session: id }
+  if (id && head === 'talk') return { kind: 'talk', session: id }
+  if (id && head === 'notes') return { kind: 'note', doc: id }
+  if (id && head === 'notebooks') return { kind: 'notebook', notebook: id }
+  if (id && head === 'meetings' && sub === undefined) return { kind: 'meeting', meeting: id }
+  if (id && head === 'artifacts') return { kind: 'artifact', callId: id }
+  if (id && head === 'vm') return { kind: 'vm', name: id }
+  return { kind: 'page', path }
+}
+
+/**
  * A window that shows one thing alone (a chat, artifact, note, notebook, meeting, …): its own title bar, no section band,
  * closed when its subject is deleted. A sidebar page window (`page`, e.g. Library) is not one — it is the shell's column
  * without the rail, navigable between pages, so the pages render there exactly as in the main window.
