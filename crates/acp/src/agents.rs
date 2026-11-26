@@ -245,6 +245,29 @@ impl Entry {
 /// [`Entry::skills_dir`] when unset: what omp, opencode, Codex and Gemini read.
 pub const DEFAULT_SKILLS_DIR: &str = ".agents/skills";
 
+/// Kind of an ACP authentication method advertised in `initialize.authMethods`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethodKind {
+    /// Client authenticates via JSON-RPC `authenticate { methodId }`.
+    Agent,
+    /// User runs a command in a terminal; never passed to `authenticate`.
+    Terminal,
+}
+
+/// Wire/UI view of one ACP authentication method from `initialize.authMethods`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AuthMethodInfo {
+    /// Method id passed to `authenticate { methodId }`.
+    pub id: String,
+    /// Human-readable method name.
+    pub name: String,
+    /// Whether the client calls `authenticate` (`agent`) or the user runs a command (`terminal`).
+    pub kind: AuthMethodKind,
+}
+
 /// Wire/UI shape for `/acp` and RPC.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -262,6 +285,9 @@ pub struct EntryInfo {
     /// 155 §8.1: [`Entry::reports`].
     #[serde(default)]
     pub reports: Reports,
+    /// Authentication methods advertised in `initialize.authMethods` during probe.
+    #[serde(default)]
+    pub auth_methods: Vec<AuthMethodInfo>,
 }
 
 /// `<data_dir>/acp/agents.yaml`.

@@ -43068,6 +43068,48 @@
         ],
         "type": "object"
       },
+      "method.agent.output.AuthMethodInfo": {
+        "description": "Wire/UI view of one ACP authentication method from `initialize.authMethods`.",
+        "properties": {
+          "id": {
+            "description": "Method id passed to `authenticate { methodId }`.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.AuthMethodKind"
+              }
+            ],
+            "description": "Whether the client calls `authenticate` (`agent`) or the user runs a command (`terminal`)."
+          },
+          "name": {
+            "description": "Human-readable method name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.AuthMethodKind": {
+        "description": "Kind of an ACP authentication method advertised in `initialize.authMethods`.",
+        "oneOf": [
+          {
+            "const": "agent",
+            "description": "Client authenticates via JSON-RPC `authenticate { methodId }`.",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "User runs a command in a terminal; never passed to `authenticate`.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.output.AwsProfiles": {
         "description": "Profiles available on the harness that performs inference.",
         "properties": {
@@ -46450,6 +46492,14 @@
             },
             "type": "array"
           },
+          "auth_methods": {
+            "default": [],
+            "description": "Authentication methods advertised in `initialize.authMethods` during probe.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.AuthMethodInfo"
+            },
+            "type": "array"
+          },
           "command": {
             "description": "Executable or command name.",
             "type": "string"
@@ -46492,7 +46542,8 @@
           "args",
           "description",
           "status",
-          "reports"
+          "reports",
+          "auth_methods"
         ],
         "type": "object"
       },
@@ -54113,6 +54164,48 @@
         ],
         "type": "object"
       },
+      "method.agent.receiver.AuthMethodInfo": {
+        "description": "Wire/UI view of one ACP authentication method from `initialize.authMethods`.",
+        "properties": {
+          "id": {
+            "description": "Method id passed to `authenticate { methodId }`.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.AuthMethodKind"
+              }
+            ],
+            "description": "Whether the client calls `authenticate` (`agent`) or the user runs a command (`terminal`)."
+          },
+          "name": {
+            "description": "Human-readable method name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.AuthMethodKind": {
+        "description": "Kind of an ACP authentication method advertised in `initialize.authMethods`.",
+        "oneOf": [
+          {
+            "const": "agent",
+            "description": "Client authenticates via JSON-RPC `authenticate { methodId }`.",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "User runs a command in a terminal; never passed to `authenticate`.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.receiver.AwsProfiles": {
         "description": "Profiles available on the harness that performs inference.",
         "properties": {
@@ -57414,6 +57507,14 @@
             "description": "Arguments.",
             "items": {
               "type": "string"
+            },
+            "type": "array"
+          },
+          "auth_methods": {
+            "default": [],
+            "description": "Authentication methods advertised in `initialize.authMethods` during probe.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.AuthMethodInfo"
             },
             "type": "array"
           },
@@ -139232,6 +139333,43 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "a2a"
+    },
+    {
+      "name": "acp_login",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "method",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "string"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "string"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
     },
     {
       "name": "activity_list",

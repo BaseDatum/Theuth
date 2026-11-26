@@ -15,13 +15,13 @@ pub mod registry;
 pub mod render;
 
 pub use agents::{
-    AGENTS_FILE, DEFAULT_SKILLS_DIR, DIR, Entry, EntryInfo, Reports, Steer, SteerKeys, SteerMode,
-    describe, load, path, save, unknown,
+    AGENTS_FILE, AuthMethodInfo, AuthMethodKind, DEFAULT_SKILLS_DIR, DIR, Entry, EntryInfo,
+    Reports, Steer, SteerKeys, SteerMode, describe, load, path, save, unknown,
 };
 pub use harness::{
     ChildAnnounce, ChildSource, ChildState, ConfigOption, ConfigValue, Connect, CostRule, Dialer,
-    Harness, LineDuplex, Permission, ProbeResult, SetOptionResult, Transport, Turn, Update,
-    current_model, probe,
+    Harness, LineDuplex, Permission, ProbeResult, SelectedAuth, SetOptionResult, Transport, Turn,
+    Update, current_model, login, probe,
 };
 pub use mesh::{MeshDialer, line_duplex};
 pub use meta::{META_KEY, SessionMeta};
