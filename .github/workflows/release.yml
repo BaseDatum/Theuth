@@ -1,11 +1,14 @@
 # Multi-platform release workflow for BaseDatum/Theuth.
 #
-# Builds 5 native release targets in parallel on every tag push `v*` (or manual dispatch):
+# Builds 5 native desktop/CLI targets in parallel on every tag push `v*` (or manual dispatch):
 #   1. macOS Apple Silicon (aarch64-apple-darwin) on macos-15
 #   2. Linux x86_64        (x86_64-unknown-linux-gnu) on ubuntu-24.04
 #   3. Linux ARM64         (aarch64-unknown-linux-gnu) on ubuntu-24.04-arm
 #   4. Windows x86_64      (x86_64-pc-windows-msvc) on windows-latest
 #   5. Windows ARM64       (aarch64-pc-windows-msvc) on windows-11-arm
+# Once all desktop builds succeed, two publish jobs run in parallel:
+#   - `publish`     (sign, S3, Homebrew tap, GitHub Release)
+#   - `publish-ios` (iOS/iPadOS aarch64-apple-ios IPA + App Store Connect / TestFlight upload)
 #
 # Note: Intel macOS (x86_64-apple-darwin) is intentionally skipped — it is hard incompatible with
 # `microsandbox` 0.7.13, `mlx-sys`, the `sandbox` preflight, and the SwiftPM macOS companion.
@@ -14,9 +17,12 @@
 #   APPLE_SIGNING_CERT_P12       Base64-encoded Developer ID Application .p12 certificate
 #   APPLE_SIGNING_CERT_PASSWORD  Password for the .p12 certificate
 #   APPLE_SIGNING_IDENTITY       Full codesign identity string ("Developer ID Application: ...")
-#   APPLE_NOTARY_KEY_P8          Base64-encoded App Store Connect API key (.p8) for notarytool
-#   APPLE_NOTARY_KEY_ID          App Store Connect API Key ID
-#   APPLE_NOTARY_ISSUER_ID       App Store Connect API Issuer UUID
+#   APPLE_NOTARY_KEY_P8          Base64-encoded App Store Connect API key (.p8) for notarytool & iOS TestFlight
+#   APPLE_NOTARY_KEY_ID          App Store Connect API Key ID (also used for iOS unless APPLE_API_KEY_ID is set)
+#   APPLE_NOTARY_ISSUER_ID       App Store Connect API Issuer UUID (also used for iOS unless APPLE_API_ISSUER is set)
+#   APPLE_API_KEY_P8             Optional override (.p8 base64) for iOS cloud signing & TestFlight upload
+#   APPLE_API_KEY_ID             Optional override Key ID for iOS cloud signing & TestFlight upload
+#   APPLE_API_ISSUER             Optional override Issuer UUID for iOS cloud signing & TestFlight upload
 #   THEUTH_UPDATE_KEY            Tauri minisign private key (contents)
 #   THEUTH_UPDATE_KEY_PASSWORD   Password for THEUTH_UPDATE_KEY (empty for --ci keys)
 #   S3_ACCESS_KEY_ID             S3/RustFS access key for release publishing
@@ -57,6 +63,10 @@ on:
         default: false
       skip_docker:
         description: 'Skip multi-arch Docker image builds and GHCR pushes'
+        type: boolean
+        default: false
+      skip_ios:
+        description: 'Skip iOS/iPadOS build and TestFlight upload'
         type: boolean
         default: false
 
@@ -888,6 +898,118 @@ jobs:
         run: |
           rm -f "$RUNNER_TEMP/homebrew_tap_key" "$RUNNER_TEMP/known_hosts"
           git config --global --unset-all "http.https://github.com/BaseDatum/homebrew-tap.git.extraheader" 2>/dev/null || true
+
+  publish-ios:
+    name: Build & Publish iOS (TestFlight)
+    needs:
+      - prepare
+      - build-macos-arm64
+      - build-linux
+      - build-windows
+    if: inputs.skip_ios != true
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          # Full history is required so `git rev-list --count HEAD` produces a monotonic CFBundleVersion.
+          fetch-depth: 0
+
+      - name: Select latest Xcode
+        run: |
+          set -euo pipefail
+          LATEST_XCODE="$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)"
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          xcode-select -p
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install cargo-tauri and just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli@2.12.6,just
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-ios-aarch64
+          cache-all-crates: true
+          cache-on-failure: true
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ios-aarch64-${{ hashFiles('crates/desktop/ui/bun.lock') }}
+          restore-keys: bun-ios-aarch64-
+
+      - name: Download TypeScript bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: ts-bindings
+          path: crates/desktop/ui/src/rpc/bindings
+
+      - name: Configure App Store Connect API key
+        env:
+          KEY_P8: ${{ secrets.APPLE_API_KEY_P8 || secrets.APPLE_NOTARY_KEY_P8 }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID || secrets.APPLE_NOTARY_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APPLE_API_ISSUER || secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEY_P8" || -z "$KEY_ID" || -z "$ISSUER_ID" ]]; then
+            echo "::error::App Store Connect API key secrets are required (APPLE_API_KEY_P8/_ID/APPLE_API_ISSUER or APPLE_NOTARY_KEY_P8/_ID/_ISSUER_ID)"
+            exit 1
+          fi
+          ASC_DIR="$HOME/.appstoreconnect/private_keys"
+          KEY_PATH="$ASC_DIR/AuthKey_${KEY_ID}.p8"
+          mkdir -p "$ASC_DIR"
+          printf '%s' "$KEY_P8" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          {
+            echo "APPLE_API_KEY=${KEY_ID}"
+            echo "APPLE_API_KEY_ID=${KEY_ID}"
+            echo "APPLE_API_ISSUER=${ISSUER_ID}"
+            echo "APPLE_API_KEY_PATH=${KEY_PATH}"
+          } >> "$GITHUB_ENV"
+
+      - name: Install JS workspace dependencies
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile --cwd packages/apps
+          bun install --frozen-lockfile --cwd crates/desktop/ui
+
+      - name: Package signed iOS IPA
+        env:
+          THEUTH_IOS_CLOUD_SIGN: '1'
+          THEUTH_SKIP_BUN_INSTALL: '1'
+          THEUTH_SKIP_TS_BINDINGS: '1'
+        run: ./scripts/package-ios.sh
+
+      - name: Upload iOS IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: crates/desktop/gen/apple/build/arm64/*.ipa
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Upload iOS IPA to TestFlight
+        run: ./scripts/upload-testflight.sh
+
+      - name: Clean up App Store Connect API key
+        if: always()
+        run: rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_"*.p8
 
   docker-images:
     name: Docker (${{ matrix.name }})
