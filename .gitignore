@@ -5,3 +5,4 @@
 .env.signing
 crates/desktop/ui/.link-smoke-identity.json
 deploy/relay/.iroh-relay/
+deploy/relay/k8s/rwx-dev/secret.yaml

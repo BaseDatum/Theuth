@@ -9,6 +9,7 @@ Two processes on `*.theuth.io`, one certificate:
 
 - `compose.yaml` — single host: `theuth-relay` behind Caddy (automatic TLS), `iroh-relay` beside it.
 - `k8s/base` + `k8s/rwx-dev` — kustomize; HAProxy ingress, cert-manager certificate `theuth-io-cert-tls`.
+- The Secret `theuth-relay` (`cookie-secret`, the HMAC key behind the `__Host-link` cookie) is **not** in this repo: create it out of band before the first apply — `kubectl -n theuth create secret generic theuth-relay --from-literal=cookie-secret="$(openssl rand -hex 32)"`. Rotating it drops every existing `__Host-link` cookie; browsers re-fetch on the next page load.
 - `Dockerfile` builds `theuth-relay`; `Dockerfile.iroh-relay` builds the upstream `iroh-relay` binary.
 
 ## theuth relay

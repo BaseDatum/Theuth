@@ -7,7 +7,9 @@ resources:
   - ../base
   - ingress.yaml
   - ingress-iroh.yaml
-  - secret.yaml
+# The Secret `theuth-relay` (key cookie-secret) is created out of band and never committed:
+#   kubectl -n theuth create secret generic theuth-relay --from-literal=cookie-secret="$(openssl rand -hex 32)"
+# Rotating it drops every existing __Host-link cookie; browsers re-fetch on the next page load.
 
 images:
   - name: ghcr.io/skymoore/theuth/relay
