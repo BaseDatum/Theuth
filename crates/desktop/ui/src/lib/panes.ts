@@ -23,7 +23,8 @@ export const INSET_TARGET = '__inset__'
 export type DragPayload =
   | { kind: 'chat'; session: string }
   | { kind: 'view'; path: string; title: string }
-  | { kind: 'tile'; tileKind: string; props: unknown; key?: string; title: string }
+  /** `session`: the chat the tile belongs to (an artifact, a terminal, …: `openTile`'s owner); none for a sidebar tile. */
+  | { kind: 'tile'; tileKind: string; props: unknown; key?: string; title: string; session?: string }
 /** The pane under the pointer and which of its edges (or its panel's tabs) the drop snaps to. */
 export type Target = { session: string; edge: Edge; rect: DOMRect }
 /** A sidebar row (a session, a draft for New chat, an app view or a tile) dragged onto the panes. */
@@ -161,8 +162,9 @@ export function payloadLeafAndSpec(payload: DragPayload): { leaf: string; spec: 
     const props = payload.title ? { path, title: payload.title } : { path }
     return { leaf, spec: tileSpec('view', '', props) }
   }
-  const leaf = tileLeaf(makeTileId(payload.tileKind, '', payload.key ?? ''))
-  return { leaf, spec: tileSpec(payload.tileKind, '', payload.props) }
+  const session = payload.session ?? ''
+  const leaf = tileLeaf(makeTileId(payload.tileKind, session, payload.key ?? ''))
+  return { leaf, spec: tileSpec(payload.tileKind, session, payload.props) }
 }
 
 /** Place any `DragPayload` (chat, standalone view, or standalone tile) at `edge` of `target`. */

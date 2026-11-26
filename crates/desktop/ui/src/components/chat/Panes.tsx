@@ -5,7 +5,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSidebar } from '@/components/ui/sidebar'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { usePressDrag } from '@/hooks/use-press-drag'
+import { type PressDragProps, usePressDrag } from '@/hooks/use-press-drag'
 import { active } from '@/store/engine-scope'
 import { TileHost } from '@/components/tiles/host'
 import { useEngines } from '@/link/engines'
@@ -14,6 +14,7 @@ import {
   CHAT,
   chatLeaves,
   DRAFT_TYPE,
+  type DragPayload,
   hasPendingDrop,
   isDraft,
   isFrame,
@@ -116,6 +117,31 @@ export function useTileDrag(tileKind: string, props: unknown, title: string, key
       if (dropped && hasPendingDrop()) openWorkspaceForDrop(navigate)
     },
   }).props
+}
+
+/**
+ * Drag a chat's tray item — a dash beside the grabber or a tile of the opened tray (an artifact, a terminal, a
+ * whiteboard, the browser, …) — into a pane, as a sidebar row: the same `usePressDrag` gesture (mouse: move; finger:
+ * hold, then move), so it works with a finger on the iPad as with the mouse. `payload` null: the item has no pane form
+ * (a list behind a menu), and nothing is spread. `prepare` runs just before a drop is placed (a web frame is recorded
+ * in its store first, which `payloadLeafAndSpec` reads). A press that became a drag never runs the item's click.
+ */
+export function usePayloadDrag(payload: DragPayload | null, title: string, prepare?: () => void): PressDragProps | Record<string, never> {
+  const navigate = useNavigate()
+  const isMobile = useIsMobile()
+  const { props } = usePressDrag({
+    disabledForFinger: isMobile,
+    onStart: (x, y) => {
+      if (payload) usePanes.getState().startPayloadDrag(payload, title, x, y)
+    },
+    onMove: (x, y) => usePanes.getState().moveDrag(x, y),
+    onEnd(drop) {
+      if (drop && usePanes.getState().drag?.target) prepare?.()
+      const dropped = usePanes.getState().endDrag(drop)
+      if (dropped && hasPendingDrop()) openWorkspaceForDrop(navigate)
+    },
+  })
+  return payload ? props : {}
 }
 
 /** The drag ghost and the snapped drop zone; mounted once in the shell, renders nothing between drags. A drop that

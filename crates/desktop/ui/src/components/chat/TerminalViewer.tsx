@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { openTerminalsTile } from '@/components/tiles/open'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
+import type { PressDragProps } from '@/hooks/use-press-drag'
 import { decode, utf8ToB64 } from '@/lib/base64'
 import { isApple } from '@/lib/chord'
 import { runsElsewhere } from '@/lib/front-door'
@@ -583,7 +584,8 @@ export function useHasTerminals(session: string | null): boolean {
  * header owns; shown once `useHasTerminals`. ⌥-click opens the session's first terminal in its own window instead (the
  * POPOUT ⌥ convention).
  */
-export function TerminalButton({ session, onOpen, className, children }: { session: string; onOpen(): void; className?: string; children: ReactNode }) {
+/** `drag`: the press-drag that opens the terminals in a pane (`usePayloadDrag`), spread on the button. */
+export function TerminalButton({ session, onOpen, className, drag, children }: { session: string; onOpen(): void; className?: string; drag?: PressDragProps | Record<string, never>; children: ReactNode }) {
   const api = useApi()
   if (!useHasTerminals(session)) return null
   const open = (popout: boolean) => {
@@ -594,7 +596,7 @@ export function TerminalButton({ session, onOpen, className, children }: { sessi
       .catch(onOpen)
   }
   return (
-    <button type="button" className={className} aria-label="Terminals" title="Terminals" onClick={(e) => open(e.altKey)}>
+    <button type="button" className={className} aria-label="Terminals" title="Terminals" onClick={(e) => open(e.altKey)} {...drag}>
       {children}
     </button>
   )

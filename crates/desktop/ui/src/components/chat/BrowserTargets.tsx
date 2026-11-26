@@ -8,6 +8,8 @@ import { type WebView, useWebViews } from '@/lib/web-views'
 import { type Entry, useEntries } from '@/store/sessions'
 import { BrowserIndicator } from './Indicators'
 import { openWebView, webCall } from './WebViewCard'
+import { usePayloadDrag } from './Panes'
+import type { TrayDrag } from './tray-drag'
 
 export type BrowserTarget = { kind: 'agent' } | { kind: 'web'; id: string; url: string; title: string }
 
@@ -86,8 +88,10 @@ function TargetIcon({ t, busy, size = 16 }: { t: BrowserTarget; busy: boolean; s
  * The chat's browsers behind one trigger: `children` in a plain button styled by `className` (the tray's Browser tile).
  * One target: a click opens it. Several: a click or a right-click lists them; picking one opens it.
  */
-export function BrowserButton({ targets, busy, onOpen, className, children }: { targets: BrowserTarget[]; busy: boolean; onOpen(t: BrowserTarget): void; className?: string; children: ReactNode }) {
+export function BrowserButton({ targets, busy, onOpen, className, drag, children }: { targets: BrowserTarget[]; busy: boolean; onOpen(t: BrowserTarget): void; className?: string; drag?: TrayDrag; children: ReactNode }) {
   const [menu, setMenu] = useState(false)
+  // One target drags into a pane like its dash (`usePayloadDrag`); a list behind its menu does not.
+  const dragProps = usePayloadDrag(targets.length === 1 && drag ? drag.payload : null, drag?.title ?? '', drag?.prepare)
   const first = targets[0]
   if (!first) return null
   const one = targets.length === 1
@@ -101,7 +105,7 @@ export function BrowserButton({ targets, busy, onOpen, className, children }: { 
         },
       }
   const trigger = (
-    <button type="button" className={className} aria-label={label} title={label} {...handlers}>
+    <button type="button" className={className} aria-label={label} title={label} {...handlers} {...dragProps}>
       {children}
     </button>
   )
