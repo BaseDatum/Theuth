@@ -124,7 +124,8 @@ test('the row exists for an existing session with a reading only (never the draf
   expect(src).toContain("shadow-sm', meta ? 'pt-1' : 'pt-2.5')}")
   expect(src).not.toMatch(/topRow|pickModel/)
   expect(src).toContain("const textMax = meta ? (touch() ? 'max-h-[144px]' : 'max-h-[184px]') : touch() ? 'max-h-[160px]' : 'max-h-[200px]'")
-  expect(src.match(/className=\{cn\(BOX, textMax\)\}/g)).toHaveLength(2)
+  // One textarea (dictation edits in place since bb4f0adc7) takes the max.
+  expect(src.match(/className=\{cn\(BOX, textMax[,)]/g)).toHaveLength(1)
   // A voice note keeps the row (same height, empty): no jump.
   expect(src).toContain('hidden={stage !== \'idle\'}')
 })
