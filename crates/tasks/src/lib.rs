@@ -30,6 +30,7 @@ pub mod escalate;
 pub mod ledger;
 pub mod packet;
 pub mod place;
+pub mod project_tools;
 pub mod rank;
 pub mod rpc_support;
 pub mod store;

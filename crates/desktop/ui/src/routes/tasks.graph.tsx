@@ -26,7 +26,7 @@ function Page() {
   const project = search.project ?? projects[0] ?? ''
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <SectionBand group="agents" />
+      <SectionBand group="projects" />
       {search.project === undefined && loading ? (
         <div className="p-6">
           <Skeleton className="h-8 w-64" />

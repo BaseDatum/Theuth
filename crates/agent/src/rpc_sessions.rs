@@ -109,8 +109,8 @@ pub trait AgentSessionsApi {
     #[method(name = "list_project_styles")]
     async fn list_project_styles(&self) -> RpcResult<Vec<ProjectStyle>>;
     /// Set project `name`'s icon (lucide name) and colour (palette key), both
-    /// allow-listed; both `None` clears the style. No event, like
-    /// `pin_session`: clients refetch `list_project_styles`.
+    /// allow-listed; both `None` clears the style. `ProjectsChanged`
+    /// (topic `agent.projects`) follows.
     #[method(name = "set_project_style")]
     async fn set_project_style(
         &self,
@@ -301,7 +301,9 @@ impl AgentSessionsApiServer for Server {
         icon: Option<String>,
         color: Option<String>,
     ) -> RpcResult<()> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, SetProjectStyle { name, icon, color }).await
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetProjectStyle { name, icon, color }).await?;
+        self.rt.publish(agent::projects::ProjectsChanged {}).await;
+        Ok(())
     }
 }
 

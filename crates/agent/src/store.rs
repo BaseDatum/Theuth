@@ -68,6 +68,7 @@ pub mod endless;
 pub mod harness;
 mod knowledge_harvester;
 mod moved;
+pub mod projects;
 pub mod suffixes;
 pub mod title_guard;
 pub mod turn_usage;
@@ -3894,7 +3895,8 @@ impl Store {
     pub async fn list_project_styles(&self) -> anyhow::Result<Vec<ProjectStyle>> {
         Ok(
             sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-                "SELECT name, icon, color FROM projects ORDER BY name",
+                "SELECT name, icon, color FROM projects \
+                 WHERE icon IS NOT NULL OR color IS NOT NULL ORDER BY name",
             )
             .fetch_all(&self.read)
             .await?
@@ -3905,8 +3907,9 @@ impl Store {
     }
 
     /// Upsert the style of project `name` (the caller normalized the label);
-    /// both `None` deletes the row. Unknown icon or colour keys are an error
-    /// ([`project::validate_style`]).
+    /// both `None` clears it, dropping a pre-223 style-only row (223: a row
+    /// with entity columns stays a project). Unknown icon or colour keys are
+    /// an error ([`project::validate_style`]).
     pub async fn set_project_style(
         &self,
         name: &str,
@@ -3916,10 +3919,23 @@ impl Store {
         crate::project::validate_style(icon, color).map_err(anyhow::Error::msg)?;
         if icon.is_none() && color.is_none() {
             let mut tx = self.begin_write().await?;
-            sqlx::query("DELETE FROM projects WHERE name = ?")
+            let dropped = sqlx::query(
+                "DELETE FROM projects WHERE name = ? AND created_ms IS NULL \
+                 AND description IS NULL AND metadata IS NULL AND status = 'active'",
+            )
+            .bind(name)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if dropped == 0 {
+                sqlx::query(
+                    "UPDATE projects SET icon = NULL, color = NULL, updated_at = ? WHERE name = ?",
+                )
+                .bind(chrono::Utc::now().to_rfc3339())
                 .bind(name)
                 .execute(&mut *tx)
                 .await?;
+            }
             tx.commit().await?;
             return Ok(());
         }

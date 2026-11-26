@@ -10,6 +10,7 @@ import { requirements as notebooksRequirements } from '@/components/notebooks/re
 import { requirements as notesRequirements } from '@/components/notes/requirements'
 import { requirements as routinesRequirements } from '@/components/routines/requirements'
 import { requirements as tasksRequirements } from '@/components/tasks/requirements'
+import { requirements as projectsRequirements } from '@/components/projects/requirements'
 import { requirements as whiteboardRequirements } from '@/components/whiteboard/requirements'
 import { placementsOf, pluginStore } from '@/lib/plugins'
 import { type Requirements, supports } from '@/rpc/discovery'
@@ -43,17 +44,25 @@ const BUILTIN_VIEWS: readonly BuiltinViewSpec[] = [
     required: agentsRequirements,
   },
   {
+    path: '/projects',
+    title: 'Projects',
+    group: 'projects',
+    description: 'Projects grouping chats, tasks, and notes, with description and metadata',
+    detail_template: '/projects/<name>',
+    required: projectsRequirements,
+  },
+  {
     path: '/tasks',
     title: 'Tasks',
-    group: 'agents',
-    description: 'Task board tracking backlog, active work, and reviews',
+    group: 'projects',
+    description: 'Task board of a project tracking backlog, active work, and reviews (?project=<name>)',
     detail_template: '/tasks/<id>',
     required: tasksRequirements,
   },
   {
     path: '/tasks/graph',
     title: 'Task graph',
-    group: 'agents',
+    group: 'projects',
     description: 'Dependency graph view of project tasks',
     required: tasksRequirements,
   },
@@ -202,6 +211,7 @@ const VALID_EXACT_PATHS = new Set<string>([
   '/attention',
   '/agents',
   '/agents/new',
+  '/projects',
   '/tasks',
   '/tasks/graph',
   '/routines',
@@ -225,6 +235,7 @@ const VALID_EXACT_PATHS = new Set<string>([
 ])
 
 const VALID_PARAM_PATTERNS: readonly RegExp[] = [
+  /^\/projects\/[^/]+$/,
   /^\/tasks\/[^/]+$/,
   /^\/notebooks\/[^/]+$/,
   /^\/notes\/[^/]+$/,
@@ -243,7 +254,7 @@ const VALID_PARAM_PATTERNS: readonly RegExp[] = [
 ]
 
 const UNKNOWN_VIEW_HINT =
-  'call pane_list() for available_views (e.g. /tasks, /notebooks, /notes, /knowledge, /agents, /routines, /meetings, /whiteboards, /artifacts, /autoresearch, /skills, /attention, /costs, /settings/appearance)'
+  'call pane_list() for available_views (e.g. /projects, /tasks, /notebooks, /notes, /knowledge, /agents, /routines, /meetings, /whiteboards, /artifacts, /autoresearch, /skills, /attention, /costs, /settings/appearance)'
 
 /**
  * Validate a candidate view path against the app's known routes so agents never open a 404 pane.

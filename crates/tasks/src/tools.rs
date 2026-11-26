@@ -75,6 +75,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>) {
     let _ = reg.ask(RegisterTool(Arc::new(TaskPlaceTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(EscalateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(DecideTool))).await;
+    crate::project_tools::register(reg).await;
 }
 
 fn actor() -> anyhow::Result<ActorRef<Tasks>> {
@@ -192,7 +193,7 @@ pub struct TaskCreateArgs {
     /// the task this one is a part of. Change or clear it later with `task_update`.
     #[serde(default)]
     pub parent: Option<String>,
-    /// Project the task belongs to (a project name as sessions carry it); default: the calling session's.
+    /// Project the task belongs to (a name from `project_list`); default: the calling session's.
     #[serde(default)]
     pub project: Option<String>,
     /// Engine name the work must run on (from `mesh_peers`); leave unset to let theuth place it.
@@ -243,7 +244,7 @@ impl Tool for TaskCreateTool {
     fn description(&self) -> String {
         "Create a task: a first-class record on the board with one owner (an agent or the user), a state \
          (`backlog` by default — not dispatched; `todo` when the user wants it started now: the owner is woken \
-         with reason `assigned`), a project (the same project labels sessions carry; defaults to your session's), \
+         with reason `assigned`), a project (a name from `project_list`; defaults to your session's), \
          an optional reviewer, blockers (ids of the tasks this one waits on — set them at create time), a \
          parent for delegation, and a placement (`where` engine, `harness`). Use it to delegate work to another \
          agent (set `parent` to your current task so the tree shows it), to hand something to the user, or to \
@@ -344,7 +345,7 @@ pub struct TaskInboxArgs {
     /// States to show; default `todo`, `doing`, `blocked`.
     #[serde(default)]
     pub state: Option<Vec<TaskState>>,
-    /// Only tasks in this project; default: every project.
+    /// Only tasks in this project (a name from `project_list`); default: every project.
     #[serde(default)]
     pub project: Option<String>,
 }
@@ -469,7 +470,7 @@ impl Tool for TaskInboxTool {
 /// Arguments for [`TaskWaitingOnUserTool`].
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct TaskWaitingOnUserArgs {
-    /// Only tasks in this project; default: every project.
+    /// Only tasks in this project (a name from `project_list`); default: every project.
     #[serde(default)]
     pub project: Option<String>,
 }

@@ -26,20 +26,31 @@ vi.mock('@/store/connection', async (original) => {
   return { ...m, useConnection: readyConnection(m.createConnection()) }
 })
 
-const render = (group: 'agents' | 'library') => renderToStaticMarkup(createElement(SectionBand, { group }))
+const render = (group: 'agents' | 'projects' | 'library') => renderToStaticMarkup(createElement(SectionBand, { group }))
 const active = (html: string) => [...html.matchAll(/<button[^>]*data-state="active"[^>]*aria-label="([^"]+)"/g)].map((m) => m[1])
 const tabs = (html: string) => html.match(/role="tab"/g)?.length ?? 0
 
-test('agents group: four full-width tabs (Autoresearch after Routines, 140), Tasks active under /tasks/abc, labels hidden below md', () => {
-  env.pathname = '/tasks/abc'
+test('agents group: three full-width tabs (Autoresearch after Routines, 140; Tasks moved to Projects, 223), Routines active under /routines/x, labels hidden below md', () => {
+  env.pathname = '/routines/x'
   const html = render('agents')
-  expect(tabs(html)).toBe(4)
-  expect(active(html)).toEqual(['Tasks'])
+  expect(tabs(html)).toBe(3)
+  expect(active(html)).toEqual(['Routines'])
   expect(html).toContain('title="Autoresearch"')
-  expect(html.match(/<span class="hidden md:inline">/g)?.length).toBe(4)
+  expect(html).not.toContain('title="Tasks"')
+  expect(html.match(/<span class="hidden md:inline">/g)?.length).toBe(3)
   expect(html).toContain('h-[52px]')
   expect(html).not.toContain('@container')
   expect(html).not.toContain('Show sidebar')
+})
+
+test('223 projects group: Projects then Tasks; Tasks active under /tasks/abc, Projects under a project page', () => {
+  env.pathname = '/tasks/abc'
+  const html = render('projects')
+  expect(tabs(html)).toBe(2)
+  expect(active(html)).toEqual(['Tasks'])
+  expect(html.indexOf('title="Projects"')).toBeLessThan(html.indexOf('title="Tasks"'))
+  env.pathname = '/projects/theuth'
+  expect(active(render('projects'))).toEqual(['Projects'])
 })
 
 test('library group: eight tabs (Skills after Knowledge, Sky 2026-11-11; Notebooks after Notes, 144; Whiteboards, 218), Meetings active under /meetings/briefs', () => {
@@ -144,8 +155,8 @@ test('inside a tile, SectionBand suppresses SidebarLead, cornerPad, and data-tau
   env.mac = true
   env.open = false
   env.rail = false
-  const html = renderToStaticMarkup(createElement(InsideTileProvider, null, createElement(SectionBand, { group: 'agents' })))
-  expect(tabs(html)).toBe(4)
+  const html = renderToStaticMarkup(createElement(InsideTileProvider, null, createElement(SectionBand, { group: 'projects' })))
+  expect(tabs(html)).toBe(2)
   expect(active(html)).toEqual(['Tasks'])
   expect(html).not.toContain('data-tauri-drag-region')
   expect(html).not.toContain('pl-20')

@@ -17,6 +17,8 @@ afterEach(() => {
 test('viewTitle derives clean human titles from route paths and respects explicit overrides', () => {
   expect(viewTitle('/tasks')).toBe('Tasks')
   expect(viewTitle('/tasks/t-1')).toBe('Tasks')
+  expect(viewTitle('/projects')).toBe('Projects')
+  expect(viewTitle('/projects/theuth')).toBe('Projects')
   expect(viewTitle('/notebooks')).toBe('Notebooks')
   expect(viewTitle('/notes')).toBe('Notes')
   expect(viewTitle('/agents')).toBe('Agents')
@@ -215,6 +217,7 @@ test('availableViews lists built-in views with detail_templates and serializeLay
   for (const p of [
     '/attention',
     '/agents',
+    '/projects',
     '/tasks',
     '/tasks/graph',
     '/routines',
@@ -248,6 +251,8 @@ test('availableViews lists built-in views with detail_templates and serializeLay
 
 test('validateViewPath accepts known top-level and parameterized routes and rejects unknown paths with a hint', () => {
   for (const valid of [
+    '/projects',
+    '/projects/my%20app',
     '/tasks',
     '/tasks/t-123',
     '/tasks/graph',

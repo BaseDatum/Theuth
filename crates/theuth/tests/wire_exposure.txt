@@ -62,6 +62,7 @@ agent.notebook-ask#NotebookAsk public
 agent.peer-delivered#PeerDelivered public
 agent.peer-delivered conditional: text and files removed when origin.contact_mode is set (b: a contact's message, 186)
 agent.peer-message#PeerMessageChanged public
+agent.projects#ProjectsChanged public
 agent.suffixes#SuffixesChanged public
 app.calls#AppCallChanged public
 artifact.diff-view-opened#DiffViewOpened public

@@ -10,7 +10,7 @@ import { requirements as costsRequirements } from '@/components/costs/requiremen
 import { broadcastRequirements } from '@/components/chat/requirements'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { AudioLines, Bot, ChartColumn, Inbox, Library, Megaphone, PanelLeft, Plus, Settings, SquarePen, StickyNote, Users } from 'lucide-react'
+import { AudioLines, Bot, ChartColumn, FolderKanban, Inbox, Library, Megaphone, PanelLeft, Plus, Settings, SquarePen, StickyNote, Users } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
@@ -82,6 +82,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   const discovery = useConnection(s => s.discovery)
   const agentsTab = GROUPS.agents.find(tab => supports(discovery, tab.required))
   const libraryTab = GROUPS.library.find(tab => supports(discovery, tab.required))
+  // 223: Projects, or the task board alone on an engine without the project methods.
+  const projectsTab = GROUPS.projects.find(tab => supports(discovery, tab.required))
   const navigate = useNavigate()
   const { isMobile, setOpenMobile, toggleSidebar, state } = useSidebar()
   // Desktop collapsed: the icon rail (a phone keeps the full Sheet).
@@ -131,6 +133,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   const dragInbox = useViewDrag('/attention', 'Inbox')
   const dragAgents = useViewDrag(agentsTab?.to ?? '/agents', 'Agents')
   const dragLibrary = useViewDrag(libraryTab?.to ?? '/artifacts', 'Library')
+  const dragProjects = useViewDrag(projectsTab?.to ?? '/projects', 'Projects')
   const dragCosts = useViewDrag('/costs', 'Costs')
   const dragMeeting = useViewDrag('/meetings/new', 'Meeting')
   const dragSettings = useViewDrag('/settings/appearance', 'Settings')
@@ -254,6 +257,13 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               <RailTip label="Agents">
                 <Link to={agentsTab.to} aria-label="Agents" className={RAIL_ITEM} data-active={section === 'agents' || undefined} data-tour="nav-agents" {...dragAgents}>
                   <Bot />
+                </Link>
+              </RailTip>
+            )}
+            {projectsTab && (
+              <RailTip label="Projects">
+                <Link to={projectsTab.to} aria-label="Projects" className={RAIL_ITEM} data-active={section === 'projects' || undefined} data-tour="nav-projects" {...dragProjects}>
+                  <FolderKanban />
                 </Link>
               </RailTip>
             )}
@@ -418,6 +428,14 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </Link>
             </SidebarMenuButton>
             <SidebarPopoutButton target={{ kind: 'page', path: agentsTab.to }} className="top-2 right-2" />
+          </SidebarMenuItem>)}
+          {projectsTab && (<SidebarMenuItem className="group/popout-row" data-tour="nav-projects">
+            <SidebarMenuButton asChild isActive={section === 'projects'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
+              <Link to={projectsTab.to} {...dragProjects}>
+                <FolderKanban /> Projects
+              </Link>
+            </SidebarMenuButton>
+            <SidebarPopoutButton target={{ kind: 'page', path: projectsTab.to }} className="top-2 right-2" />
           </SidebarMenuItem>)}
           {/* Artifacts first (Sky, 2026-09-27): the most-opened Library entry; `/library` redirects there too. */}
           {libraryTab && (<SidebarMenuItem className="group/popout-row" data-tour="nav-library">

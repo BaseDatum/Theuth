@@ -574,6 +574,61 @@ pub async fn register_post(reg: &ActorRef<ToolRegistry>, store: Arc<Store>) {
     let _ = reg
         .ask(RegisterTool(Arc::new(MeetingListTool(store))))
         .await;
+    agent::projects::register_label_source(
+        agent::projects::LabelStore::Meetings,
+        Arc::new(MeetingLabels),
+    );
+}
+
+/// 223: meetings' project labels for `projects_list`, cleared by `project_delete` through the
+/// actor's `meeting_set_project` path (manifest, index and the remembered event project).
+struct MeetingLabels;
+
+impl MeetingLabels {
+    async fn meetings(
+        project: Option<&str>,
+    ) -> anyhow::Result<(ActorRef<Meeting>, Vec<crate::MeetingSummary>)> {
+        let me = ActorRef::<Meeting>::lookup(crate::MEETING_ACTOR)
+            .ok()
+            .flatten()
+            .ok_or_else(|| anyhow::anyhow!("meeting is not running"))?;
+        let list = me
+            .ask(crate::ListMeetings {
+                limit: Some(u32::MAX),
+                project: project.map(str::to_owned),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok((me, list))
+    }
+}
+
+#[async_trait::async_trait]
+impl agent::projects::LabelSource for MeetingLabels {
+    async fn labels(&self) -> anyhow::Result<Vec<String>> {
+        let (_, list) = Self::meetings(None).await?;
+        Ok(list.into_iter().filter_map(|m| m.project).collect())
+    }
+
+    async fn detach(&self, name: &str) -> anyhow::Result<u32> {
+        let (me, list) = Self::meetings(Some(name)).await?;
+        let mut n = 0;
+        for m in list {
+            let r = me
+                .ask(crate::calendar::prebrief::SetProject {
+                    meeting: m.id,
+                    project: None,
+                })
+                .await;
+            match r {
+                Ok(_) => n += 1,
+                Err(e) => {
+                    tracing::warn!(meeting = %m.id, project = name, "project_delete: meeting label not cleared: {e}")
+                }
+            }
+        }
+        Ok(n)
+    }
 }
 
 // ---------------------------------------------------------------------------

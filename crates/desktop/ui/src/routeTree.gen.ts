@@ -43,6 +43,8 @@ import { Route as MeetingsBriefsRouteImport } from './routes/meetings.briefs'
 import { Route as MeetingsNewRouteImport } from './routes/meetings.new'
 import { Route as NotebooksIdRouteImport } from './routes/notebooks_.$id'
 import { Route as NotesIdRouteImport } from './routes/notes_.$id'
+import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
+import { Route as ProjectsNameRouteImport } from './routes/projects.$name'
 import { Route as RoutinesIndexRouteImport } from './routes/routines.index'
 import { Route as RoutinesNewRouteImport } from './routes/routines.new'
 import { Route as SettingsIndexRouteImport } from './routes/settings.index'
@@ -236,6 +238,16 @@ const NotesIdRoute = NotesIdRouteImport.update({
   path: '/notes/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
+  id: '/projects/',
+  path: '/projects/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsNameRoute = ProjectsNameRouteImport.update({
+  id: '/projects/$name',
+  path: '/projects/$name',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RoutinesIndexRoute = RoutinesIndexRouteImport.update({
   id: '/routines/',
   path: '/routines/',
@@ -379,6 +391,7 @@ export interface FileRoutesByFullPath {
   '/meetings/new': typeof MeetingsNewRoute
   '/notebooks/$id': typeof NotebooksIdRoute
   '/notes/$id': typeof NotesIdRoute
+  '/projects/$name': typeof ProjectsNameRoute
   '/routines/new': typeof RoutinesNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/skills/$name': typeof SkillsNameRoute
@@ -392,6 +405,7 @@ export interface FileRoutesByFullPath {
   '/agents/': typeof AgentsIndexRoute
   '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
+  '/projects/': typeof ProjectsIndexRoute
   '/routines/': typeof RoutinesIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/skills/': typeof SkillsIndexRoute
@@ -436,6 +450,7 @@ export interface FileRoutesByTo {
   '/meetings/new': typeof MeetingsNewRoute
   '/notebooks/$id': typeof NotebooksIdRoute
   '/notes/$id': typeof NotesIdRoute
+  '/projects/$name': typeof ProjectsNameRoute
   '/routines/new': typeof RoutinesNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/skills/$name': typeof SkillsNameRoute
@@ -449,6 +464,7 @@ export interface FileRoutesByTo {
   '/agents': typeof AgentsIndexRoute
   '/attention': typeof AttentionIndexRoute
   '/meetings': typeof MeetingsIndexRoute
+  '/projects': typeof ProjectsIndexRoute
   '/routines': typeof RoutinesIndexRoute
   '/settings': typeof SettingsIndexRoute
   '/skills': typeof SkillsIndexRoute
@@ -495,6 +511,7 @@ export interface FileRoutesById {
   '/meetings/new': typeof MeetingsNewRoute
   '/notebooks_/$id': typeof NotebooksIdRoute
   '/notes_/$id': typeof NotesIdRoute
+  '/projects/$name': typeof ProjectsNameRoute
   '/routines/new': typeof RoutinesNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/skills/$name': typeof SkillsNameRoute
@@ -508,6 +525,7 @@ export interface FileRoutesById {
   '/agents/': typeof AgentsIndexRoute
   '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
+  '/projects/': typeof ProjectsIndexRoute
   '/routines/': typeof RoutinesIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/skills/': typeof SkillsIndexRoute
@@ -555,6 +573,7 @@ export interface FileRouteTypes {
     | '/meetings/new'
     | '/notebooks/$id'
     | '/notes/$id'
+    | '/projects/$name'
     | '/routines/new'
     | '/settings/$tab'
     | '/skills/$name'
@@ -568,6 +587,7 @@ export interface FileRouteTypes {
     | '/agents/'
     | '/attention/'
     | '/meetings/'
+    | '/projects/'
     | '/routines/'
     | '/settings/'
     | '/skills/'
@@ -612,6 +632,7 @@ export interface FileRouteTypes {
     | '/meetings/new'
     | '/notebooks/$id'
     | '/notes/$id'
+    | '/projects/$name'
     | '/routines/new'
     | '/settings/$tab'
     | '/skills/$name'
@@ -625,6 +646,7 @@ export interface FileRouteTypes {
     | '/agents'
     | '/attention'
     | '/meetings'
+    | '/projects'
     | '/routines'
     | '/settings'
     | '/skills'
@@ -670,6 +692,7 @@ export interface FileRouteTypes {
     | '/meetings/new'
     | '/notebooks_/$id'
     | '/notes_/$id'
+    | '/projects/$name'
     | '/routines/new'
     | '/settings/$tab'
     | '/skills/$name'
@@ -683,6 +706,7 @@ export interface FileRouteTypes {
     | '/agents/'
     | '/attention/'
     | '/meetings/'
+    | '/projects/'
     | '/routines/'
     | '/settings/'
     | '/skills/'
@@ -724,6 +748,7 @@ export interface RootRouteChildren {
   MeetingsNewRoute: typeof MeetingsNewRoute
   NotebooksIdRoute: typeof NotebooksIdRoute
   NotesIdRoute: typeof NotesIdRoute
+  ProjectsNameRoute: typeof ProjectsNameRoute
   RoutinesNewRoute: typeof RoutinesNewRoute
   SettingsTabRoute: typeof SettingsTabRoute
   SkillsNameRoute: typeof SkillsNameRoute
@@ -736,6 +761,7 @@ export interface RootRouteChildren {
   WhiteboardsIdRoute: typeof WhiteboardsIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
+  ProjectsIndexRoute: typeof ProjectsIndexRoute
   RoutinesIndexRoute: typeof RoutinesIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
   SkillsIndexRoute: typeof SkillsIndexRoute
@@ -990,6 +1016,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NotesIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/projects/': {
+      id: '/projects/'
+      path: '/projects'
+      fullPath: '/projects/'
+      preLoaderRoute: typeof ProjectsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/projects/$name': {
+      id: '/projects/$name'
+      path: '/projects/$name'
+      fullPath: '/projects/$name'
+      preLoaderRoute: typeof ProjectsNameRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/routines/': {
       id: '/routines/'
       path: '/routines'
@@ -1226,6 +1266,7 @@ const rootRouteChildren: RootRouteChildren = {
   MeetingsNewRoute: MeetingsNewRoute,
   NotebooksIdRoute: NotebooksIdRoute,
   NotesIdRoute: NotesIdRoute,
+  ProjectsNameRoute: ProjectsNameRoute,
   RoutinesNewRoute: RoutinesNewRoute,
   SettingsTabRoute: SettingsTabRoute,
   SkillsNameRoute: SkillsNameRoute,
@@ -1238,6 +1279,7 @@ const rootRouteChildren: RootRouteChildren = {
   WhiteboardsIdRoute: WhiteboardsIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,
+  ProjectsIndexRoute: ProjectsIndexRoute,
   RoutinesIndexRoute: RoutinesIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
   SkillsIndexRoute: SkillsIndexRoute,

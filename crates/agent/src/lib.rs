@@ -87,6 +87,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
         rpc_prompts::rpc_module(server.clone()),
         rpc_suffixes::rpc_module(server.clone()),
         rpc_whiteboards::rpc_module(server.clone()),
+        projects::rpc_module(server.clone()),
         rpc_graph::rpc_module(server.clone()),
         rpc_turns::rpc_module(server),
     ]).expect("agent RPC composition")
@@ -123,6 +124,7 @@ pub mod overviews;
 pub mod peers;
 pub mod polish;
 pub mod project;
+pub mod projects;
 /// System prompt section listing, overrides, and reset helpers.
 pub mod prompt_sections;
 pub mod providers;
@@ -4858,6 +4860,7 @@ pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<EndlessProgress>().await?;
     rt.register_wire_event::<CostCubeChanged>().await?;
     rt.register_wire_event::<rpc_suffixes::SuffixesChanged>().await?;
+    rt.register_wire_event::<projects::ProjectsChanged>().await?;
     Ok(())
 }
 
