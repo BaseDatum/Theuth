@@ -590,6 +590,8 @@ fn overlay_ensure_on_main(app: &AppHandle) -> anyhow::Result<Vec<String>> {
                 // `/island` the same way.
                 let url = WebviewUrl::App(format!("/overlay?display={n}").into());
                 let win = WebviewWindowBuilder::new(app, &label, url)
+                    // Unnamed, Tauri calls it "Tauri App" (Window menu, Mission Control).
+                    .title("Overlay — theuth")
                     .transparent(true)
                     .decorations(false)
                     .shadow(false)

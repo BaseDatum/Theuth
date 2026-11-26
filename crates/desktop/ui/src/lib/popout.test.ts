@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { type PopoutTarget, TILE_STASH, artifactsRail, canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl, soloPopout, stashTileProps, tileProps, newChatPopout } from './popout'
+import { type PopoutTarget, TILE_STASH, artifactsRail, canPopout, noteOpenMode, popoutLabel, popoutTitle, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl, soloPopout, stashTileProps, tileProps, newChatPopout } from './popout'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -310,4 +310,16 @@ test("a draft pane pops out as a New chat window of its own, keyed on the draft,
   expect(popoutUrl(preset)).toBe('/new?project=my%20app&window=popout-page-new_project_my_20app-0f1e2d3c')
   // The window is a page window at /new (the preset rides the URL, the router reads it).
   expect(popoutTarget(popoutUrl(preset))).toEqual({ kind: 'page', path: '/new' })
+})
+
+test('a window opens named after its subject or kind, never left to the host default', () => {
+  expect(popoutTitle({ kind: 'page', path: '/projects' })).toBe('Projects')
+  expect(popoutTitle({ kind: 'page', path: '/attention' })).toBe('Inbox')
+  expect(popoutTitle(newChatPopout('draft:0f1e2d3c-aaaa', 'my app'))).toBe('New chat')
+  expect(popoutTitle({ kind: 'file', session: 's', path: '/repo/src/main.rs', line: 3 })).toBe('main.rs')
+  expect(popoutTitle({ kind: 'web', id: 'w', url: 'https://x.dev', title: ' Docs ' })).toBe('Docs')
+  expect(popoutTitle({ kind: 'web', id: 'w', url: 'https://x.dev', title: '' })).toBe('Web')
+  expect(popoutTitle({ kind: 'vm', name: 'sandbox-1' })).toBe('sandbox-1')
+  expect(popoutTitle({ kind: 'chat', session: 'abc' })).toBe('Chat')
+  expect(popoutTitle({ kind: 'tile', tile: 'diagram', session: 's', props: {} })).toBe('Diagram')
 })

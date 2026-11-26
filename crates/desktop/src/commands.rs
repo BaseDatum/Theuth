@@ -48,13 +48,49 @@ pub fn pasteboard_clear_if(count: i64) -> bool {
 #[cfg(desktop)]
 pub const POPOUT_PREFIX: &str = "popout-";
 
+/// What every window but main is called after: `"<content> — theuth"`.
+#[cfg(desktop)]
+const APP_NAME: &str = "theuth";
+
+/// The native title (title bar, Window menu, Dock menu, Windows taskbar) for a window showing `content`: `None` while
+/// there is nothing to name yet — an empty `document.title`, or the URL WebView2 reports in place of a missing one —
+/// so the window keeps the title it has rather than falling back to Tauri's default ("Tauri App").
+#[cfg(desktop)]
+pub(crate) fn window_title(content: &str) -> Option<String> {
+    let content = content.trim();
+    let url = content.contains("window=popout-")
+        || [
+            "tauri://",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "tauri.localhost",
+            "http://localhost:1420",
+        ]
+        .iter()
+        .any(|p| content.starts_with(p));
+    if content.is_empty() || url {
+        return None;
+    }
+    if content == APP_NAME || content.ends_with(&format!(" — {APP_NAME}")) {
+        return Some(content.to_owned());
+    }
+    Some(format!("{content} — {APP_NAME}"))
+}
+
 /// Open `url` (an app route with `?window=<label>`) in its own window, or focus the window already showing it.
 /// Size and position come back per label from `tauri-plugin-window-state` once the window was closed once.
 /// Notes (and a meeting's note pane) open portrait, 880×1000 — the 800 px sheet plus the canvas padding, and a
 /// height most laptop screens still fit; everything else opens 960×720.
+/// `title` (`popoutTitle` in `ui/src/lib/popout.ts`) names the window until its page sets `document.title`, which
+/// it follows from then on; both go through [`window_title`].
 #[cfg(desktop)]
 #[tauri::command]
-pub fn open_window(app: AppHandle, label: String, url: String) -> Result<(), String> {
+pub fn open_window(
+    app: AppHandle,
+    label: String,
+    url: String,
+    title: Option<String>,
+) -> Result<(), String> {
     if !label.starts_with(POPOUT_PREFIX) {
         return Err(format!("window label must start with `{POPOUT_PREFIX}`"));
     }
@@ -78,13 +114,20 @@ pub fn open_window(app: AppHandle, label: String, url: String) -> Result<(), Str
         } else {
             (960.0, 720.0)
         };
+    let initial = title
+        .as_deref()
+        .and_then(window_title)
+        .unwrap_or_else(|| APP_NAME.to_owned());
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+        .title(initial)
         .background_color(crate::page_background(dark))
         .disable_drag_drop_handler()
         .inner_size(w, h)
         .min_inner_size(480.0, 360.0)
         .on_document_title_changed(|win, title| {
-            let _ = win.set_title(&title);
+            if let Some(title) = window_title(&title) {
+                let _ = win.set_title(&title);
+            }
         })
         .build()
         .map(drop)
@@ -187,4 +230,40 @@ async fn blocking<T: Send + 'static>(
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("{e:#}"))
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::window_title;
+
+    #[test]
+    fn a_window_is_named_after_its_content_then_the_app() {
+        assert_eq!(
+            window_title("Projects").as_deref(),
+            Some("Projects — theuth")
+        );
+        assert_eq!(
+            window_title("  fix the build  ").as_deref(),
+            Some("fix the build — theuth")
+        );
+        // Already named: not twice.
+        assert_eq!(
+            window_title("Notes — theuth").as_deref(),
+            Some("Notes — theuth")
+        );
+        assert_eq!(window_title("theuth").as_deref(), Some("theuth"));
+    }
+
+    #[test]
+    fn nothing_to_name_keeps_the_current_title() {
+        assert_eq!(window_title(""), None);
+        assert_eq!(window_title("   "), None);
+        // WebView2 reports the URL while the page has no `<title>`.
+        assert_eq!(
+            window_title("http://tauri.localhost/c/abc?window=popout-chat-abc"),
+            None
+        );
+        assert_eq!(window_title("tauri.localhost/notes/d1"), None);
+        assert_eq!(window_title("tauri://localhost/c/abc"), None);
+    }
 }

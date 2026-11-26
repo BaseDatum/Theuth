@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { container } from '@/lib/platform'
+import { viewTitle } from '@/lib/view-title'
 import { isTauri } from '@/lib/tauri'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 
@@ -279,10 +280,32 @@ export function popoutSize(t: PopoutTarget, screen: { availWidth: number; availH
   return { width: Math.min(1100, screen.availWidth), height: Math.min(720, screen.availHeight) }
 }
 
+/** The title `t`'s window opens with, before its page sets `document.title` (the host appends " — theuth" to both, and
+ * keeps this one while the page's title is still empty): the subject when the target names it, else its kind. */
+export function popoutTitle(t: PopoutTarget): string {
+  switch (t.kind) {
+    case 'chat': return 'Chat'
+    case 'artifact': return 'Artifact'
+    case 'note': return 'Note'
+    case 'notebook': return 'Notebook'
+    case 'meeting': return 'Meeting'
+    case 'meeting-note': return 'Meeting note'
+    case 'pty': return 'Terminal'
+    case 'codemap': return 'CodeMap'
+    case 'talk': return 'Talk'
+    case 'vm': return t.name
+    case 'page': return t.path.split(/[?#]/)[0] === '/new' ? 'New chat' : viewTitle(t.path)
+    case 'web': return t.title.trim() || 'Web'
+    case 'file': return t.path.split(/[\\/]/).filter(Boolean).pop() ?? 'File'
+    case 'diff': return 'Diff'
+    case 'tile': return t.tile.charAt(0).toUpperCase() + t.tile.slice(1)
+  }
+}
+
 /** Open `t` in its own window (or focus it); a browser gets a named `window.open`. */
 export function openPopout(t: PopoutTarget): Promise<void> {
   stashTileProps(t)
-  if (isTauri()) return invoke<void>('open_window', { label: popoutLabel(t), url: popoutUrl(t) })
+  if (isTauri()) return invoke<void>('open_window', { label: popoutLabel(t), url: popoutUrl(t), title: popoutTitle(t) })
   const size = popoutSize(t, window.screen)
   if (size) window.open(popoutUrl(t), popoutLabel(t), `width=${size.width},height=${size.height}`)
   else window.open(popoutUrl(t), popoutLabel(t))
