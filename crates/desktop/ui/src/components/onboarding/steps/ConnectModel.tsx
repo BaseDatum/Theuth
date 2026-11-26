@@ -142,6 +142,8 @@ function Subscriptions({ login: state, setLogin }: { login: Login; setLogin(f: (
   const logins = useQuery({ enabled: canList, queryKey: queryKeys.logins, queryFn: () => api.list_logins() })
   const { pending, failed } = state
   const [more, setMore] = useState(false)
+  // A Cancel still in flight: Sign in waits for it, or the engine could end the new sign-in instead of the old one.
+  const cancelling = useRef<Promise<unknown>>(Promise.resolve())
   if (!canLogin) return <Note>This engine cannot sign in to subscriptions. Use an API key or a local model instead.</Note>
   // An engine that lists its logins offers only those; one that does not gets the known ones.
   const known = logins.data ? new Set(logins.data.map((l) => l.name)) : null
@@ -153,11 +155,18 @@ function Subscriptions({ login: state, setLogin }: { login: Login; setLogin(f: (
     const signIn = async () => {
       setLogin(() => ({ pending: { ns: s.ns, url: null }, failed: null }))
       try {
+        await cancelling.current
         const url = await api.login(s.ns)
         setLogin((l) => (l.pending?.ns === s.ns ? { ...l, pending: { ns: s.ns, url } } : l))
       } catch (e) {
         setLogin((l) => (l.pending?.ns === s.ns ? { pending: null, failed: { ns: s.ns, message: errorText(e) } } : l))
       }
+    }
+    // The engine ends the sign-in and frees its callback port, so Sign in works again at once (an older engine
+    // without `cancel_login` keeps the port until the sign-in times out).
+    const cancel = () => {
+      setLogin(() => ({ pending: null, failed: null }))
+      cancelling.current = api.cancel_login(s.ns).catch(() => undefined)
     }
     return (
       <div key={s.ns} className={`${CARD} flex flex-col gap-3 p-4 hover:bg-layer-2`}>
@@ -174,7 +183,7 @@ function Subscriptions({ login: state, setLogin }: { login: Login; setLogin(f: (
             // The browser may be closed or the sign-in abandoned: the wait must always have a way out.
             <span className="flex items-center gap-2">
               <LoaderCircle className="size-4 animate-spin text-fg-secondary motion-reduce:animate-none" aria-hidden />
-              <Button variant="ghost" onClick={() => setLogin(() => ({ pending: null, failed: null }))} aria-label={`Cancel sign-in: ${s.label}`}>
+              <Button variant="ghost" onClick={cancel} aria-label={`Cancel sign-in: ${s.label}`}>
                 Cancel
               </Button>
             </span>
