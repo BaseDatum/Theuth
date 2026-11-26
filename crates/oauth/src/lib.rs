@@ -1,7 +1,8 @@
 //! OAuth login plumbing shared by the agent (provider logins) and the tools
 //! plugin (MCP server logins); design doc 05.
 //!
-//! - [`callback`]: one-shot loopback redirect listener.
+//! - [`callback`]: one-shot loopback redirect listener, one per port.
+//! - [`Logins`]: the login tasks waiting on a browser, one per provider or server.
 //! - [`pkce`]: S256 verifier/challenge + CSRF state.
 //! - [`Provider`] / [`PROVIDERS`]: authorization-code providers as data.
 //! - [`Store`]: grants as vault rows `oauth/<ns>` through [`Grants`] (67 §5.4;
@@ -15,10 +16,11 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -27,7 +29,9 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpSocket};
+use tokio::sync::{Notify, oneshot};
+use tokio::task::JoinHandle;
 
 /// How long a started login waits for the browser.
 pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
@@ -57,50 +61,229 @@ pub fn set_hub(hub: bool) {
     HUB.store(hub, Ordering::Relaxed);
 }
 
+/// How a [`callback`] wait ends when a newer [`callback`] takes its port: the error starts with this.
+pub const CANCELLED: &str = "sign-in cancelled";
+
+/// How long a new [`callback`] waits for the one it replaces to close its listener.
+const RELEASE_WAIT: Duration = Duration::from_secs(5);
+
+/// The loopback listeners waiting for a browser, by port: the process-wide record a new
+/// [`callback`] on a taken port uses to end the old wait and see its socket closed.
+static LISTENING: LazyLock<Mutex<HashMap<u16, Holder>>> = LazyLock::new(Mutex::default);
+static NEXT_LISTENER: AtomicU64 = AtomicU64::new(0);
+
+fn listening() -> MutexGuard<'static, HashMap<u16, Holder>> {
+    LISTENING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One [`LISTENING`] entry: how to end its wait, and when its socket is closed.
+struct Holder {
+    id: u64,
+    cancel: Arc<Notify>,
+    closed: oneshot::Receiver<()>,
+}
+
+/// The listener of one [`callback`]: closing it on drop (success, error, timeout, cancel, or the
+/// future dropped unpolled) then signals [`Holder::closed`] and clears its [`LISTENING`] entry.
+struct Listening {
+    listener: Option<TcpListener>,
+    port: u16,
+    id: u64,
+    /// Dropped after `listener` (in `drop`), so its receiver resolves once the port is free.
+    _closed: oneshot::Sender<()>,
+}
+
+impl Drop for Listening {
+    fn drop(&mut self) {
+        drop(self.listener.take());
+        let mut map = listening();
+        if map.get(&self.port).is_some_and(|h| h.id == self.id) {
+            map.remove(&self.port);
+        }
+    }
+}
+
+/// `127.0.0.1:port` with `SO_REUSEADDR` (not on Windows, where it lets another socket share a
+/// bound port), so the closed connections of the last login, in `TIME_WAIT`, never block a rebind.
+/// Errors name the address; a port held by another program says so.
+fn bind(port: u16) -> std::io::Result<TcpListener> {
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let listen = || {
+        let socket = TcpSocket::new_v4()?;
+        #[cfg(not(windows))]
+        socket.set_reuseaddr(true)?;
+        socket.bind(addr)?;
+        socket.listen(16)
+    };
+    listen().map_err(|e| {
+        let why = match e.kind() {
+            std::io::ErrorKind::AddrInUse => format!(
+                "{addr} is in use by another program; quit it (or finish its sign-in), then try again"
+            ),
+            _ => format!("cannot listen on {addr}: {e}"),
+        };
+        std::io::Error::new(e.kind(), why)
+    })
+}
+
 /// Bind `127.0.0.1:port` (0 = ephemeral), serve exactly one redirect, reply
 /// with a "you can close this tab" page. Returns the bound port and a future
 /// resolving to the full redirect URL (`http://127.0.0.1:<port>/path?code=…`).
 /// Requests without a query string (favicon probes) are answered 404 and
 /// ignored. The caller owns the deadline.
+///
+/// One wait per port in this process: a callback still waiting on `port` is ended first (its
+/// future resolves `Err` starting with [`CANCELLED`]) and its listener closed before binding.
+/// The listener closes whenever the future completes or is dropped.
 pub async fn callback(
     port: u16,
 ) -> std::io::Result<(
     u16,
     impl Future<Output = Result<String, String>> + Send + 'static,
 )> {
-    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+    let previous = (port != 0).then(|| listening().remove(&port)).flatten();
+    if let Some(old) = previous {
+        old.cancel.notify_one();
+        // `Err` = closed: the sender is dropped right after the listener.
+        let _ = tokio::time::timeout(RELEASE_WAIT, old.closed).await;
+    }
+    let listener = bind(port)?;
     let port = listener.local_addr()?.port();
+    let id = NEXT_LISTENER.fetch_add(1, Ordering::Relaxed);
+    let cancel = Arc::new(Notify::new());
+    let (closed_tx, closed) = oneshot::channel();
+    listening().insert(
+        port,
+        Holder {
+            id,
+            cancel: cancel.clone(),
+            closed,
+        },
+    );
+    let held = Listening {
+        listener: Some(listener),
+        port,
+        id,
+        _closed: closed_tx,
+    };
     Ok((port, async move {
-        loop {
-            let (mut sock, _) = listener.accept().await.map_err(|e| e.to_string())?;
-            let mut head = Vec::new();
-            let mut buf = [0u8; 1024];
-            while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() < 16 * 1024 {
-                match sock.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => head.extend_from_slice(&buf[..n]),
-                }
-            }
-            let head = String::from_utf8_lossy(&head);
-            let target = head.split_whitespace().nth(1).unwrap_or("/").to_owned();
-            let (status, page) = if !target.contains('?') {
-                ("404 Not Found", Cow::Borrowed(""))
-            } else if target.contains("error=") {
-                ("400 Bad Request", Cow::Owned(callback_page(false)))
-            } else {
-                ("200 OK", Cow::Owned(callback_page(true)))
-            };
-            let resp = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
-                page.len()
-            );
-            let _ = sock.write_all(resp.as_bytes()).await;
-            let _ = sock.shutdown().await;
-            if target.contains('?') {
-                return Ok(format!("http://127.0.0.1:{port}{target}"));
-            }
+        let Some(listener) = held.listener.as_ref() else {
+            unreachable!("the listener is only taken on drop")
+        };
+        tokio::select! {
+            () = cancel.notified() => Err(format!("{CANCELLED}: another sign-in took 127.0.0.1:{port}")),
+            back = serve(listener, port) => back,
         }
     }))
+}
+
+/// The accept loop of [`callback`]: the first request with a query is the redirect.
+async fn serve(listener: &TcpListener, port: u16) -> Result<String, String> {
+    loop {
+        let (mut sock, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        let mut head = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() < 16 * 1024 {
+            match sock.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => head.extend_from_slice(&buf[..n]),
+            }
+        }
+        let head = String::from_utf8_lossy(&head);
+        let target = head.split_whitespace().nth(1).unwrap_or("/").to_owned();
+        let (status, page) = if !target.contains('?') {
+            ("404 Not Found", Cow::Borrowed(""))
+        } else if target.contains("error=") {
+            ("400 Bad Request", Cow::Owned(callback_page(false)))
+        } else {
+            ("200 OK", Cow::Owned(callback_page(true)))
+        };
+        let resp = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        let _ = sock.write_all(resp.as_bytes()).await;
+        let _ = sock.shutdown().await;
+        if target.contains('?') {
+            return Ok(format!("http://127.0.0.1:{port}{target}"));
+        }
+    }
+}
+
+/// Login tasks waiting on a browser, at most one per key (a provider or an MCP server name).
+/// A cancelled or replaced login is aborted (its listener closes as its future drops) and never
+/// reports; dropping the last clone aborts them all.
+#[derive(Clone, Default)]
+pub struct Logins(Arc<LoginTasks>);
+
+#[derive(Default)]
+struct LoginTasks {
+    next: AtomicU64,
+    tasks: Mutex<HashMap<String, (u64, JoinHandle<()>)>>,
+}
+
+impl LoginTasks {
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, (u64, JoinHandle<()>)>> {
+        self.tasks.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Drop for LoginTasks {
+    fn drop(&mut self) {
+        let tasks = self.tasks.get_mut().unwrap_or_else(PoisonError::into_inner);
+        for (_, (_, task)) in tasks.drain() {
+            task.abort();
+        }
+    }
+}
+
+impl Logins {
+    /// End `key`'s login if one waits, and wait until its task is gone (its listener closed).
+    /// `true` when one was waiting.
+    pub async fn cancel(&self, key: &str) -> bool {
+        let Some((_, task)) = self.0.lock().remove(key) else {
+            return false;
+        };
+        task.abort();
+        let _ = task.await;
+        true
+    }
+
+    /// Run `login` as `key`'s login, aborting any other one of `key`; `done` gets its outcome
+    /// unless it was cancelled or replaced first. [`Logins::cancel`] `key` before binding a
+    /// new login's port, so the old listener is closed by then.
+    pub fn spawn<T, D>(
+        &self,
+        key: String,
+        login: impl Future<Output = T> + Send + 'static,
+        done: impl FnOnce(T) -> D + Send + 'static,
+    ) where
+        T: Send + 'static,
+        D: Future<Output = ()> + Send + 'static,
+    {
+        let id = self.0.next.fetch_add(1, Ordering::Relaxed);
+        let tasks: Weak<LoginTasks> = Arc::downgrade(&self.0);
+        let mut map = self.0.lock();
+        let owner = key.clone();
+        // The entry is inserted before the lock is released: the task's own check waits for it.
+        let task = tokio::spawn(async move {
+            let out = login.await;
+            let current = tasks.upgrade().is_some_and(|t| {
+                let mut map = t.lock();
+                let mine = map.get(&owner).is_some_and(|(i, _)| *i == id);
+                if mine {
+                    map.remove(&owner);
+                }
+                mine
+            });
+            if current {
+                done(out).await;
+            }
+        });
+        if let Some((_, old)) = map.insert(key, (id, task)) {
+            old.abort();
+        }
+    }
 }
 
 /// Completion page served on the loopback redirect; `{state}` is `ok` or `err`.
@@ -606,7 +789,7 @@ impl Store {
             Flow::Code { .. } => {
                 let (port, back) = callback(p.port)
                     .await
-                    .map_err(|e| format!("{}: cannot listen on 127.0.0.1:{}: {e}", p.ns, p.port))?;
+                    .map_err(|e| format!("{}: {e}", p.ns))?;
                 let redirect = format!("http://{}:{port}{}", p.redirect_host, p.redirect_path);
                 url.query_pairs_mut()
                     .append_pair("response_type", "code")
@@ -950,6 +1133,109 @@ mod tests {
         assert_eq!(
             got.await.unwrap().unwrap(),
             format!("http://127.0.0.1:{port}/cb?code=abc&state=xyz")
+        );
+    }
+
+    /// `port` is free for another program: a plain bind succeeds.
+    fn free(port: u16) -> bool {
+        std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    }
+
+    #[tokio::test]
+    async fn cancel_frees_the_port_and_a_new_login_binds_it() {
+        let logins = Logins::default();
+        let (port, back) = callback(0).await.unwrap();
+        let reported = Arc::new(AtomicBool::new(false));
+        let r = reported.clone();
+        logins.spawn("anthropic".into(), back, move |_| async move {
+            r.store(true, Ordering::SeqCst);
+        });
+        assert!(!free(port), "the login listens");
+        assert!(logins.cancel("anthropic").await);
+        assert!(free(port), "cancel closed the listener");
+        assert!(!logins.cancel("anthropic").await, "nothing left to cancel");
+        let (again, back) = callback(port).await.unwrap();
+        assert_eq!(again, port);
+        let back = tokio::spawn(back);
+        reqwest::get(format!("http://127.0.0.1:{port}/cb?code=c"))
+            .await
+            .unwrap();
+        assert_eq!(
+            back.await.unwrap().unwrap(),
+            format!("http://127.0.0.1:{port}/cb?code=c")
+        );
+        assert!(
+            !reported.load(Ordering::SeqCst),
+            "a cancelled login never reports"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_callback_on_the_port_cancels_the_first() {
+        let (port, first) = callback(0).await.unwrap();
+        let first = tokio::spawn(first);
+        let (again, second) = callback(port).await.unwrap();
+        assert_eq!(again, port);
+        let err = first.await.unwrap().unwrap_err();
+        assert!(err.starts_with(CANCELLED), "{err}");
+        let second = tokio::spawn(second);
+        reqwest::get(format!("http://127.0.0.1:{port}/cb?code=2"))
+            .await
+            .unwrap();
+        assert_eq!(
+            second.await.unwrap().unwrap(),
+            format!("http://127.0.0.1:{port}/cb?code=2")
+        );
+        assert!(free(port), "the served callback closed its listener");
+    }
+
+    #[tokio::test]
+    async fn a_replaced_login_is_aborted_and_never_reports() {
+        let logins = Logins::default();
+        let (port, first) = callback(0).await.unwrap();
+        let reports = Arc::new(Mutex::new(Vec::new()));
+        let r = reports.clone();
+        logins.spawn("openai".into(), first, move |out| async move {
+            r.lock().unwrap().push(("first", out));
+        });
+        // A second Connect without Cancel: the caller cancels the key, then binds again.
+        logins.cancel("openai").await;
+        let (_, second) = callback(port).await.unwrap();
+        let r = reports.clone();
+        let (tx, rx) = oneshot::channel();
+        logins.spawn("openai".into(), second, move |out| async move {
+            r.lock().unwrap().push(("second", out));
+            let _ = tx.send(());
+        });
+        reqwest::get(format!("http://127.0.0.1:{port}/cb?code=3"))
+            .await
+            .unwrap();
+        rx.await.unwrap();
+        let reports = reports.lock().unwrap();
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert_eq!(reports[0].0, "second");
+    }
+
+    #[tokio::test]
+    async fn the_port_is_free_after_the_deadline() {
+        let (port, back) = callback(0).await.unwrap();
+        let timed_out = tokio::time::timeout(Duration::from_millis(50), back).await;
+        assert!(timed_out.is_err());
+        assert!(free(port));
+        assert!(callback(port).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_port_held_elsewhere_is_named_plainly() {
+        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = other.local_addr().unwrap().port();
+        let Err(err) = callback(port).await else {
+            panic!("bound a port another socket holds");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(
+            err.to_string().contains("in use by another program"),
+            "{err}"
         );
     }
 
