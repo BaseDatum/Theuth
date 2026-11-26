@@ -1,0 +1,111 @@
+#cloud-config
+# theuth host bootstrap. NO SECRETS in this file: user_data is readable from DO metadata and sits in the TF state.
+# Secrets and the compose project arrive later through deploy/do/scripts/deploy.sh (ssh).
+package_update: true
+package_upgrade: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - docker-buildx
+  - unattended-upgrades
+  - ca-certificates
+  - curl
+  - jq
+  - rsync
+
+write_files:
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+  # No automatic reboot: a reboot drops every share tunnel and mesh relay connection. Reboot by hand when
+  # /var/run/reboot-required appears.
+  - path: /etc/apt/apt.conf.d/52theuth-unattended
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "false";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+  - path: /etc/docker/daemon.json
+    content: |
+      {
+        "log-driver": "local",
+        "log-opts": {"max-size": "20m", "max-file": "5"},
+        "live-restore": true
+      }
+  # QUIC (iroh-relay, edge) wants large UDP buffers.
+  - path: /etc/sysctl.d/90-theuth.conf
+    content: |
+      net.core.rmem_max = 7500000
+      net.core.wmem_max = 7500000
+      vm.swappiness = 10
+  # Reserved IP egress (DO docs "Send Outbound Traffic Over a Reserved IP"): route the default via the anchor
+  # gateway so replies and new outbound flows (iroh UDP, QAD) leave from the reserved IP, not the droplet's own.
+  # Only switches once DO metadata reports the reserved IP active; otherwise leaves the route alone.
+  - path: /usr/local/sbin/theuth-reserved-ip-egress
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      md=http://169.254.169.254/metadata/v1
+      active=false
+      for _ in $(seq 1 90); do
+        active=$(curl -fsS "$md/reserved_ip/ipv4/active" 2>/dev/null || echo false)
+        [ "$active" = true ] && break
+        sleep 10
+      done
+      if [ "$active" != true ]; then
+        echo "reserved IP not active; default route unchanged" >&2
+        exit 0
+      fi
+      gw=$(curl -fsS "$md/interfaces/public/0/anchor_ipv4/gateway")
+      ip route replace default via "$gw" dev eth0
+      echo "default route via anchor gateway $gw"
+  - path: /etc/systemd/system/theuth-reserved-ip-egress.service
+    content: |
+      [Unit]
+      Description=Route egress via the reserved IP's anchor gateway
+      After=network-online.target
+      Wants=network-online.target
+      Before=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/theuth-reserved-ip-egress
+      TimeoutStartSec=20min
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /usr/local/sbin/theuth-mount-data
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      # Mount the DO volume at /srv/theuth (DO's default would be /mnt/${volume_name}). Never formats.
+      set -eu
+      dev=/dev/disk/by-id/scsi-0DO_Volume_${volume_name}
+      for _ in $(seq 1 60); do [ -b "$dev" ] && break; sleep 5; done
+      [ -b "$dev" ] || { echo "volume $dev not attached" >&2; exit 1; }
+      if mountpoint -q /mnt/${volume_name}; then umount /mnt/${volume_name}; fi
+      sed -i '\|/mnt/${volume_name}|d' /etc/fstab
+      mkdir -p /srv/theuth
+      grep -q ' /srv/theuth ' /etc/fstab || \
+        echo "$dev /srv/theuth ext4 defaults,nofail,discard,noatime 0 2" >> /etc/fstab
+      mountpoint -q /srv/theuth || mount /srv/theuth
+      # 65532 = the uid every theuth container runs as (relay, iroh-relay, edge, caddy).
+      install -d -m 0755 /srv/theuth/app
+      install -d -m 0700 -o 65532 -g 65532 /srv/theuth/edge /srv/theuth/caddy /srv/theuth/caddy/data /srv/theuth/caddy/config
+      install -d -m 0750 -o root -g 65532 /srv/theuth/secrets
+
+swap:
+  # 1 GiB droplet; the xcaddy build in deploy/do/host/caddy needs headroom.
+  filename: /swapfile
+  size: 2G
+  maxsize: 2G
+
+runcmd:
+  - [/usr/local/sbin/theuth-mount-data]
+  - [sysctl, --system]
+  - [systemctl, enable, --now, unattended-upgrades]
+  - [systemctl, enable, --now, docker]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, --no-block, theuth-reserved-ip-egress.service]

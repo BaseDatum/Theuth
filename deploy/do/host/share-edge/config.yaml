@@ -1,0 +1,36 @@
+# theuth-share-edge on the theuth host. Same production settings as the cluster's ConfigMap
+# (deploy/share-edge/k8s/rwx-dev/configmap.yaml, live 2026-11-26) minus the k8s block; the k8s-featured image runs
+# fine with k8s disabled (crates/share-edge/src/lib.rs only builds the kube client when `k8s.enabled`).
+# __PUBLIC_IP__ is replaced by scripts/deploy.sh with the droplet's reserved IP.
+domain: tun.zip
+data_dir: /var/lib/theuth-share-edge
+# Local ext4 now (the cluster used DELETE for NFS); WAL is the default and the copied DB converts on open.
+db_journal: wal
+listen: "[::]:8443"
+# HAProxy (compose IP 172.30.0.10) sends PROXY v2; nothing else on the compose network may claim visitor addresses.
+listen_proxy_protocol: {trusted: ["172.30.0.10/32"]}
+iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: ["__PUBLIC_IP__:7850"]}
+admin: {socket: /var/lib/theuth-share-edge/admin.sock, http: "[::]:9090"}
+admission: open
+# Standby key is OFFLINE (owner's vault, tunzip.edge.standby.key.b64); see deploy/share-edge/README.md.
+standby_public: 8dc34c5495d079157b02ff81ddbd47de68b60ef9f579e86bb8d5fb46c670a075
+terms_url: https://example.com/share-terms     # still a placeholder (§9.5 TBD)
+terms_rev: "2026-11-23"
+abuse_url: https://example.com/share-abuse     # TBD
+abuse_contact: abuse@example.com               # TBD
+# Production account's CAA lines are live at Porkbun (accounturi .../acct/4035598822): the migrated
+# acme/letsencrypt.json must be that account. Never `acme register` here.
+require_caa: true
+acme:
+  contact: mailto:sky@rwx.dev
+  profile: classic
+  primary: letsencrypt
+  cas:
+    letsencrypt:
+      directory: https://acme-v02.api.letsencrypt.org/directory
+    gts: {enabled: false}
+dns:
+  provider: porkbun
+  zone: tun.zip
+  credential_file: /run/secrets/theuth-share-edge/dns.json
+  target: edge.tun.zip

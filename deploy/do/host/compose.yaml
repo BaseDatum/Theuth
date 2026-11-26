@@ -1,0 +1,114 @@
+# theuth public services on one host (deploy/do/README.md). Lives at /srv/theuth/app; persistent data under
+# /srv/theuth/{edge,caddy,secrets} on the DO volume. .env is written by deploy/do/scripts/deploy.sh.
+#
+# 443/tcp  HAProxy, TCP mode, routes by SNI without terminating TLS:
+#            theuth.io www.theuth.io relay.theuth.io app.theuth.io -> Caddy   (PROXY v2)
+#            iroh.relay.theuth.io                                    -> iroh-relay (TLS in-process)
+#            *.tun.zip                                               -> share-edge (PROXY v2)
+# 80/tcp   HAProxy -> Caddy, which only redirects to https.
+# 7842/udp iroh-relay QUIC address discovery.   7850/udp share-edge iroh endpoint.
+#
+# The share edge is behind the `edge` profile: plain `docker compose up -d` never starts it, so it cannot create a
+# fresh iroh.key on an empty data dir before scripts/migrate-edge-data.sh copied the cluster's.
+name: theuth
+
+x-hardening: &hardening
+  restart: unless-stopped
+  user: "65532:65532"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+networks:
+  theuth:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  haproxy:
+    image: ${HAPROXY_IMAGE:?}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # The image runs as user haproxy: unprivileged listeners, Docker maps 80/443.
+    ports:
+      - "80:8080/tcp"
+      - "443:8443/tcp"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    tmpfs: [/tmp, /var/lib/haproxy]
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    networks:
+      theuth: {ipv4_address: 172.30.0.10}   # the only PROXY-protocol source Caddy and the edge trust
+
+  caddy:
+    build:
+      context: ./caddy
+      args:
+        CADDY_VERSION: ${CADDY_VERSION:?}
+        CADDY_PORKBUN_VERSION: ${CADDY_PORKBUN_VERSION:?}
+    image: theuth-caddy:${CADDY_VERSION:?}-porkbun-${CADDY_PORKBUN_VERSION:?}
+    <<: *hardening
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?}
+      # One Porkbun key for both zones (porkbun.tunzip.*); DNS-01 only, so certificates issue before DNS points here.
+      PORKBUN_API_KEY: ${PORKBUN_TUNZIP_APIKEY:?}
+      PORKBUN_API_SECRET_KEY: ${PORKBUN_TUNZIP_SECRET:?}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/theuth/caddy/data:/data
+      - /srv/theuth/caddy/config:/config
+    tmpfs: [/tmp]
+    networks:
+      theuth: {ipv4_address: 172.30.0.11}
+
+  relay:
+    image: ${RELAY_IMAGE:?}
+    <<: *hardening
+    command: ["--listen", "0.0.0.0:8787", "--web", "/web", "--site", "/site", "--site-listen", "0.0.0.0:8788"]
+    environment:
+      # Same value as the cluster Secret theuth-relay/cookie-secret, or every __Host-link cookie is dropped.
+      THEUTH_RELAY_COOKIE_SECRET: ${THEUTH_RELAY_COOKIE_SECRET:?}
+    stop_grace_period: 20s
+    networks:
+      theuth: {ipv4_address: 172.30.0.12}
+
+  iroh-relay:
+    image: ${IROH_RELAY_IMAGE:?}
+    <<: *hardening
+    command: ["--config-path", "/etc/iroh-relay.toml"]
+    ports:
+      - "7842:7842/udp"
+    volumes:
+      - ./iroh-relay/iroh-relay.toml:/etc/iroh-relay.toml:ro
+      # Caddy's certificate store, read-only: iroh-relay serves Caddy's iroh.relay.theuth.io certificate itself
+      # (the QUIC listener needs the key in-process). Until Caddy has issued it, iroh-relay exits and restarts.
+      - /srv/theuth/caddy/data:/caddy-data:ro
+    stop_grace_period: 20s
+    networks:
+      theuth: {ipv4_address: 172.30.0.13}
+
+  share-edge:
+    image: ${SHARE_EDGE_IMAGE:?}
+    profiles: [edge]
+    <<: *hardening
+    command: ["run", "--config", "/etc/theuth-share-edge/config.yaml"]
+    ports:
+      - "7850:7850/udp"
+    volumes:
+      - /srv/theuth/edge:/var/lib/theuth-share-edge
+      - ./share-edge/config.yaml:/etc/theuth-share-edge/config.yaml:ro
+      - /srv/theuth/secrets/tunzip-dns.json:/run/secrets/theuth-share-edge/dns.json:ro
+    # Public resolvers, as in the cluster (CAA, ACME and Porkbun lookups).
+    dns: [1.1.1.1, 9.9.9.9]
+    # Home on THIS host's iroh-relay (via the host's published 443 and 7842/udp), whatever public DNS says.
+    extra_hosts:
+      - "iroh.relay.theuth.io:host-gateway"
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    stop_grace_period: 40s   # drain_secs 30 + margin
+    networks:
+      theuth: {ipv4_address: 172.30.0.14}

@@ -1,0 +1,49 @@
+# theuth.io front (deploy/do/host/compose.yaml). HAProxy passes 443/80 through with PROXY v2; Caddy terminates
+# TLS for the theuth.io names and also keeps the iroh.relay.theuth.io certificate, which iroh-relay reads from
+# /data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/iroh.relay.theuth.io/ (iroh-relay.toml).
+{
+	http_port 8080
+	https_port 8443
+	email {$ACME_EMAIL}
+	# One issuer, fixed: the iroh-relay cert path depends on the issuer directory name (no ZeroSSL fallback).
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+	# DNS-01 only: certificates issue while DNS still points at the old host.
+	acme_dns porkbun {
+		api_key {env.PORKBUN_API_KEY}
+		api_secret_key {env.PORKBUN_API_SECRET_KEY}
+	}
+	# The automatic redirect would carry :8443; the explicit http:// site below redirects to 443.
+	auto_https disable_redirects
+	servers {
+		listener_wrappers {
+			proxy_protocol {
+				timeout 5s
+				allow 172.30.0.10/32
+			}
+			tls
+		}
+	}
+}
+
+http:// {
+	redir https://{host}{uri} permanent
+}
+
+theuth.io {
+	reverse_proxy 172.30.0.12:8788
+}
+
+www.theuth.io {
+	redir https://theuth.io{uri} permanent
+}
+
+relay.theuth.io, app.theuth.io {
+	# Long-lived WebSockets (/h/<id>); Caddy proxies upgrades with no idle timeout.
+	reverse_proxy 172.30.0.12:8787
+}
+
+# Never reached through HAProxy (it routes this SNI to iroh-relay); the block only makes Caddy obtain and renew
+# the certificate iroh-relay serves.
+iroh.relay.theuth.io {
+	respond "served by iroh-relay" 421
+}
