@@ -351,7 +351,10 @@ impl Tool for ShowViewTool {
          Optional `placement` (`beside`, `left`, `right`, `top`, `bottom`, `tab`, `replace`), \
          `target` pane id (from `pane_list`), `title`, and `focus`. Call `pane_list()` for \
          the live `available_views` catalog (including detail templates and plugin views). \
-         Reuses an existing pane already showing the same path."
+         Reuses an existing pane already showing the same path. Opening a view never closes or \
+         replaces a pane showing something else: a new pane joins the panel of other views as a \
+         tab, or splits beside the chat; only an explicit `placement: replace` swaps the target \
+         pane out."
             .into()
     }
 
@@ -388,8 +391,7 @@ impl Tool for ShowViewTool {
                 let shown_path = result["path"].as_str().unwrap_or(&path);
                 let shown_title = result["title"].as_str().unwrap_or(shown_path);
                 let reused = result["reused"].as_bool().unwrap_or(false);
-                let verb = if reused { "Reused" } else { "Opened" };
-                let content = format!("{verb} {shown_title} ({shown_path}) in pane {pane}");
+                let content = view_receipt(shown_title, shown_path, pane, reused);
                 Ok(ToolOutput {
                     structured: Some(result),
                     ..ToolOutput::ok(content)
@@ -402,6 +404,19 @@ impl Tool for ShowViewTool {
             )),
         }
     }
+}
+
+/// `show_view`'s receipt. The first line, `view opened · <title> · <path> · tile <pane>` (`view reused · …` when the
+/// pane already showed the path), is pinned: the transcript card (`ViewOpenedCard.tsx`) reads the path and the pane
+/// from it, since the transcript keeps the content, not `structured`. The second line is the human text.
+fn view_receipt(title: &str, path: &str, pane: &str, reused: bool) -> String {
+    let title = clean_title(title);
+    let (state, verb) = if reused {
+        ("reused", "Reused")
+    } else {
+        ("opened", "Opened")
+    };
+    format!("view {state} · {title} · {path} · tile {pane}\n{verb} {title} ({path}) in pane {pane}")
 }
 
 /// Action supported by `pane_manage`.
@@ -641,6 +656,27 @@ mod tests {
         assert!(validate_view_path(&too_long).is_err());
     }
 
+    /// `ViewOpenedCard.tsx` parses the first line; keep both in step.
+    #[test]
+    fn view_receipt_pins_its_first_line() {
+        assert_eq!(
+            view_receipt("Tasks", "/tasks", "tile:view::%2Ftasks", false),
+            "view opened · Tasks · /tasks · tile tile:view::%2Ftasks\n\
+             Opened Tasks (/tasks) in pane tile:view::%2Ftasks"
+        );
+        let reused = view_receipt(
+            "My\nboard",
+            "/whiteboards",
+            "tile:view::%2Fwhiteboards",
+            true,
+        );
+        assert_eq!(
+            reused.lines().next(),
+            Some("view reused · My board · /whiteboards · tile tile:view::%2Fwhiteboards")
+        );
+        assert_eq!(reused.lines().count(), 2);
+    }
+
     #[test]
     fn manage_action_validation() {
         assert_eq!(
@@ -761,7 +797,13 @@ mod tests {
             .is_err()
         );
         // Resize missing or out-of-range share
-        for bad in [None, Some(0.05), Some(0.95), Some(f64::NAN), Some(f64::INFINITY)] {
+        for bad in [
+            None,
+            Some(0.05),
+            Some(0.95),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
             assert!(
                 build_manage_op(PaneManageArgs {
                     action: PaneAction::Resize,
@@ -919,7 +961,9 @@ mod tests {
             call_with_timeout(
                 &rt_call,
                 sess,
-                LayoutOp::Close { pane: "only".into() },
+                LayoutOp::Close {
+                    pane: "only".into(),
+                },
                 Duration::from_secs(2),
             )
             .await
