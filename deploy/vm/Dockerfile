@@ -81,7 +81,7 @@ RUN set -eu; \
     if [ -n "$THEUTH_T_URL" ]; then \
       url="$THEUTH_T_URL"; curl -fsSL --retry 3 -o /tmp/t.sig "$url.sig"; \
     else \
-      url="$(curl -fsSL --retry 3 "$THEUTH_MANIFEST" | python3 -c 'import json,sys; m=json.load(sys.stdin); k="cli-linux-'"$a"'"; p=m["platforms"].get(k) or sys.exit(f"release {m[\"version\"]} has no {k} asset; pass --build-arg THEUTH_T_URL="); open("/tmp/t.sig","w").write(p["signature"]); print(p["url"])')"; \
+      url="$(curl -fsSL --retry 3 "$THEUTH_MANIFEST" | python3 -c 'import json,sys; m=json.load(sys.stdin); v=m["version"]; k="cli-linux-'"$a"'"; p=m["platforms"].get(k) or sys.exit(f"release {v} has no {k} asset; pass --build-arg THEUTH_T_URL="); open("/tmp/t.sig","w").write(p["signature"]); print(p["url"])')"; \
     fi; \
     curl -fsSL --retry 3 -o /tmp/t.tar.gz "$url"; \
     pub="$(printf '%s' "$THEUTH_PUBKEY" | base64 -d | sed -n 2p)"; \
