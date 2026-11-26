@@ -253,8 +253,14 @@ pub const CATEGORIES: &[CategoryDef] = &[
     CategoryDef {
         id: "tasks",
         label: "Tasks",
-        description: "Create and track tasks, and escalate to a human",
-        exact: &["escalate"],
+        description: "Create and track tasks and projects, and escalate to a human",
+        exact: &[
+            "escalate",
+            "project_list",
+            "project_create",
+            "project_update",
+            "project_delete",
+        ],
         prefixes: &["task_"],
     },
     CategoryDef {

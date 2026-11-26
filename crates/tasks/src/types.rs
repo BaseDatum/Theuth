@@ -620,7 +620,7 @@ pub struct TaskPatch {
     /// Engine name.
     #[serde(rename = "where")]
     pub where_: Option<String>,
-    /// Project label.
+    /// Project label; `""` clears it.
     pub project: Option<String>,
     /// Harness.
     pub harness: Option<String>,

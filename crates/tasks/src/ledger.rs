@@ -1385,6 +1385,17 @@ impl Ledger {
         }
         set!(reviewer, "reviewer");
         set!(where_, "where");
+        // 223: an empty label clears the project (`project_delete` detaches its tasks so).
+        if patch
+            .project
+            .as_deref()
+            .is_some_and(|p| p.trim().is_empty())
+        {
+            patch.project = None;
+            if let Some(old) = t.project.take() {
+                changes.push(("project", Some(old), None));
+            }
+        }
         set!(project, "project");
         set!(harness, "harness");
         if let Some(v) = patch.blockers

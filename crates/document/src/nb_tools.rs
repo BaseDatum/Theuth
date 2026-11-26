@@ -109,7 +109,7 @@ pub struct NotebookCreateArgs {
     /// The description the model reads as a prompt block in every chat of the notebook, markdown.
     #[serde(default)]
     pub description: Option<String>,
-    /// Optional `project` label (the one tasks and sessions carry).
+    /// Optional project (a name from `project_list`).
     #[serde(default)]
     pub project: Option<String>,
 }

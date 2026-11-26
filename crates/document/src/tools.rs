@@ -928,7 +928,7 @@ pub struct CreateArgs {
     /// 144 §13.2: file the new note in this notebook (a `DocId`) as a `note` item.
     #[serde(default)]
     pub notebook: Option<String>,
-    /// File the new note or board under this project (the sessions' project label); omitted = ungrouped.
+    /// File the new note or board under this project (a name from `project_list`); omitted = ungrouped.
     #[serde(default)]
     pub project: Option<String>,
 }
