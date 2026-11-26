@@ -125,7 +125,7 @@ cmd_create() {
 	'' | 1.[A-Za-z2-7]*) ;;
 	*) die "THEUTH_PAIR_TICKET does not look like a pairing string (1.<base32>)" ;;
 	esac
-	case "$ticket" in *[!A-Za-z2-7.]*) die "THEUTH_PAIR_TICKET has characters a ticket never has" ;; esac
+	case "${ticket#1.}" in *[!A-Za-z2-7]*) die "THEUTH_PAIR_TICKET has characters a ticket never has" ;; esac
 	local start=$SECONDS
 
 	say "plan: Droplet theuth-$NAME ($SIZE, $DROPLET_IMAGE) in $REGION, Volume $VOLUME (${VOLUME_GB} GiB), firewall theuth-$NAME"
