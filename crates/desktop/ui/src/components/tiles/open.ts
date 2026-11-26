@@ -3,9 +3,11 @@
 
 import type { Item } from '@/components/chat/Attachments'
 import { isMobileLayout } from '@/hooks/use-mobile'
-import { openPopout } from '@/lib/popout'
+import { notify } from '@/lib/notify'
+import { isPopout, openPopout, routeWindow } from '@/lib/popout'
 import { applyLayoutOp, type Edge, isFrame, type PanePlacement, placeView, revealView, tileLeaf, tileSpec, usePanes } from '@/lib/panes'
 import { openTile, setTileProps, type Tile, tileable, tileId } from '@/lib/tiles'
+import { validateViewPath } from '@/lib/view-catalog'
 import { normalizeViewPath } from '@/lib/view-title'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 import { useSessions } from '@/store/sessions'
@@ -166,10 +168,15 @@ export function openViewTile(
 /**
  * The composer's Talk (76 §0.12): `session`'s talk view (`/talk/$session`) in a pane titled Talk, split right of the
  * chat in leaf `host`, so the chat stays on screen; a talk pane already open for that session is revealed and selected
- * instead of a second one. Where nothing tiles (a phone, no pane `host`, no workspace) it `navigate`s to the talk view
- * as the whole page, as before. Returns the tile's leaf, or `null` when it navigated.
+ * instead of a second one. A popped window (no workspace) opens the talk window instead (`paneless`). Where nothing
+ * else tiles (a phone, no pane `host`, no workspace) it `navigate`s to the talk view as the whole page, as before.
+ * Returns the tile's leaf, or `null` when it opened a window or navigated.
  */
 export function openTalkView(session: string, host: string | null, navigate: (session: string) => void): string | null {
+  if (paneless()) {
+    void openPopout({ kind: 'talk', session })
+    return null
+  }
   const id = host && !isMobileLayout() ? openViewTile({ path: `/talk/${encodeURIComponent(session)}`, title: 'Talk' }, { host }) : null
   if (id === null) {
     navigate(session)
@@ -191,18 +198,45 @@ export function talkPaneToKeep(live: string | null): string | null {
 }
 
 /**
+ * A window with no pane workspace that must not navigate itself away: a popped window (a whiteboard, a chat, a page
+ * alone). Mounting the Trellis workspace there is not an option — it is the main window's chat layout, persisted
+ * under one storage key and driving one global `usePanes` store — so what would open in a pane opens in a window of
+ * its own (`routeWindow`) beside it instead. Checked before the phone layout: a narrow popped window is no phone.
+ */
+export const paneless = (): boolean => isPopout() && !usePanes.getState().ws
+
+/**
+ * Leave for app route `href` (a chat, New chat) from inside a pane or card: `navigate` there, except from a popped
+ * window (`paneless`), where the route opens in its own window and this one keeps what it shows.
+ */
+export function openRoute(href: string, navigate: (href: string) => void): void {
+  if (paneless()) void openPopout(routeWindow(href))
+  else navigate(href)
+}
+
+/**
  * A chat card's Open for a `show_view` call: an open `view` tile for `props.path` is revealed and selected; else it opens
  * with `show_view`'s placement (`applyLayoutOp` `open_view`): default `beside` joins the panel holding view tiles, else
  * right of `session`'s chat (default: the focused one); `replace` alone takes over `target`. Never closes another tile.
- * Returns the tile's leaf, or `null` when nothing opened. On a phone (no tiles) it navigates to the route through
- * `navigate` instead and returns `null`.
+ * Returns the tile's leaf, or `null` when nothing opened. A popped window (`paneless`) opens the route in a window of
+ * its own instead; on a phone (no tiles) it navigates to the route through `navigate`. Both return `null`. A route
+ * that does not resolve opens nothing and says why in the status bar, never landing anywhere else.
  */
 export function openViewFromCard(
   props: ViewProps,
   opts?: { placement?: PanePlacement; target?: string; session?: string; navigate?: (href: string) => void },
 ): string | null {
+  const checked = validateViewPath(normalizeViewPath(props.path))
+  if (!checked.ok) {
+    notify.error(`Can't open ${props.path}`, { description: checked.reason })
+    return null
+  }
+  if (paneless()) {
+    void openPopout(routeWindow(checked.normalized))
+    return null
+  }
   if (isMobileLayout()) {
-    opts?.navigate?.(normalizeViewPath(props.path))
+    opts?.navigate?.(checked.normalized)
     return null
   }
   const { focused, leaves } = usePanes.getState()
@@ -211,10 +245,14 @@ export function openViewFromCard(
   const target = opts?.target && leaves.includes(opts.target) ? opts.target : undefined
   const placement = !target && opts?.placement === 'replace' ? undefined : opts?.placement
   const answer = applyLayoutOp(
-    { op: 'open_view', path: props.path, title: props.title, placement, target, focus: true },
+    { op: 'open_view', path: checked.normalized, title: props.title, placement, target, focus: true },
     opts?.session ?? focused ?? '',
     opts?.navigate,
   )
+  if (answer.kind === 'failed') {
+    notify.error(`Can't open ${props.path}`, { description: answer.reason })
+    return null
+  }
   const r = answer.kind === 'done' ? answer.result : null
   return r && typeof r === 'object' && 'pane' in r && typeof r.pane === 'string' ? r.pane : null
 }
