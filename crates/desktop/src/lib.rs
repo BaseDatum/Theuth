@@ -392,6 +392,7 @@ mod desktop {
             commands::connection,
             commands::launch_log,
             commands::relaunch,
+            commands::startup_status,
             commands::quit_ack,
             commands::share_tray,
             commands::share_stop_all,

@@ -7,7 +7,7 @@
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(desktop)]
-use crate::launch::{Connection, Launch};
+use crate::launch::{Connection, Launch, StartupProgress};
 
 /// 221 §9.1 Copy (`ui/src/lib/secret-clipboard.ts`): the general pasteboard's change count right after the
 /// webview wrote a secret to it; `None` off macOS (the webview then compares the text itself).
@@ -92,11 +92,20 @@ pub fn open_window(app: AppHandle, label: String, url: String) -> Result<(), Str
 }
 
 /// Connect (probe, else spawn on a pty and wait for the port); cached after the
-/// first success. Blocks up to 15 s on a cold start.
+/// first success. 222: no fixed cap while the engine reports progress; a start
+/// already in flight is joined, never restarted.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn connection(app: AppHandle) -> Result<Connection, String> {
     blocking(move || app.state::<Launch>().connection(&app)).await
+}
+
+/// 222: the last `startup-progress` payload (`{status, alive, stalled, waited_ms}`), for a
+/// start screen that mounts after the start began.
+#[cfg(desktop)]
+#[tauri::command]
+pub fn startup_status(launch: State<'_, Launch>) -> StartupProgress {
+    launch.startup_status()
 }
 
 /// No local daemon on this platform: the UI's `invoke('connection')` fails
@@ -137,11 +146,13 @@ pub async fn legal_text(app: AppHandle, name: String) -> Result<String, String> 
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Stop the daemon we own (if any) and connect again.
+/// Stop the daemon we own (if any) and connect again. 222: an engine still making progress is
+/// left alone unless `force` — the error is `starting: <label>`.
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn relaunch(app: AppHandle) -> Result<Connection, String> {
-    blocking(move || app.state::<Launch>().relaunch(&app)).await
+pub async fn relaunch(app: AppHandle, force: Option<bool>) -> Result<Connection, String> {
+    let force = force.unwrap_or(false);
+    blocking(move || app.state::<Launch>().relaunch(&app, force)).await
 }
 
 /// The webview finished its part of the quit sequence (RPC `shutdown` when it owned the daemon): start the

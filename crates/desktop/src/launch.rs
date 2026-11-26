@@ -5,6 +5,9 @@
 //! pty, so the daemon inherits exactly the environment a terminal tab would give
 //! it (18 §2). The pty transcript is drained into a 64 KiB ring and streamed to
 //! the webview as `launch-log` events; readiness is the port, never the log.
+//! 222: while it starts, the engine's `<data_dir>/startup.json` (phase, step,
+//! heartbeat) is tailed into `startup-progress` events and decides how long the
+//! wait may last — there is no fixed cap while the engine shows progress.
 //!
 //! Windows has no login-shell environment (58 §0.3), and a ConPTY child drags a
 //! console window along and hangs in conhost's handshake on real installs, so
@@ -14,19 +17,32 @@
 use std::io::{ErrorKind, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 #[cfg(unix)]
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:7777";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
-const READY_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a port connect may take per tick of the wait.
 const POLL: Duration = Duration::from_millis(200);
+/// 222: the wait's tick — port, child, `startup.json`, `startup-progress` event.
+const TICK: Duration = Duration::from_millis(250);
+/// 222: this long without a `seq` change marks the start `stalled` (the wait goes on).
+const SOFT_STALL: Duration = Duration::from_secs(90);
+/// 222: this long without a heartbeat (or progress) fails the start.
+const HARD_STALL: Duration = Duration::from_secs(10 * 60);
+/// 222: an engine that never writes `startup.json` for its pid (older than 222) gets the
+/// pre-222 port-only wait with this cap.
+const FALLBACK_CAP: Duration = Duration::from_secs(60);
+/// 222: the engine's startup record in the data dir.
+const STARTUP_FILE: &str = "startup.json";
+/// 222: the Tauri event carrying [`StartupProgress`].
+const PROGRESS_EVENT: &str = "startup-progress";
 /// How long a daemon told `shutdown` may take to exit before it is killed.
 /// 109 §9.2: the daemon drains in-flight turns for `durability.drain_secs`
 /// (default 10 s) plus a second of slack before it exits; this covers that
@@ -87,33 +103,125 @@ fn exited(child: &mut Child) -> std::io::Result<Option<u32>> {
 struct Inner {
     connection: Option<Connection>,
     daemon: Option<Daemon>,
+    /// The start in flight (222): every `connection` joins it, only a relaunch replaces it.
+    attempt: Option<Arc<Attempt>>,
+    /// Bumped by every new attempt; a superseded attempt's thread notices and gives up.
+    generation: u64,
 }
 
-/// Managed state: the established connection, the daemon we own (if any) and
-/// the pty transcript. `connection`/`relaunch` serialise on one lock; the log
-/// has its own so it stays readable while a launch is in flight.
+/// Managed state: the established connection, the daemon we own (if any), the
+/// start in flight, the pty transcript and the start's progress. `inner` is held
+/// only for short reads and writes — a start runs on its own thread and callers
+/// wait on its [`Attempt`] — so `peek`, quit and status reads never block on a
+/// launch. The log and the progress have their own locks; lock order is `inner`
+/// before `progress`.
 #[derive(Default)]
 pub struct Launch {
     inner: Mutex<Inner>,
     log: Arc<Mutex<Vec<u8>>>,
+    progress: Mutex<Shown>,
+}
+
+/// The last published progress, plus what a non-forced relaunch refuses on.
+#[derive(Default)]
+struct Shown {
+    payload: StartupProgress,
+    /// `Some(label)` while the engine is alive, not ready and moved within [`SOFT_STALL`].
+    busy: Option<String>,
+}
+
+/// 222: payload of the `startup-progress` event and of the `startup_status` command.
+#[derive(Clone, Default, Serialize)]
+pub struct StartupProgress {
+    /// `startup.json` as the engine wrote it, when it is this start's pid; else `null`.
+    pub status: Option<serde_json::Value>,
+    /// The engine process we started is still running.
+    pub alive: bool,
+    /// No `seq` change for [`SOFT_STALL`]; the wait continues.
+    pub stalled: bool,
+    /// Since the engine was spawned.
+    pub waited_ms: u64,
+}
+
+/// One start: run by its own thread, joined by every caller that wants a connection.
+struct Attempt {
+    generation: u64,
+    outcome: Mutex<Option<Outcome>>,
+    done: Condvar,
+}
+
+#[derive(Clone)]
+enum Outcome {
+    Ready(Connection),
+    Failed(String),
+    /// A relaunch replaced this attempt; join the current one.
+    Superseded,
+}
+
+impl Attempt {
+    fn wait(&self) -> Outcome {
+        let mut outcome = lock(&self.outcome);
+        loop {
+            if let Some(o) = &*outcome {
+                return o.clone();
+            }
+            outcome = self
+                .done
+                .wait(outcome)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// The first outcome wins (a relaunch marks the old attempt superseded before its thread ends).
+    fn finish(&self, outcome: Outcome) {
+        let mut slot = lock(&self.outcome);
+        if slot.is_none() {
+            *slot = Some(outcome);
+            self.done.notify_all();
+        }
+    }
 }
 
 impl Launch {
-    /// The cached connection, or probe-then-spawn on the first call (and after a
-    /// failed one).
+    /// The cached connection, else the start in flight (joined, never restarted),
+    /// else a new probe-then-spawn (on the first call and after a failed one).
     pub fn connection(&self, app: &AppHandle) -> anyhow::Result<Connection> {
-        let mut inner = lock(&self.inner);
-        if let Some(conn) = &inner.connection {
-            return Ok(conn.clone());
-        }
-        self.start(&mut inner, app)
+        let attempt = {
+            let mut inner = lock(&self.inner);
+            if let Some(conn) = &inner.connection {
+                return Ok(conn.clone());
+            }
+            match &inner.attempt {
+                Some(a) => Arc::clone(a),
+                None => self.begin(&mut inner, app),
+            }
+        };
+        self.join(attempt, app)
     }
 
-    /// Stop the daemon we own (if any) and connect again.
-    pub fn relaunch(&self, app: &AppHandle) -> anyhow::Result<Connection> {
-        let mut inner = lock(&self.inner);
-        inner.connection = None;
-        self.start(&mut inner, app)
+    /// Stop the daemon we own (if any) and connect again. 222: without `force`, an engine that
+    /// is alive, not ready and moved within [`SOFT_STALL`] is left alone: the error is
+    /// `starting: <label>`. A dead, failed or stalled engine is replaced either way.
+    pub fn relaunch(&self, app: &AppHandle, force: bool) -> anyhow::Result<Connection> {
+        let attempt = {
+            let mut inner = lock(&self.inner);
+            if !force
+                && inner.attempt.is_some()
+                && let Some(label) = &lock(&self.progress).busy
+            {
+                bail!("starting: {label}");
+            }
+            if let Some(old) = inner.attempt.take() {
+                old.finish(Outcome::Superseded);
+            }
+            self.begin(&mut inner, app)
+        };
+        self.join(attempt, app)
+    }
+
+    /// 222: the last `startup-progress` payload, for a UI that mounts mid-start.
+    pub fn startup_status(&self) -> StartupProgress {
+        lock(&self.progress).payload.clone()
     }
 
     /// The cached connection, else a probe for a live engine (18 §3); never spawns one.
@@ -135,6 +243,7 @@ impl Launch {
     }
 
     /// The daemon we own, out of the managed state: the quit worker stops it off the main thread (163 D1).
+    /// A start in flight then fails ("daemon stopped").
     pub fn take_daemon(&self) -> Option<Daemon> {
         lock(&self.inner).daemon.take()
     }
@@ -144,8 +253,85 @@ impl Launch {
         String::from_utf8_lossy(&lock(&self.log)).into_owned()
     }
 
-    fn start(&self, inner: &mut Inner, app: &AppHandle) -> anyhow::Result<Connection> {
-        if let Some(daemon) = inner.daemon.take() {
+    /// Wait for `attempt`; a superseded one hands over to whatever is current then.
+    fn join(&self, mut attempt: Arc<Attempt>, app: &AppHandle) -> anyhow::Result<Connection> {
+        loop {
+            match attempt.wait() {
+                Outcome::Ready(conn) => return Ok(conn),
+                Outcome::Failed(e) => return Err(anyhow!(e)),
+                Outcome::Superseded => {
+                    let mut inner = lock(&self.inner);
+                    if let Some(conn) = &inner.connection {
+                        return Ok(conn.clone());
+                    }
+                    attempt = match &inner.attempt {
+                        Some(a) => Arc::clone(a),
+                        None => self.begin(&mut inner, app),
+                    };
+                }
+            }
+        }
+    }
+
+    /// A new attempt on its own thread; the caller holds `inner`.
+    fn begin(&self, inner: &mut Inner, app: &AppHandle) -> Arc<Attempt> {
+        inner.generation += 1;
+        inner.connection = None;
+        let attempt = Arc::new(Attempt {
+            generation: inner.generation,
+            outcome: Mutex::new(None),
+            done: Condvar::new(),
+        });
+        inner.attempt = Some(Arc::clone(&attempt));
+        *lock(&self.progress) = Shown::default();
+        let spawned = std::thread::Builder::new()
+            .name("engine-start".into())
+            .spawn({
+                let attempt = Arc::clone(&attempt);
+                let app = app.clone();
+                move || {
+                    let launch = app.state::<Launch>();
+                    let outcome = match launch.start(attempt.generation, &app) {
+                        Ok(Some(conn)) => Outcome::Ready(conn),
+                        Ok(None) => Outcome::Superseded,
+                        Err(e) => Outcome::Failed(format!("{e:#}")),
+                    };
+                    launch.settle(&attempt, outcome);
+                }
+            });
+        if let Err(e) = spawned {
+            inner.attempt = None;
+            attempt.finish(Outcome::Failed(format!("start thread: {e}")));
+        }
+        attempt
+    }
+
+    /// Record the outcome when `attempt` is still current, then wake its joiners.
+    fn settle(&self, attempt: &Attempt, outcome: Outcome) {
+        let mut inner = lock(&self.inner);
+        let outcome = if inner.generation == attempt.generation {
+            inner.attempt = None;
+            if let Outcome::Ready(conn) = &outcome {
+                inner.connection = Some(conn.clone());
+            }
+            outcome
+        } else {
+            Outcome::Superseded
+        };
+        drop(inner);
+        attempt.finish(outcome);
+    }
+
+    /// Probe, else spawn and [`watch`](Self::watch). `Ok(None)` when a relaunch superseded it.
+    fn start(&self, generation: u64, app: &AppHandle) -> anyhow::Result<Option<Connection>> {
+        let old = {
+            let mut inner = lock(&self.inner);
+            if inner.generation != generation {
+                return Ok(None);
+            }
+            inner.daemon.take()
+        };
+        if let Some(daemon) = old {
             daemon.stop(EXIT_GRACE);
         }
         lock(&self.log).clear();
@@ -153,13 +339,23 @@ impl Launch {
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("create {}", data_dir.display()))?;
         if let Some(conn) = probe(&data_dir) {
-            inner.connection = Some(conn.clone());
-            return Ok(conn);
+            return Ok(Some(conn));
         }
 
         let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        let (mut daemon, readers) = spawn(&data_dir, port, &self.log)?;
+        let (daemon, readers) = spawn(&data_dir, port, &self.log)?;
+        let pid = daemon.pid();
+        {
+            let mut inner = lock(&self.inner);
+            if inner.generation != generation {
+                drop(inner);
+                daemon.stop(EXIT_GRACE);
+                return Ok(None);
+            }
+            // Kept either way: on failure the transcript stays inspectable until relaunch.
+            inner.daemon = Some(daemon);
+        }
         for reader in readers {
             std::thread::spawn({
                 let log = Arc::clone(&self.log);
@@ -167,27 +363,289 @@ impl Launch {
                 move || drain(reader, &log, &app)
             });
         }
-        let ready = wait_ready(addr, &mut daemon.child, &self.log);
-        // Kept either way: on timeout the transcript stays inspectable until relaunch.
-        inner.daemon = Some(daemon);
-        if let Err(e) = ready {
-            // 146 D6: the daemon exited 0 because another engine already holds
-            // `engine.lock` (a launcher race): attach to that one instead.
-            if let Some(conn) = probe(&data_dir) {
-                inner.connection = Some(conn.clone());
-                return Ok(conn);
+        match self.watch(generation, addr, pid, &data_dir, app) {
+            Ok(true) => {}
+            Ok(false) => return Ok(None),
+            Err(e) => {
+                // 146 D6: the daemon exited 0 because another engine already holds
+                // `engine.lock` (a launcher race): attach to that one instead.
+                return match probe(&data_dir) {
+                    Some(conn) => Ok(Some(conn)),
+                    None => Err(e),
+                };
             }
-            return Err(e);
         }
         let token = token(&data_dir).context("daemon did not write <data_dir>/token")?;
-        let conn = Connection {
+        Ok(Some(Connection {
             url: ws_url(&addr.to_string(), &token),
             token,
             data_dir,
             owned: true,
-        };
-        inner.connection = Some(conn.clone());
-        Ok(conn)
+        }))
+    }
+
+    /// 18 §2 step 5 / 222: every [`TICK`] check the port (ready), the child (an early exit
+    /// fails fast) and `startup.json` for this pid, publish `startup-progress`, and let
+    /// [`decide`] end the wait. `Ok(false)` when superseded.
+    fn watch(
+        &self,
+        generation: u64,
+        addr: SocketAddr,
+        pid: Option<u32>,
+        data_dir: &Path,
+        app: &AppHandle,
+    ) -> anyhow::Result<bool> {
+        let started = Instant::now();
+        let mut tracker = Tracker::new(started);
+        loop {
+            let tick = Instant::now();
+            if TcpStream::connect_timeout(&addr, POLL).is_ok() {
+                tracker.observe(read_status(data_dir, pid), Instant::now());
+                self.publish(generation, app, tracker.payload(started, true, false), None);
+                return Ok(true);
+            }
+            let exit = {
+                let mut inner = lock(&self.inner);
+                if inner.generation != generation {
+                    return Ok(false);
+                }
+                let daemon = inner.daemon.as_mut().context("daemon stopped")?;
+                exited(&mut daemon.child)?
+            };
+            let now = Instant::now();
+            tracker.observe(read_status(data_dir, pid), now);
+            let verdict = decide(&tracker.tick(started, now, exit.is_none()));
+            let stalled = matches!(verdict, Verdict::Wait { stalled: true });
+            let busy = match (&verdict, tracker.status()) {
+                (Verdict::Wait { stalled: false }, Some(s)) if s.state == "running" => {
+                    Some(s.describe())
+                }
+                _ => None,
+            };
+            self.publish(
+                generation,
+                app,
+                tracker.payload(started, exit.is_none(), stalled),
+                busy,
+            );
+            let label = tracker
+                .status()
+                .map_or_else(|| "engine start".to_owned(), StartupStatus::describe);
+            match verdict {
+                Verdict::Wait { .. } => {}
+                Verdict::Failed(error) => bail!("engine startup failed at {label}: {error}"),
+                Verdict::Exited => bail!(
+                    "daemon exited before listening (exit code {})",
+                    exit.unwrap_or_default()
+                ),
+                Verdict::Stalled => bail!(
+                    "engine stalled at {label}: no heartbeat for {} min",
+                    HARD_STALL.as_secs() / 60
+                ),
+                Verdict::TimedOut => bail!(self.timeout_message(addr)),
+            }
+            std::thread::sleep(TICK.saturating_sub(tick.elapsed()));
+        }
+    }
+
+    /// The pre-222 timeout (an engine without `startup.json`): names the likely cause (Unix: a
+    /// shell startup stuck on a prompt) and quotes the transcript's tail.
+    fn timeout_message(&self, addr: SocketAddr) -> String {
+        let text = strip_controls(&lock(&self.log));
+        let mut msg = format!("no daemon on {addr} after {} s", FALLBACK_CAP.as_secs());
+        if cfg!(unix) && waiting_for_input(&text) {
+            msg.push_str(": your shell startup is waiting for input");
+        }
+        let tail = last_lines(&text, 5);
+        if !tail.is_empty() {
+            msg.push('\n');
+            msg.push_str(&tail);
+        }
+        msg
+    }
+
+    /// Emit `startup-progress` and keep it for `startup_status`, unless a relaunch superseded
+    /// `generation` (its reset must not be overwritten by the old start).
+    fn publish(
+        &self,
+        generation: u64,
+        app: &AppHandle,
+        payload: StartupProgress,
+        busy: Option<String>,
+    ) {
+        {
+            let inner = lock(&self.inner);
+            if inner.generation != generation {
+                return;
+            }
+            *lock(&self.progress) = Shown {
+                payload: payload.clone(),
+                busy,
+            };
+        }
+        if let Err(e) = app.emit(PROGRESS_EVENT, &payload) {
+            tracing::warn!(error = %e, "startup-progress emit");
+        }
+    }
+}
+
+/// 222: the fields of `startup.json` the shell decides on; unknown fields are ignored and
+/// missing ones default, the event forwards the raw JSON.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+struct StartupStatus {
+    pid: u32,
+    seq: u64,
+    hb_ms: u64,
+    /// `running` | `ready` | `failed`.
+    state: String,
+    phase: String,
+    label: String,
+    step: Option<Step>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+struct Step {
+    n: u64,
+    of: u64,
+}
+
+impl StartupStatus {
+    /// `Migrating agent.db (3/78)`: the label (else the phase id) and the step when its total is known.
+    fn describe(&self) -> String {
+        let base = [&self.label, &self.phase]
+            .into_iter()
+            .find(|s| !s.trim().is_empty())
+            .map_or("engine start", |s| s.as_str());
+        match &self.step {
+            Some(Step { n, of }) if *of > 0 => format!("{base} ({n}/{of})"),
+            _ => base.to_owned(),
+        }
+    }
+}
+
+/// `startup.json` parsed, with the raw JSON kept for the event; `None` when unreadable.
+fn parse_status(bytes: &[u8]) -> Option<(StartupStatus, serde_json::Value)> {
+    let raw: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let status = StartupStatus::deserialize(&raw).ok()?;
+    Some((status, raw))
+}
+
+/// `<data_dir>/startup.json` when it is `pid`'s (a file from an earlier boot is not this start's).
+fn read_status(data_dir: &Path, pid: Option<u32>) -> Option<(StartupStatus, serde_json::Value)> {
+    let pid = pid?;
+    let bytes = std::fs::read(data_dir.join(STARTUP_FILE)).ok()?;
+    parse_status(&bytes).filter(|(s, _)| s.pid == pid)
+}
+
+/// This start's view of `startup.json` over time: the last record seen and when `seq` and the
+/// heartbeat last moved (by our clock, so the engine's wall clock and a sleeping laptop do not count).
+struct Tracker {
+    seen: Option<(StartupStatus, serde_json::Value)>,
+    seq_at: Instant,
+    hb_at: Instant,
+}
+
+impl Tracker {
+    fn new(now: Instant) -> Self {
+        Self {
+            seen: None,
+            seq_at: now,
+            hb_at: now,
+        }
+    }
+
+    /// A missing or unreadable file keeps the last record seen.
+    fn observe(&mut self, next: Option<(StartupStatus, serde_json::Value)>, now: Instant) {
+        let Some(next) = next else { return };
+        match &self.seen {
+            Some((prev, _)) if prev.seq == next.0.seq => {
+                if prev.hb_ms != next.0.hb_ms {
+                    self.hb_at = now;
+                }
+            }
+            // First sight or progress: both clocks restart (progress is liveness too).
+            _ => {
+                self.seq_at = now;
+                self.hb_at = now;
+            }
+        }
+        self.seen = Some(next);
+    }
+
+    fn status(&self) -> Option<&StartupStatus> {
+        self.seen.as_ref().map(|(s, _)| s)
+    }
+
+    fn tick(&self, started: Instant, now: Instant, alive: bool) -> Tick<'_> {
+        Tick {
+            waited: now.duration_since(started),
+            alive,
+            status: self.status(),
+            since_seq: now.duration_since(self.seq_at),
+            since_hb: now.duration_since(self.hb_at),
+        }
+    }
+
+    fn payload(&self, started: Instant, alive: bool, stalled: bool) -> StartupProgress {
+        StartupProgress {
+            status: self.seen.as_ref().map(|(_, raw)| raw.clone()),
+            alive,
+            stalled,
+            waited_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+}
+
+/// What [`decide`] sees on one tick of the wait (the port did not answer).
+struct Tick<'a> {
+    /// Since the spawn.
+    waited: Duration,
+    /// The child has not exited.
+    alive: bool,
+    /// The last `startup.json` seen for this pid.
+    status: Option<&'a StartupStatus>,
+    /// Since `seq` last changed (or the record was first seen).
+    since_seq: Duration,
+    /// Since the heartbeat (or `seq`) last changed.
+    since_hb: Duration,
+}
+
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    Wait {
+        stalled: bool,
+    },
+    /// `startup.json` says `failed`, with its `error`.
+    Failed(String),
+    Exited,
+    /// No heartbeat for [`HARD_STALL`].
+    Stalled,
+    /// No `startup.json` (older engine) and no port within [`FALLBACK_CAP`].
+    TimedOut,
+}
+
+/// 222: the wait's decision, port aside. An engine that writes `startup.json` gets no cap while
+/// its heartbeat beats; one that does not (older than 222) gets the pre-222 port wait, capped at
+/// [`FALLBACK_CAP`]. A record that shows up late, inside that cap, still switches to the first.
+fn decide(t: &Tick<'_>) -> Verdict {
+    if let Some(s) = t.status
+        && s.state == "failed"
+    {
+        return Verdict::Failed(s.error.clone().unwrap_or_else(|| "unknown error".into()));
+    }
+    if !t.alive {
+        return Verdict::Exited;
+    }
+    match t.status {
+        Some(_) if t.since_hb >= HARD_STALL => Verdict::Stalled,
+        Some(_) => Verdict::Wait {
+            stalled: t.since_seq >= SOFT_STALL,
+        },
+        None if t.waited >= FALLBACK_CAP => Verdict::TimedOut,
+        None => Verdict::Wait { stalled: false },
     }
 }
 
@@ -424,35 +882,6 @@ fn append(log: &Mutex<Vec<u8>>, chunk: &[u8]) {
     }
 }
 
-/// 18 §2 step 5 / §4: poll the port every 200 ms for 15 s; an early child exit
-/// (shell error, missing binary) fails fast, a timeout names the likely cause
-/// (Unix: a shell startup stuck on a prompt) and quotes the transcript's tail.
-fn wait_ready(addr: SocketAddr, child: &mut Child, log: &Mutex<Vec<u8>>) -> anyhow::Result<()> {
-    let deadline = Instant::now() + READY_TIMEOUT;
-    loop {
-        if TcpStream::connect_timeout(&addr, POLL).is_ok() {
-            return Ok(());
-        }
-        if let Some(code) = exited(child)? {
-            bail!("daemon exited before listening (exit code {code})");
-        }
-        if Instant::now() >= deadline {
-            let text = strip_controls(&lock(log));
-            let mut msg = format!("no daemon on {addr} after {} s", READY_TIMEOUT.as_secs());
-            if cfg!(unix) && waiting_for_input(&text) {
-                msg.push_str(": your shell startup is waiting for input");
-            }
-            let tail = last_lines(&text, 5);
-            if !tail.is_empty() {
-                msg.push('\n');
-                msg.push_str(&tail);
-            }
-            bail!(msg);
-        }
-        std::thread::sleep(POLL);
-    }
-}
-
 /// The transcript without terminal control sequences (CSI, OSC/DCS/PM/APC and
 /// two-byte escapes) and stray C0 bytes: conhost's pseudo-console handshake
 /// (`\x1b[?9001h`, `\x1b]0;…\x07`, `\x1b[6n`) is not something a shell said.
@@ -535,6 +964,15 @@ impl Daemon {
             .and_then(|pid| platform::process::ProcessTree::adopt(pid).ok());
         #[cfg(windows)]
         return Some(self.tree.clone());
+    }
+
+    /// The engine's pid (Unix: the shell `exec`s into it, so the pty child's pid is the engine's):
+    /// `startup.json` with any other pid is an earlier boot's.
+    fn pid(&self) -> Option<u32> {
+        #[cfg(unix)]
+        return self.child.process_id();
+        #[cfg(windows)]
+        return Some(self.child.id());
     }
 }
 
@@ -671,5 +1109,145 @@ mod tests {
             "abcd"
         );
         assert_eq!(last_lines("a\r\n\r\nb\nc\n", 2), "b\nc");
+    }
+
+    const RECORD: &[u8] = br#"{"v":1,"pid":123,"started_ms":1764160000000,"seq":42,"hb_ms":1764160003000,
+        "state":"running","phase":"migrate:agent","label":"Migrating agent.db","step":{"n":3,"of":78},
+        "done":[{"phase":"config","label":"Reading config","ms":12}],"error":null,"later":{"x":1}}"#;
+
+    #[test]
+    fn startup_record_parses_and_keeps_raw() {
+        let (s, raw) = parse_status(RECORD).expect("parses");
+        assert_eq!((s.pid, s.seq, s.state.as_str()), (123, 42, "running"));
+        assert_eq!(s.step, Some(Step { n: 3, of: 78 }));
+        assert_eq!(s.describe(), "Migrating agent.db (3/78)");
+        // The event forwards what the engine wrote, unknown fields included.
+        assert_eq!(raw["done"][0]["ms"], 12);
+        assert_eq!(raw["later"]["x"], 1);
+    }
+
+    #[test]
+    fn startup_record_tolerates_missing_fields() {
+        let (s, _) = parse_status(
+            br#"{"pid":7,"state":"failed","error":"db locked","phase":"migrate:mesh"}"#,
+        )
+        .expect("parses");
+        assert_eq!((s.seq, s.step.clone()), (0, None));
+        assert_eq!(s.error.as_deref(), Some("db locked"));
+        // No label: the phase id; a step without a total shows no count.
+        let s = StartupStatus {
+            step: Some(Step { n: 4, of: 0 }),
+            ..s
+        };
+        assert_eq!(s.describe(), "migrate:mesh");
+        assert_eq!(StartupStatus::default().describe(), "engine start");
+        assert!(parse_status(b"{\"pid\":").is_none());
+        assert!(parse_status(br#"{"pid":"seven"}"#).is_none());
+    }
+
+    fn running() -> StartupStatus {
+        parse_status(RECORD).unwrap().0
+    }
+
+    fn tick(
+        waited: u64,
+        alive: bool,
+        status: Option<&StartupStatus>,
+        since_seq: u64,
+        since_hb: u64,
+    ) -> Tick<'_> {
+        Tick {
+            waited: Duration::from_secs(waited),
+            alive,
+            status,
+            since_seq: Duration::from_secs(since_seq),
+            since_hb: Duration::from_secs(since_hb),
+        }
+    }
+
+    #[test]
+    fn progressing_engine_has_no_cap() {
+        let s = running();
+        let wait = Verdict::Wait { stalled: false };
+        assert_eq!(decide(&tick(15, true, Some(&s), 1, 1)), wait);
+        assert_eq!(decide(&tick(3600, true, Some(&s), 89, 1)), wait);
+    }
+
+    #[test]
+    fn quiet_engine_is_stalled_then_failed() {
+        let s = running();
+        // Heartbeat but no progress for 90 s: flagged, still waiting.
+        assert_eq!(
+            decide(&tick(200, true, Some(&s), 90, 1)),
+            Verdict::Wait { stalled: true }
+        );
+        // No heartbeat for 10 min: give up.
+        assert_eq!(
+            decide(&tick(700, true, Some(&s), 600, 599)),
+            Verdict::Wait { stalled: true }
+        );
+        assert_eq!(
+            decide(&tick(700, true, Some(&s), 600, 600)),
+            Verdict::Stalled
+        );
+    }
+
+    #[test]
+    fn failure_and_exit_end_the_wait() {
+        let failed = StartupStatus {
+            state: "failed".into(),
+            error: Some("migration 12 failed".into()),
+            ..running()
+        };
+        // `failed` wins over the exit it usually comes with: it says why.
+        assert_eq!(
+            decide(&tick(5, false, Some(&failed), 0, 0)),
+            Verdict::Failed("migration 12 failed".into())
+        );
+        assert_eq!(
+            decide(&tick(5, false, Some(&running()), 0, 0)),
+            Verdict::Exited
+        );
+        assert_eq!(decide(&tick(5, false, None, 0, 0)), Verdict::Exited);
+    }
+
+    #[test]
+    fn engine_without_record_gets_the_old_capped_wait() {
+        let wait = Verdict::Wait { stalled: false };
+        assert_eq!(decide(&tick(20, true, None, 20, 20)), wait);
+        assert_eq!(decide(&tick(59, true, None, 59, 59)), wait);
+        assert_eq!(decide(&tick(60, true, None, 60, 60)), Verdict::TimedOut);
+    }
+
+    #[test]
+    fn tracker_clocks_follow_seq_and_heartbeat() {
+        let t0 = Instant::now();
+        let mut tracker = Tracker::new(t0);
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let record = |seq: u64, hb_ms: u64| {
+            let s = StartupStatus {
+                seq,
+                hb_ms,
+                ..running()
+            };
+            Some((s, serde_json::Value::Null))
+        };
+        tracker.observe(record(1, 1000), at(10));
+        // Heartbeat only: liveness moves, progress does not.
+        tracker.observe(record(1, 2000), at(100));
+        let t = tracker.tick(t0, at(110), true);
+        assert_eq!(
+            (t.since_seq, t.since_hb),
+            (Duration::from_secs(100), Duration::from_secs(10))
+        );
+        assert_eq!(decide(&t), Verdict::Wait { stalled: true });
+        // A missing file keeps the last record; progress restarts both clocks.
+        tracker.observe(None, at(120));
+        tracker.observe(record(2, 2000), at(130));
+        let t = tracker.tick(t0, at(131), true);
+        assert_eq!(
+            (t.since_seq, t.since_hb),
+            (Duration::from_secs(1), Duration::from_secs(1))
+        );
     }
 }
