@@ -242,7 +242,7 @@ jobs:
       - name: Install cargo-tauri and just
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-tauri,just
+          tool: tauri-cli@2.12.6,just
 
       - name: Install Homebrew build tools
         run: |
@@ -428,7 +428,7 @@ jobs:
       - name: Install cargo-tauri and just
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-tauri,just
+          tool: tauri-cli@2.12.6,just
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -542,7 +542,7 @@ jobs:
       - name: Install cargo-tauri and just
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-tauri,just
+          tool: tauri-cli@2.12.6,just
 
       - name: Ensure Windows native build tools (LLVM, protoc, cmake, perl, nasm)
         shell: pwsh
@@ -714,13 +714,13 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-tauri and minisign
+      - name: Install cargo-tauri
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-tauri,minisign
+          tool: tauri-cli@2.12.6
 
-      - name: Install awscli and jq
-        run: brew install awscli jq
+      - name: Install awscli, jq, and minisign
+        run: brew install awscli jq minisign
 
       - name: Configure Homebrew tap credentials
         env:
@@ -899,6 +899,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Download TypeScript bindings for relay web UI
+        if: matrix.name == 'relay'
+        uses: actions/download-artifact@v4
+        with:
+          name: ts-bindings
+          path: crates/desktop/ui/src/rpc/bindings
 
       - name: Fetch pinned iroh-relay release tarballs
         if: matrix.fetch_iroh
