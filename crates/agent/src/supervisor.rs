@@ -12916,6 +12916,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                     tracing::info!(
                         "accounting: projects/cost_owners replicated ({n} row(s) announced)"
                     );
+                    crate::projects::watch(rt2.clone(), &handle);
                     crate::rpc_suffixes::watch(rt2, handle);
                 }
                 Err(e) => tracing::info!("accounting: replication unavailable ({e}); local only"),
