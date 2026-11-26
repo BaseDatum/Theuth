@@ -187,17 +187,22 @@ test('the bar fits its pane instead of pushing buttons out: tighter gaps and 32 
   expect(meta).toContain("waiting: { icon: Shield, tone: 'text-danger motion-safe:animate-pulse'")
 }, 30_000)
 
-test('mic, send and talk keep exactly the conditions they had before the shield (86e625424~1)', () => {
+test('mic, send and talk keep their conditions: Send holds 1.4 s after a send, and stays live while dictating', () => {
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
   // Talk: voice allowed, not dictating, no note held, an empty box.
   expect(src).toContain(") : canDictate && !dictating && stage === 'idle' && !text.trim() && (")
   // Mic: voice allowed, unless dictation is live (its stop lives in the voice bar).
   expect(src).toContain('{canDictate && !(dictating && dict.active) && (')
   expect(src).toContain('const canDictate = voice && !priv && !readOnly')
-  // Send (or Steer + Stop while a turn runs) whenever no voice note holds the row.
-  expect(src).toContain("{stage === 'idle' &&\n            (at !== 'idle' && session ? (")
-  // (An attachment still uploading also holds Send: `waiting`.)
-  expect(src).toContain('<SendButton disabled={!filled || busy || dictating || readOnly || !!starting} waiting={uploading}')
+  // Send (or Steer + Stop while a turn runs) whenever no voice note holds the row. After each send Send keeps the
+  // slot 1.4 s (`playing`, the eclipse) before Steer + Stop take it; reduced motion never sets `playing`.
+  expect(src).toContain('const stopping = at !== \'idle\' && !!session && !playing')
+  expect(src).toContain("{stage === 'idle' &&\n            (stopping ? (")
+  expect(src).toContain('setTimeout(() => setPlaying(false), 1400)')
+  // Send and Steer stay live while dictating (pressing either stops dictation and sends once the words land), so
+  // `dictating` is not in either disabled set. An attachment still uploading holds Send: `waiting`.
+  expect(src).toContain('<SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading}')
+  expect(src).toContain('aria-disabled={!filled || busy || readOnly || !!uploading}')
 })
 
 test('the box never clips its own content: no max height or overflow on the box, the text keeps a one-line floor', () => {
