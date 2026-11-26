@@ -15,6 +15,7 @@ import { isPopout, openPopout } from '@/lib/popout'
 import type { Priority, Task, TaskState } from '@/rpc/bindings/method.roster.output'
 import { ProjectCombobox } from '../NewTaskSheet'
 import { OwnerSelect } from '../OwnerSelect'
+import { AccentField, ChildrenList, ParentBreadcrumb, ParentField } from '../HierarchyFields'
 import { TaskPicker } from '../TaskPicker'
 import { ownerText, parseBlocker, parseOwner, shortId, STATES } from '../helpers'
 import { useAgents, useCloseDone, useMoveTask, useTask, useTaskUpdate } from '../queries'
@@ -148,6 +149,7 @@ function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 text-sm">
+      <ParentBreadcrumb task={t} onOpen={onSelect} />
       <div className="flex flex-col gap-1.5">
         <Input
           aria-label="Title"
@@ -216,6 +218,15 @@ function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task
       </Field>
       <Field label="Project" htmlFor="tp-project">
         <ProjectCombobox id="tp-project" value={t.project} onChange={(v) => v !== t.project && patch.mutate({ project: v?.trim() || null })} />
+      </Field>
+      <Field label="Parent">
+        <ParentField task={t} onOpen={onSelect} />
+      </Field>
+      <Field label="Children">
+        <ChildrenList task={t} onOpen={onSelect} />
+      </Field>
+      <Field label="Accent">
+        <AccentField task={t} />
       </Field>
       <Field label="Brief" htmlFor="tp-brief" hint="markdown">
         <Textarea id="tp-brief" rows={6} placeholder="Context, constraints, links" className="text-[13px]" {...brief.field} />

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { popoutLabel } from '@/lib/popout'
 import type { Task } from '@/rpc/bindings/method.roster.output'
-import { dependents, graphPath, graphPopout, searchProject, taskGraph, toElk } from './model'
+import { dependents, type GraphOpts, graphPath, graphPopout, searchProject, taskGraph, toElk } from './model'
 
 let clock = 1
 const task = (id: string, over: Partial<Task> = {}): Task => ({
+  accent: null,
   attachments: [],
   blockers: [],
   blocks: [],
@@ -34,7 +35,7 @@ const task = (id: string, over: Partial<Task> = {}): Task => ({
   ...over,
 })
 
-const edgeIds = (ts: Task[], opts = { hideDone: false, parentEdges: false }) => taskGraph(ts, opts).edges.map((e) => `${e.kind}:${e.source}>${e.target}`)
+const edgeIds = (ts: Task[], opts: GraphOpts = { hideDone: false, parentEdges: false, inheritAccent: false }) => taskGraph(ts, opts).edges.map((e) => `${e.kind}:${e.source}>${e.target}`)
 
 describe('taskGraph', () => {
   it('draws B → A when A is blocked by B, open while B is not done', () => {
@@ -76,7 +77,7 @@ describe('taskGraph', () => {
 
   it('hide done drops closed tasks and their edges, no pill for a satisfied blocker', () => {
     const ts = [task('a', { blockers: ['c'] }), task('c', { state: 'done' }), task('d', { state: 'cancelled' })]
-    const g = taskGraph(ts, { hideDone: true, parentEdges: false })
+    const g = taskGraph(ts, { hideDone: true, parentEdges: false, inheritAccent: false })
     expect(g.nodes.map((n) => n.id)).toEqual(['a'])
     expect(g.edges).toEqual([])
   })
@@ -84,7 +85,7 @@ describe('taskGraph', () => {
   it('parent edges only with the chip on and only between shown tasks', () => {
     const ts = [task('root'), task('kid', { parent: 'root' }), task('orphan', { parent: 'gone' })]
     expect(edgeIds(ts)).toEqual([])
-    expect(edgeIds(ts, { hideDone: false, parentEdges: true })).toEqual(['parent:root>kid'])
+    expect(edgeIds(ts, { hideDone: false, parentEdges: true, inheritAccent: false })).toEqual(['parent:root>kid'])
   })
 
   it('the hash ignores states, titles and owners, but not ids or edges', () => {
@@ -111,7 +112,7 @@ describe('taskGraph', () => {
     expect(after.hash).toBe(before.hash)
     expect(after.nodes.find((n) => n.id === 'a')).toMatchObject({ waiting: false })
     // Hidden once done tasks are hidden; an unknown or self id draws nothing; a live blocker wins over a resolved one.
-    expect(taskGraph(resolved, { hideDone: true, parentEdges: false }).edges).toEqual([])
+    expect(taskGraph(resolved, { hideDone: true, parentEdges: false, inheritAccent: false }).edges).toEqual([])
     expect(taskGraph([{ ...task('x'), resolved_blockers: ['gone', 'x'] } as Task]).edges).toEqual([])
     const both = taskGraph([{ ...task('y', { blockers: ['z'] }), resolved_blockers: ['z'] } as Task, task('z')])
     expect(both.edges.map((e) => e.open)).toEqual([true])

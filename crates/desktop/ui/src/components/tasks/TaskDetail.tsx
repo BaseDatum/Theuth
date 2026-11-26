@@ -35,6 +35,7 @@ import { AttachmentsEditor } from './Attachments'
 import { rememberOpenedTask } from './boardMemory'
 import { MoveButton, TaskMenu } from './MoveHome'
 import { OwnerSelect } from './OwnerSelect'
+import { AccentField, ChildrenList, ParentBreadcrumb, ParentField } from './HierarchyFields'
 import { TaskChips } from './TaskChips'
 import { askSecs, engineName, homeLine } from './home'
 import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId, stateChip, wakePhrase } from './helpers'
@@ -94,6 +95,7 @@ export function TaskDetail({ id }: { id: string }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-6 p-4 md:flex-row">
           <div className="flex min-w-0 flex-1 flex-col gap-6">
+            <Crumbs task={t} />
             {home && (
               <div className="text-sm">
                 <p>
@@ -124,6 +126,7 @@ export function TaskDetail({ id }: { id: string }) {
             </Section>
             <Attachments task={t} />
             <Relations task={t} />
+            <Hierarchy task={t} />
             <Placement task={t} events={events.data ?? []} />
             <Section title="Thread">
               <Thread task={t} />
@@ -274,6 +277,32 @@ function Relations({ task: t }: { task: Task }) {
           onAdd={(b) => patch.mutate({ id: b.id, blockers: [...b.blockers, t.id] })}
           onRemove={(b) => patch.mutate({ id: b.id, blockers: b.blockers.filter((x) => x !== t.id) })}
         />
+      </Section>
+    </div>
+  )
+}
+
+/** The way to a task's ancestors, root first (nothing for a top-level task). */
+function Crumbs({ task: t }: { task: Task }) {
+  const navigate = useNavigate()
+  return <ParentBreadcrumb task={t} onOpen={(id) => void navigate({ to: '/tasks/$id', params: { id } })} />
+}
+
+/** Parent (set, change, clear), children with their progress, and the accent colour. */
+function Hierarchy({ task: t }: { task: Task }) {
+  const navigate = useNavigate()
+  const open = (id: string) => void navigate({ to: '/tasks/$id', params: { id } })
+  return (
+    <div className="grid gap-6 sm:grid-cols-2">
+      <Section title="Parent">
+        <ParentField task={t} onOpen={open} />
+        <div className="mt-3">
+          <h4 className="mb-1.5 text-xs font-semibold tracking-wide text-fg-secondary uppercase">Accent</h4>
+          <AccentField task={t} />
+        </div>
+      </Section>
+      <Section title="Children">
+        <ChildrenList task={t} onOpen={open} />
       </Section>
     </div>
   )

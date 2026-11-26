@@ -1,6 +1,6 @@
 import { Link, getRouteApi } from '@tanstack/react-router'
-import { Blocks, Circle, Network, Play, Plus } from 'lucide-react'
-import { type MutableRefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Blocks, Circle, CornerLeftUp, Hourglass, ListTree, Network, Play, Plus } from 'lucide-react'
+import { type MutableRefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
@@ -23,6 +23,7 @@ import { CardMenu } from './MoveHome'
 import { engines, homeEngine, isMuted, mutedTitle, onMachine } from './home'
 import { DRAG_STATES, STATES, age, canDrag, columns, nodesOf, ownerLabel, parseBlocker, stateChip } from './helpers'
 import { useAgents, useBoardProjects, useLiveTasks, useMesh, useMoveTask, useTasks } from './queries'
+import { accentColor, type ChildStats, childStats, isAccent, waitingOnChildren } from './hierarchy'
 
 const route = getRouteApi('/tasks/')
 // Radix Select refuses '' as a value: `any` stands for no filter, `all` for every project, labels get a prefix.
@@ -123,6 +124,12 @@ export function Board() {
     engine: search.engine ?? null,
     project: project === '' ? null : project,
   })
+  // The hierarchy reads every task (the filters above may hide a card's parent or children).
+  const everyTask = useTasks().data
+  const hierarchy = useMemo(() => {
+    const all = everyTask ?? []
+    return { kids: childStats(all), titles: new Map(all.map((t) => [t.id, t.title])) }
+  }, [everyTask])
   const set = (patch: Partial<typeof search>) =>
     void navigate({ search: (s) => ({ ...s, ...patch }), replace: true })
   // 118: the device remembers the RAW url search (a never-picked project stays "first project", `{}` is "no filters");
@@ -291,6 +298,7 @@ export function Board() {
                             key={t.id}
                             task={t}
                             returned={t.id === returned}
+                            hierarchy={{ parentTitle: t.parent ? (hierarchy.titles.get(t.parent) ?? null) : null, children: hierarchy.kids.get(t.id) ?? null }}
                             drag={DRAG_STATES.includes(t.state) ? { ref: dragRef, set: setDrag, onDrop: (to) => move.mutate({ id: t.id, state: to }) } : undefined}
                             onStart={t.state === 'backlog' ? () => move.mutate({ id: t.id, state: 'todo' }) : undefined}
                           />
@@ -317,18 +325,37 @@ export function Board() {
   )
 }
 
+/** What a card shows of the hierarchy: its parent's title (a small chip) and its children's progress. */
+export type CardHierarchy = { parentTitle: string | null; children: ChildStats | null }
+
 /**
  * One card: title, state chip ("not started", "queued for ops's desk", "at ops's desk · open session"), owner and
  * reviewer chips, node, age, blocked/waiting badges, a progress dot while checked out. `onStart` renders the Start
  * button (backlog → todo, the keyboard's way); `drag` makes the card a pointer-drag source between Backlog and Todo.
  * `returned` (118) rings the card the user just came back from; the ring fades out when the prop drops.
  */
-export function TaskCard({ task: t, onStart, drag, returned }: { task: Task; onStart?: () => void; drag?: DragProps; returned?: boolean }) {
+export function TaskCard({
+  task: t,
+  onStart,
+  drag,
+  returned,
+  hierarchy,
+}: {
+  task: Task
+  onStart?: () => void
+  drag?: DragProps
+  returned?: boolean
+  hierarchy?: CardHierarchy
+}) {
   const first = t.blockers[0] ? parseBlocker(t.blockers[0]) : null
   const handlers = useCardDrag(t, drag)
   const mesh = useMesh().data
   const home = homeEngine(t, mesh)
   const muted = isMuted(t, mesh)
+  const accent = isAccent(t.accent) ? accentColor(t.accent) : null
+  const children = hierarchy?.children ?? null
+  // A parent with open children counts as waiting for display only.
+  const kids = t.state === 'done' || t.state === 'cancelled' ? null : waitingOnChildren(children ?? undefined)
   return (
     <li
       {...handlers}
@@ -341,11 +368,24 @@ export function TaskCard({ task: t, onStart, drag, returned }: { task: Task; onS
         params={{ id: t.id }}
         draggable={false}
         className={cn(
-          'block rounded-lg border border-border-subtle bg-background p-2.5 text-sm transition-shadow duration-700 hover:bg-layer-2',
+          'relative block overflow-hidden rounded-lg border border-border-subtle bg-background p-2.5 text-sm transition-shadow duration-700 hover:bg-layer-2',
           returned && 'ring-2 ring-primary/60',
+          accent && 'pl-3.5',
         )}
       >
-        <div className="flex items-start gap-1.5">
+        {accent && (
+          <>
+            <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-9" style={{ background: `linear-gradient(color-mix(in oklab, ${accent} 16%, transparent), transparent)` }} />
+            <span aria-hidden className="absolute inset-y-0 left-0 w-1" style={{ background: accent }} />
+          </>
+        )}
+        {t.parent && (
+          <div className="relative mb-1 flex min-w-0 items-center gap-1 pr-5 text-[11px] text-fg-tertiary" title="Parent task">
+            <CornerLeftUp className="size-3 shrink-0" aria-hidden />
+            <span className="truncate">{hierarchy?.parentTitle ?? `task ${t.parent.slice(-6)}`}</span>
+          </div>
+        )}
+        <div className="relative flex items-start gap-1.5">
           {t.checkout && <Circle className="mt-1 size-2 shrink-0 fill-success text-success" aria-label="in progress" />}
           <span className="min-w-0 flex-1 wrap-anywhere pr-5">{t.title}</span>
         </div>
@@ -380,18 +420,32 @@ export function TaskCard({ task: t, onStart, drag, returned }: { task: Task; onS
           {t.where && <Badge variant="outline">{t.where}</Badge>}
           {t.harness && <Badge variant="outline">{t.harness}</Badge>}
           <AttachmentCount items={t.attachments} />
+          {children && children.total > 0 && (
+            <span className="flex items-center gap-0.5 tabular-nums" title={`${children.done} of ${children.total} children done`}>
+              <ListTree className="size-3" aria-hidden />
+              {children.done}/{children.total}
+            </span>
+          )}
           <span className="ml-auto text-fg-tertiary tabular-nums">{age(t.updated_ms)}</span>
         </div>
-        {t.blockers.length > 0 && (
+        {(t.blockers.length > 0 || kids) && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1 text-xs">
             {t.state === 'blocked' && first && (
               <Badge variant="destructive" className="max-w-full">
                 <span className="truncate">blocked: {first.kind === 'task' ? `task ${first.id.slice(-6)}` : first.raw}</span>
               </Badge>
             )}
-            <Badge variant="outline" className="text-fg-secondary">
-              <Blocks /> waiting on {t.blockers.length}
-            </Badge>
+            {t.blockers.length > 0 && (
+              <Badge variant="outline" className="text-fg-secondary">
+                <Blocks /> waiting on {t.blockers.length}
+              </Badge>
+            )}
+            {/* Derived from the children, never a stored blocker: no state changes with it. */}
+            {kids && (
+              <Badge variant="outline" className="border-danger-border text-fg-secondary">
+                <Hourglass /> {kids}
+              </Badge>
+            )}
           </div>
         )}
       </Link>

@@ -1,10 +1,11 @@
-// 214 D6/D7: the project task graph — toolbar (project, filter chips, + task, pop-out), the lazily loaded canvas and the
-// inline editor at its right edge. The same component is the `/tasks/graph` page, its pop-out window and the
-// `tasks-graph` tile; only the chrome around it differs (`variant`). Live through `useLiveTasks` (D5).
+// 214 D6/D7: the project task graph — toolbar (project, filter chips, the "under" filter, + task, pop-out), the
+// blocker-cycle warning, the lazily loaded canvas and the inline editor at its right edge. The same component is the
+// `/tasks/graph` page, its pop-out window and the `tasks-graph` tile; only the chrome around it differs (`variant`).
+// Live through `useLiveTasks` (D5).
 import { useMutation } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { AppWindow, KanbanSquare, Plus } from 'lucide-react'
-import { type KeyboardEvent, lazy, Suspense, useEffect, useState } from 'react'
+import { AppWindow, KanbanSquare, ListTree, Plus, TriangleAlert, X } from 'lucide-react'
+import { type KeyboardEvent, lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { errorText } from '@/components/settings/shared'
@@ -20,9 +21,10 @@ import { Toggle } from '@/components/ui/toggle'
 import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { useApi } from '@/lib/rpc'
 import { Unavailable } from '@/rpc/capabilities'
-import { USER } from '../helpers'
+import { shortId, USER } from '../helpers'
 import { useBoardProjects, useInvalidateTasks, useLiveTasks, useTasks } from '../queries'
-import { DEFAULT_OPTS, type GraphOpts, graphPopout } from './model'
+import { TaskPicker } from '../TaskPicker'
+import { blockerCycles, DEFAULT_OPTS, type GraphOpts, graphPopout, underScope } from './model'
 import { TaskPanel } from './TaskPanel'
 
 const Canvas = lazy(() => import('./Canvas'))
@@ -36,7 +38,11 @@ function useOpts(): [GraphOpts, (o: GraphOpts) => void] {
   const [opts, setOpts] = useState<GraphOpts>(() => {
     try {
       const raw = JSON.parse(localStorage.getItem(OPTS_KEY) ?? 'null') as Partial<GraphOpts> | null
-      return { hideDone: raw?.hideDone === true, parentEdges: raw?.parentEdges === true }
+      return {
+        hideDone: raw?.hideDone === true,
+        parentEdges: typeof raw?.parentEdges === 'boolean' ? raw.parentEdges : DEFAULT_OPTS.parentEdges,
+        inheritAccent: raw?.inheritAccent === true,
+      }
     } catch {
       return DEFAULT_OPTS
     }
@@ -61,7 +67,16 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
   const tasks = useTasks({ owner: null, state: null, engine: null, project })
   const [opts, setOpts] = useOpts()
   const [selected, setSelected] = useState<string | null>(null)
-  useEffect(() => setSelected(null), [project])
+  const [under, setUnder] = useState<string | null>(null)
+  const [pickingUnder, setPickingUnder] = useState(false)
+  useEffect(() => {
+    setSelected(null)
+    setUnder(null)
+  }, [project])
+  const underTask = under === null ? undefined : tasks.data?.find((t) => t.id === under)
+  // Blocker cycles among what is shown: drawn and flagged, never a blank graph — the warning says which tasks.
+  const cycles = useMemo(() => (tasks.data ? blockerCycles(underScope(tasks.data, under)) : []), [tasks.data, under])
+  const titleOf = (id: string) => tasks.data?.find((t) => t.id === id)?.title ?? `#${shortId(id)}`
   // Esc inside the graph (never a key pressed elsewhere — the chat beside a tile keeps its own Esc): a field in the
   // editor gives up focus first, then the editor closes. An open layer handles its own Escape.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -94,9 +109,32 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
       <Toggle variant="outline" size="sm" className="px-2.5 text-[13px]" pressed={opts.hideDone} onPressedChange={(v) => setOpts({ ...opts, hideDone: v })}>
         Hide done
       </Toggle>
-      <Toggle variant="outline" size="sm" className="px-2.5 text-[13px]" pressed={opts.parentEdges} onPressedChange={(v) => setOpts({ ...opts, parentEdges: v })}>
-        Parent links
+      <Toggle variant="outline" size="sm" className="px-2.5 text-[13px]" pressed={opts.parentEdges} onPressedChange={(v) => setOpts({ ...opts, parentEdges: v })} title="Draw parent → child links (dashed)">
+        Hierarchy
       </Toggle>
+      <Toggle variant="outline" size="sm" className="px-2.5 text-[13px]" pressed={opts.inheritAccent} onPressedChange={(v) => setOpts({ ...opts, inheritAccent: v })} title="A task without an accent shows its nearest ancestor's, faded">
+        Inherit accent
+      </Toggle>
+      {underTask ? (
+        <Button variant="outline" size="sm" className="max-w-56 gap-1 px-2 text-[13px]" onClick={() => setUnder(null)} title="Show every task again">
+          <ListTree /> <span className="truncate">Under {underTask.title}</span> <X />
+        </Button>
+      ) : (
+        <Button variant="ghost" size="sm" className="text-[13px]" onClick={() => setPickingUnder(true)} title="Only a task and everything under it">
+          <ListTree /> Under…
+        </Button>
+      )}
+      {pickingUnder && (
+        <TaskPicker
+          open
+          onOpenChange={setPickingUnder}
+          title="Show only the tasks under"
+          project={project}
+          states={['backlog', 'todo', 'doing', 'review', 'blocked', 'done']}
+          exclude={[]}
+          onPick={(t) => setUnder(t.id)}
+        />
+      )}
       <div className="ml-auto flex items-center gap-1">
         {variant === 'page' && (
           <Button asChild variant="ghost" size="sm">
@@ -121,6 +159,21 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
       ) : (
         <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-1">{toolbar}</div>
       )}
+      {cycles.length > 0 && (
+        <div role="status" className="flex shrink-0 items-start gap-2 border-b border-warning-border bg-warning-bg px-3 py-1.5 text-[13px]">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+          <span>
+            {cycles.length === 1 ? 'A blocker cycle' : `${cycles.length} blocker cycles`} — these tasks wait on each other, so none can start:{' '}
+            {cycles.map((c, i) => (
+              <span key={c.join()} className="font-medium">
+                {i > 0 && '; '}
+                {[...c, c[0]!].map(titleOf).join(' → ')}
+              </span>
+            ))}
+            . Remove one blocker to break it.
+          </span>
+        </div>
+      )}
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
         {/* `isPending` alone is also a disabled query (an engine without `tasks_list`), which never loads. */}
         {tasks.isPending && tasks.fetchStatus === 'idle' && <Unavailable />}
@@ -140,7 +193,7 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
         {tasks.data && tasks.data.length > 0 && (
           <Suspense fallback={<div className="size-full bg-background" />}>
             {/* Keyed by project: another project is a fresh drawing, fitted on its first layout. */}
-            <Canvas key={project ?? ''} tasks={tasks.data} opts={opts} selected={selected} onSelect={setSelected} panelOpen={selected !== null} />
+            <Canvas key={project ?? ''} tasks={tasks.data} opts={opts} under={underTask ? under : null} selected={selected} onSelect={setSelected} panelOpen={selected !== null} />
           </Suspense>
         )}
         {selected !== null && <TaskPanel id={selected} known={tasks.data ?? []} onSelect={setSelected} onClose={() => setSelected(null)} />}

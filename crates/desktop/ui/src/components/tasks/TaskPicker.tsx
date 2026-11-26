@@ -1,9 +1,12 @@
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import type { Task } from "@/rpc/bindings/method.roster.output"
+import type { Task, TaskState } from "@/rpc/bindings/method.roster.output"
 import { ownerLabel, shortId } from './helpers'
 import { useTasks } from './queries'
 
-/** Pick one open task of `project` by title (blocked by / blocks); `exclude` hides ids already chosen. */
+const OPEN: TaskState[] = ['backlog', 'todo', 'doing', 'review', 'blocked']
+
+/** Pick one task of `project` (`null` = every project) by title — open ones unless `states` says otherwise (blocked by /
+ * blocks / parent / under); `exclude` hides ids already chosen or refused. */
 export function TaskPicker({
   open,
   onOpenChange,
@@ -11,6 +14,7 @@ export function TaskPicker({
   project,
   exclude,
   onPick,
+  states = OPEN,
 }: {
   open: boolean
   onOpenChange(open: boolean): void
@@ -18,8 +22,9 @@ export function TaskPicker({
   project: string | null
   exclude: readonly string[]
   onPick(task: Task): void
+  states?: TaskState[]
 }) {
-  const tasks = useTasks({ owner: null, state: ['backlog', 'todo', 'doing', 'review', 'blocked'], engine: null, project })
+  const tasks = useTasks({ owner: null, state: states, engine: null, project })
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange} title={title} description="Pick a task">
       <CommandInput placeholder="Search tasks by title…" autoFocus />

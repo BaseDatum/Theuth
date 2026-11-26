@@ -1,11 +1,12 @@
 // 214 D8: the task graph's node cards and its edge — imported only by Canvas.tsx, so `@xyflow/react` stays in the
 // lazily loaded chunk. Colours are theme tokens (model.ts `STATE_TONE`), so both themes read.
 import { BaseEdge, type Edge, type EdgeProps, getSmoothStepPath, Handle, type Node, type NodeProps, Position } from '@xyflow/react'
-import { CircleCheck, Gavel, Hourglass, Link2, MessageCircleQuestion, UserRound } from 'lucide-react'
+import { CircleCheck, Gavel, Hourglass, Link2, ListTree, MessageCircleQuestion, TriangleAlert, UserRound } from 'lucide-react'
 import { memo } from 'react'
 import { cn } from '@/lib/utils'
 import type { Priority } from '@/rpc/bindings/method.roster.output'
 import { ownerLabel, shortId } from '../helpers'
+import { accentColor, waitingOnChildren } from '../hierarchy'
 import { type EdgeModel, type PillNodeModel, pillWidth, STATE_TONE, TASK_H, TASK_W, type TaskNodeModel } from './model'
 
 export type TaskNodeData = { model: TaskNodeModel; selected: boolean }
@@ -36,13 +37,17 @@ const PRIORITY: Record<Priority, { mark: string; tone: string } | null> = {
   low: { mark: '↓', tone: 'var(--color-fg-tertiary)' },
 }
 
-/** A task card: state stripe and badge, title (two lines), owner, priority, the done-when hint, `#id`. Closed tasks are
- * dimmed; a task still waiting on an open blocker carries the hourglass. */
+/** A task card: state stripe and badge, title (two lines), owner, priority, the done-when hint, children progress,
+ * `#id`. An accent turns the stripe and the title band its colour (faded when inherited from an ancestor). Closed tasks
+ * are dimmed; a task waiting on an open blocker or open children carries the hourglass; one on a blocker cycle the
+ * warning. */
 export const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskNodeType>) {
   const { model: m, selected } = data
   const t = m.task
   const tone = STATE_TONE[t.state]
   const prio = PRIORITY[t.priority]
+  const accent = m.accent ? accentColor(m.accent.key) : null
+  const kids = waitingOnChildren(m.children ?? undefined)
   return (
     <>
       <Handles />
@@ -51,19 +56,32 @@ export const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskNodeType>
           'tg-node tg-enter relative flex flex-col overflow-hidden rounded-[10px] border border-border-subtle bg-layer-1 py-2 pr-2.5 pl-3.5 text-left shadow-xs',
           selected && 'tg-selected',
           m.closed && 'opacity-55',
+          m.inCycle && 'border-warning',
         )}
         style={{ width: TASK_W, height: TASK_H }}
         data-task-id={t.id}
       >
-        <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ background: tone }} />
-        <div className="flex min-h-0 items-start gap-1.5">
+        {accent && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-0 h-[42px]"
+            style={{ background: `linear-gradient(color-mix(in oklab, ${accent} ${m.accent!.inherited ? 9 : 18}%, transparent), transparent)` }}
+          />
+        )}
+        <span
+          aria-hidden
+          className={cn('absolute inset-y-0 left-0', accent ? 'w-[5px]' : 'w-[3px]')}
+          style={{ background: accent ?? tone, opacity: m.accent?.inherited ? 0.45 : 1 }}
+        />
+        <div className="relative flex min-h-0 items-start gap-1.5">
           {prio && (
             <span className="shrink-0 font-mono text-[12px] leading-[17px] font-bold" style={{ color: prio.tone }} title={`${t.priority} priority`}>
               {prio.mark}
             </span>
           )}
           <span className={cn('line-clamp-2 min-w-0 flex-1 text-[13px] leading-[17px] font-medium text-foreground wrap-anywhere', t.state === 'cancelled' && 'line-through')}>{t.title}</span>
-          {m.waiting && <Hourglass className="mt-0.5 size-3.5 shrink-0 text-danger" aria-label="waiting on an open blocker" />}
+          {m.inCycle && <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" aria-label="on a blocker cycle" />}
+          {m.waiting && <Hourglass className="mt-0.5 size-3.5 shrink-0 text-danger" aria-label={kids ?? 'waiting on an open blocker'} />}
         </div>
         <div className="mt-auto flex min-w-0 items-center gap-1.5 text-[11px] leading-4">
           <span
@@ -74,6 +92,12 @@ export const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskNodeType>
           </span>
           <span className="min-w-0 truncate text-fg-secondary">{ownerLabel(t.owner)}</span>
           {t.done_when && <CircleCheck className="size-3 shrink-0 text-success" aria-label="has done-when criteria" />}
+          {m.children && m.children.total > 0 && (
+            <span className="flex shrink-0 items-center gap-0.5 text-fg-secondary tabular-nums" title={kids ?? `${m.children.done} of ${m.children.total} children done`}>
+              <ListTree className="size-3" aria-hidden />
+              {m.children.done}/{m.children.total}
+            </span>
+          )}
           <span className="ml-auto shrink-0 font-mono text-fg-tertiary">#{shortId(t.id)}</span>
         </div>
       </div>
@@ -84,7 +108,8 @@ export const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskNodeType>
 const PILL_ICON = { decision: Gavel, person: UserRound, task: Link2, other: MessageCircleQuestion } as const
 const PILL_TITLE = { decision: 'waiting on a decision', person: 'waiting on a person', task: 'a task outside this graph', other: 'a system blocker' } as const
 
-/** A blocker that is not a task here (`decision:`, `person:`, a phrase, another project's task): a small pill. */
+/** A blocker that is not a task here (`decision:`, `person:`, a phrase, another project's task, or — `ghost` — a task
+ * the "under" filter leaves out): a small pill. */
 export const PillNode = memo(function PillNode({ data }: NodeProps<PillNodeType>) {
   const m = data.model
   const Icon = PILL_ICON[m.blocker.kind]
@@ -92,11 +117,14 @@ export const PillNode = memo(function PillNode({ data }: NodeProps<PillNodeType>
     <>
       <Handles />
       <div
-        className="tg-pill tg-enter flex h-7 items-center gap-1.5 rounded-full border border-dashed border-danger-border bg-danger-bg px-2.5 text-[12px] text-foreground"
+        className={cn(
+          'tg-pill tg-enter flex h-7 items-center gap-1.5 rounded-full border border-dashed px-2.5 text-[12px] text-foreground',
+          m.ghost ? 'border-border-strong bg-layer-1 opacity-80' : 'border-danger-border bg-danger-bg',
+        )}
         style={{ width: pillWidth(m.label) }}
-        title={`${PILL_TITLE[m.blocker.kind]}: ${m.blocker.raw}`}
+        title={m.ghost ? `a task outside this view: ${m.label}` : `${PILL_TITLE[m.blocker.kind]}: ${m.blocker.raw}`}
       >
-        <Icon className="size-3.5 shrink-0 text-danger" aria-hidden />
+        <Icon className={cn('size-3.5 shrink-0', m.ghost ? 'text-fg-tertiary' : 'text-danger')} aria-hidden />
         <span className="truncate">{m.label}</span>
       </div>
     </>
@@ -108,7 +136,7 @@ const MARK = { open: 'tg-arrow-open', done: 'tg-arrow-done', parent: 'tg-arrow-p
 const STROKE = {
   open: 'var(--color-fg-accent)',
   done: 'color-mix(in oklab, var(--color-fg-tertiary) 70%, transparent)',
-  parent: 'var(--color-fg-tertiary)',
+  parent: 'color-mix(in oklab, var(--color-fg-secondary) 80%, transparent)',
   pill: 'var(--color-danger)',
 } as const
 
@@ -129,6 +157,28 @@ export function TaskEdgeMarkers() {
         ))}
       </defs>
     </svg>
+  )
+}
+
+/** The edge key at the canvas's top left: what each stroke means (the hierarchy only while it is drawn). */
+export function EdgeLegend({ hierarchy }: { hierarchy: boolean }) {
+  const rows: [string, string, string | undefined][] = [
+    ['blocks', STROKE.open, undefined],
+    ['finished dependency', STROKE.done, undefined],
+    ['outside blocker', STROKE.pill, '2 4'],
+    ...(hierarchy ? ([['parent → child', STROKE.parent, '6 5']] as [string, string, string][]) : []),
+  ]
+  return (
+    <ul aria-label="Edge legend" className="pointer-events-none absolute top-2 left-2 z-[5] space-y-0.5 rounded-md border border-border-subtle bg-background/85 px-2 py-1.5 text-[11px] text-fg-secondary backdrop-blur-sm">
+      {rows.map(([label, stroke, dash]) => (
+        <li key={label} className="flex items-center gap-1.5">
+          <svg aria-hidden width="22" height="6">
+            <line x1="1" y1="3" x2="21" y2="3" style={{ stroke }} strokeWidth="1.75" strokeDasharray={dash} strokeLinecap="round" />
+          </svg>
+          {label}
+        </li>
+      ))}
+    </ul>
   )
 }
 
