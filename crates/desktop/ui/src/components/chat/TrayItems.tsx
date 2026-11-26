@@ -172,7 +172,7 @@ function WhiteboardsButton({ tray, className, children }: { tray: Tray; classNam
 
 /** A tile: one full-width row like a card header — its dash, name, one line of detail and the count at the end. */
 const TILE =
-  'flex min-h-9 w-full min-w-0 shrink-0 items-center gap-2 rounded-xl border bg-background px-3 py-1.5 text-left outline-none hover:bg-layer-2 focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-expanded:bg-layer-2'
+  'tray-float flex min-h-9 w-full min-w-0 shrink-0 items-center gap-2 rounded-xl border px-3 py-1.5 text-left outline-none hover:bg-layer-2 focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-expanded:bg-layer-2'
 
 function TileBody({ color, name, detail, count }: { color: string; name: string; detail: string; count: number }) {
   return (

@@ -1353,6 +1353,21 @@ html .tg-canvas .tg-edge {
 .horizon-stage {
   transform-origin: 50% 100%;
 }
+/* A card or tile of that stack: it floats over the transcript (no band behind the stack), so its own surface carries
+   the contrast — a near-opaque card tint, the content behind it blurred, a soft drop shadow. In `components` so a
+   utility (`hover:bg-layer-2`, `aria-expanded:bg-layer-2`) still wins. */
+@layer components {
+  .tray-float {
+    background-color: color-mix(in oklab, var(--card) 92%, transparent);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+  }
+  @supports (backdrop-filter: blur(12px)) or (-webkit-backdrop-filter: blur(12px)) {
+    .tray-float {
+      -webkit-backdrop-filter: blur(12px) saturate(1.2);
+      backdrop-filter: blur(12px) saturate(1.2);
+    }
+  }
+}
 .tray-dash-side {
   transition: transform 340ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease;
 }

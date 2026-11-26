@@ -94,60 +94,68 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
   const exiting = phase === 'exiting'
   return (
     <>
+      {/* A zero-height anchor on the transcript's bottom edge: the shell hangs above it, so the cards float over the chat
+          instead of pushing it up onto a pane-coloured band. The shell and the gaps between cards let clicks and wheel
+          through to the transcript (`pointer-events-none`); only the cards themselves take them. The shell reaches 20px
+          below the anchor and the stage pads that back (`pb-6` = the old `pb-1` + 20px), with `pt-3` on top: room for the
+          cards' drop shadow inside the shell's clip, the cards themselves where they were. */}
       {mounted && (
-        <div
-          id={blockId}
-          ref={shellRef}
-          aria-hidden={exiting || undefined}
-          className={cn(
-            'mx-auto w-full max-w-[768px] shrink-0 px-4',
-            // While gliding, the stage sits on the shell's floor: the growing height reveals it from the grabber up, in one motion.
-            phase === 'open' ? 'max-h-[calc(var(--visible-band,100dvh)/2)] overflow-y-auto' : 'flex flex-col justify-end overflow-hidden',
-            exiting && 'pointer-events-none',
-          )}
-        >
+        <div className="relative z-20 h-0 w-full shrink-0">
           <div
-            ref={stageRef}
+            id={blockId}
+            ref={shellRef}
+            aria-hidden={exiting || undefined}
             className={cn(
-              'horizon-stage flex flex-col gap-1.5 pb-1',
-              phase === 'entering' && 'horizon-in',
-              exiting && 'horizon-out',
+              'pointer-events-none absolute inset-x-0 -bottom-5 mx-auto w-full max-w-[768px] px-4',
+              // While gliding, the stage sits on the shell's floor: the growing height reveals it from the grabber up, in one motion.
+              phase === 'open' ? 'max-h-[calc(var(--visible-band,100dvh)/2)] overflow-y-auto' : 'flex flex-col justify-end overflow-hidden',
             )}
           >
-            {hasTodos && <TodoCard session={session} />}
-            <TrayTiles tray={tray} />
-            {!!agents.length && (
-              <BackgroundCard title="Subagents" color={backgroundColors.subagents.bg} summary={`${agents.length} live${waiting ? ` · ${waiting} waiting on approval` : ''}`} expanded={subagentsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'subagents', open)}>
-                <ul>
-                  {agents.map((row) => (
-                    <li key={row.id}>
-                      <SubagentLink row={row} className="flex min-h-8 items-center gap-2 rounded py-1 outline-none hover:bg-layer-2 focus-visible:ring-2 focus-visible:ring-ring">
-                        <CategoryMark color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} />
-                        <span className="min-w-0 flex-1"><span className="block truncate font-medium">{row.name}</span><span className="block truncate text-fg-tertiary">{modelLabel(row)}</span></span>
-                        <span className="text-fg-secondary">{row.state.state === 'approval' ? 'waiting on approval' : row.state.state === 'awaiting' ? 'waiting on peer' : 'running'}</span>
-                        <span className="shrink-0 text-fg-tertiary tabular-nums">{row.started_at ? fmtThought(Math.max(0, now - Date.parse(row.started_at))) ?? '0s' : '—'}</span>
-                      </SubagentLink>
-                    </li>
-                  ))}
-                </ul>
-              </BackgroundCard>
-            )}
-            {/* Jobs are non-PTY jobs only: terminals are their own category (the Terminals tile, the terminal dashes). */}
-            {jobCount > 0 && (
-              <BackgroundCard title="Jobs" color={backgroundColors.jobs.bg} summary={`${jobCount} running`} expanded={jobsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'jobs', open)}>
-                {jobsExpanded && <JobsRows session={session} active={shown} />}
-              </BackgroundCard>
-            )}
-            {kernels.length > 0 && (
-              <BackgroundCard title="Kernels" color={backgroundColors.kernels.bg} summary={`${kernels.length} live${busyKernels ? ` · ${busyKernels} busy` : ''}`} expanded={kernelsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'kernels', open)}>
-                {kernelsExpanded && <KernelStrip session={session} inBar />}
-              </BackgroundCard>
-            )}
-            {reminderCount > 0 && (
-              <BackgroundCard title="Reminders" color={backgroundColors.reminders.bg} summary={`${reminderCount} pending${next === null ? '' : ` · ${countdown(next, now) === 'due now' ? 'due now' : `in ${countdown(next, now)}`}`}`} expanded={remindersExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'reminders', open)}>
-                {remindersExpanded && <ul>{[...(reminders ?? [])].map((id) => <ReminderRow key={id} session={session} id={id} reminder={details?.get(id)} now={now} />)}</ul>}
-              </BackgroundCard>
-            )}
+            <div
+              ref={stageRef}
+              className={cn(
+                'horizon-stage flex flex-col gap-1.5 pt-3 pb-6',
+                // Cards take pointer input; the tiles' column is a wrapper too, so only its tiles do.
+                !exiting && '[&>*]:pointer-events-auto [&>[data-tray-tiles]]:pointer-events-none [&>[data-tray-tiles]>*]:pointer-events-auto',
+                phase === 'entering' && 'horizon-in',
+                exiting && 'horizon-out',
+              )}
+            >
+              {hasTodos && <TodoCard session={session} />}
+              <TrayTiles tray={tray} />
+              {!!agents.length && (
+                <BackgroundCard title="Subagents" color={backgroundColors.subagents.bg} summary={`${agents.length} live${waiting ? ` · ${waiting} waiting on approval` : ''}`} expanded={subagentsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'subagents', open)}>
+                  <ul>
+                    {agents.map((row) => (
+                      <li key={row.id}>
+                        <SubagentLink row={row} className="flex min-h-8 items-center gap-2 rounded py-1 outline-none hover:bg-layer-2 focus-visible:ring-2 focus-visible:ring-ring">
+                          <CategoryMark color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} />
+                          <span className="min-w-0 flex-1"><span className="block truncate font-medium">{row.name}</span><span className="block truncate text-fg-tertiary">{modelLabel(row)}</span></span>
+                          <span className="text-fg-secondary">{row.state.state === 'approval' ? 'waiting on approval' : row.state.state === 'awaiting' ? 'waiting on peer' : 'running'}</span>
+                          <span className="shrink-0 text-fg-tertiary tabular-nums">{row.started_at ? fmtThought(Math.max(0, now - Date.parse(row.started_at))) ?? '0s' : '—'}</span>
+                        </SubagentLink>
+                      </li>
+                    ))}
+                  </ul>
+                </BackgroundCard>
+              )}
+              {/* Jobs are non-PTY jobs only: terminals are their own category (the Terminals tile, the terminal dashes). */}
+              {jobCount > 0 && (
+                <BackgroundCard title="Jobs" color={backgroundColors.jobs.bg} summary={`${jobCount} running`} expanded={jobsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'jobs', open)}>
+                  {jobsExpanded && <JobsRows session={session} active={shown} />}
+                </BackgroundCard>
+              )}
+              {kernels.length > 0 && (
+                <BackgroundCard title="Kernels" color={backgroundColors.kernels.bg} summary={`${kernels.length} live${busyKernels ? ` · ${busyKernels} busy` : ''}`} expanded={kernelsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'kernels', open)}>
+                  {kernelsExpanded && <KernelStrip session={session} inBar />}
+                </BackgroundCard>
+              )}
+              {reminderCount > 0 && (
+                <BackgroundCard title="Reminders" color={backgroundColors.reminders.bg} summary={`${reminderCount} pending${next === null ? '' : ` · ${countdown(next, now) === 'due now' ? 'due now' : `in ${countdown(next, now)}`}`}`} expanded={remindersExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'reminders', open)}>
+                  {remindersExpanded && <ul>{[...(reminders ?? [])].map((id) => <ReminderRow key={id} session={session} id={id} reminder={details?.get(id)} now={now} />)}</ul>}
+                </BackgroundCard>
+              )}
+            </div>
           </div>
         </div>
       )}

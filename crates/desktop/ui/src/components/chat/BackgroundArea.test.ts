@@ -236,9 +236,9 @@ test('dashes flank the grabber in palette order, cap each category, blink on out
   expect(document.querySelector('a[aria-label^="child0"]')?.className).toContain('subagent-dash-in')
   await click('Job j1 · show running jobs')
   expect(useSessions.getState().sessions.s1).toMatchObject({ todosShown: true, jobsExpanded: true, remindersExpanded: false })
-  // The panel opens above the row.
+  // The panel opens above the row: it hangs from the anchor right before it.
   const panel = document.getElementById('background-s1')!
-  expect(panel.nextElementSibling).toBe(row)
+  expect(panel.parentElement!.nextElementSibling).toBe(row)
   await click('Reminder r1 · check the build')
   expect(useSessions.getState().sessions.s1?.remindersExpanded).toBe(true)
   await run(() => (document.querySelector('a[aria-label^="Terminal pty0"]') as HTMLAnchorElement).click())
