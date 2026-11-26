@@ -60,16 +60,16 @@ test('same-key reuse beats grouping: the open tab comes to the front, no second 
   expect(panelOf(webLeaf('w1')).views).toEqual([webLeaf('w1'), webLeaf('w2')])
 })
 
-test('grouping beats the takeover of a selected tile', () => {
+test('grouping beats joining the selected tile’s panel', () => {
   file('f1')
   openTile({ kind: 'jobs', host: 'a', props: {} })
   usePanes.getState().select(T('jobs'))
   file('f2')
   expect(shape()).toBe(`x(a, y(${T('file', 'f1')}|${T('file', 'f2')}*, ${T('jobs')}))`)
   expect(usePanes.getState().selected).toBe(T('jobs'))
-  // A kind not laid out yet still takes the selected tile's pane over.
+  // A kind not laid out yet joins the selected tile's panel as its active tab; the selected tile stays open.
   openTile({ kind: 'prompt', host: 'a', props: {} })
-  expect(shape()).toBe(`x(a, y(${T('file', 'f1')}|${T('file', 'f2')}*, ${T('prompt')}))`)
+  expect(shape()).toBe(`x(a, y(${T('file', 'f1')}|${T('file', 'f2')}*, ${T('jobs')}|${T('prompt')}*))`)
 })
 
 test('a selection in the joined panel moves to the new tab, the one showing there now', () => {

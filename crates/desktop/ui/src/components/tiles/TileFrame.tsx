@@ -1,4 +1,4 @@
-import { AppWindow, X } from 'lucide-react'
+import { AppWindow, ArrowLeft, X } from 'lucide-react'
 import { notify as toast } from '@/lib/notify'
 import { createContext, type ReactNode, useContext } from 'react'
 import { SidebarToggle } from '@/components/chat/SidebarToggle'
@@ -44,7 +44,8 @@ export const TileAlone = createContext(false)
  * Every generic tile's chrome: the 52 px header (the sidebar toggle and the traffic-light inset when `first`, like
  * `Header` and `WebFrame`; the title and its `meta` line; the kind's own `controls`; Open in new window when `popOut`
  * is given and this build has windows; Close — the last two not when the tile is its window alone, `TileAlone`) over
- * the kind's body. Beside other panes the header is the tile's drag handle (`useViewDrag`). Its Trellis tab (shown
+ * the kind's body. `onBack`, when given, puts a Back button before the title (a `view` tile with a page to go back
+ * to). Beside other panes the header is the tile's drag handle (`useViewDrag`). Its Trellis tab (shown
  * while the tile shares a panel, e.g. with others of its kind) is named `tab`, else `title`; a kind a chat keeps one
  * of passes that chat as `chat`, so its tab carries the chat's title (two chats' Terminals tabs differ). Alone, the
  * header moves the window.
@@ -56,6 +57,7 @@ export function TileFrame({
   meta,
   controls,
   popOut,
+  onBack,
   onClose,
   first = false,
   children,
@@ -68,6 +70,8 @@ export function TileFrame({
   controls?: ReactNode
   /** Opens the tile's own window; once that worked the tile closes here (its Close), a failure leaves it and toasts. */
   popOut?: () => Promise<unknown>
+  /** Back within the tile's own history; omitted when there is nothing to go back to. */
+  onBack?: () => void
   onClose: () => void
   first?: boolean
   children: ReactNode
@@ -93,6 +97,11 @@ export function TileFrame({
         className={cn('relative flex h-[52px] shrink-0 items-center gap-1 px-2', first && !isPopout() && mac && cornerPad(sidebar))}
       >
         {nav && <SidebarToggle />}
+        {onBack && (
+          <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Back" onClick={onBack}>
+            <ArrowLeft className="size-5" />
+          </Button>
+        )}
         <div data-tauri-drag-region={region} className="flex min-w-0 flex-1 flex-col justify-center px-1">
           <span data-tauri-drag-region={region} className="truncate text-sm font-medium" title={title}>
             {title}

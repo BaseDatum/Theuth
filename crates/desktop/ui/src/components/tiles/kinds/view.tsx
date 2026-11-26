@@ -36,6 +36,8 @@ function ViewTile({ tile, first, close }: TileRender) {
 
   const lastPathRef = useRef(initialPath)
   const [currentPath, setCurrentPath] = useState(initialPath)
+  // The tile's own history has a page before this one: its header shows Back.
+  const [canBack, setCanBack] = useState(false)
 
   const interceptRef = useRef((href: string): boolean => {
     const outer = isOuterRoute(href)
@@ -74,6 +76,7 @@ function ViewTile({ tile, first, close }: TileRender) {
     return innerRouter.subscribe('onResolved', ({ toLocation }) => {
       const nextHref = toLocation.href
       setCurrentPath(nextHref)
+      setCanBack(innerRouter.history.canGoBack())
       if (nextHref !== lastPathRef.current) {
         const prev = propsRef.current
         const prevDefault = viewTitle(prev.path || '/')
@@ -104,6 +107,7 @@ function ViewTile({ tile, first, close }: TileRender) {
     <TileFrame
       first={first}
       onClose={close}
+      onBack={canBack ? () => innerRouter.history.back() : undefined}
       title={title}
       tab={title}
       popOut={() => openPopout({ kind: 'page', path: currentPath })}

@@ -27,6 +27,7 @@ export type ShortcutId =
   | 'cancel-all'
   | 'talk'
   | 'talk-transcript'
+  | 'reopen-closed'
 
 /** `window`: one keydown listener (`useHotkeys`); `composer`: the chat box's own keydown; `global`: a Tauri global shortcut (macOS). */
 export type Scope = 'window' | 'composer' | 'global'
@@ -55,6 +56,8 @@ export const DEFS: Record<ShortcutId, Def> = {
   'voice-key': { label: 'Ask theuth about the screen', chord: container() === 'macos' ? 'Control+S' : 'Control+Alt+Space', scope: 'global' },
   talk: { label: 'Stop the talk', chord: 'Mod+T', scope: 'window', inEditable: true },
   'talk-transcript': { label: 'Show or hide the talk transcript', chord: 'Mod+Shift+T', scope: 'window', inEditable: true },
+  // Shares ⌘⇧T with the talk transcript: `Panes` (its listener) is never mounted on the talk route.
+  'reopen-closed': { label: 'Reopen closed pane', chord: 'Mod+Shift+T', scope: 'window', inEditable: true },
   send: { label: 'Send', chord: 'Enter', scope: 'composer' },
   interject: { label: 'Send and interrupt the running turn', chord: 'Mod+Enter', scope: 'composer' },
   newline: { label: 'New line', chord: 'Shift+Enter', scope: 'composer' },

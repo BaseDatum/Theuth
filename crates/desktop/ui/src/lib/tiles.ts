@@ -7,7 +7,7 @@ import { useMemo } from 'react'
 import type { ViewRecord } from '@danfessler/trellis'
 import { shallow } from 'zustand/shallow'
 import { isMobileLayout } from '@/hooks/use-mobile'
-import { chatSpec, closeLeaves, groupView, isDraft, isFrame, isTile, makeTileId, ownerOf, placeView, rename, revealView, tileLeaf, tileOf, tileSpec, usePanes, type ViewSpec } from '@/lib/panes'
+import { chatSpec, closeLeaves, forgetClosed, groupView, isDraft, isFrame, isTile, makeTileId, ownerOf, placeView, rename, revealView, tileLeaf, tileOf, tileSpec, usePanes, type ViewSpec } from '@/lib/panes'
 
 export type Tile = {
   id: string
@@ -49,8 +49,8 @@ export function setTileProps(id: string, props: unknown): void {
  * leaf counts as its owner's chat. An open tile takes the new props and becomes its panel's active tab (Trellis reveals
  * a view by its id: same key, same view); with `refresh` it only takes the props, and nothing opens. A new one joins as
  * the active tab the panel already holding a tile of its kind — of several, the one used last (`groupView`). Else it
- * takes over the selected pane when that is a frame (a tile or web view) other than `host` — in place, the old one
- * closed, like a chat picked into a picked pane; otherwise it goes below the owner's last open frame, else right of the
+ * joins the selected pane's panel as its active tab when that is a frame (a tile or web view) other than `host`: the
+ * frame stays open behind it, never replaced; otherwise it goes below the owner's last open frame, else right of the
  * owner's pane, else right of `host`. Returns the tile id, or `null` when nothing tiles here or neither the owner nor
  * `host` has a pane (nothing is opened).
  */
@@ -68,7 +68,7 @@ export function openTile(o: { kind: string; host: string; props: unknown; key?: 
   if (o.refresh || (!leaves.includes(session) && !leaves.includes(o.host))) return null
   const spec = tileSpec(o.kind, session, o.props)
   if (groupView(leaf, spec)) return id
-  if (selected && selected !== o.host && isFrame(selected) && leaves.includes(selected)) placeView(selected, leaf, 'center', spec)
+  if (selected && selected !== o.host && isFrame(selected) && leaves.includes(selected)) placeView(selected, leaf, 'tab', spec)
   else {
     const anchor = leaves.filter((l) => isFrame(l) && ownerOf(l, views[l]) === session).at(-1)
     if (anchor) placeView(anchor, leaf, 'bottom', spec)
@@ -95,15 +95,17 @@ export function useTileOpen(kind: string, session: string, key?: string): boolea
   return usePanes((s) => s.leaves.includes(leaf))
 }
 
-/** A deleted chat's tiles go with it. A tile never closes because its chat's pane closed or was replaced. */
+/** A deleted chat's tiles go with it, not into Recently closed. A tile never closes because its chat's pane closed or
+ * was replaced. */
 export function closeSessionTiles(session: string): void {
-  closeLeaves(tiles().filter((t) => t.session === session).map((t) => tileLeaf(t.id)))
+  closeLeaves(tiles().filter((t) => t.session === session).map((t) => tileLeaf(t.id)), false)
+  forgetClosed((c) => c.spec.params.session === session)
 }
 
 /** Every tile closed: the engine they belong to was left, or the layout stopped tiling (below 768 px). */
 export function closeAllTiles(): void {
   const { leaves } = usePanes.getState()
-  closeLeaves(leaves.filter((l) => isTile(l)))
+  closeLeaves(leaves.filter((l) => isTile(l)), false)
 }
 
 /**
@@ -126,7 +128,7 @@ export function promoteDraft(draft: string, session: string): void {
   }
   map[draft] = { leaf: session, spec: chatSpec(session) }
   rename(map)
-  closeLeaves(clashes)
+  closeLeaves(clashes, false)
 }
 
 /**

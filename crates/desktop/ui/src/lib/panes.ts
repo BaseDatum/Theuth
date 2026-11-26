@@ -106,15 +106,17 @@ type PanesStore = {
    * (or draft) — never a frame, so no RPC, composer or sidebar highlight ever sees a `tile:`/`web:` id. */
   focused: string | null
   /** The pane the user last picked, of any kind (a press inside it, its tab, a route landing): the one that is lit
-   * while the others dim, and the one a sidebar pick or a newly opened surface takes over when it is a frame. A stale
-   * value (no longer laid out) counts as none. */
+   * while the others dim, and the panel a newly opened surface joins as a tab when it is a frame. A stale value (no
+   * longer laid out) counts as none. */
   selected: string | null
+  /** Tiles closed lately, oldest first (at most `CLOSED_MAX`): Reopen closed tab (⌘⇧T, the panel menu) pops them. */
+  closed: ClosedTile[]
   drag: Drag | null
   focus(session: string): void
   select(leaf: string): void
   /** The route landed on `session`: focus its pane (the active tab of its panel, if it was a tab behind another), or
-   * show it in the selected frame's pane (taking it over), else in the focused chat's pane, else left of the frames
-   * when only frames are left. */
+   * show it in the focused chat's pane (taking it over); a selected frame is never replaced: the chat splits left of
+   * it. Only frames left: left of all of them. */
   show(session: string): void
   /** Show `session` at `edge` of the pane showing `target` (`center` replaces it, `tab` joins its panel). A pane already
    * showing `session` moves. */
@@ -269,7 +271,8 @@ function openView(ws: WorkspaceHandle, leaf: string, spec: ViewSpec, placement: 
   ws.open(spec.type, { id: leaf, params: spec.params, placement, focus: false })
 }
 
-/** `leaf` takes `old`'s place: same panel, same tab position; `old` closes. An open `leaf` moves there. */
+/** `leaf` takes `old`'s place: same panel, same tab position; `old` closes (a tile is remembered in `closed`, as by any
+ * close through the workspace). An open `leaf` moves there. */
 function replace(ws: WorkspaceHandle, old: string, leaf: string, spec: ViewSpec): void {
   const doc = ws.getDocument()
   const panel = panelOf(doc.root, old)
@@ -331,13 +334,52 @@ function forget(ids: readonly string[]): void {
   })
 }
 
-/** Close `ids` for good: through the workspace when one is mounted, else in the persisted document. */
-export function closeLeaves(ids: readonly string[]): void {
+/** Tiles closed lately (`closed`) keep at most this many, the oldest dropped first. */
+export const CLOSED_MAX = 10
+/** A tile closed for good, as Reopen closed tab needs it: how to open it again, and where it sat. */
+export type ClosedTile = { leaf: string; spec: ViewSpec; title: string; panelId: string; index: number }
+/** Leaves closing without a place in `closed`: a deleted chat's tiles, a draft renamed into its session. */
+const unrecorded = new Set<string>()
+
+/** Close `ids` for good: through the workspace when one is mounted, else in the persisted document. A tile closed
+ * through the workspace is remembered (`closed`) unless `remember` is false. */
+export function closeLeaves(ids: readonly string[], remember = true): void {
   const { ws } = usePanes.getState()
   if (!ws) return forget(ids)
+  if (!remember) for (const id of ids) unrecorded.add(id)
   op(() => {
     for (const id of ids) void ws.close(id, { force: true })
   })
+}
+
+/** Remembered closed tiles that satisfy `drop` are forgotten (a deleted chat's). */
+export function forgetClosed(drop: (c: ClosedTile) => boolean): void {
+  const { closed } = usePanes.getState()
+  if (closed.some(drop)) usePanes.setState({ closed: closed.filter((c) => !drop(c)) })
+}
+
+/**
+ * Reopen closed tile `leaf` (default: the last one closed) where it was: its old panel at its old tab position while
+ * that panel is still docked, else right of its chat (else of the focused one). It becomes its panel's active tab and
+ * is selected. Returns the leaf, or `null` when there is nothing to reopen or no workspace.
+ */
+export function reopenClosed(leaf?: string): string | null {
+  const { ws, closed, leaves, focused } = usePanes.getState()
+  const entry = leaf === undefined ? closed.at(-1) : closed.find((c) => c.leaf === leaf)
+  if (!ws || !entry) return null
+  usePanes.setState({ closed: closed.filter((c) => c !== entry) })
+  if (!leaves.includes(entry.leaf)) {
+    const panel = nodeOf(ws.getDocument().root, entry.panelId)
+    const owner = typeof entry.spec.params.session === 'string' ? entry.spec.params.session : ''
+    const anchor = owner && leaves.includes(owner) ? owner : (focused ?? leaves[0] ?? '')
+    op(() => {
+      if (panel?.kind === 'panel') openView(ws, entry.leaf, entry.spec, { into: panel.id, index: Math.min(entry.index, panel.views.length) })
+      else put(ws, anchor, entry.leaf, 'right', entry.spec)
+    })
+  }
+  revealView(entry.leaf)
+  usePanes.getState().select(entry.leaf)
+  return entry.leaf
 }
 
 /** Relabel leaves in place (`from → to`): a draft becoming its session, its tiles retargeted. Each `to` takes its
@@ -345,6 +387,7 @@ export function closeLeaves(ids: readonly string[]): void {
 export function rename(map: Record<string, { leaf: string; spec: ViewSpec }>): void {
   const { ws, focused, selected } = usePanes.getState()
   if (!ws) return
+  for (const from of Object.keys(map)) unrecorded.add(from)
   op(() => {
     for (const [from, { leaf, spec }] of Object.entries(map)) replace(ws, from, leaf, spec)
   })
@@ -361,6 +404,7 @@ export const usePanes = create<PanesStore>()((set, get) => ({
   zooming: false,
   focused: null,
   selected: null,
+  closed: [],
   drag: null,
   focus(session) {
     if (get().focused !== session && !isFrame(session)) set({ focused: session })
@@ -376,8 +420,8 @@ export const usePanes = create<PanesStore>()((set, get) => ({
       const chats = chatLeaves(leaves)
       const target = focused && chats.includes(focused) ? focused : chats[0]
       op(() => {
-        // The picked pane is a tile: the chat takes it over, as it would a picked chat pane.
-        if (selected && isFrame(selected) && leaves.includes(selected)) replace(ws, selected, session, chatSpec(session))
+        // The picked pane is a frame: the chat splits beside it, never replacing it (a chat pane is taken over).
+        if (selected && isFrame(selected) && leaves.includes(selected)) put(ws, selected, session, 'left', chatSpec(session))
         else if (target) replace(ws, target, session, chatSpec(session))
         // Only frames left: the chat goes left of all of them, not into one corner.
         else put(ws, '', session, 'left', chatSpec(session))
@@ -579,15 +623,22 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
   go = navigate ?? null
   // Each view's panel: a view the user moved to another one (a tab dragged out, or onto another panel) was just used.
   const homes = new Map<string, string>()
+  // Each docked view's tab position and live title, as of the last change: where a closed tile reopens (`closed`).
+  const slots = new Map<string, { index: number; title: string }>()
   const sync = () => {
     const snap = ws.getSnapshot()
     mirror(snap.document, snap.views.map((v) => v.id), snap.dragging, snap.framed)
+    const index = new Map<string, number>()
+    for (const p of panels(snap.document.root)) p.views.forEach((v, i) => index.set(v, i))
     for (const v of snap.views) {
+      slots.set(v.id, { index: index.get(v.id) ?? 0, title: v.title })
       const was = homes.get(v.id)
       if (!v.panelId || was === v.panelId) continue
       if (was !== undefined && !internal) touch(v.id)
       homes.set(v.id, v.panelId)
     }
+    const { closed } = usePanes.getState()
+    if (closed.some((c) => snap.document.views[c.leaf])) usePanes.setState({ closed: closed.filter((c) => !snap.document.views[c.leaf]) })
   }
   const down = (e: Event) => {
     pressing = e.target instanceof Element ? e.target : null
@@ -623,11 +674,20 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
       if (pressing?.closest('[data-pane]')) return
       picked(id)
     }),
+    // Trellis emits `close` before its change, so `homes` and `slots` still hold where the view sat.
     ws.on('close', (v: ViewInfo) => {
       if (isWeb(v.id) && !useWebViews.getState().views[webId(v.id)]?.popped) useWebViews.getState().close(webId(v.id))
       const panel = homes.get(v.id)
+      const slot = slots.get(v.id)
       homes.delete(v.id)
+      slots.delete(v.id)
       used.delete(v.id)
+      const remember = !unrecorded.delete(v.id)
+      if (remember && isTile(v.id) && panel && slot) {
+        const entry: ClosedTile = { leaf: v.id, spec: { type: v.type, params: v.params }, title: slot.title, panelId: panel, index: slot.index }
+        const { closed } = usePanes.getState()
+        usePanes.setState({ closed: [...closed.filter((c) => c.leaf !== v.id), entry].slice(-CLOSED_MAX) })
+      }
       if (internal) return
       const to = refocus(v.id, panel)
       if (to) go?.(to)
@@ -665,7 +725,8 @@ export function resetPanes(): void {
   wanted = null
   pendingDrop = null
   used.clear()
-  usePanes.setState({ focused: null, selected: null, drag: null })
+  unrecorded.clear()
+  usePanes.setState({ focused: null, selected: null, closed: [], drag: null })
 }
 
 /** `fn` applied to the persisted document; a garbled one is removed. */

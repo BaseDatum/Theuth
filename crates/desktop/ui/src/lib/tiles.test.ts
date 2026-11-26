@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import type { LayoutNode, WorkspaceHandle } from '@danfessler/trellis'
 import { tiling, unmount, untile } from './panes.testing'
-import { chatLeaves, tileLeaf, usePanes } from './panes'
+import { chatLeaves, reopenClosed, tileLeaf, usePanes } from './panes'
 import { closeSessionTiles, closeTile, openTile, openTileOf, promoteDraft, tileId, tiles } from './tiles'
 import { useWebViews, webLeaf } from './web-views'
 
@@ -83,14 +83,14 @@ test('a tile outlives its chat: closing or replacing the owning chat leaves it o
   expect(openTileOf('prompt', 'a')).toMatchObject({ kind: 'prompt', session: 'a' })
 })
 
-test('a selected tile is taken over by the chat picked in the sidebar: same pane, the tile gone; the URL never names it', () => {
+test('a chat picked in the sidebar while a tile is selected splits beside it; the tile stays, the URL never names it', () => {
   usePanes.getState().show('a')
   openTile({ kind: 'artifact', host: 'a', props: { callId: 'c1' } })
   usePanes.getState().select(T('artifact'))
   expect(usePanes.getState().focused).toBe('a')
   usePanes.getState().show('b')
-  expect(shape()).toBe('x(a, b)')
-  expect(tiles()).toEqual([])
+  expect(shape()).toBe(`x(a, b, ${T('artifact')})`)
+  expect(tiles().map((t) => t.id)).toEqual([tileId('artifact', 'a')])
   expect(usePanes.getState()).toMatchObject({ focused: 'b', selected: 'b' })
 })
 
@@ -103,22 +103,42 @@ test('a sidebar drop on a tile’s centre replaces it; on its edge it splits bes
   expect(shape()).toBe(`x(a, b, y(${T('prompt', 'b')}, c))`)
 })
 
-test('a surface opened while a tile (or web view) is selected takes over its pane in place and closes it', () => {
+test('a surface opened while a tile (or web view) is selected joins its panel as a tab; nothing closes', () => {
   usePanes.getState().show('a')
   openTile({ kind: 'jobs', host: 'a', props: {} })
   usePanes.getState().select(T('jobs'))
   openTile({ kind: 'prompt', host: 'a', props: {} })
-  expect(shape()).toBe(`x(a, ${T('prompt')})`)
-  expect(tiles().map((t) => t.id)).toEqual([tileId('prompt', 'a')])
+  expect(shape()).toBe(`x(a, ${T('jobs')}|${T('prompt')})`)
+  expect(tiles().map((t) => t.id)).toEqual([tileId('jobs', 'a'), tileId('prompt', 'a')])
   expect(usePanes.getState()).toMatchObject({ focused: 'a', selected: T('prompt') })
-  // A web view in the selected pane is closed for good when a tile takes it over.
+  // A web view in the selected pane stays open behind the new tab.
   useWebViews.getState().open({ id: 'w', session: 'a', url: 'https://example.com/', title: 'x' })
   usePanes.getState().place(T('prompt'), webLeaf('w'), 'bottom')
   usePanes.getState().select(webLeaf('w'))
   openTile({ kind: 'skill', host: 'a', props: { name: 's' }, key: 's' })
-  expect(tree()).toEqual(['a', T('prompt'), T('skill', 'a', 's')])
-  expect(useWebViews.getState().views).toEqual({})
-  expect(usePanes.getState().focused).toBe('a')
+  expect(shape()).toBe(`x(a, y(${T('jobs')}|${T('prompt')}, ${webLeaf('w')}|${T('skill', 'a', 's')}))`)
+  expect(Object.keys(useWebViews.getState().views)).toEqual(['w'])
+  expect(usePanes.getState()).toMatchObject({ focused: 'a', selected: T('skill', 'a', 's') })
+})
+
+test('a closed tile, replaced one included, reopens where it was, newest first; a deleted chat’s tiles do not', () => {
+  openTile({ kind: 'jobs', host: 'a', props: {} })
+  openTile({ kind: 'prompt', host: 'a', props: {} })
+  usePanes.getState().select(T('jobs'))
+  openTile({ kind: 'skill', host: 'a', props: { name: 's' }, key: 's' })
+  expect(shape()).toBe(`x(a, y(${T('jobs')}|${T('skill', 'a', 's')}, ${T('prompt')}))`)
+  closeTile(tileId('jobs', 'a'))
+  usePanes.getState().place(T('prompt'), 'b', 'center')
+  expect(usePanes.getState().closed.map((c) => c.leaf)).toEqual([T('jobs'), T('prompt')])
+  expect(reopenClosed()).toBe(T('prompt'))
+  expect(reopenClosed()).toBe(T('jobs'))
+  // A replaced tile comes back beside the one that took its slot.
+  expect(shape()).toBe(`x(a, y(${T('jobs')}|${T('skill', 'a', 's')}, b|${T('prompt')}))`)
+  expect(usePanes.getState()).toMatchObject({ closed: [], selected: T('jobs') })
+  expect(reopenClosed()).toBeNull()
+  closeTile(tileId('jobs', 'a'))
+  closeSessionTiles('a')
+  expect(usePanes.getState().closed).toEqual([])
 })
 
 test('with a chat selected, or from inside the selected tile itself, a surface opens as a new split', () => {

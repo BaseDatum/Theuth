@@ -21,6 +21,7 @@ import {
   newDraft,
   picked,
   prepareStored,
+  reopenClosed,
   shown,
   storedChatLeaves,
   PERSIST,
@@ -33,7 +34,9 @@ import {
 } from '@/lib/panes'
 import type { SessionSummary } from '@/rpc/bindings/method.agent.output'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { label, matches } from '@/lib/chord'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { useShortcuts } from '@/lib/shortcuts'
 import { closeAllTiles } from '@/lib/tiles'
 import { cn } from '@/lib/utils'
 import { crossLayout } from '@/lib/web-arrival'
@@ -187,7 +190,7 @@ const NO_ICONS: Icons = {}
  * (`usePanes.selected`, any kind) and, for a chat, focuses it and moves the URL there (a draft has no URL); a frame (a
  * web view, 205 D5, or a generic tile) is selected only — the URL stays on the chat. The selected pane is lit, the
  * others dim. A press on a control in a chat while a frame is selected changes nothing, so a surface that control
- * opens takes over the selected frame's pane. The subtree's surfaces open as tiles beside this view (`useTileHost`).
+ * opens joins the selected frame's panel as a tab. The subtree's surfaces open as tiles beside this view (`useTileHost`).
  */
 function ViewBody({ render }: { render: Render }) {
   const id = useOptionalView()?.id ?? ''
@@ -216,7 +219,18 @@ function ViewBody({ render }: { render: Render }) {
 
 /** Built-in panel menu items that need what this app does not offer: floating and hiding (there is no dock). */
 const UNUSED_MENU: Record<string, true> = { float: true, dock: true, hide: true }
-const panelMenu = (entries: MenuEntry[]): MenuEntry[] => entries.filter((e) => e === 'separator' || !UNUSED_MENU[e.id ?? ''])
+/** The panel menu: Trellis's own items this app uses, then Recently closed (newest first; ⌘⇧T reopens the last). */
+const panelMenu = (entries: MenuEntry[]): MenuEntry[] => {
+  const { closed } = usePanes.getState()
+  const chord = label(useShortcuts.getState().chords['reopen-closed'])
+  const recent: MenuEntry = {
+    id: 'recently-closed',
+    label: 'Recently closed',
+    disabled: closed.length === 0,
+    items: [...closed].reverse().map((c, i) => ({ label: c.title, shortcut: i === 0 ? chord : undefined, run: () => void reopenClosed(c.leaf) })),
+  }
+  return [...entries.filter((e) => e === 'separator' || !UNUSED_MENU[e.id ?? '']), 'separator', recent]
+}
 
 /**
  * Zoom navigation, `focus` mode: a pane (or a part of the layout) is framed — maximised to the whole workspace at its
@@ -265,6 +279,16 @@ function Prepared(p: { session: string; types: string[]; icons: Icons; sessions:
   const [initial] = useState(() => L.view(CHAT, { id: session, params: { engine } }))
   const go = useRef(navigate)
   go.current = navigate
+  // ⌘⇧T (Settings › Shortcuts): the last closed tile reopens where it was.
+  const reopen = useShortcuts((s) => s.chords['reopen-closed'])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!matches(reopen, e) || reopenClosed() === null) return
+      e.preventDefault()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [reopen])
   const detach = useRef<(() => void) | null>(null)
   const ref = useCallback((ws: WorkspaceHandle | null) => {
     detach.current?.()

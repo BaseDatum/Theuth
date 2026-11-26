@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import type { SplitNode } from '@danfessler/trellis'
+import { openViewFromCard } from '@/components/tiles/open'
 import { installLayoutAgent, LAYOUT_REQUESTED_TOPIC, LAYOUT_RESOLVED_TOPIC } from './layout-agent'
 import { applyLayoutOp, hasPendingDrop, serializeLayout, tileLeaf, usePanes } from './panes'
 import { tiling, untile } from './panes.testing'
@@ -299,4 +300,17 @@ test('applyLayoutOp: open_view rejects unknown view paths so agents never open a
     expect(res.reason).toContain('available_views')
   }
   expect(usePanes.getState().leaves).toEqual(['a'])
+})
+
+test('openViewFromCard: a new view joins the views panel, an open one is revealed; nothing closes, a stale replace target is ignored', () => {
+  tiling(['a'])
+  const tasks = openViewFromCard({ path: '/tasks' }, { session: 'a' })
+  expect(tasks).toBe(tileLeaf(tileId('view', '', '/tasks')))
+  usePanes.getState().select(tasks!)
+  const costs = openViewFromCard({ path: '/costs' }, { session: 'a' })
+  expect(usePanes.getState().leaves).toEqual(['a', tasks, costs])
+  expect(usePanes.getState()).toMatchObject({ focused: 'a', selected: costs })
+  expect(openViewFromCard({ path: '/tasks' }, { placement: 'replace', target: 'gone' })).toBe(tasks)
+  expect(usePanes.getState().leaves).toEqual(['a', tasks, costs])
+  expect(usePanes.getState().selected).toBe(tasks)
 })
