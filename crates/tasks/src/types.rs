@@ -194,6 +194,38 @@ pub struct Checkout {
     pub taken: bool,
 }
 
+/// Accent colours a task may carry: the project palette of the desktop
+/// (`lib/project-style.ts` `COLORS`) — change both together.
+pub const ACCENTS: &[&str] = &[
+    "ochre",
+    "carnelian",
+    "malachite",
+    "faience",
+    "lapis",
+    "nile",
+    "umber",
+    "slate",
+    "sand",
+    "plum",
+];
+
+/// An `accent` as written (`task_update`, the tool): `""`/`"none"` clears it, a
+/// palette name sets it, anything else is refused naming the palette.
+pub fn parse_accent(s: &str) -> Result<Option<String>, String> {
+    let s = s.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    let lower = s.to_ascii_lowercase();
+    match ACCENTS.contains(&lower.as_str()) {
+        true => Ok(Some(lower)),
+        false => Err(format!(
+            "unknown accent {s:?}: one of {} or none",
+            ACCENTS.join(", ")
+        )),
+    }
+}
+
 /// The task record (67 §7.1).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -269,6 +301,10 @@ pub struct Task {
     /// lease holder. Stamped at creation; changed only by `task_move_home`.
     #[serde(default)]
     pub home: Option<String>,
+    /// Accent colour, a palette name from [`ACCENTS`]; `None` = no accent. Display only
+    /// (graph cards, board cards); a child without one may show its nearest ancestor's.
+    #[serde(default)]
+    pub accent: Option<String>,
 }
 
 /// Why an agent is woken (67 §7.3).
@@ -634,6 +670,12 @@ pub struct TaskPatch {
     pub done_because: Option<DoneBecause>,
     /// Priority; the user only (the ledger refuses agents).
     pub priority: Option<Priority>,
+    /// Parent task id (the untyped hierarchy: any task may be a parent and a child, at any
+    /// depth); `""` or `"none"` clears it. A parent that would make the task its own
+    /// ancestor is refused.
+    pub parent: Option<String>,
+    /// Accent colour: a name from [`ACCENTS`]; `""` or `"none"` clears it.
+    pub accent: Option<String>,
 }
 
 #[cfg(test)]

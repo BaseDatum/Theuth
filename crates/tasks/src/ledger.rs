@@ -14,7 +14,7 @@ use crate::store::Store;
 use crate::thread::Thread;
 use crate::types::{
     Checkout, DoneBecause, Owner, Priority, Task, TaskChangeKind, TaskChanged, TaskCreate,
-    TaskEvent, TaskFilter, TaskId, TaskPatch, TaskState, Wake, WakeReason,
+    TaskEvent, TaskFilter, TaskId, TaskPatch, TaskState, Wake, WakeReason, parse_accent,
 };
 use serde::{Deserialize, Serialize};
 
@@ -799,6 +799,11 @@ impl Ledger {
         self.with_blocks(t).await
     }
 
+    /// Direct children of `id` (its `parent` names it), any state, oldest first.
+    pub async fn children(&self, id: &TaskId) -> R<Vec<Task>> {
+        self.store.children(id).await.map_err(db)
+    }
+
     /// Tasks by filter, project then oldest first; `here` keeps the ones this engine works.
     pub async fn list(&self, f: &TaskFilter) -> R<Vec<Task>> {
         let mut v = self.store.list(f).await.map_err(db)?;
@@ -899,6 +904,7 @@ impl Ledger {
             priority: input.priority.unwrap_or_default(),
             // 182 D2: before the mesh named us, `set_engine` stamps it.
             home,
+            accent: None,
             id,
         };
         t.thread = self
@@ -1044,7 +1050,12 @@ impl Ledger {
             if !b.contains(':')
                 && !known.contains(&b)
                 && uuid::Uuid::parse_str(&b).is_ok()
-                && self.store.get(&TaskId(b.clone())).await.map_err(db)?.is_none()
+                && self
+                    .store
+                    .get(&TaskId(b.clone()))
+                    .await
+                    .map_err(db)?
+                    .is_none()
             {
                 return Err(format!(
                     "blocker {b}: no such task (use decision:<id> or person:<name> for others)"
@@ -1080,6 +1091,38 @@ impl Ledger {
     }
 
     // ---- blockers ------------------------------------------------------------
+
+    /// Refuse `parent` for `id` when it is `id` itself, unknown, or has `id`
+    /// among its ancestors (the hierarchy stays a forest). Walks `parent` links
+    /// up from `parent`; a pre-existing loop above it ends the walk.
+    async fn check_parent(&self, id: &TaskId, parent: &TaskId) -> R<()> {
+        if parent == id {
+            return Err("a task cannot be its own parent".into());
+        }
+        let mut cur = self
+            .load(parent)
+            .await
+            .map_err(|_| format!("parent {parent}: no such task"))?;
+        let mut path = vec![short(id).to_owned(), short(parent).to_owned()];
+        let mut seen = HashSet::from([parent.clone()]);
+        while let Some(up) = cur.parent.clone() {
+            path.push(short(&up).to_owned());
+            if up == *id {
+                return Err(format!(
+                    "parent would make the task its own ancestor: {}",
+                    path.join(" → ")
+                ));
+            }
+            if !seen.insert(up.clone()) {
+                break;
+            }
+            let Some(next) = self.store.get(&up).await.map_err(db)? else {
+                break;
+            };
+            cur = next;
+        }
+        Ok(())
+    }
 
     /// Refuse a `blockers` list that would put `id` on a cycle: walk the
     /// blocker graph from each task-id entry; reaching `id` names the path.
@@ -1298,12 +1341,32 @@ impl Ledger {
 
         let mut patch = patch;
         if let Some(b) = patch.blockers.take() {
+            if b.iter().any(|x| *x == id.0) {
+                return Err("a task cannot block itself (a blocker cycle of one)".into());
+            }
             let b = self.check_blockers(b, &t.blockers).await?;
             if b != t.blockers {
                 self.check_cycle(id, &b).await?;
             }
             patch.blockers = Some(b);
         }
+        // The hierarchy: `""`/`none` clears the parent; a set one must not loop.
+        let parent = match patch.parent.take() {
+            None => None,
+            Some(p) => {
+                let p = p.trim();
+                if p.is_empty() || p.eq_ignore_ascii_case("none") {
+                    Some(None)
+                } else {
+                    let p = TaskId(p.to_owned());
+                    if t.parent.as_ref() != Some(&p) {
+                        self.check_parent(id, &p).await?;
+                    }
+                    Some(Some(p))
+                }
+            }
+        };
+        let accent = patch.accent.take().map(|a| parse_accent(&a)).transpose()?;
         let blockers = patch.blockers.clone().unwrap_or_else(|| t.blockers.clone());
         if let Some(to) = patch.state
             && to != t.state
@@ -1421,6 +1484,22 @@ impl Ledger {
                 Some(v.as_str().into()),
             ));
             t.priority = v;
+        }
+        if let Some(v) = parent
+            && v != t.parent
+        {
+            changes.push((
+                "parent",
+                t.parent.as_ref().map(|p| p.0.clone()),
+                v.as_ref().map(|p| p.0.clone()),
+            ));
+            t.parent = v;
+        }
+        if let Some(v) = accent
+            && v != t.accent
+        {
+            changes.push(("accent", t.accent.clone(), v.clone()));
+            t.accent = v;
         }
         if let Some(to) = patch.state
             && to != t.state
@@ -4465,16 +4544,122 @@ pub(crate) mod tests {
         let e = r.blockers(&c.id, &[&a.id.0], "user").await.unwrap_err();
         assert!(e.starts_with("blockers would form a cycle"), "{e}");
         assert!(e.contains(&a.id.0[..8]) && e.contains(&c.id.0[..8]), "{e}");
-        assert!(
-            r.blockers(&a.id, &[&a.id.0], "user")
-                .await
-                .unwrap_err()
-                .contains("cycle")
-        );
+        let e = r.blockers(&a.id, &[&a.id.0], "user").await.unwrap_err();
+        assert_eq!(e, "a task cannot block itself (a blocker cycle of one)");
         // non-task entries and the parent link never cycle
         r.blockers(&c.id, &["decision:x", "person:sky"], "user")
             .await
             .unwrap();
+    }
+
+    async fn patch(r: &mut Rig, id: &TaskId, p: TaskPatch) -> R<Task> {
+        r.ledger.update(id, p, "user", None).await
+    }
+    fn parent_of(p: &str) -> TaskPatch {
+        TaskPatch {
+            parent: Some(p.to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn parent_sets_clears_and_refuses_ancestor_cycles() {
+        let mut r = rig().await;
+        let e3 = r.task("user").await;
+        let s1 = r.task("user").await;
+        let t1 = r.task("user").await;
+        // set, then a grandchild; the record and the event log carry it
+        let s = patch(&mut r, &s1.id, parent_of(&e3.id.0)).await.unwrap();
+        assert_eq!(s.parent.as_ref(), Some(&e3.id));
+        patch(&mut r, &t1.id, parent_of(&s1.id.0)).await.unwrap();
+        assert_eq!(
+            r.ledger.get(&t1.id).await.unwrap().parent,
+            Some(s1.id.clone())
+        );
+        assert!(
+            r.ledger
+                .events(&s1.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e.field == "parent" && e.after.as_deref() == Some(e3.id.0.as_str()))
+        );
+        // the root under its grandchild, or under itself, is refused; nothing changed
+        let e = patch(&mut r, &e3.id, parent_of(&t1.id.0))
+            .await
+            .unwrap_err();
+        assert!(
+            e.starts_with("parent would make the task its own ancestor"),
+            "{e}"
+        );
+        assert_eq!(
+            patch(&mut r, &e3.id, parent_of(&e3.id.0))
+                .await
+                .unwrap_err(),
+            "a task cannot be its own parent"
+        );
+        assert!(
+            patch(
+                &mut r,
+                &e3.id,
+                parent_of("01a1a796-6cf2-73ce-8cbe-f722a52a6229")
+            )
+            .await
+            .unwrap_err()
+            .contains("no such task")
+        );
+        assert_eq!(r.ledger.get(&e3.id).await.unwrap().parent, None);
+        // a child may still block its own parent: the hierarchy is not a blocker edge
+        r.blockers(&e3.id, &[&s1.id.0], "user").await.unwrap();
+        // clear with "" or "none"; the children list follows
+        assert_eq!(r.ledger.children(&e3.id).await.unwrap().len(), 1);
+        assert_eq!(
+            patch(&mut r, &s1.id, parent_of("")).await.unwrap().parent,
+            None
+        );
+        assert_eq!(
+            patch(&mut r, &t1.id, parent_of("none"))
+                .await
+                .unwrap()
+                .parent,
+            None
+        );
+        assert!(r.ledger.children(&e3.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn accent_is_a_palette_name_or_none() {
+        let mut r = rig().await;
+        let t = r.task("user").await;
+        let accent = |a: &str| TaskPatch {
+            accent: Some(a.to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            patch(&mut r, &t.id, accent("Lapis"))
+                .await
+                .unwrap()
+                .accent
+                .as_deref(),
+            Some("lapis")
+        );
+        assert_eq!(
+            r.ledger.get(&t.id).await.unwrap().accent.as_deref(),
+            Some("lapis")
+        );
+        let e = patch(&mut r, &t.id, accent("teal")).await.unwrap_err();
+        assert!(
+            e.starts_with("unknown accent \"teal\": one of ochre"),
+            "{e}"
+        );
+        assert_eq!(
+            r.ledger.get(&t.id).await.unwrap().accent.as_deref(),
+            Some("lapis")
+        );
+        assert_eq!(
+            patch(&mut r, &t.id, accent("none")).await.unwrap().accent,
+            None
+        );
     }
 
     #[tokio::test]
@@ -8055,31 +8240,59 @@ pub(crate) mod tests {
         let mut r = rig().await;
         let design = r
             .ledger
-            .create(planned("design", Some("p"), &[]), "agent:ops", None, WakeReason::Assigned)
-            .await
-            .unwrap();
-        let build = r
-            .ledger
             .create(
-                planned("build", Some("p"), &[&design.id.0, "person:sam", &design.id.0]),
+                planned("design", Some("p"), &[]),
                 "agent:ops",
                 None,
                 WakeReason::Assigned,
             )
             .await
             .unwrap();
-        assert_eq!(build.blockers, [design.id.0.clone(), "person:sam".into()], "deduped");
-        assert_eq!(r.ledger.get(&build.id).await.unwrap().blockers, build.blockers);
-        assert_eq!(r.ledger.blocks_of(&design.id).await.unwrap(), [build.id.clone()]);
+        let build = r
+            .ledger
+            .create(
+                planned(
+                    "build",
+                    Some("p"),
+                    &[&design.id.0, "person:sam", &design.id.0],
+                ),
+                "agent:ops",
+                None,
+                WakeReason::Assigned,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            build.blockers,
+            [design.id.0.clone(), "person:sam".into()],
+            "deduped"
+        );
+        assert_eq!(
+            r.ledger.get(&build.id).await.unwrap().blockers,
+            build.blockers
+        );
+        assert_eq!(
+            r.ledger.blocks_of(&design.id).await.unwrap(),
+            [build.id.clone()]
+        );
 
         let ghost = TaskId::new().0;
         let e = r
             .ledger
-            .create(planned("ship", None, &[&ghost]), "agent:ops", None, WakeReason::Assigned)
+            .create(
+                planned("ship", None, &[&ghost]),
+                "agent:ops",
+                None,
+                WakeReason::Assigned,
+            )
             .await
             .unwrap_err();
         assert!(e.contains(&format!("blocker {ghost}: no such task")), "{e}");
-        assert_eq!(r.ledger.list(&TaskFilter::default()).await.unwrap().len(), 2, "nothing created");
+        assert_eq!(
+            r.ledger.list(&TaskFilter::default()).await.unwrap().len(),
+            2,
+            "nothing created"
+        );
 
         // task_update: the same check and dedupe; free text (`blocked {on}`) passes.
         let e = r
@@ -8088,7 +8301,11 @@ pub(crate) mod tests {
             .unwrap_err();
         assert!(e.contains(&format!("blocker {ghost}: no such task")), "{e}");
         let t = r
-            .blockers(&design.id, &["waiting for CI", "waiting for CI"], "agent:ops")
+            .blockers(
+                &design.id,
+                &["waiting for CI", "waiting for CI"],
+                "agent:ops",
+            )
             .await
             .unwrap();
         assert_eq!(t.blockers, ["waiting for CI"]);
@@ -8109,7 +8326,12 @@ pub(crate) mod tests {
         let mut r = rig().await;
         let first = r
             .ledger
-            .create(planned("first", None, &[]), "user", None, WakeReason::Assigned)
+            .create(
+                planned("first", None, &[]),
+                "user",
+                None,
+                WakeReason::Assigned,
+            )
             .await
             .unwrap();
         let mut input = planned("second", None, &[&first.id.0]);
@@ -8122,9 +8344,14 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(second.state, TaskState::Blocked);
         let woken = |w: &[Wake]| w.iter().any(|w| w.task.as_ref() == Some(&second.id));
-        assert!(!woken(&r.ledger.wakes().await.unwrap()), "blocked: nobody woken");
+        assert!(
+            !woken(&r.ledger.wakes().await.unwrap()),
+            "blocked: nobody woken"
+        );
 
-        r.set_state(&first.id, TaskState::Cancelled, "user").await.unwrap();
+        r.set_state(&first.id, TaskState::Cancelled, "user")
+            .await
+            .unwrap();
         let t = r.ledger.get(&second.id).await.unwrap();
         assert_eq!(t.state, TaskState::Todo);
         // 214 A1: the finished dependency stays, as resolved.
@@ -8137,28 +8364,52 @@ pub(crate) mod tests {
         // Only closed tasks as blockers: plain `todo`, filed as resolved. A `kind:` blocker: `blocked`.
         let mut input = planned("third", None, &[&first.id.0]);
         input.state = TaskState::Todo;
-        let t = r.ledger.create(input, "user", None, WakeReason::Assigned).await.unwrap();
+        let t = r
+            .ledger
+            .create(input, "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
         assert_eq!(t.state, TaskState::Todo);
         assert!(t.blockers.is_empty());
-        assert_eq!(r.ledger.get(&t.id).await.unwrap().resolved_blockers, [first.id.clone()]);
+        assert_eq!(
+            r.ledger.get(&t.id).await.unwrap().resolved_blockers,
+            [first.id.clone()]
+        );
         let mut input = planned("fourth", None, &["person:sam"]);
         input.state = TaskState::Todo;
-        let t = r.ledger.create(input, "user", None, WakeReason::Assigned).await.unwrap();
+        let t = r
+            .ledger
+            .create(input, "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
         assert_eq!(t.state, TaskState::Blocked);
 
         // A manual removal is not a resolution.
         let open = r
             .ledger
-            .create(planned("open", None, &[]), "user", None, WakeReason::Assigned)
+            .create(
+                planned("open", None, &[]),
+                "user",
+                None,
+                WakeReason::Assigned,
+            )
             .await
             .unwrap();
         let t = r
             .ledger
-            .create(planned("waits", None, &[&open.id.0]), "user", None, WakeReason::Assigned)
+            .create(
+                planned("waits", None, &[&open.id.0]),
+                "user",
+                None,
+                WakeReason::Assigned,
+            )
             .await
             .unwrap();
         let t = r.blockers(&t.id, &[], "user").await.unwrap();
-        assert!(t.blockers.is_empty() && t.resolved_blockers.is_empty(), "{t:?}");
+        assert!(
+            t.blockers.is_empty() && t.resolved_blockers.is_empty(),
+            "{t:?}"
+        );
     }
 
     /// 214 D3: every committed create / update / move / comment reaches the listener.
@@ -8176,7 +8427,12 @@ pub(crate) mod tests {
         };
         let t = r
             .ledger
-            .create(planned("plan", Some("p"), &[]), "user", None, WakeReason::Assigned)
+            .create(
+                planned("plan", Some("p"), &[]),
+                "user",
+                None,
+                WakeReason::Assigned,
+            )
             .await
             .unwrap();
         let change = |kind, project: Option<&str>| TaskChanged {
@@ -8201,7 +8457,11 @@ pub(crate) mod tests {
             .unwrap();
         let got = drain();
         assert!(!got.is_empty());
-        assert!(got.iter().all(|c| *c == change(TaskChangeKind::Updated, Some("q"))), "{got:?}");
+        assert!(
+            got.iter()
+                .all(|c| *c == change(TaskChangeKind::Updated, Some("q"))),
+            "{got:?}"
+        );
 
         r.ledger
             .move_to(&t.id, TaskState::Todo, None, None, None, "user", None)
@@ -8218,7 +8478,15 @@ pub(crate) mod tests {
         // A refused change publishes nothing.
         let _ = r
             .ledger
-            .move_to(&t.id, TaskState::Review, None, None, None, "agent:ops", None)
+            .move_to(
+                &t.id,
+                TaskState::Review,
+                None,
+                None,
+                None,
+                "agent:ops",
+                None,
+            )
             .await;
         assert!(drain().is_empty());
     }

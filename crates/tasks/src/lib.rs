@@ -21,12 +21,9 @@ pub mod rpc_hub;
 
 /// Assemble this plugin's RPC methods.
 pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
-    rpc_core::merge_described([
-        rpc_hub::rpc_module(server),
-    ]).expect("tasks RPC composition")
+    rpc_core::merge_described([rpc_hub::rpc_module(server)]).expect("tasks RPC composition")
 }
 
-pub mod rpc_support;
 pub mod activity;
 pub mod config;
 pub mod escalate;
@@ -34,6 +31,7 @@ pub mod ledger;
 pub mod packet;
 pub mod place;
 pub mod rank;
+pub mod rpc_support;
 pub mod store;
 pub mod thread;
 pub mod tools;
@@ -54,8 +52,9 @@ use serde::{Deserialize, Serialize};
 
 pub use config::TasksConfig;
 pub use types::{
-    Checkout, Disposition, DoneBecause, Owner, Priority, Task, TaskChangeKind, TaskChanged,
-    TaskCreate, TaskEvent, TaskFilter, TaskId, TaskPatch, TaskState, Wake, WakeReason,
+    ACCENTS, Checkout, Disposition, DoneBecause, Owner, Priority, Task, TaskChangeKind,
+    TaskChanged, TaskCreate, TaskEvent, TaskFilter, TaskId, TaskPatch, TaskState, Wake, WakeReason,
+    parse_accent,
 };
 
 /// Registry name of the [`Tasks`] actor.
@@ -159,6 +158,10 @@ pub struct WaitingOnUser(pub String);
 /// `ask` → `Result<Vec<TaskId>, String>`: tasks whose `blockers` name this one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskBlocks(pub TaskId);
+
+/// `ask` → `Result<Vec<Task>, String>`: tasks whose `parent` is this one, oldest first.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskChildren(pub TaskId);
 
 /// `ask` → `Result<Task, String>`: create, log, wake the owner (`assigned`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -854,6 +857,14 @@ impl Message<TaskBlocks> for Tasks {
 
     async fn handle(&mut self, m: TaskBlocks, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ledger.blocks_of(&m.0).await
+    }
+}
+
+impl Message<TaskChildren> for Tasks {
+    type Reply = Result<Vec<Task>, String>;
+
+    async fn handle(&mut self, m: TaskChildren, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.children(&m.0).await
     }
 }
 
@@ -1653,7 +1664,8 @@ impl schedule::TaskCreator for ScheduleTasks {
 /// Declare wire contracts before starting producers.
 pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
-    rt.register_wire_event::<activity::ActivityAppended>().await?;
+    rt.register_wire_event::<activity::ActivityAppended>()
+        .await?;
     rt.register_wire_event::<TaskChanged>().await
 }
 

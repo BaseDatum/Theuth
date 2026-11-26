@@ -19,12 +19,13 @@ use crate::packet::{self, Check, Item, PacketOption, Pointer, Recommendation};
 use crate::place;
 use crate::thread::Thread;
 use crate::types::{
-    Disposition, DoneBecause, Owner, Priority, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState,
+    Disposition, DoneBecause, Owner, Priority, Task, TaskCreate, TaskFilter, TaskId, TaskPatch,
+    TaskState, parse_accent,
 };
 use crate::{
     AnswerDecision, AwaitDecision, CheckBoard, CheckoutTask, CommentTask, CreateTask,
     EffectiveReviewer, Escalate, GetTask, ListTasks, MoveTask, NoteDisposition, PlaceTask,
-    ReassignTask, ReviewPacket, Tasks, UpdateTask, WriteBudgetOf, escalate,
+    ReassignTask, ReviewPacket, TaskChildren, Tasks, UpdateTask, WriteBudgetOf, escalate,
 };
 
 /// `ask` → `String`: the actor text of `session`'s caller — `agent:<name>`
@@ -128,6 +129,47 @@ fn create_state(s: Option<TaskState>) -> Result<TaskState, String> {
     }
 }
 
+/// What read tools show of `t`'s place in the hierarchy and its accent, as one line:
+/// `parent <id> "<title>" · children 1 of 3 done · accent lapis`; empty when none applies.
+async fn hierarchy_of(a: &ActorRef<Tasks>, t: &Task) -> String {
+    let parent = match &t.parent {
+        Some(p) => Some((
+            p.clone(),
+            flat(a.ask(GetTask(p.clone())).await).ok().map(|p| p.title),
+        )),
+        None => None,
+    };
+    let children = flat(a.ask(TaskChildren(t.id.clone())).await).unwrap_or_default();
+    hierarchy_text(parent, &children, t.accent.as_deref())
+}
+
+/// [`hierarchy_of`] without the lookups. Cancelled children do not count; `done` of the rest.
+fn hierarchy_text(
+    parent: Option<(TaskId, Option<String>)>,
+    children: &[Task],
+    accent: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some((id, title)) = parent {
+        parts.push(match title {
+            Some(t) => format!("parent {id} \"{t}\""),
+            None => format!("parent {id} (not found)"),
+        });
+    }
+    let live: Vec<_> = children
+        .iter()
+        .filter(|c| c.state != TaskState::Cancelled)
+        .collect();
+    if !live.is_empty() {
+        let done = live.iter().filter(|c| c.state == TaskState::Done).count();
+        parts.push(format!("children {done} of {} done", live.len()));
+    }
+    if let Some(a) = accent {
+        parts.push(format!("accent {a}"));
+    }
+    parts.join(" · ")
+}
+
 /// Arguments for [`TaskCreateTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TaskCreateArgs {
@@ -145,7 +187,9 @@ pub struct TaskCreateArgs {
     /// `agent:<name>` or `user`; default: the owner's `reports_to`.
     #[serde(default)]
     pub reviewer: Option<String>,
-    /// Parent task id when this is a delegation.
+    /// Parent task id: the untyped hierarchy — any task may be a parent and a child, at any depth
+    /// (levels live in titles, e.g. "E3 …"). Set it to your current task when delegating, or to
+    /// the task this one is a part of. Change or clear it later with `task_update`.
     #[serde(default)]
     pub parent: Option<String>,
     /// Project the task belongs to (a project name as sessions carry it); default: the calling session's.
@@ -180,6 +224,11 @@ pub struct TaskCreateArgs {
     /// still open the task starts `blocked`; its owner is woken when the last one closes.
     #[serde(default)]
     pub blockers: Vec<String>,
+    /// Accent colour shown on the task's card: one of ochre, carnelian, malachite, faience, lapis,
+    /// nile, umber, slate, sand, plum (or none). Display only; a child without one shows its
+    /// parent's faded.
+    #[serde(default)]
+    pub accent: Option<String>,
 }
 
 /// `task_create`: a new task record; owner and reviewer default per the line.
@@ -221,13 +270,21 @@ impl Tool for TaskCreateTool {
             Ok(s) => s,
             Err(e) => return Ok(ToolOutput::err(e)),
         };
+        // Refused before anything is written; set right after the create.
+        let accent = match a.accent.as_deref().map(parse_accent).transpose() {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
         let input = TaskCreate {
             state,
             title: a.title,
             brief: a.brief,
             owner,
             reviewer: parse_owner(a.reviewer.as_deref())?,
-            parent: a.parent.map(TaskId),
+            parent: a
+                .parent
+                .filter(|p| !p.trim().is_empty() && !p.trim().eq_ignore_ascii_case("none"))
+                .map(|p| TaskId(p.trim().to_owned())),
             project,
             where_: a.where_,
             harness: a.harness,
@@ -237,25 +294,44 @@ impl Tool for TaskCreateTool {
             priority: a.priority,
             blockers: a.blockers,
         };
-        let r = flat(
+        let mut r = flat(
             actor
                 .ask(CreateTask {
                     input,
-                    created_by: me,
+                    created_by: me.clone(),
                     session: Some(cx.session.to_string()),
                 })
                 .await,
         );
+        if let (Ok(t), Some(Some(accent))) = (&r, accent) {
+            r = flat(
+                actor
+                    .ask(UpdateTask {
+                        id: t.id.clone(),
+                        patch: TaskPatch {
+                            accent: Some(accent),
+                            ..Default::default()
+                        },
+                        actor: me,
+                        session: Some(cx.session.to_string()),
+                    })
+                    .await,
+            );
+        }
         Ok(match r {
             Ok(t) => ToolOutput::ok(format!(
-                "created task {} — owner {}, reviewer {}, project {}, state {}",
+                "created task {} — owner {}, reviewer {}, project {}, state {}{}",
                 t.id,
                 t.owner,
                 t.reviewer
                     .as_ref()
                     .map_or("none".to_owned(), ToString::to_string),
                 t.project.as_deref().unwrap_or("none"),
-                t.state.as_str()
+                t.state.as_str(),
+                match hierarchy_of(&actor, &t).await {
+                    h if h.is_empty() => String::new(),
+                    h => format!(", {h}"),
+                }
             )),
             Err(e) => ToolOutput::err(e),
         })
@@ -285,7 +361,8 @@ impl Tool for TaskInboxTool {
     fn description(&self) -> String {
         "Your inbox: the tasks you own in `todo`, `doing` or `blocked` (or the states you pass), grouped by \
          project (tasks without one last), oldest first within a group, one line each — id, state, title, \
-         placement, blockers, when it last moved. Pass `project` to see one project only. It shows only \
+         placement, blockers, the hierarchy (parent id and title, children n of m done) and accent, when it \
+         last moved. Pass `project` to see one project only. It shows only \
          your own tasks: do not go looking for other agents' work. Read it at the start of a wake, then \
          `task_checkout` the one the wake named."
             .into()
@@ -331,8 +408,9 @@ impl Tool for TaskInboxTool {
                     h.as_deref().unwrap_or("?")
                 ),
             };
+            let hierarchy = hierarchy_of(&actor, t).await;
             text.push_str(&format!(
-                "- {} [{}] {} — {}{}{} — moved {}\n",
+                "- {} [{}] {} — {}{}{}{} — moved {}\n",
                 t.id,
                 t.state.as_str(),
                 t.title,
@@ -341,6 +419,11 @@ impl Tool for TaskInboxTool {
                     String::new()
                 } else {
                     format!(" — blocked on {}", t.blockers.join(", "))
+                },
+                if hierarchy.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {hierarchy}")
                 },
                 if t.attachments.is_empty() {
                     String::new()
@@ -490,6 +573,10 @@ impl Tool for TaskCheckoutTool {
             Err(e) => return Ok(ToolOutput::err(e)),
         };
         let mut text = serde_json::to_string_pretty(&t)?;
+        let hierarchy = hierarchy_of(&actor, &t).await;
+        if !hierarchy.is_empty() {
+            text.push_str(&format!("\n\n--- hierarchy ---\n{hierarchy}"));
+        }
         if !t.attachments.is_empty() {
             text.push_str("\n\n--- attachments ---\n");
             for r in &t.attachments {
@@ -524,9 +611,20 @@ pub struct TaskUpdateArgs {
     /// New reviewer (`agent:<name>` | `user`).
     #[serde(default)]
     pub reviewer: Option<String>,
-    /// Blockers, replaced whole: task ids, `decision:<id>`, `person:<name>`.
+    /// Blockers, replaced whole: task ids, `decision:<id>`, `person:<name>`. To add one pass the
+    /// current list plus it; to remove one pass the list without it; `[]` clears them. A task id
+    /// that would close a blocker cycle (or the task itself) is refused.
     #[serde(default)]
     pub blockers: Option<Vec<String>>,
+    /// Parent task id (the untyped hierarchy: any task may be a parent and a child, at any depth;
+    /// levels live in titles, e.g. "E3 …"). `""` or `"none"` clears it; omitted leaves it. A parent
+    /// that would make the task its own ancestor is refused.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// Accent colour: one of ochre, carnelian, malachite, faience, lapis, nile, umber, slate, sand,
+    /// plum; `"none"` clears it; omitted leaves it.
+    #[serde(default)]
+    pub accent: Option<String>,
     /// New title.
     #[serde(default)]
     pub title: Option<String>,
@@ -620,7 +718,10 @@ impl Tool for TaskUpdateTool {
          sends a reviewed task back to its owner; `state: cancelled` drops it. A write by a session that does \
          not hold the checkout is refused once the checkout moved on (`superseded`). One session may write to \
          at most 20 tasks it does not own. Every change is logged to the thread with your session and \
-         before/after."
+         before/after. `parent` moves the task in the untyped hierarchy (set or clear; levels live in \
+         titles; a cycle is refused), `accent` sets its card colour from the palette (ochre, carnelian, \
+         malachite, faience, lapis, nile, umber, slate, sand, plum, or none), `blockers` replaces the whole \
+         list (pass the current list plus or minus the change)."
             .into()
     }
 
@@ -640,6 +741,8 @@ impl Tool for TaskUpdateTool {
             attachments: a.attachments,
             done_because: a.done_because,
             priority: a.priority,
+            parent: a.parent,
+            accent: a.accent,
             ..Default::default()
         };
         match a.state {
@@ -1648,6 +1751,150 @@ mod tests {
             a.state, None,
             "the schema does not force a state; the default is backlog"
         );
+    }
+
+    #[test]
+    fn task_update_args_take_parent_accent_and_blockers() {
+        let args = |mut v: serde_json::Value| -> TaskUpdateArgs {
+            v["id"] = "t1".into();
+            serde_json::from_value(v).unwrap()
+        };
+        // parent: omitted / null leave it, "" clears it, an id sets it
+        assert_eq!(args(serde_json::json!({})).parent, None);
+        assert_eq!(args(serde_json::json!({ "parent": null })).parent, None);
+        assert_eq!(
+            args(serde_json::json!({ "parent": "" })).parent.as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            args(serde_json::json!({ "parent": "p1" }))
+                .parent
+                .as_deref(),
+            Some("p1")
+        );
+        // accent: a palette name or none
+        assert_eq!(
+            args(serde_json::json!({ "accent": "lapis" }))
+                .accent
+                .as_deref(),
+            Some("lapis")
+        );
+        assert_eq!(parse_accent("none"), Ok(None));
+        assert!(
+            parse_accent("teal")
+                .unwrap_err()
+                .contains("ochre, carnelian")
+        );
+        // blockers: replaced whole
+        assert_eq!(
+            args(serde_json::json!({ "blockers": ["a", "b"] })).blockers,
+            Some(vec!["a".to_owned(), "b".to_owned()])
+        );
+        let c: TaskCreateArgs = serde_json::from_value(
+            serde_json::json!({ "title": "t", "brief": "", "parent": "p1", "accent": "plum" }),
+        )
+        .unwrap();
+        assert_eq!(
+            (c.parent.as_deref(), c.accent.as_deref()),
+            (Some("p1"), Some("plum"))
+        );
+    }
+
+    #[tokio::test]
+    async fn read_tools_show_parent_children_and_accent_and_updates_reach_the_ledger() {
+        use kameo::actor::Spawn;
+        let mut r = crate::ledger::tests::rig().await;
+        let epic = r.task("user").await;
+        let a = r.task("user").await;
+        let b = r.task("user").await;
+        let actor = Tasks::spawn(Tasks {
+            ledger: r.ledger,
+            escalations: Default::default(),
+        });
+        let update = async |id: &TaskId, patch: TaskPatch| {
+            flat(
+                actor
+                    .ask(UpdateTask {
+                        id: id.clone(),
+                        patch,
+                        actor: "user".into(),
+                        session: None,
+                    })
+                    .await,
+            )
+        };
+        for c in [&a, &b] {
+            update(
+                &c.id,
+                TaskPatch {
+                    parent: Some(epic.id.0.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
+        update(
+            &a.id,
+            TaskPatch {
+                state: Some(TaskState::Cancelled),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let epic = update(
+            &epic.id,
+            TaskPatch {
+                accent: Some("lapis".into()),
+                title: Some("E3 ship".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        // a cancelled child does not count
+        assert_eq!(
+            hierarchy_of(&actor, &epic).await,
+            "children 0 of 1 done · accent lapis"
+        );
+        let b2 = flat(actor.ask(GetTask(b.id.clone())).await).unwrap();
+        assert_eq!(
+            hierarchy_of(&actor, &b2).await,
+            format!("parent {} \"E3 ship\"", epic.id)
+        );
+        // a cycle and an unknown accent are refused; "" clears the parent
+        let e = update(
+            &epic.id,
+            TaskPatch {
+                parent: Some(b.id.0.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("its own ancestor"), "{e}");
+        assert!(
+            update(
+                &b.id,
+                TaskPatch {
+                    accent: Some("teal".into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err()
+        );
+        let b3 = update(
+            &b.id,
+            TaskPatch {
+                parent: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hierarchy_of(&actor, &b3).await, "");
     }
 }
 

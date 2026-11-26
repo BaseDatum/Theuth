@@ -495,6 +495,7 @@ mod tests {
             attachments: vec![],
             priority: Priority::Medium,
             home: None,
+            accent: None,
         }
     }
 
