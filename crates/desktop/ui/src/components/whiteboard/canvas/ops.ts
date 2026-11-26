@@ -240,6 +240,16 @@ export function removeFrame(doc: Y.Doc, id: Id): void {
   chunked(doc, OWNER, ops)
 }
 
+/** A frame's new rect and the membership that follows it (binding `resizeMembership`): one undo step. */
+export function resizeFrame(doc: Y.Doc, id: Id, rect: { x: number; y: number; w: number; h: number }, members: { join: Id[]; leave: Id[] }): void {
+  const m = entry(doc, 'frames', id)
+  if (!m) return
+  const ops: (() => void)[] = [() => patchMap(m, { x: rect.x, y: rect.y, w: rect.w, h: rect.h })]
+  for (const c of members.join) ops.push(() => entry(doc, 'cards', c)?.set('frame', id))
+  for (const c of members.leave) ops.push(() => entry(doc, 'cards', c)?.delete('frame'))
+  chunked(doc, OWNER, ops)
+}
+
 /** Owner long-press: Pin (`sent`/`answered` → `pinned`) or Unpin (→ `answered`). */
 export function pinMark(doc: Y.Doc, id: Id, pinned: boolean): void {
   const m = entry(doc, 'marks', id)

@@ -1021,12 +1021,21 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   }), [boxOf, captions, commit, dark, doc, focus, freeSpot, host, rf, store, undo, windowRect, worldView])
 
   // ---- React Flow callbacks ----
+  /** `--wb-zoom` on the wrapper: frame bands and link hit strokes keep a constant screen size (canvas.css). Written on
+   *  a zoom change only, never per pan frame. */
+  const zoomVar = useRef(0)
+  const setZoomVar = useCallback((z: number) => {
+    if (z === zoomVar.current || !wrap.current) return
+    zoomVar.current = z
+    wrap.current.style.setProperty('--wb-zoom', String(z))
+  }, [])
   const onMove = useCallback((ev: unknown, v: Viewport) => {
     if (ev) fitted.current = true // the owner moved: no late fit
     viewRef.current = { x: v.x, y: v.y, zoom: v.zoom }
+    setZoomVar(v.zoom)
     hoverRepaint.current()
     onViewChange?.(viewRef.current, 'move')
-  }, [onViewChange])
+  }, [onViewChange, setZoomVar])
   const onMoveEnd = useCallback((_: unknown, v: Viewport) => {
     viewRef.current = { x: v.x, y: v.y, zoom: v.zoom }
     onViewChange?.(viewRef.current, 'end')
@@ -1036,9 +1045,10 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const onInit = useCallback(() => {
     const v = rf.getViewport()
     viewRef.current = { x: v.x, y: v.y, zoom: v.zoom }
+    setZoomVar(v.zoom)
     onViewChange?.(viewRef.current, 'end')
     recomputeLod()
-  }, [onViewChange, recomputeLod, rf])
+  }, [onViewChange, recomputeLod, rf, setZoomVar])
   // The document often arrives after mount (engine sync): fit once when the first cards show up, unless the owner moved.
   const fitted = useRef(Object.keys(board.cards).length > 0)
   const hasCards = Object.keys(board.cards).length > 0

@@ -2,8 +2,8 @@
 // absolute coordinates (§2.2, §12.11) and the binding converts to parent-relative for React Flow and back on drag end.
 // Nothing here writes; `dragEnd` returns the writes the canvas commits (positions are written on drag end only).
 import { ridersOf } from '../ink/anchor'
-import { containsPoint } from './geom'
-import type { Board, Card, Frame, Id, Link, Port, Stroke } from './model'
+import { contains, containsPoint, intersects } from './geom'
+import type { Board, Box, Card, Frame, Id, Link, Port, Stroke } from './model'
 import type { Move } from './ops'
 
 /** Frames sit under every card; React Flow draws a child above its parent anyway. */
@@ -83,6 +83,42 @@ export function frameAt(board: Board, x: number, y: number, except?: Id): Frame 
     if (!best || f.w * f.h < best.w * best.h) best = f
   }
   return best
+}
+
+/** A frame's padding around its cards and its title band above them (place.rs `PAD`, `BAND`). */
+export const FRAME_PAD = 32
+export const FRAME_BAND = 40
+
+/** The rect a frame takes around `boxes` (place.rs `frame_around`), null for none. */
+export function frameAround(boxes: readonly Box[]): Box | null {
+  if (boxes.length === 0) return null
+  const x0 = Math.min(...boxes.map((b) => b[0]))
+  const y0 = Math.min(...boxes.map((b) => b[1]))
+  const x1 = Math.max(...boxes.map((b) => b[0] + b[2]))
+  const y1 = Math.max(...boxes.map((b) => b[1] + b[3]))
+  return [x0 - FRAME_PAD, y0 - FRAME_PAD - FRAME_BAND, x1 - x0 + 2 * FRAME_PAD, y1 - y0 + 2 * FRAME_PAD + FRAME_BAND]
+}
+
+/**
+ * Membership after a frame is resized to `rect` (the drop of the resize): a drawn card fully inside joins unless it
+ * already sits in a smaller frame; a member left fully outside leaves. A member the new rect still touches stays.
+ */
+export function resizeMembership(board: Board, id: Id, rect: Box): { join: Id[]; leave: Id[] } {
+  const join: Id[] = []
+  const leave: Id[] = []
+  const area = rect[2] * rect[3]
+  for (const c of Object.values(board.cards)) {
+    if (c.state === 'archived') continue
+    const b: Box = [c.x, c.y, c.w, c.h]
+    if (c.frame === id) {
+      if (!intersects(rect, b)) leave.push(c.id)
+      continue
+    }
+    if (!contains(rect, b)) continue
+    const host = c.frame ? board.frames[c.frame] : undefined
+    if (!host || host.w * host.h > area) join.push(c.id)
+  }
+  return { join, leave }
 }
 
 export type DragWrites = { cards: Move[]; frames: { id: Id; x: number; y: number }[]; riders: Stroke[] }
