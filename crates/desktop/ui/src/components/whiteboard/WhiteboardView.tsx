@@ -217,6 +217,17 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   useEffect(() => {
     if (!sidePanel) store.getState().set({ hover: null })
   }, [sidePanel, store])
+  // The canvas's left edge moves by the panel's width as it opens or closes: the view moves back by as much, so what
+  // was on screen stays where it was (the part the panel now covers goes under it).
+  const panelShown = useRef(sidePanel)
+  useLayoutEffect(() => {
+    if (panelShown.current === sidePanel) return
+    panelShown.current = sidePanel
+    const h = handle.current
+    if (!h) return
+    const v = h.view()
+    h.setView({ ...v, x: v.x + (sidePanel ? -OUTLINE_W : OUTLINE_W) })
+  }, [sidePanel])
   const [exitShown, setExitShown] = useState(false)
   const exitPeek = useMemo(() => awake({ ms: EXIT_SHOW_MS, onChange: setExitShown }), [])
   const cursorAwake = useMemo(() => awake({ ms: CURSOR_IDLE_MS, onChange: (on) => frameEl.current?.toggleAttribute('data-cursor-idle', !on) }), [])
@@ -719,8 +730,9 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
         </div>
       ) : null}
       {sidePanel && (
-        // Its own pointer and wheel stay here (the canvas is a sibling, never under it): a drag never pans, the wheel
-        // scrolls the list. Esc with the focus inside closes it before the canvas or the shell see the key.
+        // Its own pointer, wheel and keys stay here (the canvas is a sibling, never under it): a drag never pans, the
+        // wheel scrolls the list, and no key reaches the canvas or the shell's shortcuts (Delete would archive the
+        // picked card). Its own keys: Esc and O close it, ↑/↓ move between rows.
         <aside
           aria-label="Outline"
           data-outline-panel=""
@@ -728,11 +740,21 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
           style={{ width: OUTLINE_W }}
           onPointerDown={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
+          onKeyUp={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
-            if (e.key !== 'Escape') return
             e.stopPropagation()
+            const plain = !e.metaKey && !e.ctrlKey && !e.altKey
+            if (e.key === 'Escape' || (plain && e.key.toLowerCase() === 'o')) {
+              e.preventDefault()
+              return setOutline(false)
+            }
+            if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+            const rows = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-outline-id]')]
+            const i = rows.indexOf(document.activeElement as HTMLElement)
+            const next = rows[e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1)]
+            if (!next) return
             e.preventDefault()
-            setOutline(false)
+            next.focus()
           }}
         >
           <OutlineView

@@ -10,6 +10,7 @@ import * as Y from 'yjs'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
+import { readBoard } from './canvas/model'
 import { addCard } from './canvas/ops'
 import { WhiteboardShell } from './WhiteboardView'
 
@@ -25,6 +26,7 @@ let el: HTMLDivElement
 let phone = false
 const MATCH_MEDIA = window.matchMedia
 let ids: { near: string; far: string }
+let doc: Y.Doc
 
 beforeEach(() => {
   phone = false
@@ -48,7 +50,7 @@ afterEach(() => {
 async function mount() {
   el = document.createElement('div')
   document.body.append(el)
-  const doc = new Y.Doc()
+  doc = new Y.Doc()
   ids = {
     near: addCard(doc, { kind: 'sticky', title: 'Near', x: 0, y: 0, w: 220, h: 150, source: { t: 'sticky', text: 'a' } }),
     far: addCard(doc, { kind: 'sticky', title: 'Far away', x: 3000, y: 2000, w: 220, h: 150, source: { t: 'sticky', text: 'b' } }),
@@ -126,6 +128,36 @@ describe('the outline on desktop and iPad: a side panel beside the live canvas',
     expect(panel()).not.toBeNull()
     await key('P', { shiftKey: true })
     expect(panel()).toBeNull()
+  })
+
+  it('no key typed in the panel reaches the canvas: Delete there archives nothing; ↑/↓ move between rows', async () => {
+    await mount()
+    await key('o')
+    await act(async () => row(ids.near)!.click())
+    row(ids.near)!.focus()
+    for (const k of ['Delete', 'Backspace', 'Enter', 'h']) await key(k, {}, row(ids.near)!)
+    expect(readBoard(doc).cards[ids.near]!.state).toBe('live')
+    expect(panel()).not.toBeNull()
+    await key('ArrowDown', {}, row(ids.near)!)
+    expect(document.activeElement).toBe(row(ids.far))
+    await key('ArrowUp', {}, row(ids.far)!)
+    expect(document.activeElement).toBe(row(ids.near))
+    // The same key outside the panel is the canvas's: the selected card goes.
+    await key('Delete')
+    expect(readBoard(doc).cards[ids.near]!.state).toBe('archived')
+  })
+
+  it('opening and closing the panel keeps what was on screen in place: the view moves back by the panel width', async () => {
+    await mount()
+    const at = () => {
+      const m = /translate\((-?[\d.]+)px, ?(-?[\d.]+)px\) scale\(([\d.]+)\)/.exec(viewport())!
+      return { x: Number(m[1]), y: Number(m[2]), zoom: Number(m[3]) }
+    }
+    const before = at()
+    await key('o')
+    expect(at()).toEqual({ ...before, x: before.x - 300 })
+    await key('o')
+    expect(at()).toEqual(before)
   })
 })
 
