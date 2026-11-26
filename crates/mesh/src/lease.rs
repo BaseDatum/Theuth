@@ -121,8 +121,12 @@ fn key(
 /// Who holds the lease. `incumbent` is the holder as this engine last
 /// computed it. Guards against flapping (67 §4.5): a candidate first seen less
 /// than `probation_ms` ago cannot outrank the incumbent, and a better candidate
-/// must have been connected for `handover_ms` before the incumbent yields.
-/// Both guards apply only while the incumbent is itself still a candidate.
+/// must have been connected for `handover_ms` before the incumbent yields —
+/// except a `Prefer` challenger over a non-`Prefer` incumbent, which takes the
+/// lease once proven: the operator named it hub (a restarted preferred hub
+/// must not wait out the grace behind a stand-in). `Prefer` vs `Prefer` keeps
+/// the grace. Both guards apply only while the incumbent is itself still a
+/// candidate.
 pub fn elect(
     candidates: &[Candidate],
     incumbent: Option<&EngineId>,
@@ -135,21 +139,41 @@ pub fn elect(
         .filter(|c| c.hub_pref != HubPref::Never)
         .collect();
     ranked.sort_by_key(|c| std::cmp::Reverse(key(c)));
-    let incumbent = incumbent.filter(|id| ranked.iter().any(|c| &c.id == *id));
+    let incumbent = ranked.iter().find(|c| Some(&c.id) == incumbent).copied();
     let Some(inc) = incumbent else {
         return ranked.first().map(|c| c.id.clone());
     };
+    let inc_prefers = inc.hub_pref == HubPref::Prefer;
     for c in &ranked {
-        if &c.id == inc {
-            return Some(inc.clone());
+        if c.id == inc.id {
+            return Some(inc.id.clone());
         }
         let proven = now_ms.saturating_sub(c.first_seen_ms) >= probation_ms;
-        let stable = now_ms.saturating_sub(c.connected_since_ms) >= handover_ms;
+        let stable = (c.hub_pref == HubPref::Prefer && !inc_prefers)
+            || now_ms.saturating_sub(c.connected_since_ms) >= handover_ms;
         if proven && stable {
             return Some(c.id.clone());
         }
     }
-    Some(inc.clone())
+    Some(inc.id.clone())
+}
+
+/// 182 S9: the holder a just-(re)started engine follows instead of electing:
+/// the longest-up connected claimer that has been up longer than this engine
+/// (`started_ms`). A `Prefer` engine follows only a `Prefer` elder — it does
+/// not defer to a stand-in hub it outranks.
+pub fn restart_elder(
+    candidates: &[Candidate],
+    claimers: &[EngineId],
+    self_pref: HubPref,
+    started_ms: u64,
+) -> Option<EngineId> {
+    candidates
+        .iter()
+        .filter(|c| claimers.contains(&c.id) && c.uptime_since_ms < started_ms)
+        .filter(|c| self_pref != HubPref::Prefer || c.hub_pref == HubPref::Prefer)
+        .min_by_key(|c| (c.uptime_since_ms, c.id.0.clone()))
+        .map(|c| c.id.clone())
 }
 
 /// 182 D5: [`elect`] when the lease may be held twice. `claimers` are the
@@ -501,6 +525,93 @@ mod tests {
         assert_eq!(
             resolve(&both, Some(&ia), &ia, &[], NOW, PROBATION, HANDOVER),
             elect(&both, Some(&ia), NOW, PROBATION, HANDOVER)
+        );
+    }
+
+    /// A `Prefer` challenger takes the lease from a non-`Prefer` incumbent
+    /// as soon as it is proven — no handover grace.
+    #[test]
+    fn prefer_challenger_preempts_a_non_prefer_incumbent_at_once() {
+        let p50 = cand("p50", EngineClass::Desktop);
+        let mut hub = cand("hub", EngineClass::Desktop);
+        hub.hub_pref = HubPref::Prefer;
+        hub.connected_since_ms = NOW - 1_000;
+        hub.uptime_since_ms = NOW - 1_000;
+        let c = [p50.clone(), hub.clone()];
+        assert_eq!(
+            elect(&c, id("p50").as_ref(), NOW, PROBATION, HANDOVER),
+            id("hub")
+        );
+        // Probation still applies to a Prefer newcomer.
+        let mut fresh = hub.clone();
+        fresh.first_seen_ms = NOW - HOUR;
+        assert_eq!(
+            elect(&[p50, fresh], id("p50").as_ref(), NOW, PROBATION, HANDOVER),
+            id("p50")
+        );
+    }
+
+    /// Two `Prefer` engines: the better one still waits out the grace.
+    #[test]
+    fn prefer_vs_prefer_keeps_the_grace() {
+        let mut inc = cand("desktop", EngineClass::Desktop);
+        inc.hub_pref = HubPref::Prefer;
+        let mut better = cand("server", EngineClass::Server);
+        better.hub_pref = HubPref::Prefer;
+        better.connected_since_ms = NOW - 60_000;
+        let c = [inc, better];
+        assert_eq!(
+            elect(&c, id("desktop").as_ref(), NOW, PROBATION, HANDOVER),
+            id("desktop")
+        );
+        assert_eq!(
+            elect(
+                &c,
+                id("desktop").as_ref(),
+                NOW + HANDOVER,
+                PROBATION,
+                HANDOVER
+            ),
+            id("server")
+        );
+    }
+
+    /// The incident: a restarted `Prefer` engine sees a long-up non-`Prefer`
+    /// claimer. It must not follow it as an elder, and the election it runs
+    /// instead (holding nothing, the claimer its incumbent) picks itself; the
+    /// claimer's own election agrees. A non-`Prefer` restarter still follows,
+    /// and a `Prefer` restarter still follows a `Prefer` elder.
+    #[test]
+    fn restarted_prefer_engine_does_not_follow_a_non_prefer_elder() {
+        let p50 = cand("p50", EngineClass::Desktop);
+        let started = NOW - 5_000;
+        let mut hub = cand("hub", EngineClass::Desktop);
+        hub.hub_pref = HubPref::Prefer;
+        hub.uptime_since_ms = started;
+        hub.connected_since_ms = started;
+        let (ih, ip) = (hub.id.clone(), p50.id.clone());
+        let c = [hub.clone(), p50.clone()];
+        let claimers = std::slice::from_ref(&ip);
+        assert_eq!(restart_elder(&c, claimers, HubPref::Prefer, started), None);
+        assert_eq!(
+            resolve(&c, None, &ih, claimers, NOW, PROBATION, HANDOVER),
+            id("hub"),
+            "on the restarted hub"
+        );
+        assert_eq!(
+            resolve(&c, Some(&ip), &ip, &[], NOW, PROBATION, HANDOVER),
+            id("hub"),
+            "on p50"
+        );
+        assert_eq!(
+            restart_elder(&c, claimers, HubPref::Eligible, started),
+            id("p50")
+        );
+        let mut pref_elder = p50;
+        pref_elder.hub_pref = HubPref::Prefer;
+        assert_eq!(
+            restart_elder(&[hub, pref_elder], claimers, HubPref::Prefer, started),
+            id("p50")
         );
     }
 }

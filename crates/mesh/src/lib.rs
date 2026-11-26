@@ -717,14 +717,9 @@ impl Ctx {
         // 182 S9: for its first `lapse` + 30 s a (re)started engine does not take
         // the lease from a connected holder that has been up longer — it follows
         // it; rank decides later, under the handover grace (no churn on restart).
+        // A `Prefer` engine follows only a `Prefer` elder.
         let elder = (now.saturating_sub(self.started_ms) < lapse_ms + RESTART_HOLD_MS)
-            .then(|| {
-                cands
-                    .iter()
-                    .filter(|c| claimers.contains(&c.id) && c.uptime_since_ms < self.started_ms)
-                    .min_by_key(|c| (c.uptime_since_ms, c.id.0.clone()))
-                    .map(|c| c.id.clone())
-            })
+            .then(|| lease::restart_elder(&cands, &claimers, cfg.hub, self.started_ms))
             .flatten();
         let holder = match elder {
             Some(h) => Some(h),
