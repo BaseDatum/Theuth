@@ -664,8 +664,10 @@ export function Composer({
   }, [live, api])
   /** 153 §6.1: the dictation whose words are in the box, until the next send reports it (`''`/null = nothing to report). */
   const lastDictation = useRef<string | null>(null)
-  /** 153 §7.4 "send it": the landed value to `submit()` once the box says it; `null` otherwise. */
+  /** 153 §7.4 "send it": the landed value to send once the box says it; `null` otherwise. */
   const [autoSend, setAutoSend] = useState<string | null>(null)
+  /** How `autoSend` goes out: Send/Steer pressed while dictating (`sendAfterDictate`), or spoken "send it" (a press). */
+  const autoGesture = useRef<'press' | 'interrupt'>('press')
   /** Pending send gesture triggered by pressing Send/Steer while dictating; consumed on dictation finish. */
   const sendAfterDictate = useRef<'press' | 'interrupt' | null>(null)
   /** This pane's identity for `correction` → the suggestion card lands under the pane that sent (§6.3 step 4). */
@@ -675,6 +677,10 @@ export function Composer({
     () =>
       dictation.onFinish(({ value, caret, id, send }) => {
         if (!ownerRef.current) return
+        // Taken before the box is written: `replayInto`'s input events render synchronously, and that render's
+        // idle-phase effect clears `sendAfterDictate`.
+        const pressed = sendAfterDictate.current
+        sendAfterDictate.current = null
         const b = bufRef.current
         if (b) {
           // Esc hands back an empty id (§6.1 reports nothing for a discard).
@@ -689,9 +695,10 @@ export function Composer({
           setPending({ caret })
         } else setPending({ text: value, caret })
         lastDictation.current = id || null
-        const pendingSend = sendAfterDictate.current
-        sendAfterDictate.current = null
-        if (send || pendingSend) setAutoSend(value)
+        if (send || pressed) {
+          autoGesture.current = pressed ?? 'press'
+          setAutoSend(value)
+        }
       }),
     [],
   )
@@ -743,12 +750,13 @@ export function Composer({
     ta.addEventListener('beforeinput', onBefore)
     return () => ta.removeEventListener('beforeinput', onBefore)
   }, [dictating])
-  // The spoken "send it" fires once the landed text is the box's text — the same path as ⏎, exactly once.
+  // The landed text goes out once it is the box's text: Send/Steer pressed while dictating, or the spoken "send it" —
+  // the same path as ⏎ / ⌘↩ (`gesture`; an empty box sends nothing), exactly once.
   useEffect(() => {
     const r = spokenSend(autoSend, text)
     if (!r.fire) return
     setAutoSend(r.auto)
-    void submit()
+    gesture(autoGesture.current)
   })
   // Idle again (finished, discarded, or `start` failed) → nobody owns it. `start` flips the phase synchronously,
   // so the same batch that sets `owner` never sees idle.
