@@ -81,6 +81,19 @@ export function pairLogins(providers: readonly ProviderInfo[], logins: readonly 
 /** A login's state: `not logged in`, `logged in`, or `logged in (<account>)` when the provider names it. */
 export const loginText = (l: LoginInfo): string => (!l.logged_in ? 'not logged in' : l.account ? `logged in (${l.account})` : 'logged in')
 
+/** A provider row's one action beside its name; its other actions sit in the row's ⋯ menu. */
+export type RowAction = 'key' | 'login' | 'refresh'
+
+/**
+ * The primary action of a provider row. Until it is usable (no key, not logged in), the way in: Log in where the
+ * provider has a login, else Set key… where it takes one. Once usable, Refresh models where it refreshes; else none.
+ */
+export function primaryAction(r: { ready: boolean; keyed: boolean; login: LoginInfo | undefined; refreshable: boolean }): RowAction | null {
+  if (!r.ready && r.login) return 'login'
+  if (!r.ready && r.keyed) return 'key'
+  return r.refreshable ? 'refresh' : null
+}
+
 /** Toast of a `refresh_provider_models` reply (162 D7): `rwx: 14 models (+2, −1)` or `rwx: 14 models, no change`. */
 export function refreshedText({ provider: p, added, removed }: RefreshedModels): string {
   if (added.length === 0 && removed.length === 0) return `${p.name}: ${p.models} models, no change`
