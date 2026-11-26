@@ -70,7 +70,7 @@ vi.mock('@/components/code/FileView', () => ({
 vi.mock('@/components/chat/DiagramFrame', () => ({ HOME: {}, Surface: Stub, Tool: Stub, Tools: Stub }))
 vi.mock('@/components/chat/JobsSheet', () => ({ JobFilters: Stub, JobList: Stub, LiveJob: Stub, useJobs: () => ({ summary: '' }) }))
 vi.mock('@/components/notes/NotePage', () => ({ NoteView: Stub }))
-vi.mock('@/components/notes/requirements', () => ({ panelRequirements: {} }))
+vi.mock('@/components/notes/requirements', () => ({ panelRequirements: {}, requirements: {} }))
 vi.mock('@/components/chat/Attachments', () => ({ Original: Stub }))
 vi.mock('@/components/chat/MessageAssistant', () => ({ RemoveButton: Stub, rehypePlugins: [] }))
 vi.mock('@/components/plugins/PluginSurface', () => ({ PluginSurface: Stub }))
