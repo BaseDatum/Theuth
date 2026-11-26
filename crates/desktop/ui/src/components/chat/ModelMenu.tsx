@@ -1,7 +1,7 @@
 import { Capability, useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Brain, ChevronLeft, ChevronRight, Eye, RotateCcw, Sparkles } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { routed } from '@/lib/owner'
 import { Button } from '@/components/ui/button'
@@ -556,15 +556,17 @@ function ComposerModelBody(props: Props) {
         title={step === 0 ? undefined : labels.full}
       />
     )
-  // The icon step's name is only in its tooltip (and its aria-label).
-  const shown =
+  // The icon step's name is only in its tooltip (and its aria-label). The Tooltip wraps the Popover/Dialog trigger,
+  // never the reverse: an `asChild` trigger merges its props into its child, and a `Tooltip` root renders no element,
+  // so a trigger around it would drop its `onClick` and the icon would open nothing.
+  const shown = (t: ReactElement) =>
     step === 3 ? (
       <Tooltip>
-        <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+        <TooltipTrigger asChild>{t}</TooltipTrigger>
         <TooltipContent>{labels.full}</TooltipContent>
       </Tooltip>
     ) : (
-      trigger
+      t
     )
   // Above the input the list is capped by the visible band (a short window, the keyboard), as in `ModelCombobox`.
   const list = 'max-h-[min(24rem,calc(var(--visible-band)-6rem))]'
@@ -572,12 +574,12 @@ function ComposerModelBody(props: Props) {
     <>
       {touch() ? (
         <Dialog open={open} onOpenChange={onOpenChange}>
-          <DialogTrigger asChild>{shown}</DialogTrigger>
+          {shown(<DialogTrigger asChild>{trigger}</DialogTrigger>)}
           <PickerDialogContent m={m} session={props.session} advisor={advisor} />
         </Dialog>
       ) : (
         <Popover open={open} onOpenChange={onOpenChange}>
-          <PopoverTrigger asChild>{shown}</PopoverTrigger>
+          {shown(<PopoverTrigger asChild>{trigger}</PopoverTrigger>)}
           <PopoverContent side="top" align="end" sideOffset={8} className="w-80 p-0">
             {m.agent ? <HarnessPicker m={m} listClassName={list} /> : <ModelCommand m={m} session={props.session} advisor={advisor} listClassName={list} />}
           </PopoverContent>

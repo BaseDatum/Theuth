@@ -10,12 +10,19 @@ import * as Y from 'yjs'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { NO_PICK, useDrafts } from '@/lib/drafts'
 import type * as Rpc from '@/lib/rpc'
+import type * as Discovery from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
 import { WhiteboardShell } from './WhiteboardView'
 
 const rpc = vi.hoisted(() => ({ api: {} as Record<string, unknown> }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => rpc.api }))
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => () => undefined, useRouterState: () => '/' }))
+/** `true`: the engine advertises every capability (the model picker is gated on `modelRequirements`). */
+const caps = vi.hoisted(() => ({ all: false }))
+vi.mock('@/rpc/discovery', async (original) => {
+  const m = await original<typeof Discovery>()
+  return { ...m, supports: (...a: Parameters<typeof m.supports>) => caps.all || m.supports(...a) }
+})
 
 window.HTMLElement.prototype.scrollIntoView = () => {}
 Element.prototype.setPointerCapture ??= () => {}
@@ -39,6 +46,8 @@ const answers: Record<string, (...a: unknown[]) => unknown> = {
   send_input: (s: unknown) => s ?? 'made-by-send',
   steer: () => null,
 }
+const LIST_MODELS = answers.list_models!
+const RESIZE_OBSERVER = globalThis.ResizeObserver
 
 beforeEach(() => {
   calls = []
@@ -69,6 +78,9 @@ afterEach(() => {
   act(() => root.unmount())
   el.remove()
   document.body.innerHTML = ''
+  caps.all = false
+  answers.list_models = LIST_MODELS
+  globalThis.ResizeObserver = RESIZE_OBSERVER
 })
 
 async function mount() {
@@ -177,5 +189,47 @@ describe('the whiteboard composer is the session composer', () => {
     // The pick is spent on that session, which the whiteboard now talks to.
     expect(useDrafts.getState().pick).toEqual(NO_PICK)
     await vi.waitFor(() => expect(q('button[aria-label^="Session: "]')).not.toBeNull())
+  })
+
+  it('the model picker opens from the narrow dock (its icon step), lists favorites first, and its pick applies to the first send', async () => {
+    caps.all = true
+    answers.list_models = () => [
+      { id: 'm/one', name: 'One', provider: 'm', context: 0, reasoning: true, image: true, efforts: ['low', 'high'], budget_min: null, budget_max: null, local: false },
+      { id: 'x/two', name: 'Two', provider: 'x', context: 0, reasoning: false, image: true, efforts: [], budget_min: null, budget_max: null, local: false },
+    ]
+    // Two providers: the picker opens on its top level, where the starred models lead.
+    useConnection.setState({ info: { favorite_models: ['x/two'], default_model: 'm/one' } as never })
+    // The dock is iPhone-wide and its toolbar leads with the tools button: the model's slot leaves room for the icon only.
+    globalThis.ResizeObserver = class {
+      cb: (e: { contentRect: { width: number } }[]) => void
+      constructor(cb: (e: { contentRect: { width: number } }[]) => void) {
+        this.cb = cb
+      }
+      observe(el: Element) {
+        if (el.matches('[data-model-slot]')) this.cb([{ contentRect: { width: 20 } }])
+      }
+      unobserve() {}
+      disconnect() {}
+    } as never
+    await mount()
+    await vi.waitFor(() => expect(q('[data-whiteboard-composer] [data-tour="chat-model"]')?.getAttribute('data-step')).toBe('3'))
+    const trigger = q('[data-whiteboard-composer] [data-tour="chat-model"]')!
+    await act(async () => {
+      trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }))
+      trigger.click()
+    })
+    await vi.waitFor(() => expect(trigger.getAttribute('aria-expanded')).toBe('true'))
+    const rows = await vi.waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>('[data-slot="popover-content"] [cmdk-item]')]
+      expect(found.length).toBeGreaterThan(0)
+      return found
+    })
+    expect(rows[0]!.textContent).toContain('Two') // the favorite leads
+    await click(rows[0]!)
+    expect(useDrafts.getState().pick.model).toBe('x/two')
+    await type('Go')
+    await send()
+    await vi.waitFor(() => expect(method('create_session')).toHaveLength(1))
+    expect(method('create_session')[0]![1]).toMatchObject({ model: 'x/two' })
   })
 })
