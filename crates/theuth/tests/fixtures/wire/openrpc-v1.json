@@ -142771,6 +142771,32 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "cancel_login",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "cancel_reminder",
       "paramStructure": "by-position",
       "params": [

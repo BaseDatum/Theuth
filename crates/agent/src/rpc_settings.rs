@@ -1,6 +1,6 @@
 use crate as agent;
 use agent::rpc_forward as forward;
-use agent::{AcpLogin, SetModelFavorite, AddAcp, AddProvider, Agents, CompactStyle, EscalateModel, GetCompactStyle, GetEscalateModel, GetSubagentModel, GetTitleModel, GetVisionModel, ListAcp, ListLogins, ListModels, ListProviders, ListRegistry, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog, AwsProfiles, ListAwsProfiles, SetAwsProfile, EndlessConfig, GetPolishModel, SetPolishModel};
+use agent::{AcpLogin, SetModelFavorite, AddAcp, AddProvider, Agents, CancelLogin, CompactStyle, EscalateModel, GetCompactStyle, GetEscalateModel, GetSubagentModel, GetTitleModel, GetVisionModel, ListAcp, ListLogins, ListModels, ListProviders, ListRegistry, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog, AwsProfiles, ListAwsProfiles, SetAwsProfile, EndlessConfig, GetPolishModel, SetPolishModel};
 use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
@@ -283,9 +283,14 @@ pub trait AgentSettingsApi {
     #[method(name = "list_logins")]
     async fn list_logins(&self) -> RpcResult<Vec<LoginInfo>>;
     /// Start a provider login (a kind or an account instance's name); returns the URL to
-    /// open. Ends with a `LoginFinished` event.
+    /// open. Ends with a `LoginFinished` event. A sign-in of the same provider still
+    /// waiting is cancelled first, so starting again always rebinds its callback port.
     #[method(name = "login")]
     async fn login(&self, provider: String) -> RpcResult<String>;
+    /// End the provider's waiting sign-in, if any, and free its callback port at once.
+    /// No `LoginFinished` follows.
+    #[method(name = "cancel_login")]
+    async fn cancel_login(&self, provider: String) -> RpcResult<()>;
     /// Forget a provider login (a kind or an account instance's name).
     #[method(name = "logout")]
     async fn logout(&self, provider: String) -> RpcResult<()>;
@@ -841,6 +846,10 @@ impl AgentSettingsApiServer for Server {
 
     async fn login(&self, provider: String) -> RpcResult<String> {
         ask::<Agents, _>(agent::AGENT_ACTOR, Login { provider }).await
+    }
+
+    async fn cancel_login(&self, provider: String) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, CancelLogin { provider }).await
     }
 
     async fn logout(&self, provider: String) -> RpcResult<()> {

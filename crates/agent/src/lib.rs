@@ -7,7 +7,7 @@
 //!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`SetVisionModel`], [`GetVisionModel`], [`ListSessions`], [`LoadSession`], [`RenameSession`], [`ListAgents`],
 //!   [`ListModels`], [`SetModel`], [`GetDefaultModel`], [`SetEffort`], [`GetDefaultEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
-//!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
+//!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`CancelLogin`], [`Logout`],
 //!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`RefreshProviderModels`],
 //!   [`ExportProviders`], [`ApplyProviders`], [`NewSession`],
 //!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`], [`Ancestors`],
@@ -2729,7 +2729,8 @@ pub struct LoginInfo {
 }
 
 /// `ask` → `Result<String, String>`: the URL to open; the browser is also
-/// opened. Completion arrives as [`LoginFinished`].
+/// opened. Completion arrives as [`LoginFinished`]. A sign-in of the same
+/// provider still waiting is cancelled first (it sends no [`LoginFinished`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Login {
     /// genai namespace (`openai`).
@@ -2740,6 +2741,14 @@ pub struct Login {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Logout {
     /// genai namespace (`openai`).
+    pub provider: String,
+}
+
+/// `ask` → `()`: end the provider's waiting sign-in, if any, and close its
+/// loopback listener; it sends no [`LoginFinished`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CancelLogin {
+    /// genai namespace (`openai`) or account instance name.
     pub provider: String,
 }
 

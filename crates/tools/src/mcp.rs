@@ -861,6 +861,8 @@ struct State {
     adopted: HashSet<String>,
     /// [`StartServer`] callers waiting for a pending connect to settle.
     waiters: HashMap<String, Vec<ReplySender<Result<(), String>>>>,
+    /// [`McpLogin`]s waiting on the browser, one per server; a second one ends the first.
+    logins: ::oauth::Logins,
 }
 
 /// 187: a failed start and when the next one may run.
@@ -1423,9 +1425,11 @@ impl Message<McpLogin> for Mcp {
         };
         let oauth = oauth.unwrap_or_default();
         let (want_port, redirect) = oauth.redirect()?;
+        // Login pressed again: the waiting one ends and closes its listener before the bind.
+        self.state.logins.cancel(&name).await;
         let (port, back) = ::oauth::callback(want_port)
             .await
-            .map_err(|e| format!("callback listener on 127.0.0.1:{want_port}: {e}"))?;
+            .map_err(|e| format!("{name}: {e}"))?;
         let mut manager = AuthorizationManager::new(url.as_str())
             .await
             .map_err(|e| e.to_string())?;
@@ -1453,8 +1457,8 @@ impl Message<McpLogin> for Mcp {
         let url = session.get_authorization_url().to_owned();
         ::oauth::open_browser(&url);
         let me = ctx.actor_ref().clone();
-        tokio::spawn(async move {
-            let done = match tokio::time::timeout(::oauth::LOGIN_TIMEOUT, back).await {
+        let login = async move {
+            match tokio::time::timeout(::oauth::LOGIN_TIMEOUT, back).await {
                 // rmcp exchanges the code and saves through `FileStore`.
                 Ok(Ok(cb)) => session
                     .handle_callback_url(&cb)
@@ -1463,16 +1467,20 @@ impl Message<McpLogin> for Mcp {
                     .map_err(|e| e.to_string()),
                 Ok(Err(e)) => Err(e),
                 Err(_) => Err("timed out waiting for the browser".into()),
-            };
-            match done {
-                Ok(()) => {
-                    let _ = me.tell(Restart { name }).await;
-                }
-                Err(error) => {
-                    let _ = me.tell(LoginFailed { name, error }).await;
-                }
             }
-        });
+        };
+        self.state
+            .logins
+            .spawn(name.clone(), login, move |done| async move {
+                match done {
+                    Ok(()) => {
+                        let _ = me.tell(Restart { name }).await;
+                    }
+                    Err(error) => {
+                        let _ = me.tell(LoginFailed { name, error }).await;
+                    }
+                }
+            });
         Ok(url)
     }
 }

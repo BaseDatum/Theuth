@@ -88,7 +88,7 @@ use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AcpLogin, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, ArchiveSession, BroadcastOutcome, BroadcastReceipt,
-    BroadcastRequest, BroadcastRow, BroadcastTargets, Cancel, CancelScope, Compact, CompactStyle,
+    BroadcastRequest, BroadcastRow, BroadcastTargets, Cancel, CancelLogin, CancelScope, Compact, CompactStyle,
     ContextItems, DeleteSession, Delivery, DeskSession, EditTurn, EscalateModel, ForkSession,
     GetCompactStyle, GetDefaultEffort, GetDefaultModel, GetEscalateModel, GetMaxSalvages,
     GetMaxToolRounds, GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos,
@@ -218,6 +218,9 @@ pub struct Agents {
     costs: CostService,
     client: Client,
     auth: Auth,
+    /// Provider sign-ins waiting on the browser, one per provider (a second [`Login`] or
+    /// [`CancelLogin`] ends the first and closes its loopback listener).
+    logins: oauth::Logins,
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
@@ -11339,6 +11342,9 @@ impl Message<Login> for Agents {
 
     async fn handle(&mut self, m: Login, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let p = self.auth.login_provider(&m.provider)?;
+        // Connect pressed again (the browser opened the wrong profile, say): the waiting
+        // sign-in ends and its listener closes before the new one binds the same port.
+        self.logins.cancel(&m.provider).await;
         let (url, finish) = self.auth.oauth.login(&p).await?;
         // The browser's session decides which account signs in: once a kind has
         // accounts, the default browser would finish at once with whichever is signed
@@ -11351,19 +11357,27 @@ impl Message<Login> for Agents {
             oauth::open_browser(&url);
         }
         let rt = self.rt.clone();
-        tokio::spawn(async move {
-            let error = finish.await.err();
-            match &error {
-                Some(e) => tracing::warn!("login {}: {e}", m.provider),
-                None => tracing::info!("login {}: ok", m.provider),
-            }
-            rt.publish(LoginFinished {
-                provider: m.provider,
-                error,
-            })
-            .await;
-        });
+        let provider = m.provider.clone();
+        self.logins
+            .spawn(m.provider, finish, move |done| async move {
+                let error = done.err();
+                match &error {
+                    Some(e) => tracing::warn!("login {provider}: {e}"),
+                    None => tracing::info!("login {provider}: ok"),
+                }
+                rt.publish(LoginFinished { provider, error }).await;
+            });
         Ok(url)
+    }
+}
+
+impl Message<CancelLogin> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: CancelLogin, _: &mut Context<Self, Self::Reply>) {
+        if self.logins.cancel(&m.provider).await {
+            tracing::info!("login {}: cancelled", m.provider);
+        }
     }
 }
 
@@ -13483,6 +13497,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
+            logins: oauth::Logins::default(),
             cfg: cfg.clone(),
             default_model: cfg.model.clone(),
             default_effort: cfg.effort.clone(),
@@ -14642,6 +14657,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
     boot_paused.extend(sync);
     Agents {
         rt,
+        logins: oauth::Logins::default(),
         default_model: cfg.model.clone(),
         default_effort: None,
         favorite_models: Vec::new(),
