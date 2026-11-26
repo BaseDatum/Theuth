@@ -42,15 +42,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use agent::{AgentEvent, PeerMessageChanged};
 use agent::store::Store;
+use agent::{AgentEvent, PeerMessageChanged};
 use bytes::Bytes;
 use futures::{SinkExt as _, StreamExt as _};
 use kameo::actor::{ActorRef, Spawn as _};
 use kameo::message::{Context, Message};
 use replica::{ALPN_SESSIONS, ByteStream, PeerEvent, PeerId, Transport};
-use runtime::{Runtime, SessionId};
 use rpc_core::{Following, Unfollow};
+use runtime::{Runtime, SessionId};
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -72,7 +72,6 @@ pub struct SetTransport(pub Arc<dyn Transport>);
 /// `tell`: a local client is subscribed to `session`; follow its owner.
 #[derive(Clone, Copy, Debug)]
 pub struct Follow(pub SessionId);
-
 
 /// `tell`: a remote subscriber's stream for `session` is open; events go to `tx`.
 pub struct Serve {
@@ -134,7 +133,10 @@ pub const WIRE_RELAYED: &[(&str, &str)] = &[
     ("PagePreviewResolved", "artifact.page-preview-resolved"),
     ("WebViewCallRequested", "artifact.web-view-call-requested"),
     ("WebViewCallResolved", "artifact.web-view-call-resolved"),
-    ("LayoutCommandRequested", "artifact.layout-command-requested"),
+    (
+        "LayoutCommandRequested",
+        "artifact.layout-command-requested",
+    ),
     ("LayoutCommandResolved", "artifact.layout-command-resolved"),
     ("ElementFormRequested", "browser.element-form-requested"),
     ("ElementFormResolved", "browser.element-form-resolved"),
@@ -158,7 +160,6 @@ const MAX_WIRED: usize = 4096;
 /// `tell`: the owner of `session` (per the replica) reconnected; retry now.
 #[derive(Clone, Debug)]
 pub struct Reconnected(pub PeerId);
-
 
 /// Follow `session`'s owner while the guard lives; `None` before the actor exists.
 pub fn follow(session: SessionId) -> Option<Following> {
@@ -568,6 +569,23 @@ impl Message<AgentEvent> for EventRelay {
         let Ok(bytes) = serde_json::to_vec(&ev) else {
             return;
         };
+        // A spawn / watch-only row is keyed by the child, which no viewer follows
+        // yet: it also goes to the parent's stream, which a viewer of the parent does.
+        let parent = match &ev {
+            AgentEvent::SubagentSpawned { parent, .. }
+            | AgentEvent::ObservedChildChanged { parent, .. } => {
+                Some(*parent).filter(|p| *p != session)
+            }
+            _ => None,
+        };
+        if let Some(parent) = parent {
+            let bytes = bytes.clone();
+            self.send(parent, false, |session, seq| Msg::Event {
+                session,
+                seq,
+                bytes,
+            });
+        }
         self.send(session, false, |session, seq| Msg::Event {
             session,
             seq,
@@ -1373,6 +1391,49 @@ mod tests {
         t.stores.1.close().await;
     }
 
+    /// A viewer following only the parent sees the parent's new child: the child's
+    /// `SubagentSpawned` (keyed by the child) also goes down the parent's stream.
+    #[tokio::test]
+    async fn a_follower_of_the_parent_sees_its_new_child() {
+        let mut t = two(false).await;
+        let (tap_tx, mut tapped) = mpsc::unbounded_channel();
+        let tap = Tap::spawn_with_mailbox(Tap(tap_tx), runtime::subscriber_mailbox());
+        t.rt_f.subscribe::<Tap, AgentEvent>(&tap).await;
+        t.front.tell(Follow(t.session)).await.unwrap();
+        assert_eq!(t.seen.recv().await, Some("watch"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let child = SessionId::new();
+        t.rt_o
+            .publish(AgentEvent::SubagentSpawned {
+                parent: t.session,
+                child,
+                name: "win-probe2".into(),
+                cap: None,
+                agent: None,
+                model: None,
+            })
+            .await;
+        let got = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match tapped.recv().await {
+                    Some(ev @ AgentEvent::SubagentSpawned { .. }) => return ev,
+                    Some(_) => continue,
+                    None => panic!("tap closed"),
+                }
+            }
+        })
+        .await
+        .expect("the parent's follower got the spawn");
+        assert!(
+            matches!(got, AgentEvent::SubagentSpawned { parent, child: c, ref name, .. }
+                if parent == t.session && c == child && name == "win-probe2"),
+            "{got:?}"
+        );
+        t.stores.0.close().await;
+        t.stores.1.close().await;
+    }
+
     /// 209 §4.4: the forward list names the tile-call pair, `show_web`'s event, the page-preview
     /// pair and the element-form pair (P5), each under its declared topic.
     #[test]
@@ -1380,7 +1441,10 @@ mod tests {
         for (kind, topic) in [
             ("WebViewCallRequested", "artifact.web-view-call-requested"),
             ("WebViewCallResolved", "artifact.web-view-call-resolved"),
-            ("LayoutCommandRequested", "artifact.layout-command-requested"),
+            (
+                "LayoutCommandRequested",
+                "artifact.layout-command-requested",
+            ),
             ("LayoutCommandResolved", "artifact.layout-command-resolved"),
             ("WebViewOpened", "artifact.web-view-opened"),
             ("PtyViewOpened", "artifact.pty-view-opened"),
