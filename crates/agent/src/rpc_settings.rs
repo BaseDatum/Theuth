@@ -313,20 +313,26 @@ pub trait AgentSettingsApi {
     /// `include_keys` (the vault replicates; the target uses its own copy). A row whose address
     /// is loopback points at this machine and comes back `skipped`. The owner's press only; a
     /// target without `apply_providers` is an error naming the update it needs.
+    /// `include_favorites` (default off) also sends this engine's favorite models, which replace
+    /// the target's and come back as one more line.
     #[method(name = "sync_providers", with_extensions)]
     async fn sync_providers(
         &self,
         to: String,
         names: Option<Vec<String>>,
         include_keys: Option<bool>,
+        include_favorites: Option<bool>,
     ) -> RpcResult<agent::ProviderSyncReport>;
     /// The target of `sync_providers`: upsert `rows` into `providers.yaml` by name (other rows
     /// stay), store a sent key in the vault (a keyless row never deletes one), and make them
     /// live without a restart. One result per row; a failed model listing does not fail the row.
+    /// `favorites`, when sent, replace `agent.favorite_models` (announced as
+    /// `FavoriteModelsChanged`), reported as the line `favorite models`.
     #[method(name = "apply_providers", with_extensions)]
     async fn apply_providers(
         &self,
         rows: Vec<agent::ProviderRow>,
+        favorites: Option<Vec<String>>,
     ) -> RpcResult<Vec<agent::ProviderSyncResult>>;
     /// 177 E8: what answers on the default local runtime ports of 127.0.0.1
     /// (11434, 1234, 8000, 8080); 1.5 s at most. Never adds anything.
@@ -854,6 +860,7 @@ impl AgentSettingsApiServer for Server {
         to: String,
         names: Option<Vec<String>>,
         include_keys: Option<bool>,
+        include_favorites: Option<bool>,
     ) -> RpcResult<agent::ProviderSyncReport> {
         if !secrets::rpc::human_press(ext) {
             return Err(jsonrpsee::types::ErrorObjectOwned::owned(
@@ -871,16 +878,18 @@ impl AgentSettingsApiServer for Server {
             agent::ExportProviders {
                 names,
                 include_keys: include_keys.unwrap_or(false),
+                include_favorites: include_favorites.unwrap_or(false),
             },
         )
         .await?;
         let mut results = exported.skipped;
-        if !exported.rows.is_empty() {
+        if !exported.rows.is_empty() || exported.favorites.is_some() {
             let peer = replica::PeerId(to.clone());
             // The target lists each provider's models (up to 10 s, concurrently) before it answers.
             let wait = forward::TIMEOUT + std::time::Duration::from_secs(15);
+            let params = (&exported.rows, &exported.favorites);
             let applied: Option<Vec<agent::ProviderSyncResult>> =
-                forward::to_peer_within(ext, &peer, "apply_providers", (&exported.rows,), wait)
+                forward::to_peer_within(ext, &peer, "apply_providers", params, wait)
                     .await
                     .map_err(|e| {
                         if e.code() == jsonrpsee::types::error::METHOD_NOT_FOUND_CODE {
@@ -907,9 +916,14 @@ impl AgentSettingsApiServer for Server {
         &self,
         ext: &Extensions,
         rows: Vec<agent::ProviderRow>,
+        favorites: Option<Vec<String>>,
     ) -> RpcResult<Vec<agent::ProviderSyncResult>> {
         rpc_core::owner(ext)?;
-        ask::<Agents, _>(agent::AGENT_ACTOR, agent::ApplyProviders { rows }).await
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::ApplyProviders { rows, favorites },
+        )
+        .await
     }
 
     async fn local_servers_probe(&self) -> RpcResult<Vec<agent::LocalServer>> {

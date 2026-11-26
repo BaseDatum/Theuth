@@ -10794,6 +10794,13 @@ impl Agents {
             }
             _ => return Ok(self.favorite_models.clone()),
         }
+        self.store_favorites().await;
+        Ok(self.favorite_models.clone())
+    }
+
+    /// Write `favorite_models` to `agent.favorite_models` as one flow-sequence line and announce
+    /// it as `FavoriteModelsChanged` (a star here, or a mesh copy's replace).
+    async fn store_favorites(&mut self) {
         // JSON array syntax is valid YAML and survives ids with `:` / `.`.
         let value = format!(
             "[{}]",
@@ -10812,7 +10819,6 @@ impl Agents {
                 models: self.favorite_models.clone(),
             })
             .await;
-        Ok(self.favorite_models.clone())
     }
 }
 
@@ -11721,7 +11727,12 @@ impl Message<ExportProviders> for Agents {
                 r.key = self.auth.key(&r.name).filter(|k| !k.is_empty());
             }
         }
-        ExportedProviders { rows, skipped }
+        let favorites = m.include_favorites.then(|| self.favorite_models.clone());
+        ExportedProviders {
+            rows,
+            skipped,
+            favorites,
+        }
     }
 }
 
@@ -11729,7 +11740,8 @@ impl Message<ApplyProviders> for Agents {
     type Reply = Vec<ProviderSyncResult>;
 
     /// The target of a mesh copy: each row is upserted on its own (one bad row fails only its
-    /// line), the live ones list their models concurrently, then one catalog reload.
+    /// line), the live ones list their models concurrently, then one catalog reload. Sent
+    /// favorites replace this engine's (the same write as a star), as one more result line.
     async fn handle(
         &mut self,
         m: ApplyProviders,
@@ -11740,20 +11752,15 @@ impl Message<ApplyProviders> for Agents {
             status,
             detail,
         };
-        let secrets = match crate::providers::secrets_actor() {
-            Ok(a) => a,
-            Err(e) => {
-                return m
-                    .rows
-                    .iter()
-                    .map(|r| line(&r.name, ProviderSyncStatus::Error, Some(e.clone())))
-                    .collect();
-            }
-        };
-        let mut results = Vec::with_capacity(m.rows.len());
+        let secrets = crate::providers::secrets_actor();
+        let mut results = Vec::with_capacity(m.rows.len() + 1);
         let mut live = Vec::new();
         for row in &m.rows {
-            match crate::providers::apply(&self.rt.data_dir, &secrets, row).await {
+            let applied = match &secrets {
+                Ok(a) => crate::providers::apply(&self.rt.data_dir, a, row).await,
+                Err(e) => Err(e.clone()),
+            };
+            match applied {
                 Err(e) => results.push(line(&row.name, ProviderSyncStatus::Error, Some(e))),
                 Ok((replaced, mut g)) => {
                     let status = if replaced {
@@ -11800,6 +11807,20 @@ impl Message<ApplyProviders> for Agents {
             .any(|r| r.status != ProviderSyncStatus::Error)
         {
             self.reload_catalog().await;
+        }
+        if let Some(favorites) = m.favorites {
+            let (status, detail) = if favorites == self.favorite_models {
+                let same = "already the same list".to_owned();
+                (ProviderSyncStatus::Skipped, same)
+            } else {
+                self.favorite_models = favorites;
+                self.store_favorites().await;
+                (
+                    ProviderSyncStatus::Updated,
+                    format!("replaced with {} favorites", self.favorite_models.len()),
+                )
+            };
+            results.push(line(crate::FAVORITES_LINE, status, Some(detail)));
         }
         results
     }

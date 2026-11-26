@@ -2987,6 +2987,9 @@ pub struct ExportProviders {
     /// Attach each row's vault key.
     #[serde(default)]
     pub include_keys: bool,
+    /// Attach this engine's favorite models (`agent.favorite_models`).
+    #[serde(default)]
+    pub include_favorites: bool,
 }
 
 /// Reply of [`ExportProviders`].
@@ -2996,14 +2999,23 @@ pub struct ExportedProviders {
     pub rows: Vec<ProviderRow>,
     /// Rows not sent, with why ([`ProviderSyncStatus::Skipped`]).
     pub skipped: Vec<ProviderSyncResult>,
+    /// The favorite model ids, in starring order, when asked for.
+    pub favorites: Option<Vec<String>>,
 }
 
+/// The `name` of the result line a mesh copy's favorites get (not a legal provider name).
+pub const FAVORITES_LINE: &str = "favorite models";
+
 /// `ask` → `Vec<ProviderSyncResult>`: upsert mesh-copied rows by name into `providers.yaml`,
-/// store a sent key, and make them live; one result per row.
+/// store a sent key, and make them live; one result per row. `favorites`, when sent, replace
+/// this engine's (written and announced like a star), reported as a [`FAVORITES_LINE`] line.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplyProviders {
     /// The rows, as [`ExportProviders`] produced them on the sender.
     pub rows: Vec<ProviderRow>,
+    /// The sender's favorite model ids; `None`: leave this engine's alone.
+    #[serde(default)]
+    pub favorites: Option<Vec<String>>,
 }
 
 /// `ask` → `Vec<LocalServer>`: probe the default local runtime ports on
