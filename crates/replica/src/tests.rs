@@ -941,3 +941,74 @@ async fn batch_for_an_unattached_table_applies_after_attach() {
     );
     assert_eq!(parked_count(&b).await, 0, "the parked entries applied");
 }
+
+/// Incident (333 renamed to "P50"): a row written before the attach has no
+/// shadow clock. A peer's wall-zero stamp (a stand-in re-announce, a
+/// `mesh_meta` default) must not replace its value — it only fills a column
+/// that is NULL here. A real stamp still wins as before.
+#[tokio::test]
+async fn a_wall_zero_change_only_fills_an_unclocked_null_column() {
+    let b = side_of_schema(
+        &[
+            "CREATE TABLE mesh_meta (key TEXT PRIMARY KEY, value TEXT, note TEXT, hlc TEXT)",
+            "INSERT INTO mesh_meta (key, value, note, hlc) \
+             VALUES ('name', 'home', NULL, '000001a000000000-00000000-me')",
+        ],
+        &["mesh_meta"],
+    )
+    .await;
+    let change = |column: &str, value: &str, hlc: &crate::Hlc| crate::Change {
+        table: "mesh_meta".into(),
+        pk: "name".into(),
+        column: Some(column.into()),
+        value: crate::value::Val::Text(value.into()).encode(),
+        hlc: hlc.clone(),
+        deleted: false,
+    };
+    let zero = crate::Hlc {
+        wall_ms: 0,
+        counter: 0x9539_530e,
+        origin: crate::PeerId("p50".into()),
+    };
+    let stand_in = crate::Hlc::stand_in();
+    let batch = crate::ChangeBatch {
+        origin: crate::PeerId("p50".into()),
+        seq: 1,
+        changes: vec![
+            change("value", "P50", &zero),
+            change("value", "P50", &stand_in),
+            change("note", "filled", &stand_in),
+        ],
+    };
+    assert!(b.engine.apply(&batch).await.unwrap());
+    let row = || async {
+        sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT value, note FROM mesh_meta WHERE key = 'name'",
+        )
+        .fetch_one(&b.pool)
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        row().await,
+        (Some("home".into()), Some("filled".into())),
+        "local value kept, NULL column filled"
+    );
+
+    let real = crate::Hlc {
+        wall_ms: now_ms(),
+        counter: 0,
+        origin: crate::PeerId("p50".into()),
+    };
+    let batch = crate::ChangeBatch {
+        origin: crate::PeerId("p50".into()),
+        seq: 2,
+        changes: vec![change("value", "renamed", &real)],
+    };
+    assert!(b.engine.apply(&batch).await.unwrap());
+    assert_eq!(
+        row().await.0.as_deref(),
+        Some("renamed"),
+        "a real write wins"
+    );
+}

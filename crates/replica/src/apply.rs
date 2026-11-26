@@ -10,7 +10,7 @@
 //! re-announces the whole row (current values, current clocks) so both sides
 //! converge on the full row.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Context as _;
 use sqlx::Row as _;
@@ -503,6 +503,12 @@ async fn apply_table(
 /// column clocks; delete when the delete is newer than every column, write
 /// the winning columns in one upsert. Returns whether a delete in `changes`
 /// lost to a newer column here (the caller re-announces the row).
+///
+/// A change stamped at wall-clock zero (a stand-in, an unclocked column
+/// re-announced, a `mesh_meta` default) only fills: against a column with no
+/// shadow clock here it lands only where the local value is absent or NULL.
+/// An unclocked local value predates replication (written before the attach),
+/// and no peer's placeholder may replace it.
 async fn apply_row(
     attached: &Attached,
     table: &str,
@@ -517,6 +523,8 @@ async fn apply_row(
     let mut winners: HashMap<&str, (&Hlc, Val)> = HashMap::new();
     let mut deleted = false;
     let mut lost_delete = false;
+    // Columns non-NULL here, read on the first wall-zero change that needs it.
+    let mut held: Option<HashSet<String>> = None;
 
     // A live write newer than the tombstone voids it for the whole group, so
     // the rest of a re-announced row lands too.
@@ -557,6 +565,14 @@ async fn apply_row(
         }
         if clocks.get(col).is_some_and(|k| *k >= c.hlc) {
             continue;
+        }
+        if c.hlc.wall_ms == 0 && !clocks.contains_key(col) {
+            if held.is_none() {
+                held = Some(non_null_columns(attached, table, pk, tx).await?);
+            }
+            if held.as_ref().is_some_and(|h| h.contains(col)) {
+                continue;
+            }
         }
         clocks.insert(col.to_owned(), c.hlc.clone());
         winners.insert(col, (&c.hlc, Val::decode(c.value.as_deref())?));
@@ -637,4 +653,39 @@ async fn apply_row(
         store::unbury(book, table, pk).await?;
     }
     Ok(lost_delete)
+}
+
+/// The replicated columns of row `pk` holding a non-NULL value (empty when the
+/// row is absent).
+async fn non_null_columns(
+    attached: &Attached,
+    table: &str,
+    pk: &str,
+    tx: &mut sqlx::SqliteConnection,
+) -> anyhow::Result<HashSet<String>> {
+    let cols = &attached.info.columns;
+    let tests = cols
+        .iter()
+        .map(|c| format!("{} IS NOT NULL", quote(c)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {tests} FROM {} WHERE {} = ?",
+        quote(table),
+        quote(&attached.info.pk)
+    );
+    let Some(row) = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(pk)
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        return Ok(HashSet::new());
+    };
+    let mut out = HashSet::new();
+    for (i, c) in cols.iter().enumerate() {
+        if row.try_get::<bool, _>(i)? {
+            out.insert(c.clone());
+        }
+    }
+    Ok(out)
 }
