@@ -89,13 +89,13 @@ export function useMesh() {
 }
 
 /**
- * Project labels the board knows: every session's plus every task's. A project exists when a session or a task
- * carries the label (51 §3), so a task created under a new name is what creates the project.
+ * Project labels the board knows: every active project (223: a project exists when it has a row) plus every label a
+ * session or a task still carries without one (implicit, 51 §3), so old data keeps its board.
  */
 export function useBoardProjects(): string[] {
-  const fromSessions = useProjects()
+  const known = useProjects()
   const tasks = useTasks()
-  return [...new Set([...fromSessions, ...(tasks.data?.flatMap((t) => (t.project ? [t.project] : [])) ?? [])])].sort()
+  return [...new Set([...known, ...(tasks.data?.flatMap((t) => (t.project ? [t.project] : [])) ?? [])])].sort()
 }
 
 /** `task_move` as a mutation: refetches the lists (and the task's events) on success, toasts the engine's refusal verbatim. */

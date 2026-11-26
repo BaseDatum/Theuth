@@ -1,8 +1,10 @@
 import { Link, getRouteApi } from '@tanstack/react-router'
-import { Blocks, Circle, Network, Play, Plus } from 'lucide-react'
+import { Blocks, Circle, FolderKanban, Network, Play, Plus } from 'lucide-react'
 import { type MutableRefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
+import { requirements as projectsRequirements } from '@/components/projects/requirements'
+import { useSupported } from '@/rpc/capabilities'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -78,6 +80,8 @@ export function Board() {
   // 214 D5: the board follows task changes made anywhere (an agent, another window).
   useLiveTasks()
   const [creating, setCreating] = useState(false)
+  // 223: the selected project's page, on an engine with the project methods.
+  const projectPage = useSupported(projectsRequirements)
   // 115: the "does it need me" queue — collapsed by default, the choice kept per device.
   const queue = useQueue()
   const [queueOpen, setQueueOpen] = useQueueOpen()
@@ -155,7 +159,7 @@ export function Board() {
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <SectionBand group="agents" />
+      <SectionBand group="projects" />
       {/* 97b: the filters are the page's row; on a phone the selects wrap, so the row grows past 44 px (`min-h-11`). */}
       <SectionRow className="h-auto min-h-11 flex-wrap gap-2 py-1">
         <Select value={project === '' ? ALL : `p:${project}`} onValueChange={(v) => set({ project: v === ALL ? '' : v.slice(2) })}>
@@ -173,6 +177,13 @@ export function Board() {
             <SelectItem value={ALL}>All projects</SelectItem>
           </SelectContent>
         </Select>
+        {project !== '' && projectPage && (
+          <Button asChild variant="ghost" size="icon-sm" aria-label={`Open project ${project}`} title="Project page">
+            <Link to="/projects/$name" params={{ name: project }}>
+              <FolderKanban />
+            </Link>
+          </Button>
+        )}
         <Select value={search.agent ?? ANY} onValueChange={(v) => set({ agent: v === ANY ? undefined : v })}>
           <SelectTrigger size="sm" className="w-36" aria-label="Agent">
             <SelectValue placeholder="Agent" />

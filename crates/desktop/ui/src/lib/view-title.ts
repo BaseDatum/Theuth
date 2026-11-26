@@ -1,6 +1,7 @@
 /** Derive a clean human title for an app route path (e.g. `/tasks` -> `Tasks`, `/attention` -> `Inbox`). */
 const ROUTE_TITLES: readonly [prefix: string, title: string][] = [
   ['/meetings/new', 'Meeting'],
+  ['/projects', 'Projects'],
   ['/tasks', 'Tasks'],
   ['/notebooks', 'Notebooks'],
   ['/notes', 'Notes'],

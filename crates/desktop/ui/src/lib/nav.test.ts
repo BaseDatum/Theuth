@@ -1,10 +1,12 @@
 import { expect, test } from 'vitest'
-import { groupOf, sectionOf, tabOf } from './nav'
+import { GROUPS, groupOf, pageTitle, sectionOf, tabOf } from './nav'
 
 test('tabOf matches the route exactly or as a prefix at a / boundary', () => {
   expect(tabOf('agents', '/agents')).toBe('/agents')
   expect(tabOf('agents', '/agents/new')).toBe('/agents')
-  expect(tabOf('agents', '/tasks/abc')).toBe('/tasks')
+  expect(tabOf('agents', '/tasks/abc')).toBeNull()
+  expect(tabOf('projects', '/tasks/abc')).toBe('/tasks')
+  expect(tabOf('projects', '/projects/my%20app')).toBe('/projects')
   expect(tabOf('agents', '/routines/x/overview')).toBe('/routines')
   expect(tabOf('library', '/meetings/briefs')).toBe('/meetings')
   expect(tabOf('library', '/meetingsx')).toBeNull()
@@ -17,7 +19,9 @@ test('tabOf matches the route exactly or as a prefix at a / boundary', () => {
 
 test('groupOf names the section a path belongs to', () => {
   expect(groupOf('/agents')).toBe('agents')
-  expect(groupOf('/tasks/abc')).toBe('agents')
+  expect(groupOf('/tasks/abc')).toBe('projects')
+  expect(groupOf('/tasks/graph')).toBe('projects')
+  expect(groupOf('/projects')).toBe('projects')
   expect(groupOf('/routines/new')).toBe('agents')
   expect(groupOf('/skills')).toBe('library')
   expect(groupOf('/skills/pdf')).toBe('library')
@@ -35,7 +39,11 @@ test('sectionOf lights the right sidebar row', () => {
   expect(sectionOf('/')).toBeNull()
   expect(sectionOf('/talk/abc')).toBe('talk')
   expect(sectionOf('/agents')).toBe('agents')
-  expect(sectionOf('/tasks/abc')).toBe('agents')
+  expect(sectionOf('/tasks')).toBe('projects')
+  expect(sectionOf('/tasks/abc')).toBe('projects')
+  expect(sectionOf('/projects')).toBe('projects')
+  expect(sectionOf('/projects/theuth')).toBe('projects')
+  expect(sectionOf('/projectsx')).toBeNull()
   expect(sectionOf('/routines/new')).toBe('agents')
   expect(sectionOf('/attention')).toBe('attention')
   expect(sectionOf('/costs')).toBe('costs')
@@ -59,4 +67,12 @@ test('sectionOf lights the right sidebar row', () => {
   expect(sectionOf('/settings/appearance')).toBe('settings')
   expect(sectionOf('/settingsx')).toBeNull()
   expect(sectionOf('/new')).toBeNull()
+})
+
+test('223: Agents keeps Agents, Routines and Autoresearch; Projects holds the projects list and the task board', () => {
+  expect(GROUPS.agents.map((t) => t.label)).toEqual(['Agents', 'Routines', 'Autoresearch'])
+  expect(GROUPS.projects.map((t) => t.to)).toEqual(['/projects', '/tasks'])
+  expect(pageTitle('/projects')).toBe('Projects')
+  expect(pageTitle('/tasks')).toBe('Tasks')
+  expect(pageTitle('/projects/theuth')).toBeUndefined()
 })

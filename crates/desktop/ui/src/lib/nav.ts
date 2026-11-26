@@ -10,24 +10,29 @@ import { requirements as whiteboardRequirements } from '@/components/whiteboard/
 import { requirements as notebooksRequirements } from '@/components/notebooks/requirements'
 import { requirements as meetingRequirements } from '@/components/meeting/requirements'
 import { skillsRequirements, secretsRequirements } from '@/components/library/requirements'
-// 97: the sidebar's two grouped buttons (Agents, Library) and the route-backed tab rows under their pages.
+import { requirements as projectsRequirements } from '@/components/projects/requirements'
+// 97: the sidebar's grouped buttons (Agents, Projects, Library) and the route-backed tab rows under their pages.
 // URLs do not change; a tab IS a navigation to its route. Sky (2026-11-11): Skills is a Library tab and Tools is
 // Settings › Tools › MCP (143 R1 had both under Agents); Agents keeps the work, Library the content.
+// 223: the task board left Agents for Projects; `/tasks` URLs stay, now under the Projects row and band.
 
-import { BookOpen, Bot, CalendarClock, FlaskConical, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Notebook, Presentation, Sparkles, StickyNote } from 'lucide-react'
+import { BookOpen, Bot, CalendarClock, FlaskConical, FolderKanban, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Notebook, Presentation, Sparkles, StickyNote } from 'lucide-react'
 
-export type Group = 'agents' | 'library'
+export type Group = 'agents' | 'projects' | 'library'
 
 /** A tab's route, as a literal so `navigate({ to })` type-checks. */
-export type Tab = '/agents' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/whiteboards' | '/notebooks' | '/meetings' | '/skills' | '/secrets' | '/autoresearch'
+export type Tab = '/agents' | '/projects' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/whiteboards' | '/notebooks' | '/meetings' | '/skills' | '/secrets' | '/autoresearch'
 
 export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: LucideIcon; required: Requirements }[]> = {
   agents: [
     { required: agentsRequirements, to: '/agents', label: 'Agents', icon: Bot },
-    { required: tasksRequirements, to: '/tasks', label: 'Tasks', icon: ListChecks },
     { required: routinesRequirements, to: '/routines', label: 'Routines', icon: CalendarClock },
     // 140 (Sky, 2026-10-08 23:58): the Study view sits next to Routines — a study is a routine-driven loop.
     { required: autoresearchRequirements, to: '/autoresearch', label: 'Autoresearch', icon: FlaskConical },
+  ],
+  projects: [
+    { required: projectsRequirements, to: '/projects', label: 'Projects', icon: FolderKanban },
+    { required: tasksRequirements, to: '/tasks', label: 'Tasks', icon: ListChecks },
   ],
   // Artifacts first (Sky, 2026-09-27): the most-opened entry.
   library: [
@@ -47,16 +52,17 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
 export const tabOf = (group: Group, pathname: string): string | null =>
   GROUPS[group].find((t) => pathname === t.to || pathname.startsWith(`${t.to}/`))?.to ?? null
 
-/** The group whose tab owns `pathname`; null outside both sections. */
+/** The group whose tab owns `pathname`; null outside every section. */
 export const groupOf = (pathname: string): Group | null =>
-  tabOf('agents', pathname) ? 'agents' : tabOf('library', pathname) ? 'library' : null
+  (['agents', 'projects', 'library'] as const).find((g) => tabOf(g, pathname)) ?? null
 
-export type Section = 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | 'whiteboards' | 'costs' | 'settings' | null
+export type Section = 'talk' | 'agents' | 'projects' | 'attention' | 'library' | 'meeting' | 'whiteboards' | 'costs' | 'settings' | null
 
 /** Which sidebar row `pathname` lights up; null for chats and the rest. */
 export const sectionOf = (pathname: string): Section => {
   if (pathname.startsWith('/talk/')) return 'talk'
   if (tabOf('agents', pathname)) return 'agents'
+  if (tabOf('projects', pathname)) return 'projects'
   if (pathname === '/attention' || pathname.startsWith('/attention/')) return 'attention'
   // The start form is the Meeting button's page, not a Library tab.
   if (pathname === '/meetings/new') return 'meeting'
