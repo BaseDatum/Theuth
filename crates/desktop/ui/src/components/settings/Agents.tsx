@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Radar, Trash2 } from 'lucide-react'
@@ -28,6 +28,16 @@ export function Agents() {
   const probe = useAction((_: void) => api.list_acp(true), {
     onSuccess: (list) => qc.setQueryData(queryKeys.acp, list),
   })
+  // The Log in affordance only exists where a status is known, and the list loads with
+  // `status: null`. Probe once when the tab opens so a harness that needs a login says so.
+  const probed = useRef(false)
+  useEffect(() => {
+    if (probed.current || probe.isPending) return
+    if (!installed.data?.some((e) => e.status === null)) return
+    probed.current = true
+    probe.mutate(undefined)
+  }, [installed.data, probe])
+
   const add = useAction((id: string) => api.add_acp(id), {
     keys: [queryKeys.acp],
     onSuccess: (e) => toast.success(`Added ${e.name}`),
