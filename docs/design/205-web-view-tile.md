@@ -72,8 +72,8 @@ All take `label: String` that must match `^web-[0-9a-f]{16}$`; anything else is 
 
 | Command | Arguments | Does |
 |---|---|---|
-| `web_view_attach` | `window: tauri::Window` (the caller's), `label`, `url`, `x`, `y`, `width`, `height` (logical px, f64) | Creates the child webview in the caller's window at the rectangle, or, when the label exists, reparents it to the caller's window if needed, moves it there and shows it. An existing webview is **not** navigated. |
-| `web_view_bounds` | `label`, `x`, `y`, `width`, `height` | Moves and sizes it. |
+| `web_view_attach` | `window: tauri::Window` (the caller's), `label`, `url`, `x`, `y`, `width`, `height` (logical px, f64, in the caller page's viewport), `viewport: Option<f64>` (the page's `innerHeight`) | Creates the child webview in the caller's window at the rectangle, or, when the label exists, reparents it to the caller's window if needed, moves it there and shows it. An existing webview is **not** navigated. The rectangle is offset by where the viewport sits in the window's content view: the page webview's position plus its top inset (frame height − `viewport`), which on macOS is the title bar's height in a `Visible`-style window (a pop-out; Tauri makes it a full-size content view) and zero under `Overlay` (`main`). |
+| `web_view_bounds` | `label`, `x`, `y`, `width`, `height`, `viewport` | Moves and sizes it, offset as `web_view_attach`. |
 | `web_view_visible` | `label`, `visible: bool` | Shows or hides it without destroying it. |
 | `web_view_navigate` | `label`, `url` | Loads the URL (http/https only). |
 | `web_view_reload` | `label` | Reloads. |

@@ -65,3 +65,18 @@ test('a scroll wakes the frame loop at once', () => {
   stop()
   expect(frames).toHaveLength(0)
 })
+
+test('the viewport height changing under a still placeholder is a move', () => {
+  const moved = vi.fn()
+  const stop = followRect(el, moved)
+  const before = window.innerHeight
+  Object.defineProperty(window, 'innerHeight', { value: before - 32, configurable: true })
+  try {
+    window.dispatchEvent(new Event('resize'))
+    frame()
+    expect(moved).toHaveBeenCalledExactlyOnceWith({ x: 0, y: 0, width: 100, height: 50 })
+  } finally {
+    Object.defineProperty(window, 'innerHeight', { value: before, configurable: true })
+    stop()
+  }
+})
