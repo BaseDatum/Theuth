@@ -192,17 +192,35 @@ jq --arg base "$PUB_VER" '
 ' "$DIST/$MANIFEST_NAME" > "$WORK/$MANIFEST_NAME"
 wasabi_cp "$WORK/$MANIFEST_NAME" "${S3_ROOT}/${MANIFEST_NAME}"
 
-echo "==> [wasabi] verifying public reads at $PUBLIC_BASE/"
-FETCHED_VER="$(curl -fsSL --retry 3 "${PUBLIC_BASE}/${MANIFEST_NAME}" | jq -r '.version')"
+echo "==> [wasabi] verifying uploaded objects via S3 API"
+wasabi_aws s3 cp "${S3_ROOT}/${MANIFEST_NAME}" "$WORK/live-manifest.json" >/dev/null
+FETCHED_VER="$(jq -r '.version' "$WORK/live-manifest.json")"
+PLATFORM_COUNT="$(jq '.platforms | length' "$WORK/live-manifest.json")"
 [[ "$FETCHED_VER" == "$VERSION" ]] || {
-  echo "error: ${PUBLIC_BASE}/${MANIFEST_NAME} returned version '$FETCHED_VER', expected '$VERSION'" >&2
+  echo "error: ${S3_ROOT}/${MANIFEST_NAME} returned version '$FETCHED_VER', expected '$VERSION'" >&2
   exit 1
 }
-curl -fsSL --retry 3 "${PUB_VER}/SHA256SUMS" -o "$WORK/live-SHA256SUMS"
+wasabi_aws s3 cp "${S3_VER}/SHA256SUMS" "$WORK/live-SHA256SUMS" >/dev/null
 cmp -s "$DIST/SHA256SUMS" "$WORK/live-SHA256SUMS" || {
-  echo "error: ${PUB_VER}/SHA256SUMS differs from local SHA256SUMS" >&2
+  echo "error: ${S3_VER}/SHA256SUMS differs from local SHA256SUMS" >&2
   exit 1
 }
-PLATFORM_COUNT="$(curl -fsSL --retry 3 "${PUBLIC_BASE}/${MANIFEST_NAME}" | jq '.platforms | length')"
-echo "    ok: ${PUBLIC_BASE}/${MANIFEST_NAME} (version=$FETCHED_VER, platforms=$PLATFORM_COUNT)"
-echo "    ok: ${PUB_VER}/SHA256SUMS verified"
+echo "    ok (S3 API): ${S3_ROOT}/${MANIFEST_NAME} (version=$FETCHED_VER, platforms=$PLATFORM_COUNT)"
+echo "    ok (S3 API): ${S3_VER}/SHA256SUMS byte-identical"
+
+echo "==> [wasabi] checking anonymous public read at ${PUBLIC_BASE}/${MANIFEST_NAME}"
+HTTP_CODE="$(curl -sS -o "$WORK/pub-check.out" -w '%{http_code}' "${PUBLIC_BASE}/${MANIFEST_NAME}" || true)"
+if [[ "$HTTP_CODE" == "200" ]]; then
+  PUB_VER_GOT="$(jq -r '.version' "$WORK/pub-check.out" 2>/dev/null || true)"
+  [[ "$PUB_VER_GOT" == "$VERSION" ]] || {
+    echo "error: public ${PUBLIC_BASE}/${MANIFEST_NAME} returned version '$PUB_VER_GOT', expected '$VERSION'" >&2
+    exit 1
+  }
+  echo "    ok (public HTTPS): ${PUBLIC_BASE}/${MANIFEST_NAME} HTTP 200 (version=$PUB_VER_GOT)"
+elif [[ "${WASABI_REQUIRE_PUBLIC:-0}" == "1" ]]; then
+  echo "error: anonymous GET ${PUBLIC_BASE}/${MANIFEST_NAME} returned HTTP $HTTP_CODE" >&2
+  cat "$WORK/pub-check.out" >&2
+  exit 1
+else
+  echo "    WARN: anonymous GET ${PUBLIC_BASE}/${MANIFEST_NAME} returned HTTP $HTTP_CODE (objects are uploaded and verified via S3 API; enable Wasabi account public access via support@wasabi.com)" >&2
+fi
