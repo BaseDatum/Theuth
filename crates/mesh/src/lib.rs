@@ -1476,7 +1476,7 @@ impl runtime::Plugin for MeshPlugin {
             // (a no-op where it already landed).
             if let Some(h) = handle {
                 let id = c.net.id.0.clone();
-                if let Err(e) = h.restamp("engine_stats", &id).await {
+                if let Err(e) = h.restamp_own_stats(&id).await {
                     tracing::warn!("mesh: engine_stats restamp: {e:#}");
                 }
                 reannounce_on_connect_with(&c.rt, h, "engine_stats", "id = ?", id, None);

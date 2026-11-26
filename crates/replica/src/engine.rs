@@ -845,14 +845,25 @@ impl ReplicaHandle {
         Ok(pks.len() as u64)
     }
 
-    /// Announce row `pk` of `table` again as a fresh write of this origin:
-    /// every column under one new stamp (also written to the row's `hlc`),
-    /// changed or not. For a row only this engine writes (its own
-    /// `engine_stats`): a peer that dropped columns it did not know yet (an
-    /// older build) recorded the batch anyway, so sync never ships it again
-    /// and the update trigger logs only changed columns. Returns `false`
-    /// when the row is absent.
-    pub async fn restamp(&self, table: &str, pk: &str) -> anyhow::Result<bool> {
+    /// Announce this engine's own `engine_stats` row (`own_id`, the mesh id
+    /// the row is keyed by) again as a fresh write: every column under one
+    /// new stamp, changed or not. A peer that dropped columns it did not know
+    /// yet (an older build) recorded the batch anyway, so sync never ships it
+    /// again and the update trigger logs only changed columns. Returns
+    /// `false` when the row is absent. Single-writer rows owned by this
+    /// engine only: `own_id` must be the caller's own id — any other row
+    /// would get a stale copy stamped over newer writes.
+    pub async fn restamp_own_stats(&self, own_id: &str) -> anyhow::Result<bool> {
+        self.restamp(RESTAMPABLE, own_id).await
+    }
+
+    /// [`ReplicaHandle::restamp_own_stats`] for `table`; refuses every table
+    /// but [`RESTAMPABLE`] (multi-writer tables — tasks, agents, schedules,
+    /// `mesh_meta` — would have newer data clobbered).
+    pub(crate) async fn restamp(&self, table: &str, pk: &str) -> anyhow::Result<bool> {
+        if table != RESTAMPABLE {
+            anyhow::bail!("restamp {table}: only single-writer {RESTAMPABLE} rows");
+        }
         let _guard = self.engine.write_lock.lock().await;
         let attached = self.engine.tables.lock().get(table).cloned();
         let Some(attached) = attached else {
@@ -894,3 +905,7 @@ impl ReplicaHandle {
         &self.tables
     }
 }
+
+/// The one table whose rows each have a single writer, the engine they name:
+/// the only one [`ReplicaHandle::restamp`] touches.
+const RESTAMPABLE: &str = "engine_stats";

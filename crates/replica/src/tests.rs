@@ -799,33 +799,33 @@ async fn a_column_a_peer_attached_late_arrives_on_reannounce() {
     assert_eq!(home(b.pool.clone(), "t1").await.as_deref(), Some("eng-b"));
 }
 
-/// The engine_stats case: B ran an older schema when A wrote `home`, skipped
-/// it and recorded the batch. A restamping its own unchanged row ships every
-/// column under a fresh clock, so B converges.
+/// B ran an older schema when A wrote `os_name`, skipped it and recorded the
+/// batch. A restamping its own unchanged stats row ships every column under a
+/// fresh clock, so B converges.
 #[tokio::test]
 async fn a_restamped_row_reaches_a_peer_that_dropped_its_columns() {
     let a = side_with(
-        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, home TEXT, hlc TEXT)",
-        &["tasks"],
+        "CREATE TABLE engine_stats (id TEXT PRIMARY KEY, os TEXT, os_name TEXT, hlc TEXT)",
+        &["engine_stats"],
     )
     .await;
     let b = side_with(
-        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, hlc TEXT)",
-        &["tasks"],
+        "CREATE TABLE engine_stats (id TEXT PRIMARY KEY, os TEXT, hlc TEXT)",
+        &["engine_stats"],
     )
     .await;
     exec(
         &a.pool,
-        "INSERT INTO tasks (id, title, home) VALUES ('me', 'x', 'eng-a')",
+        "INSERT INTO engine_stats (id, os, os_name) VALUES ('me', 'linux', 'Arch Linux')",
     )
     .await;
     exchange(&a, &b).await;
-    exec(&b.pool, "ALTER TABLE tasks ADD COLUMN home TEXT").await;
+    exec(&b.pool, "ALTER TABLE engine_stats ADD COLUMN os_name TEXT").await;
     let Side { pool, dir, .. } = b;
     let engine = Engine::open(&dir.path().join("replica.sqlite"))
         .await
         .unwrap();
-    let handle = engine.attach(&pool, &["tasks"]).await.unwrap();
+    let handle = engine.attach(&pool, &["engine_stats"]).await.unwrap();
     let b = Side {
         engine,
         pool,
@@ -833,22 +833,26 @@ async fn a_restamped_row_reaches_a_peer_that_dropped_its_columns() {
         dir,
     };
     // An unchanged rewrite logs nothing: B stays empty.
-    exec(&a.pool, "UPDATE tasks SET home = 'eng-a' WHERE id = 'me'").await;
+    exec(
+        &a.pool,
+        "UPDATE engine_stats SET os_name = 'Arch Linux' WHERE id = 'me'",
+    )
+    .await;
     exchange(&a, &b).await;
     let row = |pool: SqlitePool| async move {
         sqlx::query_as::<_, (Option<String>, Option<String>)>(
-            "SELECT title, home FROM tasks WHERE id = 'me'",
+            "SELECT os, os_name FROM engine_stats WHERE id = 'me'",
         )
         .fetch_one(&pool)
         .await
         .unwrap()
     };
-    assert_eq!(row(b.pool.clone()).await, (Some("x".into()), None));
+    assert_eq!(row(b.pool.clone()).await, (Some("linux".into()), None));
 
     let mut feed = a.handle.subscribe();
-    assert!(a.handle.restamp("tasks", "me").await.unwrap());
+    assert!(a.handle.restamp_own_stats("me").await.unwrap());
     let batch = feed.recv().await.unwrap();
-    let stamp: String = sqlx::query_scalar("SELECT hlc FROM tasks WHERE id = 'me'")
+    let stamp: String = sqlx::query_scalar("SELECT hlc FROM engine_stats WHERE id = 'me'")
         .fetch_one(&a.pool)
         .await
         .unwrap();
@@ -861,13 +865,27 @@ async fn a_restamped_row_reaches_a_peer_that_dropped_its_columns() {
         })
         .collect();
     cols.sort();
-    assert_eq!(cols, ["home", "title"], "every column, changed or not");
+    assert_eq!(cols, ["os", "os_name"], "every column, changed or not");
     exchange(&a, &b).await;
     assert_eq!(
         row(b.pool.clone()).await,
-        (Some("x".into()), Some("eng-a".into()))
+        (Some("linux".into()), Some("Arch Linux".into()))
     );
-    assert!(!a.handle.restamp("tasks", "nobody").await.unwrap());
+    assert!(!a.handle.restamp_own_stats("nobody").await.unwrap());
+}
+
+/// Restamping gives a local copy a fresh clock over every column: on a
+/// multi-writer table a stale engine would clobber newer writes, so any
+/// table but `engine_stats` is refused and nothing is emitted.
+#[tokio::test]
+async fn restamp_refuses_a_multi_writer_table() {
+    let a = side().await;
+    exec(&a.pool, "INSERT INTO tasks (id, title) VALUES ('t1', 'x')").await;
+    while a.handle.flush().await.unwrap().is_some() {}
+    let mut feed = a.handle.subscribe();
+    let err = a.handle.restamp("tasks", "t1").await.unwrap_err();
+    assert!(err.to_string().contains("engine_stats"), "{err:#}");
+    assert!(feed.try_recv().is_err(), "nothing emitted");
 }
 
 /// 182: batches that arrive before a table's plugin attached (tasks attaches
