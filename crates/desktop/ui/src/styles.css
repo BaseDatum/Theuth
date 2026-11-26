@@ -1372,6 +1372,10 @@ html .tg-canvas .tg-edge {
   /* Open: a lighter gray than the closed pill's `bg-fg-tertiary/40`, no blue. */
   background-color: color-mix(in oklab, var(--fg-tertiary) 22%, transparent);
 }
+/* Dark theme: "lighter" means brighter than the closed pill, still gray. */
+.dark [data-dash-row][data-open="true"] .tray-grabber-pill {
+  background-color: color-mix(in oklab, var(--fg-secondary) 70%, transparent);
+}
 @media (prefers-reduced-motion: no-preference) {
   .horizon-in {
     animation: bg-horizon-up 440ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
