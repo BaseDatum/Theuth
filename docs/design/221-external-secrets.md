@@ -677,6 +677,19 @@ Vaultwarden 1.37.5. Where the subsections below differ, the as-built doc wins:
     form);
   - a private CA must be in the OS trust store;
   - the HTTP client is not injectable (only `with_middleware`), so §6.2's CA-file idea is dropped.
+- **Client headers.** theuth's `ClientSettings` set `device_type` to the CLI type of this OS and
+  `bitwarden_client_version` to `BW_CLIENT_VERSION` (`crates/secrets-bitwarden/src/lib.rs`). The SDK
+  puts them into both HTTP clients' default headers: `Device-Type`, `Bitwarden-Client-Name: cli`
+  (derived from the device type), `Bitwarden-Client-Version`, `User-Agent: theuth`
+  (`sdk@2b06afa:crates/bitwarden-core/src/client/builder.rs#L206-L257`). theuth's own requests
+  (prelogin, grants, SSO prevalidate, email code) go through `BwBackend::request` on the SDK's
+  identity client, so they carry the same headers. Bitwarden cloud refuses a token request without
+  `Bitwarden-Client-Version` (`bitwarden/server:src/Identity/IdentityServer/RequestValidators/ClientVersionValidator.cs#L31-L54`)
+  and, for V2-encryption accounts, one below 2026.10.1 (`src/Core/KeyManagement/Constants.cs#L5`;
+  `invalid_client_version` reads "This Bitwarden account needs a newer client than this theuth build
+  speaks …"). Vaultwarden checks neither. `BW_CLIENT_VERSION` is the client release of the SDK pin
+  (`BW_SDK_REV`; 2b06afa = `@bitwarden/sdk-internal@0.2.0-main.1259`, the 2026.11.1 line) and is
+  bumped with sdk-internal; a unit test fails when the workspace rev moves without it.
 
 ### 5.2 Login
 
@@ -1520,8 +1533,9 @@ docker run -d --rm --name sso-vw --network container:sso-kc \
   `localhost` on the first free port of 8065..=8070, on 127.0.0.1 and on ::1 (the browser may
   resolve `localhost` to either). It calls
   `connection_sso_begin` with that port and opens the system browser at `authorize_url`.
-- The listener takes the first `GET /?code=…&state=…`. It answers a small "you can close this tab"
-  page (or an error page for `error=`), hands the full URL to `connection_sso_complete` and closes.
+- The listener takes the first `GET /?code=…&state=…`. It answers the OAuth login's callback page
+  (`oauth::callback_page`: "Logged in", or "Login failed" for `error=`), hands the full URL to
+  `connection_sso_complete` and closes.
 - The flow times out after 5 minutes, with a Cancel button. Both close the listener.
   `NeedTwoFactor` continues on the same login card with the code field.
 

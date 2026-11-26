@@ -80,6 +80,42 @@ async fn auth_hash(
     .map_err(sdk)
 }
 
+/// The sdk-internal commit [`BW_CLIENT_VERSION`] belongs to: the workspace `Cargo.toml`'s `rev` of
+/// every `bitwarden-*` crate (a test checks they agree).
+pub const BW_SDK_REV: &str = "2b06afa3b3579af116cd60f83d65b9e411fd2a56";
+
+/// The Bitwarden client release whose data model the pinned SDK ([`BW_SDK_REV`]) speaks, sent as
+/// `Bitwarden-Client-Version` on every request (the SDK client's default headers, [`client_settings`]).
+/// Bump together with sdk-internal.
+///
+/// The identity server refuses a token request without it ("No client version header found",
+/// bitwarden/server `src/Identity/IdentityServer/RequestValidators/ClientVersionValidator.cs`
+/// L31, L50-54) and, for accounts with V2 encryption, one below
+/// `MinimumClientVersionForV2Encryption` = 2026.10.1 (`src/Core/KeyManagement/Constants.cs` L5;
+/// L58-71 of the validator: `invalid_client_version`). Feature gates on the same header live in
+/// `src/Core/Constants.cs` (L34-40).
+///
+/// Derivation: `2b06afa` is npm `@bitwarden/sdk-internal@0.2.0-main.1259` (its `gitHead`), published
+/// 2026-11-24. bitwarden/clients' latest release, `cli-v2026.11.1` (2026-11-23), ships
+/// `0.2.0-main.1214`; clients `main` on 2026-11-24..26 is still `apps/cli` 2026.11.1 with
+/// `0.2.0-main.1258`. So the pin is the 2026.11.1 line; no later client release exists.
+pub const BW_CLIENT_VERSION: &str = "2026.11.1";
+
+/// The SDK settings of every client: its default headers go on SDK and raw requests alike, as
+/// Bitwarden's clients send them (bitwarden/clients `libs/common/src/services/api.service.ts`
+/// `applyPlatformHeaders`): `Device-Type` (the CLI type of this OS), `Bitwarden-Client-Name: cli`
+/// (the SDK derives it from the device type), `Bitwarden-Client-Version` and `User-Agent`.
+fn client_settings(urls: &Urls) -> ClientSettings {
+    ClientSettings {
+        identity_url: urls.identity.clone(),
+        api_url: urls.api.clone(),
+        user_agent: "theuth".into(),
+        device_type: password::sdk_device_type(),
+        bitwarden_client_version: Some(BW_CLIENT_VERSION.into()),
+        ..Default::default()
+    }
+}
+
 /// The backend id: `{{secret:bw/…}}`.
 pub const BACKEND: &str = "bw";
 /// Entries per [`ListPage`].
@@ -413,12 +449,7 @@ impl BwBackend {
 
     fn new_client(urls: &Urls) -> Client {
         ClientBuilder::new()
-            .with_settings(ClientSettings {
-                identity_url: urls.identity.clone(),
-                api_url: urls.api.clone(),
-                user_agent: "theuth".into(),
-                ..Default::default()
-            })
+            .with_settings(client_settings(urls))
             .with_token_handler(Arc::new(PasswordManagerTokenHandler::default()))
             .build()
     }
@@ -865,7 +896,7 @@ impl BwBackend {
         }
     }
 
-    /// An unauthenticated POST through the SDK's own HTTP client (its TLS rules).
+    /// An unauthenticated POST: [`Self::request`] with a body.
     async fn post(
         &self,
         client: &Client,
@@ -873,14 +904,30 @@ impl BwBackend {
         content_type: &str,
         body: String,
     ) -> Result<(u16, String), ExtError> {
+        self.request(client, url, Some((content_type, body))).await
+    }
+
+    /// Every unauthenticated request of theuth's own (prelogin, password and SSO grants, SSO
+    /// prevalidate, the email code): a GET, or a POST of `body` (content type, text). It goes
+    /// through the SDK's identity HTTP client, so its TLS rules and default headers
+    /// ([`client_settings`]: the client name, version and device type) apply; build no request
+    /// on another client.
+    pub(crate) async fn request(
+        &self,
+        client: &Client,
+        url: String,
+        body: Option<(&str, String)>,
+    ) -> Result<(u16, String), ExtError> {
         let api = client.internal.get_api_configurations();
-        let req = api
-            .identity_config
-            .client
-            .post(url)
-            .header("Content-Type", content_type)
-            .header("Accept", "application/json")
-            .body(body);
+        let http = &api.identity_config.client;
+        let req = match body {
+            Some((content_type, body)) => http
+                .post(url)
+                .header("Content-Type", content_type)
+                .body(body),
+            None => http.get(url),
+        }
+        .header("Accept", "application/json");
         self.timed(async {
             let r = req
                 .send()
@@ -1610,6 +1657,160 @@ fn kind_of_list(t: &bitwarden_vault::CipherListViewType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `BW_CLIENT_VERSION` belongs to one sdk-internal commit: bumping the rev in the workspace
+    /// `Cargo.toml` fails here until `BW_SDK_REV` (and, after checking, the version) follow.
+    #[test]
+    fn client_version_follows_the_sdk_pin() {
+        let toml =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml"))
+                .unwrap();
+        let revs: Vec<&str> = toml
+            .lines()
+            .filter(|l| l.starts_with("bitwarden-") && l.contains("bitwarden/sdk-internal"))
+            .filter_map(|l| l.split("rev = \"").nth(1)?.split('"').next())
+            .collect();
+        assert!(revs.len() >= 7, "{revs:?}");
+        for rev in revs {
+            assert_eq!(
+                rev, BW_SDK_REV,
+                "sdk-internal moved: re-derive BW_CLIENT_VERSION, then update BW_SDK_REV"
+            );
+        }
+        // bitwarden/server src/Core/KeyManagement/Constants.cs L5: V2-encryption accounts need 2026.10.1.
+        let v: Vec<u32> = BW_CLIENT_VERSION
+            .split('.')
+            .map(|p| p.parse().unwrap())
+            .collect();
+        assert_eq!(v.len(), 3);
+        assert!(v >= vec![2026, 10, 1], "{BW_CLIENT_VERSION}");
+    }
+
+    /// One HTTP/1.1 request off `sock`: the request line and the lower-cased headers.
+    async fn read_request(sock: &mut tokio::net::TcpStream) -> (String, HashMap<String, String>) {
+        use tokio::io::AsyncReadExt as _;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            let n = sock.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "the client closed before the headers ended");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+        let mut lines = head.split("\r\n");
+        let line = lines.next().unwrap().to_owned();
+        let headers: HashMap<String, String> = lines
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| (k.trim().to_lowercase(), v.trim().to_owned()))
+            .collect();
+        let len: usize = headers
+            .get("content-length")
+            .map_or(0, |l| l.parse().unwrap());
+        while buf.len() < head_end + len {
+            let n = sock.read(&mut chunk).await.unwrap();
+            assert!(n > 0);
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        (line, headers)
+    }
+
+    /// The raw requests (prelogin, password grant, SSO prevalidate, SSO code exchange) carry
+    /// Bitwarden's client headers, and `invalid_client_version` reads as "update theuth".
+    #[tokio::test]
+    async fn raw_requests_carry_the_client_headers() {
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let (line, headers) = read_request(&mut sock).await;
+                let (status, body) = if line.contains("/accounts/prelogin") {
+                    ("200 OK", r#"{"kdf":0,"kdfIterations":5000}"#)
+                } else if line.contains("/sso/prevalidate") {
+                    ("200 OK", r#"{"token":"sso-token"}"#)
+                } else if line.contains("/connect/token") {
+                    // bitwarden/server ClientVersionValidator.cs L67-70 via CustomTokenRequestValidator.
+                    (
+                        "400 Bad Request",
+                        r#"{"error":"invalid_client_version","error_description":"Please update your app to continue using Bitwarden","ErrorModel":{"Message":"Please update your app to continue using Bitwarden"}}"#,
+                    )
+                } else {
+                    ("404 Not Found", "{}")
+                };
+                log.lock().unwrap().push((line, headers));
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                sock.write_all(resp.as_bytes()).await.unwrap();
+                let _ = sock.shutdown().await;
+            }
+        });
+        let config = |login| BwConfig {
+            server: Server::SelfHosted,
+            base_url: Some(base.clone()),
+            login,
+            email: Some("me@example.org".into()),
+            ..Default::default()
+        };
+        let outdated = password::outdated_client();
+        assert!(outdated.contains(BW_CLIENT_VERSION), "{outdated}");
+
+        let pw = BwBackend::new("pw", config(LoginKind::Password));
+        let r = pw
+            .login_password(PasswordLogin {
+                email: "me@example.org".into(),
+                password: Zeroizing::new("pw".into()),
+                two_factor: None,
+                new_device_otp: None,
+            })
+            .await;
+        assert!(
+            matches!(&r, Err(ExtError::Denied(m)) if *m == outdated),
+            "{r:?}"
+        );
+
+        let sso = BwBackend::new("sso", config(LoginKind::Sso));
+        let begin = sso.sso_begin("acme", None).await.unwrap();
+        assert!(begin.authorize_url.contains("ssoToken=sso-token"));
+        let r = sso.sso_complete(&begin.state, "code", None).await;
+        assert!(
+            matches!(&r, Err(ExtError::Denied(m)) if *m == outdated),
+            "{r:?}"
+        );
+
+        let seen = seen.lock().unwrap();
+        let paths: Vec<&str> = seen.iter().map(|(l, _)| l.as_str()).collect();
+        for want in [
+            "POST /identity/accounts/prelogin/password ",
+            "GET /identity/sso/prevalidate?domainHint=acme ",
+            "POST /identity/connect/token ",
+        ] {
+            assert!(
+                paths.iter().any(|p| p.starts_with(want)),
+                "{want}: {paths:?}"
+            );
+        }
+        assert_eq!(seen.len(), 4, "{paths:?}");
+        let device_type = password::device_type().to_string();
+        for (line, h) in seen.iter() {
+            let get = |k: &str| h.get(k).map(String::as_str);
+            assert_eq!(get("bitwarden-client-name"), Some("cli"), "{line}");
+            assert_eq!(
+                get("bitwarden-client-version"),
+                Some(BW_CLIENT_VERSION),
+                "{line}"
+            );
+            assert_eq!(get("device-type"), Some(device_type.as_str()), "{line}");
+            assert_eq!(get("user-agent"), Some("theuth"), "{line}");
+        }
+    }
 
     #[tokio::test]
     async fn status_follows_credentials_and_bad_urls() {

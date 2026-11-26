@@ -44,6 +44,8 @@ dirs = { workspace = true }
 tauri-plugin-updater = { workspace = true }
 # `net`: 221 §9.6's SSO loopback listener (`src/sso.rs`).
 tokio = { workspace = true, features = ["net"] }
+# The SSO loopback answers with oauth's callback page (`oauth::callback_page`).
+oauth = { workspace = true }
 platform = { workspace = true }
 # Speech model files from the release bucket at start (crates/desktop/src/models.rs).
 reqwest = { workspace = true }

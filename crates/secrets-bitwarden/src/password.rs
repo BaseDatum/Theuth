@@ -71,15 +71,23 @@ pub enum LoginStep {
     NeedNewDeviceOtp,
 }
 
-/// The `deviceType` theuth reports: the CLI type of this OS.
-pub fn device_type() -> u8 {
+/// The `deviceType` theuth reports: the CLI type of this OS. Also the client's `Device-Type`
+/// header, from which the SDK derives `Bitwarden-Client-Name: cli` (`BwBackend`'s client
+/// settings in `lib.rs`).
+pub fn sdk_device_type() -> bitwarden_core::DeviceType {
+    use bitwarden_core::DeviceType as D;
     if cfg!(target_os = "macos") {
-        24
+        D::MacOsCLI
     } else if cfg!(target_os = "windows") {
-        23
+        D::WindowsCLI
     } else {
-        25
+        D::LinuxCLI
     }
+}
+
+/// [`sdk_device_type`] as the number the token forms carry.
+pub fn device_type() -> u8 {
+    sdk_device_type() as u8
 }
 
 /// `application/x-www-form-urlencoded` body of the password grant.
@@ -243,11 +251,25 @@ pub fn parse_token_response(status: u16, body: &str) -> TokenOutcome {
     {
         return TokenOutcome::NewDevice;
     }
+    // bitwarden/server `ClientVersionValidator.cs` L67-70: `BW_CLIENT_VERSION` is below the
+    // account's minimum (V2 encryption).
+    if text("error") == "invalid_client_version" {
+        return TokenOutcome::Refused(outdated_client());
+    }
     let why = [message, desc, text("error")]
         .into_iter()
         .find(|s| !s.is_empty())
         .unwrap_or_else(|| format!("HTTP {status}"));
     TokenOutcome::Refused(why)
+}
+
+/// The refusal when the server wants a newer client than [`crate::BW_CLIENT_VERSION`].
+pub fn outdated_client() -> String {
+    format!(
+        "This Bitwarden account needs a newer client than this theuth build speaks \
+         (Bitwarden client {}). Update theuth.",
+        crate::BW_CLIENT_VERSION
+    )
 }
 
 /// The supported subset of `codes`, or why none can be answered.

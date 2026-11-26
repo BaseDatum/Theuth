@@ -269,7 +269,6 @@ impl BwBackend {
             ));
         }
         let client = Self::new_client(&urls);
-        let api = client.internal.get_api_configurations();
         let url = format!(
             "{}/sso/prevalidate?{}",
             urls.identity,
@@ -277,25 +276,7 @@ impl BwBackend {
                 .append_pair("domainHint", org)
                 .finish()
         );
-        let req = api
-            .identity_config
-            .client
-            .get(url)
-            .header("Accept", "application/json");
-        let (status, text) = self
-            .timed(async {
-                let r = req
-                    .send()
-                    .await
-                    .map_err(|e| ExtError::Network(e.to_string()))?;
-                let status = r.status().as_u16();
-                let text = r
-                    .text()
-                    .await
-                    .map_err(|e| ExtError::Network(e.to_string()))?;
-                Ok::<_, ExtError>((status, text))
-            })
-            .await??;
+        let (status, text) = self.request(&client, url, None).await?;
         let token = serde_json::from_str::<Json>(&text)
             .ok()
             .and_then(|v| field(&v, "Token").and_then(Json::as_str).map(str::to_owned))
