@@ -86,6 +86,10 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   const { isMobile, setOpenMobile, toggleSidebar, state } = useSidebar()
   // Desktop collapsed: the icon rail (a phone keeps the full Sheet).
   const rail = !isMobile && state === 'collapsed'
+  // The expanded sidebar, once shown, stays mounted behind the rail (hidden, inert, at its own fixed width), so a toggle
+  // never tears down and rebuilds the chat list (its virtualizer and measurements), the desks or the plugin slot.
+  const [kept, setKept] = useState(!rail)
+  if (!rail && !kept) setKept(true)
   const mac = isMacDesktop()
   // Phones: the sidebar is a sheet over the chat, so every tap that navigates (a chat, New chat,
   // Knowledge, Settings) also dismisses it. Selecting rows for deletion does not navigate.
@@ -159,8 +163,10 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   return (
     <>
     <Sidebar collapsible="icon" className="border-r-0">
-      {rail ? (
-        <div className="flex h-full w-full flex-col items-center">
+      {/* The rail first, so a lookup in document order (a search trigger, a tour target) finds it over the hidden sidebar
+       * behind it. It sits at the container's trailing edge: the only part a collapsed sidebar shows (`Sidebar`). */}
+      {rail && (
+        <div className="absolute inset-y-0 right-0 z-10 flex w-(--sidebar-width-icon) flex-col items-center bg-sidebar">
           {/* The macOS traffic lights sit over the rail's top: this strip is theirs (and drags the window); the 3.5rem
            * rail is narrower than they reach, so the header right of it adds the rest (`cornerPad`). */}
           {mac && <div data-tauri-drag-region className="h-[52px] w-full shrink-0" />}
@@ -286,8 +292,14 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </RailTip>
           </div>
         </div>
-      ) : (
-      <>
+      )}
+      {(kept || !rail) && (
+      <div
+        // Fades out over the collapse slide and is then `invisible`; layout is kept (no reflow, no resize observer fires).
+        className={cn('flex min-h-0 w-full flex-1 flex-col transition-[opacity,visibility] duration-200', rail && 'invisible opacity-0')}
+        inert={rail}
+        aria-hidden={rail || undefined}
+      >
       <SidebarHeader
         data-tauri-drag-region={isMacDesktop() || undefined}
         className={cn('h-[52px] flex-row items-center', isMacDesktop() && 'pl-20')}
@@ -453,7 +465,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
-      </>
+      </div>
       )}
     </Sidebar>
     {/* Beside, not inside: on phones the sidebar is a sheet that unmounts when closed (62 §5.2). */}

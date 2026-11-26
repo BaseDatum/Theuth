@@ -131,25 +131,33 @@ function OwnerDetail({ owner, epoch, state }: { owner: string; epoch: number; st
  * The layout tier (lib/header.ts) for the pane this header sits in, from measurement rather than a viewport
  * breakpoint: `row` has `min-w-max`, so its width is the bar's natural width whenever that exceeds the pane's, and
  * `header.clientWidth` is the pane's. Re-checked after every render (a pill appeared) and on every pane resize;
- * both run before paint (layout effect; `flushSync` in the observer), so a wrong tier is never drawn.
+ * both run before paint (layout effect; `flushSync` in the observer), so a wrong tier is never drawn. A resize that
+ * keeps the tier (most of a drag, a sidebar slide) renders nothing: `flushSync` runs only for a change.
  */
-function useTier(header: RefObject<HTMLElement | null>, row: RefObject<HTMLElement | null>): number {
+export function useTier(header: RefObject<HTMLElement | null>, row: RefObject<HTMLElement | null>): number {
   const [tier, setTier] = useState(0)
   const need = useRef<(number | undefined)[]>([])
-  const check = useRef(() => {})
-  check.current = () => {
+  // The tier the measurement now calls for, or null while it is the one shown.
+  const change = useRef((): number | null => null)
+  change.current = () => {
     const el = header.current
     const r = row.current
-    if (!el || !r) return
+    if (!el || !r) return null
     need.current[tier] = r.offsetWidth
     const next = decideTier(tier, el.clientWidth, need.current)
-    if (next !== tier) setTier(next)
+    return next === tier ? null : next
   }
-  useLayoutEffect(() => check.current())
+  useLayoutEffect(() => {
+    const next = change.current()
+    if (next !== null) setTier(next)
+  })
   useLayoutEffect(() => {
     const el = header.current
     if (!el) return
-    const ro = new ResizeObserver(() => flushSync(() => check.current()))
+    const ro = new ResizeObserver(() => {
+      const next = change.current()
+      if (next !== null) flushSync(() => setTier(next))
+    })
     ro.observe(el)
     return () => ro.disconnect()
   }, [header])

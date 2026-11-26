@@ -16,7 +16,7 @@ import { PublicShareStrip } from '@/components/public-share/PublicShareStrip'
 import { RoutineDraftBridge } from '@/components/routines/RoutineChat'
 import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { SearchDialog } from '@/components/sidebar/SearchDialog'
-import { SidebarInset, SidebarProvider, useSidebar, useSidebarOpen } from '@/components/ui/sidebar'
+import { SidebarInset, SidebarProvider, useSidebarActions, useSidebarIsMobile } from '@/components/ui/sidebar'
 import { useHotkeys } from '@/lib/hotkeys'
 import { CostsPrefetch } from '@/lib/costs/queries'
 import { CostsResident, ResidentCtx } from '@/components/costs/Resident'
@@ -73,22 +73,17 @@ function Popped() {
 function Root() {
   const { session } = useParams({ strict: false })
   const navigate = useNavigate()
-  // Every path that changes it (the toggles, ⌘B, ⇧⌘S's event, a swipe) lands here; a mesh switch keeps it.
-  const [open, setOpen] = useSidebarOpen()
   useHotkeys()
   // Opening a chat re-reads the viewport: an iPad window that changed size with no event left since keeps its old band.
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   useEffect(remeasureViewport, [pathname])
 
   useEffect(() => {
-    const toggle = () => setOpen((o) => !o)
     const fresh = () => openNewChat(navigate)
     const shortcuts = () => void settings(navigate, 'shortcuts')
-    window.addEventListener('theuth:toggle-sidebar', toggle)
     window.addEventListener('theuth:new-chat', fresh)
     window.addEventListener('theuth:shortcuts', shortcuts)
     return () => {
-      window.removeEventListener('theuth:toggle-sidebar', toggle)
       window.removeEventListener('theuth:new-chat', fresh)
       window.removeEventListener('theuth:shortcuts', shortcuts)
     }
@@ -99,7 +94,9 @@ function Root() {
   // (`max(--safe-bottom, 18px)`, see StatusBar), so nothing pads below it. The phone has no bar; its line closes the column.
   return (
     <div className="flex h-band flex-col [--statusbar-h:calc(22px_+_var(--safe-bottom))] max-md:[--statusbar-h:0px] md:bg-sidebar md:pb-[var(--safe-bottom)] md:ios:[--statusbar-h:max(var(--safe-bottom),18px)] md:ios:pb-0">
-      <SidebarProvider open={open} onOpenChange={setOpen} rail className="min-h-0 flex-1">
+      {/* Uncontrolled: the provider owns expanded-or-rail (every toggle, ⌘B, ⇧⌘S's event, a swipe), saves it and keeps it
+       * across a mesh switch, so a toggle never re-renders this shell. */}
+      <SidebarProvider rail className="min-h-0 flex-1">
         <AppSidebar session={session} />
         <Capability required={searchRequirements} hide><SearchHost /></Capability>
         <Capability required={routineRequirements} hide><RoutineDraftBridge /></Capability>
@@ -136,7 +133,8 @@ function Root() {
  * dismiss the drawer without unmounting the dialog — one modal, one focus trap. Focus return is the dialog's.
  */
 function SearchHost() {
-  const { isMobile, setOpenMobile } = useSidebar()
+  const isMobile = useSidebarIsMobile()
+  const { setOpenMobile } = useSidebarActions()
   const [open, setOpen] = useState(false)
   const [request, setRequest] = useState<SearchRequest>()
   useEffect(() => {

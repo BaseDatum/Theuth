@@ -163,20 +163,21 @@ export function diffTitle(spec: DiffSpec): string {
 }
 
 /** The diff layout a box draws in (`lib/diff-layout.ts`): the remembered choice, else by the width of the element
- * `ref` is put on; `choose` remembers an explicit choice for every diff. */
+ * `ref` is put on; `choose` remembers an explicit choice for every diff. Only the layout that width calls for is
+ * state, so resizing re-renders the diff only when it crosses `SPLIT_MIN_PX`, not on every pixel. */
 export function useDiffLayout(): { layout: DiffLayout; choose(layout: DiffLayout): void; ref(el: HTMLElement | null): void } {
   const { chosen, choose } = useDiffLayoutChoice()
-  const [width, setWidth] = useState(0)
+  const [fits, setFits] = useState<DiffLayout>(() => diffLayout(null, 0))
   const watch = useRef<ResizeObserver | null>(null)
   const ref = useCallback((el: HTMLElement | null) => {
     watch.current?.disconnect()
     watch.current = null
     if (!el) return
-    setWidth(el.getBoundingClientRect().width)
-    watch.current = new ResizeObserver(([e]) => e && setWidth(e.contentRect.width))
+    setFits(diffLayout(null, el.getBoundingClientRect().width))
+    watch.current = new ResizeObserver(([e]) => e && setFits(diffLayout(null, e.contentRect.width)))
     watch.current.observe(el)
   }, [])
-  return { layout: diffLayout(chosen, width), choose, ref }
+  return { layout: chosen ?? fits, choose, ref }
 }
 
 /** The Unified | Split switch of a diff tile, card or popped window. */

@@ -7,6 +7,7 @@ import { Slot } from 'radix-ui'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { touch } from '@/lib/hotkeys'
 import { clamp, PX_STEP } from '@/lib/resize-drag'
+import { SIDEBAR_SLIDE_EVENT } from '@/lib/sidebar-slide'
 import { SWIPE_ATTR } from '@/lib/use-row-swipe'
 import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Button } from '@/components/ui/button'
@@ -57,7 +58,8 @@ export function initialSidebarOpen(): boolean {
   return saved ?? readSidebarOpen(globalThis.document?.cookie ?? '')
 }
 
-/** The shell's expanded state, saved on every change so a remount (a mesh switch) or the next load starts from it. */
+/** The shell's expanded state, saved on every change so a remount (a mesh switch) or the next load starts from it. For
+ * a controlled `SidebarProvider`; an uncontrolled one keeps (and saves) the same state itself. */
 export function useSidebarOpen(): [boolean, React.Dispatch<React.SetStateAction<boolean>>] {
   const [open, setOpen] = React.useState(initialSidebarOpen)
   React.useEffect(() => writeSidebarOpen(open), [open])
@@ -70,35 +72,63 @@ export function writeSidebarOpen(open: boolean): void {
   document.cookie = `${SIDEBAR_COOKIE_NAME}=${open}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
 }
 
-type SidebarContextProps = {
-  state: 'expanded' | 'collapsed'
-  open: boolean
-  setOpen: (open: boolean) => void
-  openMobile: boolean
-  setOpenMobile: (open: boolean) => void
-  isMobile: boolean
+type SidebarActions = {
+  setOpen: (open: boolean | ((open: boolean) => boolean)) => void
+  setOpenMobile: React.Dispatch<React.SetStateAction<boolean>>
   toggleSidebar: () => void
-  /** Desktop width in px. */
-  width: number
   /** Clamps to `SIDEBAR_WIDTH_MIN`–`SIDEBAR_WIDTH_MAX` and saves the width in its cookie. */
   setWidth: (px: number) => void
+}
+
+type SidebarState = {
+  state: 'expanded' | 'collapsed'
+  open: boolean
+  openMobile: boolean
+  /** Desktop width in px. */
+  width: number
   /** The collapsed desktop rail is on screen: collapsed (`!open`), not a phone, and the shell has a rail. */
   rail: boolean
 }
 
-const SidebarContext = React.createContext<SidebarContextProps | null>(null)
+type SidebarContextProps = SidebarState & SidebarActions & { isMobile: boolean }
 
-function useSidebar() {
-  const context = React.useContext(SidebarContext)
-  if (!context) {
-    throw new Error('useSidebar must be used within a SidebarProvider.')
-  }
+// Three contexts so a consumer re-renders only for what it reads: the actions never change, `isMobile` only when the
+// viewport crosses the phone breakpoint, the state on every toggle or resize. `useSidebar` reads all three.
+const SidebarActionsContext = React.createContext<SidebarActions | null>(null)
+const SidebarMobileContext = React.createContext<boolean | null>(null)
+const SidebarStateContext = React.createContext<SidebarState | null>(null)
 
-  return context
+const outside = (hook: string) => new Error(`${hook} must be used within a SidebarProvider.`)
+
+/** Everything: re-renders on every toggle and width change. Prefer `useSidebarActions` / `useSidebarIsMobile`. */
+function useSidebar(): SidebarContextProps {
+  const actions = React.useContext(SidebarActionsContext)
+  const isMobile = React.useContext(SidebarMobileContext)
+  const state = React.useContext(SidebarStateContext)
+  const all = React.useMemo(
+    () => (actions && state && isMobile !== null ? { ...state, ...actions, isMobile } : null),
+    [actions, state, isMobile],
+  )
+  if (!all) throw outside('useSidebar')
+  return all
+}
+
+/** `toggleSidebar`, `setOpen`, `setOpenMobile`, `setWidth`: referentially stable, never re-renders on a toggle. */
+function useSidebarActions(): SidebarActions {
+  const actions = React.useContext(SidebarActionsContext)
+  if (!actions) throw outside('useSidebarActions')
+  return actions
+}
+
+/** Whether the sidebar is the phone Sheet; changes only when the viewport crosses the breakpoint. */
+function useSidebarIsMobile(): boolean {
+  const isMobile = React.useContext(SidebarMobileContext)
+  if (isMobile === null) throw outside('useSidebarIsMobile')
+  return isMobile
 }
 
 function SidebarProvider({
-  defaultOpen = true,
+  defaultOpen,
   open: openProp,
   onOpenChange: setOpenProp,
   rail: hasRail = false,
@@ -107,6 +137,7 @@ function SidebarProvider({
   children,
   ...props
 }: React.ComponentProps<'div'> & {
+  /** Uncontrolled start; unset: this page's last saved state, else the `sidebar_state` cookie (`initialSidebarOpen`). */
   defaultOpen?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
@@ -116,29 +147,40 @@ function SidebarProvider({
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
 
-  // This is the internal state of the sidebar.
-  // We use openProp and setOpenProp for control from outside the component.
-  const [_open, _setOpen] = React.useState(defaultOpen)
+  // Uncontrolled (the shell): this provider owns the expanded state, saves every change (`writeSidebarOpen`, so a mesh
+  // switch's remount and the next load start from it) and answers ⇧⌘S's `theuth:toggle-sidebar`. Controlled (`open`):
+  // the owner keeps and saves it (`useSidebarOpen`), or it is fixed (a popped window).
+  const controlled = openProp !== undefined
+  const [_open, _setOpen] = React.useState(() => defaultOpen ?? initialSidebarOpen())
   const open = openProp ?? _open
-  const setOpen = React.useCallback(
-    (value: boolean | ((value: boolean) => boolean)) => {
-      const openState = typeof value === 'function' ? value(open) : value
-      if (setOpenProp) {
-        setOpenProp(openState)
-      } else {
-        _setOpen(openState)
-      }
+  const written = React.useRef(_open)
+  React.useEffect(() => {
+    if (controlled || written.current === _open) return
+    written.current = _open
+    writeSidebarOpen(_open)
+  }, [controlled, _open])
 
-      // This sets the cookie to keep the sidebar state.
-      writeSidebarOpen(openState)
-    },
-    [setOpenProp, open],
-  )
-
-  // Helper to toggle the sidebar.
+  // What the stable actions below read at call time.
+  const live = React.useRef({ open, controlled, setOpenProp, isMobile })
+  React.useLayoutEffect(() => {
+    live.current = { open, controlled, setOpenProp, isMobile }
+  })
+  const setOpen = React.useCallback((value: boolean | ((open: boolean) => boolean)) => {
+    const l = live.current
+    if (l.controlled) l.setOpenProp?.(typeof value === 'function' ? value(l.open) : value)
+    else _setOpen(value)
+  }, [])
   const toggleSidebar = React.useCallback(() => {
-    return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open)
-  }, [isMobile, setOpen, setOpenMobile])
+    if (live.current.isMobile) setOpenMobile((o) => !o)
+    else setOpen((o) => !o)
+  }, [setOpen])
+
+  React.useEffect(() => {
+    if (controlled) return
+    const toggle = () => _setOpen((o) => !o)
+    window.addEventListener('theuth:toggle-sidebar', toggle)
+    return () => window.removeEventListener('theuth:toggle-sidebar', toggle)
+  }, [controlled])
 
   const [width, _setWidth] = React.useState(() => readSidebarWidth(globalThis.document?.cookie ?? ''))
   const setWidth = React.useCallback((px: number) => {
@@ -165,45 +207,49 @@ function SidebarProvider({
   const state = open ? 'expanded' : 'collapsed'
   const rail = hasRail && !isMobile && !open
 
-  const contextValue = React.useMemo<SidebarContextProps>(
-    () => ({
-      state,
-      open,
-      setOpen,
-      isMobile,
-      openMobile,
-      setOpenMobile,
-      toggleSidebar,
-      width,
-      setWidth,
-      rail,
-    }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, width, setWidth, rail],
-  )
+  const actions = React.useMemo<SidebarActions>(() => ({ setOpen, setOpenMobile, toggleSidebar, setWidth }), [setOpen, toggleSidebar, setWidth])
+  const stateValue = React.useMemo<SidebarState>(() => ({ state, open, openMobile, width, rail }), [state, open, openMobile, width, rail])
 
   return (
-    <SidebarContext.Provider value={contextValue}>
-      <TooltipProvider delayDuration={0}>
-        <div
-          data-slot="sidebar-wrapper"
-          style={
-            {
-              '--sidebar-width': `${width}px`,
-              '--sidebar-width-icon': SIDEBAR_WIDTH_ICON,
-              ...style,
-            } as React.CSSProperties
-          }
-          className={cn(
-            'group/sidebar-wrapper flex min-h-svh w-full has-data-[variant=inset]:bg-sidebar',
-            className,
-          )}
-          {...props}
-        >
-          {children}
-        </div>
-      </TooltipProvider>
-    </SidebarContext.Provider>
+    <SidebarActionsContext.Provider value={actions}>
+      <SidebarMobileContext.Provider value={isMobile}>
+        <SidebarStateContext.Provider value={stateValue}>
+          <TooltipProvider delayDuration={0}>
+            <div
+              data-slot="sidebar-wrapper"
+              style={
+                {
+                  '--sidebar-width': `${width}px`,
+                  '--sidebar-width-icon': SIDEBAR_WIDTH_ICON,
+                  ...style,
+                } as React.CSSProperties
+              }
+              // `overflow-x-clip`: the column slides right while the sidebar expands (`Sidebar`); its far edge is cut, never scrolled to.
+              className={cn(
+                'group/sidebar-wrapper flex min-h-svh w-full overflow-x-clip has-data-[variant=inset]:bg-sidebar',
+                className,
+              )}
+              {...props}
+            >
+              {children}
+            </div>
+          </TooltipProvider>
+        </SidebarStateContext.Provider>
+      </SidebarMobileContext.Provider>
+    </SidebarActionsContext.Provider>
   )
+}
+
+/** The desktop open/close slide: compositor-only `transform`, never an animated width. */
+const SLIDE_MS = 200
+const SLIDE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'
+
+/** `el`'s current horizontal translation (px), mid-animation included. */
+function translateXOf(el: Element): number {
+  const m = /^matrix(3d)?\((.+)\)$/.exec(getComputedStyle(el).transform)
+  if (!m) return 0
+  const v = m[2]!.split(',').map(Number)
+  return (m[1] ? v[12] : v[4]) ?? 0
 }
 
 function Sidebar({
@@ -211,6 +257,7 @@ function Sidebar({
   variant = 'sidebar',
   collapsible = 'offcanvas',
   className,
+  style,
   children,
   ...props
 }: React.ComponentProps<'div'> & {
@@ -270,6 +317,63 @@ function Sidebar({
   // A left sidebar grows as its edge moves right; a right one as it moves left.
   const dir = side === 'left' ? 1 : -1
 
+  // Desktop open/close. The container is always `--sidebar-width` wide (its content never reflows); collapsed it is
+  // translated so only its trailing `railGap` shows (the icon rail's content sits at that edge; offcanvas: none of it).
+  // Only the gap's width moves the column, once per toggle: collapsing commits the narrow gap at once and slides the
+  // (now wider) column in from where it was; expanding keeps the narrow gap while the column slides right (its far edge
+  // clipped by the wrapper), then commits the wide gap and drops the slide in the same frame. Both slides are Web
+  // Animations of `transform` alone; a toggle mid-slide picks up from where things are.
+  const railGap =
+    collapsible === 'icon' ? (variant === 'sidebar' ? 'var(--sidebar-width-icon)' : 'calc(var(--sidebar-width-icon) + 1rem)') : '0px'
+  const root = React.useRef<HTMLDivElement>(null)
+  const gap = React.useRef<HTMLDivElement>(null)
+  const box = React.useRef<HTMLDivElement>(null)
+  const slide = React.useRef<Animation[] | null>(null)
+  const shown = React.useRef(state)
+  React.useLayoutEffect(() => {
+    const was = shown.current
+    shown.current = state
+    if (was === state) return
+    const g = gap.current
+    const b = box.current
+    const prev = slide.current
+    slide.current = null
+    const inset = root.current?.parentElement?.querySelector<HTMLElement>(':scope > [data-slot="sidebar-inset"]') ?? null
+    // Read where a running slide has things before dropping it.
+    const boxAt = prev && b ? translateXOf(b) : null
+    const insetAt = prev && inset ? translateXOf(inset) : null
+    for (const a of prev ?? []) a.cancel()
+    if (!g || !b) return
+    g.style.width = ''
+    if (typeof b.animate !== 'function' || globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+    const expanding = state === 'expanded'
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+    const railPx = collapsible === 'icon' ? rem * (variant === 'sidebar' ? 3.5 : 4.5) : 0
+    const delta = (width - railPx) * dir
+    const boxFrom = boxAt ?? (expanding ? -delta : 0)
+    const boxTo = expanding ? 0 : -delta
+    const duration = delta === 0 ? 0 : SLIDE_MS * Math.min(1, Math.abs(boxTo - boxFrom) / Math.abs(delta))
+    if (duration < 1) return
+    const timing: KeyframeAnimationOptions = { duration, easing: SLIDE_EASE, fill: 'forwards' }
+    const at = (x: number) => ({ transform: `translateX(${x}px)` })
+    if (expanding) g.style.width = railGap
+    const anims = [b.animate([at(boxFrom), at(boxTo)], timing)]
+    if (inset) anims.push(inset.animate([at(insetAt ?? (expanding ? 0 : delta)), at(expanding ? delta : 0)], timing))
+    slide.current = anims
+    window.dispatchEvent(new Event(SIDEBAR_SLIDE_EVENT))
+    anims[0]!.finished.then(
+      () => {
+        if (slide.current !== anims) return
+        slide.current = null
+        // One task, so one frame: the final gap and the column's rest position land together (one reflow).
+        g.style.width = ''
+        for (const a of anims) a.cancel()
+      },
+      () => undefined,
+    )
+  }, [state, width, collapsible, variant, dir, railGap])
+  React.useEffect(() => () => slide.current?.forEach((a) => a.cancel()), [])
+
   if (collapsible === 'none') {
     return (
       <div
@@ -278,6 +382,7 @@ function Sidebar({
           'flex h-full w-(--sidebar-width) flex-col bg-sidebar text-sidebar-foreground',
           className,
         )}
+        style={style}
         {...props}
       >
         {children}
@@ -310,21 +415,24 @@ function Sidebar({
     )
   }
 
+  const collapsed = state === 'collapsed'
   return (
     <div
+      ref={root}
       className="group peer hidden text-sidebar-foreground md:block"
       data-state={state}
       data-resizing={resizing || undefined}
-      data-collapsible={state === 'collapsed' ? collapsible : ''}
+      data-collapsible={collapsed ? collapsible : ''}
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
     >
-      {/* This is what handles the sidebar gap on desktop */}
+      {/* This is what handles the sidebar gap on desktop: the only box whose width moves the column. */}
       <div
+        ref={gap}
         data-slot="sidebar-gap"
         className={cn(
-          'relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear group-data-[resizing=true]:transition-none',
+          'relative w-(--sidebar-width) bg-transparent',
           'group-data-[collapsible=offcanvas]:w-0',
           'group-data-[side=right]:rotate-180',
           variant === 'floating' || variant === 'inset'
@@ -335,31 +443,36 @@ function Sidebar({
       {/* The shell's own height (`h-band`: `--visible-band`, lib/viewport.ts), never a CSS viewport unit: the iOS/iPadOS
        * webview can leave `100svh` stale and short for the life of the page, which squeezed the rail's scrolling middle
        * (between its fixed header and Settings) to nothing until the app restarted. 217: less the status bar under it
-       * (`--statusbar-h`, set by the shell; unset where there is no bar). */}
+       * (`--statusbar-h`, set by the shell; unset where there is no bar). Always `--sidebar-width` wide; collapsed, it is
+       * translated so only its trailing `railGap` shows. */}
       <div
+        ref={box}
         data-slot="sidebar-container"
         className={cn(
-          'fixed top-0 z-10 hidden h-band max-h-[calc(var(--visible-band)_-_var(--statusbar-h,0px))] w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear group-data-[resizing=true]:transition-none md:flex',
-          side === 'left'
-            ? 'left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]'
-            : 'right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]',
+          'fixed top-0 z-10 hidden h-band max-h-[calc(var(--visible-band)_-_var(--statusbar-h,0px))] w-(--sidebar-width) md:flex',
+          side === 'left' ? 'left-0' : 'right-0',
           // Adjust the padding for floating and inset variants.
           variant === 'floating' || variant === 'inset'
-            ? 'p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]'
-            : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l',
+            ? 'p-2'
+            : 'group-data-[side=left]:border-r group-data-[side=right]:border-l',
           className,
         )}
+        style={
+          collapsed
+            ? { transform: `translateX(calc((${railGap} - var(--sidebar-width)) * ${dir}))`, ...style }
+            : style
+        }
         {...props}
       >
         <div
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
-          className="flex h-full w-full flex-col bg-sidebar pt-[var(--safe-top)] pb-[var(--safe-bottom)] pl-[var(--safe-left)] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow-sm md:pb-0"
+          className="relative flex h-full w-full flex-col bg-sidebar pt-[var(--safe-top)] pb-[var(--safe-bottom)] pl-[var(--safe-left)] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow-sm md:pb-0"
         >
           {children}
         </div>
         {/* Expanded desktop only: collapsed (offcanvas or icon) and the phone Sheet have no drag edge. The hit zone
-         * reaches away from the sidebar so its scrollbar stays usable. */}
+         * reaches away from the sidebar so its scrollbar stays usable. A drag resizes live: no slide runs. */}
         {state === 'expanded' && (
           <ResizeHandle
             orientation="vertical"
@@ -383,7 +496,7 @@ function Sidebar({
 }
 
 function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar } = useSidebarActions()
 
   return (
     <Button
@@ -405,7 +518,7 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
 }
 
 function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar } = useSidebarActions()
 
   return (
     <button
@@ -493,7 +606,7 @@ function SidebarContent({ className, ...props }: React.ComponentProps<'div'>) {
       data-slot="sidebar-content"
       data-sidebar="content"
       className={cn(
-        'flex min-h-0 flex-1 flex-col gap-2 overflow-auto group-data-[collapsible=icon]:overflow-hidden',
+        'flex min-h-0 flex-1 flex-col gap-2 overflow-auto',
         className,
       )}
       {...props}
@@ -524,8 +637,7 @@ function SidebarGroupLabel({
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
-        'flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 ring-sidebar-ring outline-hidden transition-[margin,opacity] duration-200 ease-linear focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0',
-        'group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0',
+        'flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 ring-sidebar-ring outline-hidden focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0',
         className,
       )}
       {...props}
@@ -548,7 +660,6 @@ function SidebarGroupAction({
         'absolute top-3.5 right-3 flex aspect-square w-5 items-center justify-center rounded-md p-0 text-sidebar-foreground ring-sidebar-ring outline-hidden transition-transform hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0',
         // Increases the hit area of the button on mobile.
         'after:absolute after:-inset-2 md:after:hidden',
-        'group-data-[collapsible=icon]:hidden',
         className,
       )}
       {...props}
@@ -590,7 +701,7 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<'li'>) {
 }
 
 const sidebarMenuButtonVariants = cva(
-  'peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0',
+  'peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden group-has-data-[sidebar=menu-action]/menu-item:pr-8 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0',
   {
     variants: {
       variant: {
@@ -601,7 +712,7 @@ const sidebarMenuButtonVariants = cva(
       size: {
         default: 'h-8 text-sm pointer-coarse:h-11',
         sm: 'h-7 text-xs',
-        lg: 'h-12 text-sm group-data-[collapsible=icon]:p-0!',
+        lg: 'h-12 text-sm',
       },
     },
     defaultVariants: {
@@ -625,7 +736,6 @@ function SidebarMenuButton({
   tooltip?: string | React.ComponentProps<typeof TooltipContent>
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const Comp = asChild ? Slot.Root : 'button'
-  const { isMobile, state } = useSidebar()
 
   const button = (
     <Comp
@@ -651,14 +761,16 @@ function SidebarMenuButton({
   return (
     <Tooltip>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent
-        side="right"
-        align="center"
-        hidden={state !== 'collapsed' || isMobile}
-        {...tooltip}
-      />
+      <SidebarMenuTooltip {...tooltip} />
     </Tooltip>
   )
+}
+
+/** A menu button's tooltip, shown only on the collapsed desktop sidebar: the one part of a menu button that reads the
+ * sidebar's state, so a toggle does not re-render every row. */
+function SidebarMenuTooltip(props: React.ComponentProps<typeof TooltipContent>) {
+  const { isMobile, state } = useSidebar()
+  return <TooltipContent side="right" align="center" hidden={state !== 'collapsed' || isMobile} {...props} />
 }
 
 function SidebarMenuAction({
@@ -683,7 +795,6 @@ function SidebarMenuAction({
         'peer-data-[size=sm]/menu-button:top-1',
         'peer-data-[size=default]/menu-button:top-1.5',
         'peer-data-[size=lg]/menu-button:top-2.5',
-        'group-data-[collapsible=icon]:hidden',
         // Hidden until hover / focus / open only where a hover-capable fine pointer exists: an iPad (≥ md, coarse pointer) always shows it.
         showOnHover &&
           'group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 peer-data-[active=true]/menu-button:text-sidebar-accent-foreground data-[state=open]:opacity-100 md:pointer-fine:opacity-0',
@@ -705,7 +816,6 @@ function SidebarMenuBadge({ className, ...props }: React.ComponentProps<'div'>) 
         'peer-data-[size=sm]/menu-button:top-1',
         'peer-data-[size=default]/menu-button:top-1.5',
         'peer-data-[size=lg]/menu-button:top-2.5',
-        'group-data-[collapsible=icon]:hidden',
         className,
       )}
       {...props}
@@ -753,7 +863,6 @@ function SidebarMenuSub({ className, ...props }: React.ComponentProps<'ul'>) {
       data-sidebar="menu-sub"
       className={cn(
         'mx-3.5 flex min-w-0 translate-x-px flex-col gap-1 border-l border-sidebar-border px-2.5 py-0.5',
-        'group-data-[collapsible=icon]:hidden',
         className,
       )}
       {...props}
@@ -796,7 +905,6 @@ function SidebarMenuSubButton({
         'data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground',
         size === 'sm' && 'text-xs',
         size === 'md' && 'text-sm',
-        'group-data-[collapsible=icon]:hidden',
         className,
       )}
       {...props}
@@ -829,4 +937,6 @@ export {
   SidebarSeparator,
   SidebarTrigger,
   useSidebar,
+  useSidebarActions,
+  useSidebarIsMobile,
 }

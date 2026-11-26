@@ -1,6 +1,6 @@
 import { AppWindow, ExternalLink, Globe, Maximize2, PanelRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useSidebar } from '@/components/ui/sidebar'
+import { useSidebarIsMobile } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { placeWeb, popOutWeb } from '@/lib/panes'
 import { canPopout } from '@/lib/popout'
@@ -51,7 +51,7 @@ function popOutCard(session: string, { id, url, title }: { id: string; url: stri
  * tile: with native views its Open shows the page full screen (209 §7); without (a browser) **Open in browser** is the
  * card's action. */
 export function WebViewCard({ tool, session }: { tool: Tool; session: string }) {
-  const { isMobile } = useSidebar()
+  const isMobile = useSidebarIsMobile()
   const call = webCall(tool)
   const failed = tool.result?.isError === true
   const running = !tool.interrupted && (tool.pending || !tool.result)

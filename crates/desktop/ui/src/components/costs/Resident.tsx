@@ -4,7 +4,7 @@
 // The `/costs` route renders nothing under this host; a popped-out window (no host) renders the page itself.
 
 import { useRouterState } from '@tanstack/react-router'
-import { createContext, lazy, startTransition, Suspense, useEffect, useMemo, useState } from 'react'
+import { createContext, lazy, startTransition, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useCostCube } from '@/lib/costs/queries'
 import { type CostsSearch, validateCostsSearch } from '@/lib/costs/search'
 import { cn } from '@/lib/utils'
@@ -34,12 +34,28 @@ export function CostsResident() {
     const t = setTimeout(() => (typeof requestIdleCallback === 'function' ? requestIdleCallback(() => startTransition(() => setWarm(true)), { timeout: 3_000 }) : startTransition(() => setWarm(true))), PREWARM_MS)
     return () => clearTimeout(t)
   }, [warm, held])
-  if (!warm && !here) return null
+  // Hidden, its width is pinned to what it last was (`right: auto`), so the column resizing under it (a sidebar toggle or
+  // drag, a split) never re-lays out the page or fires its charts' resize observers; on /costs it takes the column again.
+  const box = useRef<HTMLDivElement>(null)
+  const mounted = warm || here
+  useLayoutEffect(() => {
+    const el = box.current
+    if (!el) return
+    if (here) {
+      el.style.width = ''
+      el.style.right = ''
+    } else if (!el.style.width) {
+      el.style.width = `${el.clientWidth}px`
+      el.style.right = 'auto'
+    }
+  }, [here, mounted])
+  if (!mounted) return null
   return (
     <div
-      // Always laid out at the column's size; showing it changes only non-inherited properties (opacity, z-order) and
-      // `inert`, so the browser does not restyle the page's thousands of nodes. Hidden: inert (no focus, no pointer, out
-      // of the accessibility tree) and transparent.
+      ref={box}
+      // Laid out at the column's size; showing it changes only non-inherited properties (opacity, z-order) and `inert`,
+      // so the browser does not restyle the page's thousands of nodes. Hidden: inert (no focus, no pointer, out of the
+      // accessibility tree), transparent and at a frozen width (above).
       className={cn('absolute inset-0 flex flex-col overflow-hidden [contain:strict]', !here && '-z-10 opacity-0')}
       inert={!here}
     >
