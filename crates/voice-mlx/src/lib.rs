@@ -12,14 +12,20 @@ use std::path::Path;
 /// frame index and predicted duration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Word {
+    /// The word's text, without the leading `▁` marker.
     pub text: String,
+    /// Start time in seconds from the beginning of the audio.
     pub start_s: f32,
+    /// End time in seconds from the beginning of the audio.
     pub end_s: f32,
 }
 
+/// The result of one transcription: the full text and its words with timings.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Transcript {
+    /// The whole decoded text.
     pub text: String,
+    /// The decoded words in order, with their times.
     pub words: Vec<Word>,
 }
 
