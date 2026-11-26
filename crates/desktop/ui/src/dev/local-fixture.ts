@@ -22,7 +22,7 @@ const flag = (): string | null => (import.meta.env.DEV ? globalThis.localStorage
 
 const URL_MLX = 'http://127.0.0.1:8080/v1/'
 
-const mlx: ProviderInfo = { name: 'mlx', base_url: URL_MLX, models: 3, builtin: false, configured: true, refreshable: true, local: true, runtime: 'omlx', has_key: true }
+const mlx: ProviderInfo = { name: 'mlx', base_url: URL_MLX, models: 3, builtin: false, configured: true, refreshable: true, local: true, runtime: 'omlx', has_key: true, account_of: null, supports_login: false }
 
 /** Ollama answers with 3 models, LM Studio is not running, a second omlx on :8000 wants a key (401), omlx on :8080 is already `mlx`. */
 const servers: LocalServer[] = [

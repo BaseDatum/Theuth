@@ -10,6 +10,8 @@ import type { ProviderModel } from "@/rpc/bindings/method.agent.output"
 import type { LoginInfo } from "@/rpc/bindings/method.agent.output"
 import { CustomProviderForm, LocalServerForm, ModelLimits, ModelProviders, ProbeRows } from './ModelProviders'
 import {
+  accountDraft,
+  accountLabel,
   BUILTIN_LABEL,
   builtinKeyNote,
   contextPlaceholder,
@@ -20,6 +22,7 @@ import {
   limitValue,
   localAddArgs,
   loginText,
+  modelsText,
   orderProviders,
   pairLogins,
   presetForm,
@@ -42,7 +45,10 @@ const row = (name: string, builtin: boolean, configured: boolean, refreshable = 
   local,
   runtime: local ? 'omlx' : null,
   has_key: configured,
+  account_of: null,
+  supports_login: false,
 })
+const account = (name: string, kind: string): ProviderInfo => ({ ...row(name, false, false), account_of: kind })
 
 const withCache = (el: ReactElement, fill: (qc: QueryClient) => void = () => {}) => {
   const qc = new QueryClient()
@@ -56,6 +62,27 @@ test('built-ins come first, custom providers after, engine order kept within eac
   const list = orderProviders([row('a', false, true), row('opencode', true, false), row('rwx', false, true), row('openrouter', true, true)])
   expect(list.map((p) => p.name)).toEqual(['opencode', 'openrouter', 'a', 'rwx'])
   expect(orderProviders(undefined)).toEqual([])
+})
+
+test('an account follows its kind among the built-ins; one whose kind has no row closes them', () => {
+  const list = orderProviders([row('rwx', false, true), account('anthropic-work', 'anthropic'), row('anthropic', true, false), row('openai', true, true), account('xai-home', 'xai'), account('anthropic-2', 'anthropic')])
+  expect(list.map((p) => p.name)).toEqual(['anthropic', 'anthropic-work', 'anthropic-2', 'openai', 'xai-home', 'rwx'])
+  expect(accountLabel('anthropic')).toBe('Anthropic account')
+  expect(accountLabel('acme')).toBe('acme account')
+})
+
+test('Add another account: the suffix is [a-z0-9_-], names <kind>-<suffix>, and may not take an existing name', () => {
+  expect(accountDraft('anthropic', '', [])).toEqual({ name: 'anthropic-', error: null, ready: false })
+  expect(accountDraft('anthropic', ' work ', [])).toEqual({ name: 'anthropic-work', error: null, ready: true })
+  expect(accountDraft('openai', 'team_2-b', []).ready).toBe(true)
+  for (const bad of ['Work', 'a b', 'a.b', 'ü', 'a/b']) expect(accountDraft('openai', bad, []).error).toBe('Use only lowercase letters, digits, _ and -')
+  expect(accountDraft('anthropic', 'work', ['anthropic-work'])).toEqual({ name: 'anthropic-work', error: 'anthropic-work already exists', ready: false })
+})
+
+test('reset / refresh-all toasts: one provider by name, several by count', () => {
+  const one = { provider: { ...row('anthropic', true, true), models: 12 }, added: [], removed: [] }
+  expect(modelsText('Reset', [one])).toBe('Reset anthropic: 12 models')
+  expect(modelsText('Refreshed', [one, one, one])).toBe('Refreshed 3 providers')
 })
 
 test('refresh toast: counts on a change, "no change" when nothing moved', () => {
@@ -135,9 +162,9 @@ test('188 A6: no Accounts section — a paired login sits on its provider row, a
   const t = text(html)
   expect(t).not.toContain('Accounts')
   expect(t).toMatch(/rwx custom rwx\/… · 1 models · https:\/\/rwx\/v1\/ · not logged in/)
-  expect(t).toMatch(/anthropic built-in logged in \(me@x\.io\) Log out/)
-  expect(t.indexOf('OpenCode Zen')).toBeLessThan(t.indexOf('anthropic'))
-  expect(t.indexOf('anthropic')).toBeLessThan(t.indexOf('Local servers'))
+  expect(t).toMatch(/Anthropic built-in logged in \(me@x\.io\) Log out/)
+  expect(t.indexOf('OpenCode Zen')).toBeLessThan(t.indexOf('Anthropic'))
+  expect(t.indexOf('Anthropic')).toBeLessThan(t.indexOf('Local servers'))
   expect(t.match(/Log in/g)).toHaveLength(1)
 })
 

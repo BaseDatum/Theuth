@@ -1,13 +1,18 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Copy, Radar, RefreshCw, Trash2 } from 'lucide-react'
+import { ChevronRight, Copy, Radar, RefreshCw, RotateCcw, Trash2, UserPlus } from 'lucide-react'
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
+import { copyToClipboard } from '@/lib/code-copy'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import {
+  accountDraft,
+  accountLabel,
   builtinKeyNote,
   BUILTIN_LABEL,
   contextPlaceholder,
   freeName,
+  isBuiltinRow,
   isLocalUrl,
   LIMIT_SOURCE,
   type Limits,
@@ -16,6 +21,7 @@ import {
   localAddArgs,
   type LocalForm,
   loginText,
+  modelsText,
   orderProviders,
   pairLogins,
   presetForm,
@@ -99,25 +105,39 @@ function useLogins() {
 
 type Logins = ReturnType<typeof useLogins>
 
-/** A login's state, or while a sign-in waits, its URL: to open on the node, or locally if the browser did not open. */
-function LoginState({ l, logins }: { l: LoginInfo; logins: Logins }) {
+/**
+ * A login's state, or while a sign-in waits, its URL (copyable): to open on the node, or locally if the browser did not
+ * open. With several accounts of one kind (`hint`), the browser's session picks the account, hence the private window.
+ */
+function LoginState({ l, logins, hint = false }: { l: LoginInfo; logins: Logins; hint?: boolean }) {
   const engineName = useConnection((s) => s.info?.name)
   if (logins.pending?.name !== l.name) return <>{loginText(l)}</>
+  const url = logins.pending.url
   return (
     <span className="block">
       {logins.pending.local ? "Browser didn't open?" : `Sign in from the node (${engineName ?? 'node'}):`}{' '}
-      <code className="select-all break-all font-mono text-xs">{logins.pending.url}</code>
+      <code className="select-all break-all font-mono text-xs">{url}</code>{' '}
+      <Button
+        type="button"
+        size="icon-xs"
+        variant="ghost"
+        aria-label={`Copy the sign-in URL of ${l.name}`}
+        onClick={() => void copyToClipboard(url).then((ok) => (ok ? toast.success('Copied the sign-in URL') : toast.error('Could not copy the URL')))}
+      >
+        <Copy />
+      </Button>
+      {hint && <span className="block text-[13px] text-fg-tertiary">Open it in a private window to choose a different account.</span>}
     </span>
   )
 }
 
 /** A provider row's login after its key or address; nothing for a provider without one. */
-function LoginSuffix({ l, logins }: { l: LoginInfo | undefined; logins: Logins }) {
+function LoginSuffix({ l, logins, hint }: { l: LoginInfo | undefined; logins: Logins; hint: boolean }) {
   if (!l) return null
   return (
     <>
       {' · '}
-      <LoginState l={l} logins={logins} />
+      <LoginState l={l} logins={logins} hint={hint} />
     </>
   )
 }
@@ -131,18 +151,140 @@ function LoginButton({ l, logins }: { l: LoginInfo | undefined; logins: Logins }
   )
 }
 
+/** Refresh models (`refresh_provider_models`): the spinner turns on the row being refreshed only. */
+function RefreshButton({ name, refresh }: { name: string; refresh: Action<string, unknown> }) {
+  return (
+    <Button size="sm" variant="outline" disabled={refresh.isPending} onClick={() => refresh.mutate(name)}>
+      <RefreshCw className={refresh.isPending && refresh.variables === name ? 'animate-spin' : undefined} /> Refresh models
+    </Button>
+  )
+}
+
+/** Reset models (`reset_provider_models`), after a confirmation: drops what listings added, back to the built-in catalog. */
+export function ResetModels({ name, label, reset }: { name: string; label: string; reset: Action<string, unknown> }) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="ghost" aria-label={`Reset models of ${name}`} disabled={reset.isPending}>
+          <RotateCcw /> Reset models
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{`Reset ${label}'s models?`}</AlertDialogTitle>
+          <AlertDialogDescription>The models fetched for it and any limits you set are dropped; its list goes back to the built-in catalog. Refresh models fetches it again.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => reset.mutate(name)}>Reset models</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+/**
+ * Add another account… of a built-in kind (`add_account`): a suffix (`[a-z0-9_-]`, checked as typed) names it
+ * `<kind>-<suffix>`; an optional API key, else (for a kind with a login) Log in right after.
+ */
+export function AddAccount({ kind, supportsLogin, names, onLogin }: { kind: string; supportsLogin: boolean; names: readonly string[]; onLogin(name: string): void }) {
+  const api = useApi()
+  const label = BUILTIN_LABEL[kind] ?? kind
+  const [open, setOpen] = useState(false)
+  const [suffix, setSuffix] = useState('')
+  const [key, setKey] = useState('')
+  const [loginAfter, setLoginAfter] = useState(true)
+  const draft = accountDraft(kind, suffix, names)
+  // A stored key wins over a login (the engine uses a login only while the account has no key).
+  const login = supportsLogin && loginAfter && !key.trim()
+  const close = (o: boolean) => {
+    setOpen(o)
+    if (!o) {
+      setSuffix('')
+      setKey('')
+      setLoginAfter(true)
+    }
+  }
+  const add = useAction((v: { suffix: string; key: string; login: boolean }) => api.add_account(kind, v.suffix, v.key || null), {
+    keys: [queryKeys.providers, queryKeys.models, queryKeys.logins],
+    onSuccess: (p, v) => {
+      close(false)
+      toast.success(`Added ${p.name}`)
+      if (v.login) onLogin(p.name)
+    },
+  })
+  return (
+    <Dialog open={open} onOpenChange={close}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="ghost" aria-label={`Add another ${label} account`}>
+          <UserPlus /> Add another account…
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{`Add another ${label} account`}</DialogTitle>
+          <DialogDescription>{`A second ${label} account with its own ${supportsLogin ? 'key or login' : 'key'}; its models are listed under its own name.`}</DialogDescription>
+        </DialogHeader>
+        <form
+          className="space-y-3"
+          aria-label={`Add another ${label} account`}
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (draft.ready) add.mutate({ suffix: suffix.trim(), key: key.trim(), login })
+          }}
+        >
+          <label className="block space-y-1 text-sm">
+            <span>Suffix</span>
+            <Input autoFocus value={suffix} onChange={(e) => setSuffix(e.target.value)} placeholder="work" aria-label="Account suffix" aria-invalid={!!draft.error} spellCheck={false} autoComplete="off" />
+          </label>
+          <p className="text-[13px] text-fg-secondary">
+            Name: <code className="font-mono">{suffix.trim() ? draft.name : `${kind}-…`}</code>
+          </p>
+          {draft.error && (
+            <p role="alert" className="text-[13px] text-destructive">
+              {draft.error}
+            </p>
+          )}
+          <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API key (optional)" aria-label="Account API key" autoComplete="off" />
+          {supportsLogin && (
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={login} disabled={!!key.trim()} onChange={(e) => setLoginAfter(e.currentTarget.checked)} />
+              <span>
+                Log in after adding
+                <span className="block text-[13px] text-fg-tertiary">{key.trim() ? 'The key is used; no login needed.' : 'Open the sign-in URL in a private window to choose a different account.'}</span>
+              </span>
+            </label>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => close(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!draft.ready || add.isPending}>
+              Add account
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 /** A sub-heading inside the Providers section (177: Local servers, Custom providers). */
 const SUB = 'mt-6 text-[13px] font-semibold'
 
 /**
- * One list of model providers (162 D2/D9): the built-in key providers (85 §0.9: Google, OpenCode Zen, OpenCode Go, OpenRouter,
- * keyed by the `google` / `opencode` / `opencode-go` / `openrouter` secret through the masked `set_secret` entry; the value is never read back) and the OAuth
- * providers, then the local model servers (177 U1), then the other custom OpenAI-compatible providers (key sent once
+ * One list of model providers (162 D2/D9): the built-in providers (85 §0.9: Google, OpenCode Zen, OpenCode Go, OpenRouter,
+ * keyed by the `google` / `opencode` / `opencode-go` / `openrouter` secret through the masked `set_secret` entry; the value
+ * is never read back; the OAuth providers), each followed by its other accounts (`<kind>-<suffix>`, own key or login),
+ * then the local model servers (177 U1), then the other custom OpenAI-compatible providers (key sent once
  * with `add_provider`, never echoed). A custom or local row expands to its models' limits (177 U2). A provider with a
  * login carries it on its row (188 A6); a login with no provider row gets a row of its own after the built-ins.
  */
 function ProviderList() {
   const canQuery2 = useQuerySupport(["list_providers"])
+  const canReset = useQuerySupport(['reset_provider_models'])
+  const canRefreshAll = useQuerySupport(['refresh_all_models'])
+  const canAddAccount = useQuerySupport(['add_account'])
   const api = useApi()
   const providers = useQuery({ enabled: canQuery2,
     queryKey: queryKeys.providers,
@@ -152,8 +294,10 @@ function ProviderList() {
   const rows = orderProviders(providers.data)
   // Until the providers answer, every login would look unpaired.
   const paired = pairLogins(rows, providers.data ? (logins.list ?? []) : [])
-  const custom = rows.filter((p) => !p.builtin && !p.local)
-  const local = rows.filter((p) => !p.builtin && p.local)
+  const custom = rows.filter((p) => !isBuiltinRow(p) && !p.local)
+  const local = rows.filter((p) => !isBuiltinRow(p) && p.local)
+  // A kind with other accounts, and those accounts: their logins get the private-window hint.
+  const multi = new Set(rows.flatMap((p) => (p.account_of ? [p.name, p.account_of] : [])))
   // A provider change changes which models `list_models` may offer (85 §2).
   const keys = [queryKeys.providers, queryKeys.models]
   const [open, setOpen] = useState<string | null>(null)
@@ -170,6 +314,14 @@ function ProviderList() {
   const refresh = useAction((name: string) => api.refresh_provider_models(name), {
     keys,
     onSuccess: (r) => toast.success(refreshedText(r)),
+  })
+  const reset = useAction((name: string) => api.reset_provider_models(name), {
+    keys,
+    onSuccess: (r) => toast.success(modelsText('Reset', r)),
+  })
+  const refreshAll = useAction(() => api.refresh_all_models(), {
+    keys,
+    onSuccess: (r) => toast.success(modelsText('Refreshed', r)),
   })
   const [form, setForm] = useState<CustomForm>({ name: '', url: '', key: '' })
   const add = useAction((v: CustomForm) => api.add_provider(v.name.trim(), v.url.trim(), v.key.trim() || null), {
@@ -191,7 +343,7 @@ function ProviderList() {
             <Dot on={p.configured || p.local || !!paired.byProvider.get(p.name)?.logged_in} />
             {BUILTIN_LABEL[p.name] ?? p.name}
             <Badge variant="outline" className="font-normal">
-              {p.builtin ? 'built-in' : p.local ? 'local' : 'custom'}
+              {p.account_of ? accountLabel(p.account_of) : p.builtin ? 'built-in' : p.local ? 'local' : 'custom'}
             </Badge>
           </span>
         }
@@ -199,14 +351,14 @@ function ProviderList() {
           <>
             {p.runtime && `${runtimeLabel(p.runtime)} · `}
             <span className="font-mono">{p.name}/…</span> · {p.models} models ·{' '}
-            {!p.builtin ? (
+            {!isBuiltinRow(p) ? (
               <span className="font-mono">{p.base_url}</span>
             ) : p.configured ? (
               'key set'
             ) : (
               `no key (secret \`${p.name}\`)`
             )}
-            <LoginSuffix l={paired.byProvider.get(p.name)} logins={logins} />
+            <LoginSuffix l={paired.byProvider.get(p.name)} logins={logins} hint={multi.has(p.name)} />
           </>
         }
       >
@@ -236,23 +388,23 @@ function ProviderList() {
             </Button>
           </form>
         ) : (
-          <span className="flex items-center gap-2">
-            {!p.builtin && (
+          <span className="flex flex-wrap items-center justify-end gap-2">
+            {!isBuiltinRow(p) && (
               <Button size="sm" variant="ghost" aria-expanded={expanded === p.name} aria-label={`Model limits of ${p.name}`} onClick={() => setExpanded(expanded === p.name ? null : p.name)}>
                 <ChevronRight className={expanded === p.name ? 'rotate-90 transition-transform' : 'transition-transform'} /> Limits
               </Button>
             )}
-            {p.refreshable && (
-              <Button size="sm" variant="outline" disabled={refresh.isPending} onClick={() => refresh.mutate(p.name)}>
-                <RefreshCw className={refresh.isPending && refresh.variables === p.name ? 'animate-spin' : undefined} /> Refresh models
-              </Button>
-            )}
+            {/* An engine with Reset models refreshes every built-in kind and account (a listing, or back to the catalog). */}
+            {(p.refreshable || (canReset && isBuiltinRow(p))) && <RefreshButton name={p.name} refresh={refresh} />}
+            {canReset && isBuiltinRow(p) && <ResetModels name={p.name} label={BUILTIN_LABEL[p.name] ?? p.name} reset={reset} />}
             <LoginButton l={paired.byProvider.get(p.name)} logins={logins} />
-            {p.builtin ? (
+            {isBuiltinRow(p) && (
               <Button size="sm" variant="outline" onClick={() => setOpen(p.name)}>
                 {p.configured ? 'Replace key…' : 'Set key…'}
               </Button>
-            ) : (
+            )}
+            {canAddAccount && p.builtin && !p.account_of && <AddAccount kind={p.name} supportsLogin={p.supports_login} names={names} onLogin={(n) => logins.login.mutate(n)} />}
+            {(!p.builtin || p.account_of) && (
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button variant="ghost" size="icon-sm" aria-label={`Remove ${p.name}`} disabled={remove.isPending}>
@@ -262,7 +414,7 @@ function ProviderList() {
                 <AlertDialogContent>
                   <AlertDialogHeader>
                     <AlertDialogTitle>{`Remove ${p.name}?`}</AlertDialogTitle>
-                    <AlertDialogDescription>Its model list and any limits you set are deleted.</AlertDialogDescription>
+                    <AlertDialogDescription>{p.account_of ? 'Its key, login, model list and any limits you set are deleted.' : 'Its model list and any limits you set are deleted.'}</AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -279,8 +431,20 @@ function ProviderList() {
   )
 
   return (
-    <Section title="Providers" actions={<CopyProviders />}>
-      {rows.filter((p) => p.builtin).map(row)}
+    <Section
+      title="Providers"
+      actions={
+        <>
+          {canRefreshAll && (
+            <Button size="sm" variant="outline" disabled={refreshAll.isPending} onClick={() => refreshAll.mutate()}>
+              <RefreshCw className={refreshAll.isPending ? 'animate-spin' : undefined} /> Refresh all
+            </Button>
+          )}
+          <CopyProviders />
+        </>
+      }
+    >
+      {rows.filter(isBuiltinRow).map(row)}
       {paired.alone.map((l) => (
         <Row
           key={l.name}
@@ -295,7 +459,11 @@ function ProviderList() {
           }
           description={<LoginState l={l} logins={logins} />}
         >
-          <LoginButton l={l} logins={logins} />
+          <span className="flex flex-wrap items-center justify-end gap-2">
+            {canReset && <RefreshButton name={l.name} refresh={refresh} />}
+            {canReset && <ResetModels name={l.name} label={BUILTIN_LABEL[l.name] ?? l.name} reset={reset} />}
+            <LoginButton l={l} logins={logins} />
+          </span>
         </Row>
       ))}
       <LocalServers names={names} empty={!!providers.data && local.length === 0}>

@@ -7,17 +7,58 @@ import type { RefreshedModels } from "@/rpc/bindings/method.agent.output"
 import type { SummaryTest } from "@/rpc/bindings/method.agent.output"
 import type { LoginInfo } from "@/rpc/bindings/method.agent.output"
 
-/** Display names of the built-in key providers (85 §0.9); the engine sends the ids. */
+/** Display names of the built-in providers (85 §0.9); the engine sends the ids. */
 export const BUILTIN_LABEL: Record<string, string> = {
   google: 'Google',
   opencode: 'OpenCode Zen',
   'opencode-go': 'OpenCode Go',
   openrouter: 'OpenRouter',
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  xai: 'xAI',
+  cursor: 'Cursor',
 }
 
-/** The one Models › Providers list (162 D2): built-ins first, then custom providers, engine order kept within each. */
+/** A row the built-in group shows: a built-in kind, or another account of one (`account_of`). */
+export const isBuiltinRow = (p: ProviderInfo): boolean => p.builtin || !!p.account_of
+
+/**
+ * The one Models › Providers list (162 D2): built-ins first, each followed by its other accounts (`<kind>-<suffix>`),
+ * then custom providers; engine order kept within each. An account whose kind has no row closes the built-ins.
+ */
 export function orderProviders(list: ProviderInfo[] | undefined): ProviderInfo[] {
-  return [...(list?.filter((p) => p.builtin) ?? []), ...(list?.filter((p) => !p.builtin) ?? [])]
+  const rows = list ?? []
+  const accounts = rows.filter((p) => p.account_of)
+  const kinds = rows.filter((p) => p.builtin && !p.account_of)
+  const known = new Set(kinds.map((p) => p.name))
+  return [
+    ...kinds.flatMap((k) => [k, ...accounts.filter((a) => a.account_of === k.name)]),
+    ...accounts.filter((a) => !known.has(a.account_of!)),
+    ...rows.filter((p) => !isBuiltinRow(p)),
+  ]
+}
+
+/** The tag beside an account row's name: `Anthropic account`. */
+export const accountLabel = (kind: string): string => `${BUILTIN_LABEL[kind] ?? kind} account`
+
+/** An account suffix: what `add_account` accepts after `<kind>-`. */
+export const ACCOUNT_SUFFIX = /^[a-z0-9_-]+$/
+
+/**
+ * The Add another account form's state: the name it creates (`<kind>-<suffix>`), the problem with the suffix
+ * (`null` when fine or still empty), and whether Add may be pressed.
+ */
+export function accountDraft(kind: string, suffix: string, taken: readonly string[]): { name: string; error: string | null; ready: boolean } {
+  const s = suffix.trim()
+  const name = `${kind}-${s}`
+  const error = !s ? null : !ACCOUNT_SUFFIX.test(s) ? 'Use only lowercase letters, digits, _ and -' : taken.includes(name) ? `${name} already exists` : null
+  return { name, error, ready: !!s && !error }
+}
+
+/** Toast of a `reset_provider_models` / `refresh_all_models` reply: one provider's count, or how many providers. */
+export function modelsText(verb: 'Reset' | 'Refreshed', r: readonly RefreshedModels[]): string {
+  if (r.length === 1) return `${verb} ${r[0]!.provider.name}: ${r[0]!.provider.models} models`
+  return `${verb} ${r.length} providers`
 }
 
 /** Secret note written beside a built-in key, as the other Settings key forms do. */
