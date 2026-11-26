@@ -47,6 +47,8 @@ pub enum CardKind {
     Session,
     /// A live app view: a route of the app (`/tasks/graph?project=…`) rendered inside the card.
     View,
+    /// A task (67 TASKS), drawn live from the task store: state, title, owner, priority, blockers.
+    Task,
 }
 
 impl CardKind {
@@ -64,6 +66,7 @@ impl CardKind {
             Self::Sticky => "sticky",
             Self::Session => "session",
             Self::View => "view",
+            Self::Task => "task",
         }
     }
 
@@ -75,7 +78,7 @@ impl CardKind {
     /// Kinds whose card is sized to its rendered content when placed or updated without an explicit size
     /// (the owner's client measures it and writes the size; see [`Card::fit`]).
     pub fn fits_content(self) -> bool {
-        matches!(self, Self::Page | Self::Diagram | Self::Note | Self::Excerpt | Self::Image)
+        matches!(self, Self::Page | Self::Diagram | Self::Note | Self::Excerpt | Self::Image | Self::Task)
     }
 
     fn parse(s: &str) -> Option<Self> {
@@ -209,10 +212,16 @@ pub enum Source {
     },
     /// A live app view: one of the app's view routes (`/tasks/graph?project=…`, `/tasks`, `/tasks/<id>`, `/agents`),
     /// rendered live and interactive inside the card. A task the user opens in a graph or board card becomes its own
-    /// `/tasks/<id>` view card beside it, titled with the task and linked (dashed) from the card it came from.
+    /// `task` card beside it, titled with the task and linked (dashed) from the card it came from.
     View {
         /// The route path, with its query.
         path: String,
+    },
+    /// A task by id; the card shows the task's live record. Blockers between task cards are mirrored as dashed
+    /// `blocks` links the user's client keeps in step (marked `sync: "task-blocker"`).
+    Task {
+        /// The task id.
+        task: String,
     },
 }
 
@@ -231,6 +240,7 @@ impl Source {
             Self::Sticky { .. } => CardKind::Sticky,
             Self::Session { .. } => CardKind::Session,
             Self::View { .. } => CardKind::View,
+            Self::Task { .. } => CardKind::Task,
         }
     }
 }

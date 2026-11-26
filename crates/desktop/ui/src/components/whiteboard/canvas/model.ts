@@ -8,7 +8,7 @@ export const ENGINE = 'engine'    // provider.ts#L16 literal
 
 export type Id = string
 export type By = 'owner' | `session:${string}`
-export type CardKind = 'page' | 'diagram' | 'note' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'sticky' | 'session' | 'view'
+export type CardKind = 'page' | 'diagram' | 'note' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'sticky' | 'session' | 'view' | 'task'
 export type Source =
   | { t: 'page'; session: string; call_id: string }
   | { t: 'diagram'; lang: 'json-render' | 'openui' | 'mermaid'; code: string }
@@ -22,6 +22,8 @@ export type Source =
   | { t: 'session'; session: string }
   /** A live app view: an app route (`/tasks/graph?project=…`) rendered inside the card. */
   | { t: 'view'; path: string }
+  /** A task (67 TASKS) by id: the card draws the task's live record (title, state, owner, …) from the task store. */
+  | { t: 'task'; task: string }
 export type Version = { source: Source; at: number; by: By; note?: string }
 export type DevicePreset = 'phone' | 'tablet' | 'desktop' | 'auto' | 'custom'
 export type DeviceViewport = { w: number; h: number; preset: DevicePreset }
@@ -39,7 +41,8 @@ export type Card = {
   scale?: number
 }
 export type Port = 'top' | 'right' | 'bottom' | 'left'
-export type Link = { id: Id; from: Id; to: Id; from_port?: Port; to_port?: Port; label?: string; style: 'solid' | 'dashed'; arrow: 'end' | 'both' | 'none'; by: By }
+/** `sync`: drawn and kept by a sync, not the user — `task-blocker` mirrors a task's blockers between task cards. */
+export type Link = { id: Id; from: Id; to: Id; from_port?: Port; to_port?: Port; label?: string; style: 'solid' | 'dashed'; arrow: 'end' | 'both' | 'none'; by: By; sync?: 'task-blocker' }
 export type FrameColour = 'neutral' | 'blue' | 'green' | 'amber' | 'red' | 'violet'
 export type Frame = { id: Id; title: string; x: number; y: number; w: number; h: number; colour: FrameColour; preset?: 'phone' | 'tablet' | 'desktop'; by: By }
 export type InkTool = 'monoline' | 'pen' | 'marker'
@@ -65,7 +68,7 @@ export type Board = {
 
 type Raw = Record<string, unknown>
 
-const CARD_KINDS: readonly CardKind[] = ['page', 'diagram', 'note', 'excerpt', 'diff', 'terminal', 'web', 'image', 'sticky', 'session', 'view']
+const CARD_KINDS: readonly CardKind[] = ['page', 'diagram', 'note', 'excerpt', 'diff', 'terminal', 'web', 'image', 'sticky', 'session', 'view', 'task']
 const CARD_STATES: readonly CardState[] = ['live', 'dimmed', 'archived']
 const PORTS: readonly Port[] = ['top', 'right', 'bottom', 'left']
 const FRAME_COLOURS: readonly FrameColour[] = ['neutral', 'blue', 'green', 'amber', 'red', 'violet']
@@ -145,6 +148,7 @@ function readSource(v: unknown, kind: CardKind): Source | null {
     case 'sticky': return str(s.text) !== undefined ? { t: 'sticky', text: s.text as string } : null
     case 'session': return str(s.session) !== undefined ? { t: 'session', session: s.session as string } : null
     case 'view': return str(s.path) !== undefined ? { t: 'view', path: s.path as string } : null
+    case 'task': return str(s.task) ? { t: 'task', task: s.task as string } : null
   }
 }
 
@@ -210,6 +214,7 @@ export function readLink(id: Id, v: unknown): Link | null {
   if (fp) link.from_port = fp
   if (tp) link.to_port = tp
   if (str(r.label) !== undefined) link.label = r.label as string
+  if (r.sync === 'task-blocker') link.sync = 'task-blocker'
   return link
 }
 

@@ -1,9 +1,9 @@
 // §8.5 card chrome: title bar (title + kind), stacked edge and the `v2 of 3` scrubber, dimmed + tag chip, placeholder
 // shimmer, selected outline + four handles, entered border; a shield over every live body until the card is entered.
 import { Handle, NodeResizer, NodeToolbar, Position, type Node, type NodeProps } from '@xyflow/react'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouter } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, ExternalLink, EyeOff, Eye, Archive, Maximize2, PanelRight, Pin, PinOff, RefreshCw, RotateCcw } from 'lucide-react'
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { openViewFromCard } from '@/components/tiles/open'
 import { useStore as useZustand } from 'zustand'
 import { CardBoundary, Chip, hostOf, KIND_NAME, LiveBody, Snapshot } from './cards/bodies'
@@ -20,6 +20,12 @@ import { applyFit, fitSize, fitsContent, measureBody } from './fit'
 import { hidesOverflow, scrollChain, wheelRoute, ZOOM_SURFACE } from './scroll'
 import { useResizeEnd } from './resize'
 import { viewCardPath } from '../view-card'
+import { openTaskPane, taskOf } from '../task-cards'
+
+// Lazy: the task card's tools pull the task store and its queries.
+const TaskTools = lazy(() => import('./cards/TaskCard').then((m) => ({ default: m.TaskTools })))
+/** A press that moves less than this (screen px) before it lifts is a click: on a task card's body, it opens the task. */
+const CLICK_SLOP = 6
 
 export type CardNodeType = Node<CardNodeData, 'card'>
 
@@ -97,6 +103,11 @@ function Toolbar({ card, refreshPreview, fitNow, resetView }: { card: Card; refr
         <ExternalLink className="size-4" /> Open
       </button>
       {viewPath && <OpenInPane path={viewPath} title={card.title} />}
+      {card.kind === 'task' && (
+        <Suspense fallback={null}>
+          <TaskTools card={card} />
+        </Suspense>
+      )}
       {refreshPreview && (
         <button type="button" aria-label="Refresh preview" onClick={refreshPreview}>
           <RefreshCw className="size-4" />
@@ -134,7 +145,12 @@ function Toolbar({ card, refreshPreview, fitNow, resetView }: { card: Card; refr
               {card.pin ? <PinOff className="size-4" /> : <Pin className="size-4" />}
             </button>
           )}
-          <button type="button" aria-label="Archive" onClick={() => { archive(doc, [card.id]); stopCapturing() }}>
+          <button
+            type="button"
+            aria-label={card.kind === 'task' ? 'Remove from board (the task stays)' : 'Archive'}
+            title={card.kind === 'task' ? 'Remove from board (the task stays)' : undefined}
+            onClick={() => { archive(doc, [card.id]); stopCapturing() }}
+          >
             <Archive className="size-4" />
           </button>
         </>
@@ -156,6 +172,10 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
   const web = source?.t === 'web' ? source.url : null
   const refreshPreview = useWebPreview(card)
   const lastTap = useRef(0)
+  // A task card's body: a click (no drag: a drag there pans the board) opens the task in a pane.
+  const router = useRouter({ warn: false })
+  const press = useRef<{ x: number; y: number } | null>(null)
+  const task = taskOf(card)
   const versioned = !IN_PLACE.includes(card.kind)
   const stacked = versioned && card.versions.length > 1
   const placeholder = card.placeholder !== undefined
@@ -299,7 +319,17 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
           // Entered, a drag inside the body is the content's (scroll, select), not a board pan.
           className={entered ? 'wb-clip nopan' : 'wb-clip'}
           data-body
+          onPointerDown={(e) => {
+            press.current = { x: e.clientX, y: e.clientY }
+          }}
           onPointerUp={(e) => {
+            const p = press.current
+            press.current = null
+            if (task && !entered && e.pointerType !== 'pen' && p && Math.hypot(e.clientX - p.x, e.clientY - p.y) < CLICK_SLOP) {
+              const mode = store.getState().mode
+              if (mode === 'idle' || mode === 'hand') openTaskPane(task, card.title, router ? (href) => void router.navigate({ href }) : undefined)
+              return
+            }
             // Double-tap (finger) or double-click enters the card; a pen never reaches here (the ink filter takes it).
             if (entered || placeholder || e.pointerType === 'pen' || (readOnly && card.kind === 'sticky')) return
             if (e.timeStamp - lastTap.current < 320) {

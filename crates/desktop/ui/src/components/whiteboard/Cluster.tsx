@@ -18,6 +18,7 @@ import {
   Image as ImageIcon,
   LassoSelect,
   LayoutDashboard,
+  ListTodo,
   ListTree,
   Pen,
   Plus,
@@ -39,7 +40,7 @@ import { pickInkTool } from './canvas/input'
 import type { Mode, WbStore } from './canvas/store'
 import { INK_COLOURS, inkCss } from './ink/colour'
 
-export type AddKind = 'sticky' | 'note' | 'artifact' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'view' | 'clipboard'
+export type AddKind = 'sticky' | 'note' | 'artifact' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'view' | 'tasks' | 'clipboard'
 
 export type ClusterProps = {
   store: WbStore
@@ -95,6 +96,7 @@ const ADD: { kind: AddKind; label: string; icon: ReactNode }[] = [
   { kind: 'web', label: 'Web page', icon: <Globe className="size-4" /> },
   { kind: 'image', label: 'Image', icon: <ImageIcon className="size-4" /> },
   { kind: 'view', label: 'App view…', icon: <LayoutDashboard className="size-4" /> },
+  { kind: 'tasks', label: 'Tasks…', icon: <ListTodo className="size-4" /> },
   { kind: 'clipboard', label: 'From clipboard', icon: <Clipboard className="size-4" /> },
 ]
 

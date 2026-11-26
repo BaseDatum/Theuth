@@ -170,6 +170,7 @@ fn extras(c: &Card) -> Vec<String> {
         Source::Excerpt { path, start, end, .. } => vec![format!("{path}#L{start}-L{end}")],
         Source::Web { url } => host(url).map(|h| vec![h.to_owned()]).unwrap_or_default(),
         Source::View { path } => vec![path.clone()],
+        Source::Task { task } => vec![format!("task {task}")],
         _ => Vec::new(),
     }
 }
@@ -392,6 +393,10 @@ pub fn source_summary(c: &Card) -> (String, Option<String>) {
         Source::View { path } => (
             format!("live app view {path} — the user sees it update and can work in it; wb_crop shows how it last looked"),
             None,
+        ),
+        Source::Task { task } => (
+            format!("task {task}, shown live (state, owner, priority, blockers) — the card title follows the task's"),
+            Some(format!("task_get(\"{task}\")")),
         ),
     }
 }
