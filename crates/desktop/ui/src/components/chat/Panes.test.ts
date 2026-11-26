@@ -82,9 +82,11 @@ test('a press selects a tile without touching focus or the URL; a control presse
   await act(async () => press(pane('b').querySelector('button')!))
   expect(usePanes.getState()).toMatchObject({ focused: 'a', selected: jobs })
   await act(async () => void openTile({ kind: 'prompt', host: 'b', props: {} }))
-  // The tile's pane (right of the a/b column) now shows the new surface: a, b, then it.
-  expect(usePanes.getState().leaves).toEqual(['a', 'b', tileLeaf(tileId('prompt', 'b'))])
-  expect(usePanes.getState().leaves).not.toContain(jobs)
+  // The new surface joins the tile's panel (right of the a/b column) as a tab; the tile stays open.
+  const prompt = tileLeaf(tileId('prompt', 'b'))
+  expect(usePanes.getState().leaves).toEqual(['a', 'b', jobs, prompt])
+  const ws = usePanes.getState().ws!
+  expect(ws.view(prompt)!.panelId).toBe(ws.view(jobs)!.panelId)
   expect(navigate).not.toHaveBeenCalled()
   // A press on a chat's body selects and focuses it, and moves the URL there.
   await act(async () => press(pane('b').querySelector('[data-body]')!))
