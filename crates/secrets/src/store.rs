@@ -60,8 +60,7 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
         .context("lock for migrations")?;
     // `run_direct`, not `run(&mut tx)`: the `Acquire` blanket impl trips
     // "implementation of `Send` is not general enough" in the plugin's `start`.
-    sqlx::migrate!("./migrations")
-        .run_direct(None, &mut *tx, false)
+    platform::startup::migrate::run_direct("secrets", &sqlx::migrate!("./migrations"), &mut tx)
         .await
         .context("run migrations")?;
     tx.commit().await.context("commit migrations")?;

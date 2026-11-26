@@ -22,7 +22,7 @@ mesh = { workspace = true }
 sandbox = { workspace = true }  # the agent pin asks EnsureVm (79 §4.9)
 replica = { workspace = true }
 secrets = { workspace = true }
-platform = { workspace = true }
+platform = { workspace = true, features = ["sqlx"] }  # 222: reported migrations
 chrono = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }

@@ -93,7 +93,9 @@ impl Store {
         let mut migrator = sqlx::migrate!("./migrations");
         // A database a build of this branch migrated before 0008 left `migrations/` (184).
         migrator.set_ignore_missing(true);
-        migrator.run(&pool).await.context("run migrations")?;
+        platform::startup::migrate::run("mesh", &migrator, &pool)
+            .await
+            .context("run migrations")?;
         sqlx::query(CREATE_PEER_DOCS_SEEN)
             .execute(&pool)
             .await

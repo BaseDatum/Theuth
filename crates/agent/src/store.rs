@@ -764,8 +764,7 @@ impl Store {
             .connect_with(opts.clone())
             .await
             .with_context(|| format!("open {}", path.display()))?;
-        sqlx::migrate!("./migrations")
-            .run(&read)
+        platform::startup::migrate::run("agent", &sqlx::migrate!("./migrations"), &read)
             .await
             .context("run migrations")?;
         let me: Arc<str> = engine.map(|e| e.0).unwrap_or_default().into();

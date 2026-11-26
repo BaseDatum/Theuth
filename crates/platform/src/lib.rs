@@ -15,6 +15,7 @@ pub mod process;
 pub mod service;
 pub mod sha256;
 pub mod shell;
+pub mod startup;
 pub mod target;
 pub mod text;
 pub mod time;

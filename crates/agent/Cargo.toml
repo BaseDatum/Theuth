@@ -12,7 +12,7 @@ codeindex = { workspace = true }
 rpc-core = { workspace = true }
 rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
-platform = { workspace = true }
+platform = { workspace = true, features = ["sqlx"] }  # 222: reported migrations
 knowledge = { workspace = true }
 search = { workspace = true }
 runtime = { workspace = true }

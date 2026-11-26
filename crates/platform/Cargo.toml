@@ -15,6 +15,11 @@ hex = { workspace = true }
 tracing = { workspace = true }
 shlex = { workspace = true }  # `shell::quote`
 bytesize = { workspace = true }  # `fmt::bytes`
+serde_json = { workspace = true }  # 222 `startup`: <data_dir>/startup.json
+sqlx = { workspace = true, optional = true }  # 222 `startup::migrate` (feature `sqlx`): reported migrations
+
+[features]
+sqlx = ["dep:sqlx"]
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }  # killpg / kill / setsid / access / getppid; 126: getloadavg / statvfs / sysctlbyname

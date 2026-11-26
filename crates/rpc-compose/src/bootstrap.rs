@@ -76,6 +76,7 @@ impl runtime::Plugin for RpcPlugin {
         if self.implicit && configured_listen(rt).is_none() {
             cfg.listen = EPHEMERAL.to_owned();
         }
+        platform::startup::phase("rpc-listen", "Opening the RPC listener", None);
         let addr = match serve(rt, cfg.clone(), module).await {
             Err(e) if self.implicit && cfg.listen != EPHEMERAL => {
                 tracing::warn!(listen = %cfg.listen, error = %e, "rpc.listen busy; binding an ephemeral port");
@@ -85,6 +86,8 @@ impl runtime::Plugin for RpcPlugin {
             r => r?,
         };
         engine::set_listen(addr.to_string());
+        // 222: the desktop's wait ends on this port; startup.json says so too.
+        platform::startup::ready();
         // The link plugin dispatches decrypted device requests into our
         // methods and serves ACP over mode-1 conns (32 §4.3); it registers
         // in its own start, so hand it the dispatch once it is there.

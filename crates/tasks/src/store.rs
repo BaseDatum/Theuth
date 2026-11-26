@@ -173,8 +173,7 @@ impl Store {
             .connect_with(opts)
             .await
             .with_context(|| format!("open {}", path.display()))?;
-        sqlx::migrate!("./migrations")
-            .run(&pool)
+        platform::startup::migrate::run("tasks", &sqlx::migrate!("./migrations"), &pool)
             .await
             .context("run migrations")?;
         Ok(Self { pool })

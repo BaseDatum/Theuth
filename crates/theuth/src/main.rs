@@ -1462,6 +1462,10 @@ fn main() -> anyhow::Result<()> {
         .thread_stack_size(8 << 20)
         .build()?
         .block_on(run());
+    // 222: a start that returned an error before ready says so in startup.json.
+    if let Err(e) = &result {
+        platform::startup::failed(&format!("{e:#}"));
+    }
     // A failed start (a plugin refused) still unlinks engine.json (63 §2.1).
     rpc::engine::release();
     result
@@ -1787,9 +1791,13 @@ async fn run() -> anyhow::Result<()> {
             .and_then(|v| v.into_string())
     };
     // `Some` = attached to the running engine (63 §0.3): TUI, `-p`, `--acp`.
+    let lock_since = std::time::Instant::now();
     let attached = match rpc::engine::acquire(&data_dir, host, listen) {
         Ok(lease) => {
             rpc::engine::hold(lease);
+            // 222: this process is the engine; only now may it overwrite startup.json.
+            platform::startup::init(&data_dir, lock_since);
+            platform::startup::phase("config", "Reading config", None);
             None
         }
         Err(rpc::engine::Error::Running(running)) => {
@@ -1848,6 +1856,7 @@ async fn run() -> anyhow::Result<()> {
         default_hook(info);
     }));
 
+    platform::startup::phase("runtime-init", "Initialising the runtime", None);
     // V8's one-time setup must happen on the main thread before any plugin
     // thread builds an isolate, and the env knobs are exported while the
     // process is still effectively single-threaded (23 §3.1). The warmup must stay
@@ -1975,8 +1984,14 @@ async fn run() -> anyhow::Result<()> {
     // The pairing-only run and an attached client have no registry to
     // expect participants on.
     if cli.link_signal || attached_client {
-        for plugin in plugins {
+        let count = plugins.len() as u64;
+        for (i, plugin) in plugins.into_iter().enumerate() {
             let name = plugin.name();
+            platform::startup::phase(
+                &format!("plugin:{name}"),
+                &format!("Starting {name}"),
+                Some((i as u64 + 1, count)),
+            );
             plugin
                 .start(&rt)
                 .await
@@ -1992,6 +2007,9 @@ async fn run() -> anyhow::Result<()> {
         )
         .await;
     }
+    // 222: a run without an RPC plugin (`--link-signal`) is ready once its plugins are up;
+    // otherwise the RPC plugin said so when it bound.
+    platform::startup::ready();
 
     // 79 smoke bug 7: every normal exit names its origin (an rpc `shutdown` logs its peer in `api.rs`).
     let (origin, reason) = tokio::select! {
@@ -2317,8 +2335,14 @@ async fn start_plugins(rt: &Runtime, mut plugins: Vec<Box<dyn Plugin>>) -> anyho
                 .map_err(|e| e.to_string())
         })
     }));
-    for plugin in plugins {
+    let count = plugins.len() as u64;
+    for (i, plugin) in plugins.into_iter().enumerate() {
         let name = plugin.name();
+        platform::startup::phase(
+            &format!("plugin:{name}"),
+            &format!("Starting {name}"),
+            Some((i as u64 + 1, count)),
+        );
         plugin
             .start(rt)
             .await

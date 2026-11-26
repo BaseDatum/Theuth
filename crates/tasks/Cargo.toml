@@ -19,7 +19,7 @@ agent = { workspace = true }
 mesh = { workspace = true }
 replica = { workspace = true }
 sessionsync = { workspace = true }  # 68 §4.4: the orphan sweep takes the lost engine's session
-platform = { workspace = true }
+platform = { workspace = true, features = ["sqlx"] }  # 222: reported migrations
 chrono = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
