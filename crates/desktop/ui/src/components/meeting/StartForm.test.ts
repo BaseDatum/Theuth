@@ -42,6 +42,7 @@ vi.mock('@/lib/rpc', async (original) => ({
     list_sessions: async () => [],
     list_project_styles: async () => [],
     meeting_list: async () => [],
+    projects_list: async () => [],
   }),
 }))
 

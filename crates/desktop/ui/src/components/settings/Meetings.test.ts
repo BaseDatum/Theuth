@@ -64,6 +64,7 @@ const api = {
   set_meeting_live_diarization: vi.fn(async (on: boolean) => on),
   meeting_list: vi.fn(async () => [{ id: 'm1' }, { id: 'm2' }, { id: 'm3' }]),
   meeting_get: vi.fn(async (id: string) => ({ id, stats: { m1: { echo_dupes: 3, mic_segments: 40, speakers: true }, m2: { echo_dupes: 1, mic_segments: 10, speakers: null }, m3: null }[id] })),
+  projects_list: vi.fn(async () => []),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 

@@ -21,7 +21,7 @@ vi.mock('@/components/chat/Citations', () => ({ CitationsProvider: ({ children }
 vi.mock('@/components/chat/MessageAssistant', () => ({ markdownComponents: {}, plugins: {}, rehypePlugins: [], shikiTheme: ['a', 'b'] }))
 vi.mock('@/components/notebooks/useNotebook', () => ({ useSources: () => ({ data: [] }) }))
 vi.mock('@/components/notebooks/useNotebooks', () => ({ useNotebooks: () => ({ data: [] }) }))
-vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<object>()), useApi: () => ({}) }))
 
 const nb = (id: string, title: string): Notebook => ({ doc: { id, title, kind: 'notebook', binding: 'notebook', created_ms: 1, updated_ms: 1, bytes: 0, project: null }, project: null, archived_ms: null, sources: 0, notes: 0, chats: 0 })
 const NOTEBOOKS = [nb('a', 'DR failover'), nb('b', 'Onboarding')]

@@ -15,6 +15,7 @@ const api = {
   list_sessions: vi.fn(async (): Promise<SessionSummary[]> => []),
   list_project_styles: vi.fn(async () => []),
   meeting_list: vi.fn(async (): Promise<MeetingSummary[]> => []),
+  projects_list: vi.fn(async () => []),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
