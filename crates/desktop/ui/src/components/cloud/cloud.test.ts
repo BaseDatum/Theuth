@@ -63,6 +63,7 @@ const node = (n: Partial<CloudNode> = {}): CloudNode => ({
   k8s: null,
   desktop: true,
   vault: null,
+  link: null,
   ...n,
 })
 

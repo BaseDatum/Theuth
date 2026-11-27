@@ -132,6 +132,7 @@ const node = (n: Partial<CloudNode> & Pick<CloudNode, 'name' | 'provider' | 'sta
   desktop: true,
   k8s: null,
   vault: null,
+  link: null,
   ...n,
 })
 
@@ -198,6 +199,9 @@ const cloud: CloudApi = {
   cloud_destroy: () => ok(['droplet 4821', 'firewall theuth-sky-cloud']),
   cloud_terminal: (name) => ok({ session: 'fixture', job: `pty-${name}`, engine: 'e1f2' }),
   cloud_logs: (name) => ok({ name, lines: LOGS }),
+  // Phone-only pairing (224 §16.12) has no fixture: no node answers.
+  cloud_link_pairing: () => Promise.reject(new Error('no node in the fixture')),
+  cloud_link_paired: (name) => ok(NODES.find((n) => n.name === name) ?? SKY),
 }
 const api = new Proxy(cloud as unknown as Api, {
   get: (t, name: string) =>

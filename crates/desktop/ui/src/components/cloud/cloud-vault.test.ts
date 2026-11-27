@@ -102,6 +102,7 @@ const node = (n: Partial<CloudNode> = {}): CloudNode => ({
   k8s: null,
   desktop: true,
   vault: 'needs_password',
+  link: null,
   ...n,
 })
 

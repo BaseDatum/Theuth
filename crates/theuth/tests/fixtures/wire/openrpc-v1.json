@@ -16653,6 +16653,18 @@
             ],
             "description": "Kubernetes: where it runs."
           },
+          "link": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.NodeLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Phone-only nodes (224 §16.12): the node forms its own mesh and the app pairs with it over\nthe relay. `None` for a node that joined this engine's mesh."
+          },
           "memory_gb": {
             "description": "2, 4 or 8.",
             "format": "uint8",
@@ -16805,7 +16817,8 @@
           "desktop",
           "created_ms",
           "k8s",
-          "vault"
+          "vault",
+          "link"
         ],
         "type": "object"
       },
@@ -16872,6 +16885,48 @@
             "type": "string"
           }
         ]
+      },
+      "event.cloudnodes_2eevents.output.NodeLink": {
+        "description": "How the app reaches a node made by an engine that is not a mesh member (224 §16.12). Public\ndata only: the claim's PSK stays in this engine's vault until the app paired.",
+        "properties": {
+          "claim_id": {
+            "description": "The one-time link claim's relay rendezvous id (a hash of its PSK).",
+            "type": "string"
+          },
+          "engine": {
+            "description": "The node's link identity (base64url public key) once it answered on the relay.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_name": {
+            "description": "The name the node answered with.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_ms": {
+            "description": "When the claim dies (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paired": {
+            "default": false,
+            "description": "The app paired with the node; the claim is spent and forgotten here.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "claim_id",
+          "expires_ms",
+          "engine",
+          "engine_name",
+          "paired"
+        ],
+        "type": "object"
       },
       "event.cloudnodes_2eevents.output.NodeState": {
         "description": "Lifecycle of a node record.",
@@ -17185,6 +17240,18 @@
             ],
             "description": "Kubernetes: where it runs."
           },
+          "link": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.NodeLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Phone-only nodes (224 §16.12): the node forms its own mesh and the app pairs with it over\nthe relay. `None` for a node that joined this engine's mesh."
+          },
           "memory_gb": {
             "description": "2, 4 or 8.",
             "format": "uint8",
@@ -17380,6 +17447,45 @@
             "type": "string"
           }
         ]
+      },
+      "event.cloudnodes_2eevents.receiver.NodeLink": {
+        "description": "How the app reaches a node made by an engine that is not a mesh member (224 §16.12). Public\ndata only: the claim's PSK stays in this engine's vault until the app paired.",
+        "properties": {
+          "claim_id": {
+            "description": "The one-time link claim's relay rendezvous id (a hash of its PSK).",
+            "type": "string"
+          },
+          "engine": {
+            "description": "The node's link identity (base64url public key) once it answered on the relay.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_name": {
+            "description": "The name the node answered with.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_ms": {
+            "description": "When the claim dies (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paired": {
+            "default": false,
+            "description": "The app paired with the node; the claim is spent and forgotten here.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "claim_id",
+          "expires_ms"
+        ],
+        "type": "object"
       },
       "event.cloudnodes_2eevents.receiver.NodeState": {
         "description": "Lifecycle of a node record.",
@@ -85771,6 +85877,18 @@
             ],
             "description": "Kubernetes: where it runs."
           },
+          "link": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.NodeLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Phone-only nodes (224 §16.12): the node forms its own mesh and the app pairs with it over\nthe relay. `None` for a node that joined this engine's mesh."
+          },
           "memory_gb": {
             "description": "2, 4 or 8.",
             "format": "uint8",
@@ -85923,7 +86041,8 @@
           "desktop",
           "created_ms",
           "k8s",
-          "vault"
+          "vault",
+          "link"
         ],
         "type": "object"
       },
@@ -86138,6 +86257,48 @@
             "type": "string"
           }
         ]
+      },
+      "method.cloudnodes.output.NodeLink": {
+        "description": "How the app reaches a node made by an engine that is not a mesh member (224 §16.12). Public\ndata only: the claim's PSK stays in this engine's vault until the app paired.",
+        "properties": {
+          "claim_id": {
+            "description": "The one-time link claim's relay rendezvous id (a hash of its PSK).",
+            "type": "string"
+          },
+          "engine": {
+            "description": "The node's link identity (base64url public key) once it answered on the relay.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_name": {
+            "description": "The name the node answered with.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_ms": {
+            "description": "When the claim dies (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paired": {
+            "default": false,
+            "description": "The app paired with the node; the claim is spent and forgotten here.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "claim_id",
+          "expires_ms",
+          "engine",
+          "engine_name",
+          "paired"
+        ],
+        "type": "object"
       },
       "method.cloudnodes.output.NodeLogs": {
         "description": "`cloud_logs`: the tail of the node engine's own log, read over the mesh.",
@@ -86676,6 +86837,18 @@
             ],
             "description": "Kubernetes: where it runs."
           },
+          "link": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.NodeLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Phone-only nodes (224 §16.12): the node forms its own mesh and the app pairs with it over\nthe relay. `None` for a node that joined this engine's mesh."
+          },
           "memory_gb": {
             "description": "2, 4 or 8.",
             "format": "uint8",
@@ -87014,6 +87187,45 @@
             "type": "string"
           }
         ]
+      },
+      "method.cloudnodes.receiver.NodeLink": {
+        "description": "How the app reaches a node made by an engine that is not a mesh member (224 §16.12). Public\ndata only: the claim's PSK stays in this engine's vault until the app paired.",
+        "properties": {
+          "claim_id": {
+            "description": "The one-time link claim's relay rendezvous id (a hash of its PSK).",
+            "type": "string"
+          },
+          "engine": {
+            "description": "The node's link identity (base64url public key) once it answered on the relay.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_name": {
+            "description": "The name the node answered with.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_ms": {
+            "description": "When the claim dies (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paired": {
+            "default": false,
+            "description": "The app paired with the node; the claim is spent and forgotten here.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "claim_id",
+          "expires_ms"
+        ],
+        "type": "object"
       },
       "method.cloudnodes.receiver.NodeLogs": {
         "description": "`cloud_logs`: the tail of the node engine's own log, read over the mesh.",
@@ -110083,6 +110295,26 @@
         ],
         "type": "object"
       },
+      "method.nodes.output.ClaimAccepted": {
+        "description": "`device_pair_claim` reply (224 §16.12): the engine identity's pairing is armed with a one-time\nlink claim and this engine is (being) parked on the relay under `id`.",
+        "properties": {
+          "expires_ms": {
+            "description": "Unix ms; the claim dies then.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "The relay rendezvous id (a hash of the claim's PSK; not secret).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "expires_ms"
+        ],
+        "type": "object"
+      },
       "method.nodes.output.Device": {
         "description": "A paired device as the UIs list it.",
         "properties": {
@@ -111235,6 +111467,26 @@
           "frames_out",
           "bytes_in",
           "bytes_out"
+        ],
+        "type": "object"
+      },
+      "method.nodes.receiver.ClaimAccepted": {
+        "description": "`device_pair_claim` reply (224 §16.12): the engine identity's pairing is armed with a one-time\nlink claim and this engine is (being) parked on the relay under `id`.",
+        "properties": {
+          "expires_ms": {
+            "description": "Unix ms; the claim dies then.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "The relay rendezvous id (a hash of the claim's PSK; not secret).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "expires_ms"
         ],
         "type": "object"
       },
@@ -148231,6 +148483,58 @@
       "x-theuth-owner": "cloudnodes"
     },
     {
+      "name": "cloud_link_paired",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.CloudNode"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.CloudNode"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_link_pairing",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "string"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "string"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
       "name": "cloud_list",
       "paramStructure": "by-position",
       "params": [],
@@ -150527,6 +150831,32 @@
         },
         "x-theuth-receiverSchema": {
           "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "nodes"
+    },
+    {
+      "name": "device_pair_claim",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "claim",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.nodes.output.ClaimAccepted"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.nodes.receiver.ClaimAccepted"
         }
       },
       "x-theuth-audience": "owner",
