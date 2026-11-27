@@ -17,7 +17,8 @@ import { isApple } from '@/lib/chord'
 import { runsElsewhere } from '@/lib/front-door'
 import { useEngineLabel } from '@/lib/owner'
 import { touch } from '@/lib/platform'
-import { canPopout, isPopout, openPopout } from '@/lib/popout'
+import { canPopout, isPopout, openPopout, popoutLabel, popoutOpen } from '@/lib/popout'
+import { isTauri, onPopoutClosed } from '@/lib/tauri'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { macKeyBytes } from '@/lib/terminal-keys'
 import { swallowEngineQueries } from '@/lib/terminal-replies'
@@ -96,6 +97,8 @@ export function attachSource(
   onExit: (e: JobExit) => void,
   /** 183 §4.3: the attach was refused `-32014 RunsElsewhere` — the live output stays on `owner`; nothing is attached or sent. */
   onElsewhere?: (owner: string) => void,
+  /** Called once a `reset` replay finishes writing, so a live PTY viewer can refit to its current box. */
+  onReset?: () => void,
 ) {
   let ended = false
   let lane: Promise<unknown> = Promise.resolve()
@@ -122,7 +125,8 @@ export function attachSource(
       case 'reset':
         term.reset()
         if (term.rows !== c.rows || term.cols !== c.cols) term.resize(c.cols, c.rows)
-        term.write(decode(c.data))
+        if (onReset) term.write(decode(c.data), onReset)
+        else term.write(decode(c.data))
         break
       case 'data':
         term.write(decode(c.data))
@@ -171,13 +175,75 @@ const terminalsQuery = (api: Api, session: string) => ({
 
 // The mark a popped window leaves for the panel in the other window (`storage` events cross windows, like `composer-drafts`).
 const mark = (j: JobRef) => `pty-popout:${j.session}/${j.job}`
-const marked = (j: JobRef) => localStorage.getItem(mark(j)) !== null
-const onStorage = (cb: () => void) => {
-  window.addEventListener('storage', cb)
-  return () => window.removeEventListener('storage', cb)
+const marked = (j: JobRef) => {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(mark(j)) !== null
+  } catch {
+    return false
+  }
 }
-/** Whether `job` is showing in its own window right now (the panel then defers to it). */
-export const usePoppedElsewhere = (job: JobRef | null) => useSyncExternalStore(onStorage, () => job !== null && marked(job))
+const markListeners = new Set<() => void>()
+const notifyMarks = () => {
+  for (const fn of markListeners) fn()
+}
+export function setPopoutMark(j: JobRef): void {
+  try {
+    localStorage.setItem(mark(j), '1')
+  } catch {
+    // ignore storage errors
+  }
+  notifyMarks()
+}
+export function clearPopoutMark(j: JobRef): void {
+  try {
+    localStorage.removeItem(mark(j))
+  } catch {
+    // ignore storage errors
+  }
+  notifyMarks()
+}
+const subscribeMarks = (cb: () => void) => {
+  markListeners.add(cb)
+  if (typeof window !== 'undefined') window.addEventListener('storage', cb)
+  return () => {
+    markListeners.delete(cb)
+    if (typeof window !== 'undefined') window.removeEventListener('storage', cb)
+  }
+}
+/**
+ * Whether `job` is showing in its own window right now (the panel then defers to it).
+ * In Tauri, verifies against the live window list (`popoutOpen`) and clears stale `localStorage` marks
+ * (e.g. when a popout window closed natively without firing `pagehide`) or on `popout-closed`.
+ */
+export function usePoppedElsewhere(job: JobRef | null): boolean {
+  const isMarked = useSyncExternalStore(subscribeMarks, () => job !== null && marked(job), () => false)
+  const session = job?.session ?? null
+  const jobId = job?.job ?? null
+  useEffect(() => {
+    if (!session || !jobId || !isTauri()) return
+    const ref: JobRef = { session, job: jobId }
+    const target = { kind: 'pty', session, job: jobId } as const
+    const label = popoutLabel(target)
+    let cancelled = false
+    const verify = () => {
+      if (!marked(ref)) return
+      void popoutOpen(target).then((open) => {
+        if (!cancelled && !open) clearPopoutMark(ref)
+      })
+    }
+    if (isMarked) verify()
+    window.addEventListener('focus', verify)
+    const off = onPopoutClosed((closed) => {
+      if (closed === label) clearPopoutMark(ref)
+    })
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', verify)
+      void off.then((u) => u())
+    }
+  }, [session, jobId, isMarked])
+  return isMarked
+}
 
 /** "Open in new window" for one terminal; nothing where no second window exists. */
 export function PopoutTerminalButton({ session, job, className }: JobRef & { className?: string }) {
@@ -265,7 +331,15 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
     if (fit) term.loadAddon(fit)
     term.open(el)
     termRef.current = term
-    fit?.fit()
+    const fitNow = () => {
+      if (!fit || el.clientWidth === 0 || el.clientHeight === 0) return
+      try {
+        fit.fit()
+      } catch {
+        // xterm throws if fit runs before renderer metrics are ready
+      }
+    }
+    fitNow()
     // A phone's keyboard covers half the terminal: tap (or the keyboard button) asks for it.
     if (!mobile) term.focus()
     const ta = term.textarea!
@@ -292,38 +366,53 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
     }
     el.addEventListener('touchstart', drag, { passive: true })
     el.addEventListener('touchmove', drag, { passive: false })
-    const wire = attachSource(src, term, api, client, (e) => {
-      setExit(e)
-      onExitRef.current?.()
-    }, (owner) => {
-      setElsewhere(owner)
-      onElsewhereRef.current?.(owner)
-    })
+    let fitFrame = 0
+    const scheduleFit = () => {
+      if (!fit) return
+      cancelAnimationFrame(fitFrame)
+      fitFrame = requestAnimationFrame(fitNow)
+    }
+    const wire = attachSource(
+      src,
+      term,
+      api,
+      client,
+      (e) => {
+        setExit(e)
+        onExitRef.current?.()
+      },
+      (owner) => {
+        setElsewhere(owner)
+        onElsewhereRef.current?.(owner)
+      },
+      ref ? scheduleFit : undefined,
+    )
     sendRef.current = wire.send
-    // pty source only: size the PTY to the box, and give the default grid back on leaving.
+    // pty source only: refit xterm smoothly on every frame during a resize, while debouncing `pty_resize` (SIGWINCH)
+    // until the drag settles, and restore the default grid on leaving.
+    let resizeSend: ReturnType<typeof setTimeout> | undefined
     const resized = ref
       ? term.onResize(({ rows, cols }) => {
           setSize(`${cols}×${rows}`)
-          if (!wire.ended()) void api.pty_resize(ref.session, ref.job, rows, cols, ...onEngine(ref.engine)).catch(() => undefined)
+          clearTimeout(resizeSend)
+          if (wire.ended() || rows < 2 || cols < 10) return
+          const r = Math.min(200, rows)
+          const c = Math.min(400, cols)
+          resizeSend = setTimeout(() => {
+            if (!wire.ended()) void api.pty_resize(ref.session, ref.job, r, c, ...onEngine(ref.engine)).catch(() => undefined)
+          }, REFIT_MS)
         })
       : null
     if (ref) setSize(`${term.cols}×${term.rows}`)
-    // The first fit is immediate; after that a burst of resizes (a divider drag, the sidebar's slide) fits once it
-    // settles, so the PTY gets one `pty_resize`, not one per frame.
-    let fitted = false
-    let refit: ReturnType<typeof setTimeout> | undefined
-    let fitFrame = 0
-    const ro = fit
-      ? new ResizeObserver(() => {
-          if (!fitted) {
-            fitted = true
-            return fit.fit()
-          }
-          clearTimeout(refit)
-          refit = setTimeout(() => (fitFrame = requestAnimationFrame(() => fit.fit())), REFIT_MS)
-        })
-      : null
+    let disposed = false
+    const ro = fit ? new ResizeObserver(scheduleFit) : null
     ro?.observe(el)
+    scheduleFit()
+    if (fit && typeof document !== 'undefined' && document.fonts?.ready) {
+      void document.fonts.ready.then(() => {
+        if (!disposed) scheduleFit()
+      })
+    }
     // Cell source: grow to the rows in use (a full-screen program or scrolled output takes the whole grid); the
     // kernel PTY itself is never resized.
     const grow = () => {
@@ -335,19 +424,21 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
     }
     const parsed = ref ? null : term.onWriteParsed(grow)
     if (!ref) grow()
-    if (ref && popped) localStorage.setItem(mark(ref), '1')
+    if (ref && popped) setPopoutMark(ref)
     // Leaving: the popped window gives the grid back; the panel only when no popped window owns it.
     const leave = () => {
       if (!ref) return
-      if (popped) localStorage.removeItem(mark(ref))
+      if (popped) clearPopoutMark(ref)
       if (!wire.ended() && (popped || !marked(ref)))
         void api.pty_resize(ref.session, ref.job, DEFAULT_ROWS, DEFAULT_COLS, ...onEngine(ref.engine)).catch(() => undefined)
     }
     window.addEventListener('pagehide', leave)
+    window.addEventListener('beforeunload', leave)
     return () => {
+      disposed = true
       wire.dispose()
       ro?.disconnect()
-      clearTimeout(refit)
+      clearTimeout(resizeSend)
       cancelAnimationFrame(fitFrame)
       parsed?.dispose()
       resized?.dispose()
@@ -356,6 +447,7 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
       el.removeEventListener('touchstart', drag)
       el.removeEventListener('touchmove', drag)
       window.removeEventListener('pagehide', leave)
+      window.removeEventListener('beforeunload', leave)
       leave()
       termRef.current = null
       sendRef.current = null
@@ -378,8 +470,8 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
         // prompt waits — is never under the bar. Past the caller's max-height it scrolls, and `flex-col-reverse` keeps
         // it at the bottom unless the user scrolls up.
         className={cn(
-          'relative min-h-0 flex-1 rounded-md p-1',
-          src.kind === 'cell' ? 'flex flex-col-reverse overflow-auto' : 'overflow-hidden',
+          'relative min-h-0 min-w-0 flex-1 rounded-md',
+          src.kind === 'cell' ? 'flex flex-col-reverse overflow-auto p-1' : 'overflow-hidden',
           className,
         )}
         // `colorScheme`: the box's scrollbars match the soot canvas on a light app theme too.
@@ -387,7 +479,7 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
       >
         <div
           ref={host}
-          className={src.kind === 'cell' ? 'w-max shrink-0 overflow-hidden' : 'size-full'}
+          className={src.kind === 'cell' ? 'w-max shrink-0 overflow-hidden' : 'absolute inset-1 overflow-hidden'}
           // The rows in use of the 30-row grid; ~15 px a 12 px row until xterm has measured one.
           style={src.kind === 'cell' ? { height: rows * (rowH || 15) } : undefined}
         />
@@ -513,10 +605,18 @@ export function TerminalSelect({
   )
 }
 
-/** Brings `job`'s own window forward (it is showing there, `usePoppedElsewhere`). */
+/** Brings `job`'s own window forward (it is showing there, `usePoppedElsewhere`); if that window is already gone (stale mark), clears the mark so this pane takes over in place. */
 export function FocusWindowButton({ session, job }: JobRef) {
+  const focus = async () => {
+    const target = { kind: 'pty', session, job } as const
+    if (isTauri() && !(await popoutOpen(target))) {
+      clearPopoutMark({ session, job })
+      return
+    }
+    await openPopout(target)
+  }
   return (
-    <Button variant="outline" size="sm" onClick={() => void openPopout({ kind: 'pty', session, job })}>
+    <Button variant="outline" size="sm" onClick={() => void focus()}>
       Focus window
     </Button>
   )
@@ -526,8 +626,8 @@ export function FocusWindowButton({ session, job }: JobRef) {
  * The picked terminal: a placeholder when none, a stub while it shows in its own window (with Focus window unless the
  * caller shows it elsewhere: `focus={false}`), else the xterm.
  */
-export function TerminalScreen({ terminals, job, focus = true }: { terminals: TerminalSummary[]; job: JobRef | null; focus?: boolean }) {
-  const elsewhere = usePoppedElsewhere(job)
+export function TerminalScreen({ terminals, job, focus = true, checkPopout = true }: { terminals: TerminalSummary[]; job: JobRef | null; focus?: boolean; checkPopout?: boolean }) {
+  const elsewhere = usePoppedElsewhere(checkPopout ? job : null)
   const current = terminals.find((t) => t.id === job?.job && t.session === job?.session)
   if (!job)
     return (

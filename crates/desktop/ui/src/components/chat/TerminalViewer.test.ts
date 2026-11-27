@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
 import type { PtyChunk } from "@/rpc/bindings/method.agent.output"
 import { RpcError } from '@/rpc/client'
-import { attachSource, CELL_KEYS, liveRows, PoppedTerminal, Terminal } from './TerminalViewer'
+import { attachSource, CELL_KEYS, clearPopoutMark, liveRows, PoppedTerminal, setPopoutMark, Terminal } from './TerminalViewer'
 
 const api = { cell_input: vi.fn(async () => null), pty_input: vi.fn(async () => null), pty_resize: vi.fn(async () => null) }
 const unsub = vi.fn(async () => undefined)
@@ -24,7 +24,17 @@ vi.mock('@/lib/chord', () => ({ isApple: () => true }))
 vi.mock('@/lib/owner', () => ({ useEngineLabel: (owner: string) => owner }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
 vi.mock('@tanstack/react-query', () => ({ useQuery: () => ({ data: [{ id: 'j1', session: 's1', name: 'dev', command: 'bash', state: 'running' }] }) }))
-vi.mock('@/lib/popout', () => ({ POPOUT: null, canPopout: () => false, isPopout: () => popped(), openPopout: async () => undefined }))
+const mockPopoutOpen = vi.fn(async (_t?: unknown) => false)
+const mockOpenPopout = vi.fn(async (_t?: unknown) => undefined)
+vi.mock('@/lib/popout', () => ({
+  POPOUT: null,
+  canPopout: () => false,
+  isPopout: () => popped(),
+  openPopout: (t: unknown) => mockOpenPopout(t),
+  popoutLabel: (t: { session: string; job: string }) => `popout-pty-${t.session}-${t.job}`,
+  popoutOpen: (t: unknown) => mockPopoutOpen(t),
+}))
+vi.mock('@/lib/tauri', () => ({ isTauri: () => false, onPopoutClosed: async () => () => {} }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 
 /** The slice of xterm `attachSource` touches. */
@@ -203,4 +213,39 @@ test('PoppedTerminal renders a closeable header in-page (iPhone) and omits it in
   const inWindow = renderToStaticMarkup(createElement(PoppedTerminal, { session: 's1', job: 'j1' }))
   expect(inWindow).not.toContain('data-terminal-header')
   expect(inWindow).not.toContain('aria-label="Close terminal"')
+})
+
+test('pty terminal decouples xterm host from intrinsic size (min-w-0 + absolute inset-1) and refits after a reset replay', async () => {
+  const html = renderToStaticMarkup(createElement(Terminal, { session: 's1', job: 'j1', label: 'sh' }))
+  expect(html).toContain('min-w-0')
+  expect(html).toContain('absolute inset-1 overflow-hidden')
+
+  const term = fakeTerm()
+  term.write.mockImplementation((_data: unknown, cb?: () => void) => cb?.())
+  const onReset = vi.fn()
+  attachSource({ kind: 'pty', session: 's1', job: 'j1' }, term as unknown as Term, api, client, () => {}, undefined, onReset)
+  onItem()({ type: 'reset', data: btoa('hi'), rows: 40, cols: 120 })
+  expect(term.resize).toHaveBeenCalledWith(120, 40)
+  expect(onReset).toHaveBeenCalledTimes(1)
+})
+
+test('setPopoutMark / clearPopoutMark toggle localStorage cleanly', () => {
+  const store = new Map<string, string>()
+  const prev = globalThis.localStorage
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    },
+  })
+  try {
+    setPopoutMark({ session: 's1', job: 'j1' })
+    expect(store.get('pty-popout:s1/j1')).toBe('1')
+    clearPopoutMark({ session: 's1', job: 'j1' })
+    expect(store.has('pty-popout:s1/j1')).toBe(false)
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: prev })
+  }
 })

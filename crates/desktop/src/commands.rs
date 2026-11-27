@@ -116,6 +116,7 @@ pub fn open_window(
         return Err(format!("window label must start with `{POPOUT_PREFIX}`"));
     }
     if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.unminimize();
         win.show().map_err(|e| e.to_string())?;
         return win.set_focus().map_err(|e| e.to_string());
     }

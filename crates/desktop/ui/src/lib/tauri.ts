@@ -94,6 +94,8 @@ export const onLaunchLog = (cb: (chunk: string) => void) => on<string>('launch-l
 export const onStartupProgress = (cb: (p: StartupProgress) => void) => on<StartupProgress>('startup-progress', cb)
 /** Tray menu / app menu: show the window and go to `path` (`/`, `/knowledge`, `/settings/appearance`). */
 export const onNavigate = (cb: (path: string) => void) => on<string>('navigate', cb)
+/** A popout window closed (`WindowEvent::Destroyed` in `crates/desktop/src/lib.rs`); payload is its window label. */
+export const onPopoutClosed = (cb: (label: string) => void) => on<string>('popout-closed', cb)
 /** 210 §7.4 item 2: the tray's "Stop public sharing (N)" item, shown while `live > 0` (`commands::share_tray`). */
 export const shareTray = (live: number): Promise<void> =>
   isTauri() ? invoke<void>('share_tray', { live }) : Promise.resolve()

@@ -476,7 +476,12 @@ mod desktop {
                         paint_page_background(&win);
                     }
                 }
-                WindowEvent::Destroyed => crate::webview::on_window_destroyed(window),
+                WindowEvent::Destroyed => {
+                    crate::webview::on_window_destroyed(window);
+                    if window.label().starts_with(commands::POPOUT_PREFIX) {
+                        let _ = window.app_handle().emit("popout-closed", window.label());
+                    }
+                }
                 _ => {}
             })
             .setup(|app| {
