@@ -485,6 +485,11 @@ pub fn project(m: &ChatMessage, mask: &Mask) -> Option<ChatMessage> {
         let part = u32::try_from(i).ok()?;
         match p {
             ContentPart::Binary(_) if mask.has(BinaryAt { part, image: None }) => {}
+            ContentPart::Text(t)
+                if m.role == ChatRole::User
+                    && part > 0
+                    && parse_text_attachment(t).is_some()
+                    && mask.has(BinaryAt { part, image: None }) => {}
             ContentPart::ToolResponse(r)
                 if mask
                     .binaries
@@ -1222,7 +1227,7 @@ impl Active {
                 }
                 ContextTarget::Binary { owner, part, image } => {
                     let (m, _) = self.owner(owner)?;
-                    binary_at(m, part, image)?;
+                    attachment_at(m, part, image)?;
                     want.entry(owner)
                         .or_default()
                         .binaries
@@ -1300,7 +1305,7 @@ impl Active {
                     continue;
                 }
                 new.binaries.push(at);
-                if binary_at(m, at.part, at.image)?.is_image() {
+                if attachment_at(m, at.part, at.image)?.is_image() {
                     plan.images += 1;
                 } else {
                     plan.documents += 1;
@@ -1420,19 +1425,134 @@ impl Active {
     }
 }
 
-/// The binary at `(part, image)` of `m`, or why the coordinates are malformed.
-fn binary_at(m: &ChatMessage, part: u32, image: Option<u32>) -> Result<&Binary, String> {
+/// Leading line of every non-binary user attachment part (inlined text or path pointer).
+pub const ATTACHMENT_PREFIX: &str = "the user attached: ";
+
+/// Parsed non-binary user attachment part (inlined fenced body or bare path pointer).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TextAttachment<'a> {
+    pub path: &'a str,
+    pub inlined: bool,
+}
+
+impl TextAttachment<'_> {
+    /// Display file name (last path segment), falling back to the raw path.
+    pub(crate) fn file_name(&self) -> String {
+        Path::new(self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(self.path)
+            .to_owned()
+    }
+
+    /// Best-effort MIME type for the attached file chip (overrides `mime_guess`
+    /// where TypeScript `.ts` is mislabelled as `video/mp2t` and gives inlined
+    /// extensionless files `text/plain`).
+    pub(crate) fn mime(&self) -> String {
+        let path = Path::new(self.path);
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            match ext.to_ascii_lowercase().as_str() {
+                "svg" => return "image/svg+xml".into(),
+                "md" | "markdown" | "mdx" => return "text/markdown".into(),
+                "ts" | "mts" | "cts" | "tsx" if self.inlined => return "text/typescript".into(),
+                "toml" => return "application/toml".into(),
+                "yaml" | "yml" => return "application/yaml".into(),
+                _ => {}
+            }
+        }
+        match mime_guess::from_path(path).first() {
+            Some(m) if m == mime_guess::mime::APPLICATION_OCTET_STREAM && self.inlined => {
+                "text/plain".into()
+            }
+            Some(m) => m.essence_str().to_owned(),
+            None if self.inlined => "text/plain".into(),
+            None => "application/octet-stream".into(),
+        }
+    }
+}
+
+/// Parse a user message text part produced by `attachment_part`: either a bare
+/// pointer line `the user attached: <path>` or a fenced inline body
+/// `the user attached: <path>\n\n<fence><info>\n<body><fence>`.
+pub(crate) fn parse_text_attachment(s: &str) -> Option<TextAttachment<'_>> {
+    let rest = s.strip_prefix(ATTACHMENT_PREFIX)?;
+    match rest.split_once('\n') {
+        None => {
+            if rest.is_empty() || rest.contains('\r') {
+                return None;
+            }
+            Some(TextAttachment {
+                path: rest,
+                inlined: false,
+            })
+        }
+        Some((path, after_first_nl)) => {
+            if path.is_empty() || path.contains('\r') {
+                return None;
+            }
+            let after_blank = after_first_nl.strip_prefix('\n')?;
+            let fence_len = after_blank.bytes().take_while(|&b| b == b'`').count();
+            if fence_len < 3 {
+                return None;
+            }
+            let after_fence = &after_blank[fence_len..];
+            let (info, body_and_close) = after_fence.split_once('\n')?;
+            if !info.is_empty()
+                && (info.len() > 16 || !info.bytes().all(|b| b.is_ascii_alphanumeric()))
+            {
+                return None;
+            }
+            let closing = &after_blank[..fence_len];
+            let before_close = body_and_close.strip_suffix(closing)?;
+            if !before_close.is_empty() && !before_close.ends_with('\n') {
+                return None;
+            }
+            Some(TextAttachment {
+                path,
+                inlined: true,
+            })
+        }
+    }
+}
+
+enum AttachmentRef<'a> {
+    Binary(&'a Binary),
+    Text,
+}
+
+impl AttachmentRef<'_> {
+    fn is_image(&self) -> bool {
+        match self {
+            Self::Binary(b) => b.is_image(),
+            Self::Text => false,
+        }
+    }
+}
+
+/// The binary or user text-attachment at `(part, image)` of `m`, or why the
+/// coordinates are malformed.
+fn attachment_at(
+    m: &ChatMessage,
+    part: u32,
+    image: Option<u32>,
+) -> Result<AttachmentRef<'_>, String> {
     let p = m
         .content
         .parts()
         .get(part as usize)
         .ok_or_else(|| format!("part {part} does not exist"))?;
     match (p, image) {
-        (ContentPart::Binary(b), None) => Ok(b),
+        (ContentPart::Binary(b), None) => Ok(AttachmentRef::Binary(b)),
         (ContentPart::ToolResponse(r), Some(k)) => r
             .images
             .get(k as usize)
+            .map(AttachmentRef::Binary)
             .ok_or_else(|| format!("part {part} has no image {k}")),
+        (ContentPart::Text(t), None)
+            if m.role == ChatRole::User && part > 0 && parse_text_attachment(t).is_some() =>
+        {
+            Ok(AttachmentRef::Text)
+        }
         (ContentPart::Binary(_), Some(_)) => {
             Err(format!("part {part} is a binary, not a tool response"))
         }
@@ -1474,7 +1594,7 @@ fn source_at(m: &ChatMessage, part: u32) -> Result<(), String> {
     }
 }
 
-/// Every binary occurrence of `m` with its removal state under `mask`.
+/// Every binary and user file-attachment occurrence of `m` with its removal state under `mask`.
 pub fn attachments(owner: ContextOwner, m: &ChatMessage, mask: &Mask) -> Vec<ContextAttachment> {
     let mut out = Vec::new();
     let one = |b: &Binary, part: u32, image: Option<u32>| ContextAttachment {
@@ -1495,6 +1615,21 @@ pub fn attachments(owner: ContextOwner, m: &ChatMessage, mask: &Mask) -> Vec<Con
                         .enumerate()
                         .map(|(k, b)| one(b, part, Some(k as u32))),
                 );
+            }
+            ContentPart::Text(t) if m.role == ChatRole::User && part > 0 => {
+                if let Some(att) = parse_text_attachment(t) {
+                    out.push(ContextAttachment {
+                        target: ContextTarget::Binary {
+                            owner,
+                            part,
+                            image: None,
+                        },
+                        name: att.file_name(),
+                        mime: att.mime(),
+                        path: Some(PathBuf::from(att.path)),
+                        removed: mask.whole || mask.has(BinaryAt { part, image: None }),
+                    });
+                }
             }
             _ => {}
         }
@@ -1572,7 +1707,12 @@ fn binary_items(
     calls: &HashMap<&str, &str>,
 ) {
     let head = matches!(owner, ContextOwner::Head { .. });
-    let mut one = |part: u32, image: Option<u32>, b: &Binary, tokens: u32, tool: Option<&str>| {
+    let one = |out: &mut Vec<ContextItem>,
+               part: u32,
+               image: Option<u32>,
+               b: &Binary,
+               tokens: u32,
+               tool: Option<&str>| {
         if mask.has(BinaryAt { part, image }) {
             return;
         }
@@ -1607,7 +1747,7 @@ fn binary_items(
     for (i, p) in m.content.iter().enumerate() {
         let Ok(part) = u32::try_from(i) else { break };
         match p {
-            ContentPart::Binary(b) => one(part, None, b, compact::est_part(p), None),
+            ContentPart::Binary(b) => one(out, part, None, b, compact::est_part(p), None),
             ContentPart::ToolResponse(r) => {
                 let tool = r
                     .fn_name
@@ -1617,7 +1757,29 @@ fn binary_items(
                 for (k, b) in r.images.iter().enumerate() {
                     let Ok(k) = u32::try_from(k) else { break };
                     // `compact::est_part` charges a tool image flat.
-                    one(part, Some(k), b, compact::IMAGE_TOKENS, tool);
+                    one(out, part, Some(k), b, compact::IMAGE_TOKENS, tool);
+                }
+            }
+            ContentPart::Text(t) if m.role == ChatRole::User && part > 0 => {
+                if let Some(att) = parse_text_attachment(t)
+                    && !mask.has(BinaryAt { part, image: None })
+                {
+                    let mime = att.mime();
+                    let format = mime.rsplit('/').next().unwrap_or(&mime).to_ascii_uppercase();
+                    out.push(ContextItem {
+                        target: ContextTarget::Binary {
+                            owner,
+                            part,
+                            image: None,
+                        },
+                        kind: ContextKind::Document,
+                        group: "document".into(),
+                        label: preview(&att.file_name()),
+                        detail: Some(bound(&format, DETAIL_CHARS)),
+                        tokens: compact::est_part(p),
+                        at: at.cloned(),
+                        remove_with: Vec::new(),
+                    });
                 }
             }
             _ => {}
@@ -1932,13 +2094,18 @@ fn bound(text: &str, max: usize) -> String {
 
 // endregion: --- Active frame
 
-/// Write `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`; an existing
-/// file is not rewritten. The one attachment-store naming rule, shared by RPC
-/// `put_attachment`, the ACP prompt path and history preview materialization.
+/// Write `bytes` as `<data_dir>/attachments/<sha256[..16]>[.<ext>]` (no trailing
+/// dot when `ext` is empty); an existing file is not rewritten. The one
+/// attachment-store naming rule, shared by RPC `put_attachment`, the ACP prompt
+/// path and history preview materialization.
 pub fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Result<PathBuf> {
     let hex = hex::encode(Sha256::digest(bytes));
     let dir = data_dir.join("attachments");
-    let path = dir.join(format!("{}.{ext}", &hex[..16]));
+    let path = if ext.is_empty() {
+        dir.join(&hex[..16])
+    } else {
+        dir.join(format!("{}.{ext}", &hex[..16]))
+    };
     if !path.exists() {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(&path, bytes)?;
@@ -3201,5 +3368,89 @@ mod tests {
         );
         assert_eq!(std::fs::read(&p).unwrap(), b"hello");
         assert_eq!(save_blob(b"hello", "png", &dir).unwrap(), p);
+
+        // Extensionless names store without a trailing dot.
+        let bare = save_blob(b"all:\n\techo ok\n", "", &dir).unwrap();
+        let bare_hex = hex::encode(Sha256::digest(b"all:\n\techo ok\n"));
+        assert_eq!(bare, dir.join("attachments").join(&bare_hex[..16]));
+        assert!(!bare.to_string_lossy().ends_with('.'));
+    }
+
+    #[test]
+    fn text_and_pointer_attachments_reload_as_removable_chips() {
+        let msg = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text("please inspect these".into()),
+            ContentPart::Text(
+                "the user attached: /work/notes.md\n\n```md\n# Hello\n```".into(),
+            ),
+            ContentPart::Text(
+                "the user attached: /work/diagram.svg\n\n```svg\n<svg/>\n```".into(),
+            ),
+            ContentPart::Text(
+                "the user attached: /work/page.html\n\n```html\n<h1>Hi</h1>\n```".into(),
+            ),
+            ContentPart::Text(
+                "the user attached: /work/Makefile\n\n```\nall:\n\techo ok\n```".into(),
+            ),
+            ContentPart::Text("the user attached: /work/bundle.zip".into()),
+        ]));
+        let owner = ContextOwner::Message { seq: 7 };
+        let atts = attachments(owner, &msg, &Mask::default());
+        assert_eq!(atts.len(), 5);
+        assert_eq!(atts[0].name, "notes.md");
+        assert_eq!(atts[0].mime, "text/markdown");
+        assert_eq!(atts[0].path, Some(PathBuf::from("/work/notes.md")));
+        assert_eq!(
+            atts[0].target,
+            ContextTarget::Binary {
+                owner,
+                part: 1,
+                image: None
+            }
+        );
+        assert!(!atts[0].removed);
+
+        assert_eq!(atts[1].name, "diagram.svg");
+        assert_eq!(atts[1].mime, "image/svg+xml");
+        assert_eq!(atts[1].path, Some(PathBuf::from("/work/diagram.svg")));
+
+        assert_eq!(atts[2].name, "page.html");
+        assert_eq!(atts[2].mime, "text/html");
+        assert_eq!(atts[2].path, Some(PathBuf::from("/work/page.html")));
+
+        assert_eq!(atts[3].name, "Makefile");
+        assert_eq!(atts[3].mime, "text/plain");
+        assert_eq!(atts[3].path, Some(PathBuf::from("/work/Makefile")));
+
+        assert_eq!(atts[4].name, "bundle.zip");
+        assert_eq!(atts[4].mime, "application/zip");
+        assert_eq!(atts[4].path, Some(PathBuf::from("/work/bundle.zip")));
+
+        // Removing the zip pointer (part 5) and markdown body (part 1) updates both
+        // the chip's `removed` flag and the projected message sent to the model.
+        let active = Active {
+            epoch: 0,
+            at_seq: -1,
+            tail_from: 0,
+            head: None,
+            rows: vec![(7, msg.clone(), Mask::default())],
+            meta: BTreeMap::new(),
+        };
+        let groups = active.groups();
+        let plan = active
+            .plan(&[atts[0].target, atts[4].target], &groups)
+            .expect("removal plan");
+        assert_eq!(plan.documents, 2);
+        assert_eq!(plan.images, 0);
+        let mask = &plan.rows[&7];
+        let reloaded = attachments(owner, &msg, mask);
+        assert!(reloaded[0].removed);
+        assert!(!reloaded[1].removed);
+        assert!(reloaded[4].removed);
+
+        let projected = project(&msg, mask).expect("still has words and remaining parts");
+        assert_eq!(projected.content.parts().len(), 4);
+        assert!(projected.content.texts().iter().all(|t| !t.contains("notes.md") && !t.contains("bundle.zip")));
+        assert!(projected.content.texts().iter().any(|t| t.contains("diagram.svg")));
     }
 }

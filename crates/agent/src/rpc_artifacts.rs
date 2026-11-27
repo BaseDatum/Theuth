@@ -24,10 +24,10 @@ pub trait AgentArtifactsApi {
         bytes: String,
         file_ext: String,
     ) -> RpcResult<PathBuf>;
-    /// Store base64 `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`
+    /// Store base64 `bytes` as `<data_dir>/attachments/<sha256[..16]>[.<ext>]`
     /// and return the path, for `send_input { files }` or `transcribe`. `ext`
-    /// ∈ png, jpg, jpeg, gif, webp, pdf, m4a, mp4, webm, ogg, opus, mp3, wav;
-    /// images ≤ 5 MB, PDFs ≤ 32 MB, audio ≤ 16 MB decoded.
+    /// is empty (extensionless) or a short alphanumeric token; images/svg ≤ 5 MB,
+    /// audio ≤ 16 MB, PDFs and generic files ≤ 32 MB decoded.
     #[method(name = "put_attachment")]
     async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf>;
 }

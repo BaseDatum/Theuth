@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Output cap for `read_file`: the hard backstop after the line caps.
-const MAX_BYTES: usize = 64 * 1024;
+pub const MAX_BYTES: usize = 64 * 1024;
 /// Lines shown when no `limit` is given.
 const DEFAULT_LINES: usize = 2000;
 /// Longest line echoed back; longer lines are cut with ` …[+K chars]`.

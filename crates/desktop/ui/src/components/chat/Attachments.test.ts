@@ -6,7 +6,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
 import type { ContextAttachment } from "@/rpc/bindings/method.agent.output"
 import type * as Conn from '@/store/connection'
-import { type Item, Lightbox } from './Attachments'
+import { Attachments, type Item, Lightbox } from './Attachments'
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('@/lib/rpc', async (original) => ({
@@ -45,4 +45,26 @@ test('a removed occurrence keeps the archive-only note and has no removal contro
   expect(html).toContain('Archived original, removed from context: shot.png')
   expect(html).not.toContain('aria-label="Remove')
   expect(html).toContain('aria-label="Close"')
+})
+
+test('zip, md, html, and svg render as name chips while raster images render as thumbs and PDFs stay viewable', () => {
+  const nonImages = renderToStaticMarkup(
+    createElement(Attachments, { files: ['/dd/bundle.zip', '/dd/notes.md', '/dd/page.html', '/dd/icon.svg', '/dd/Makefile'] }),
+  )
+  for (const name of ['bundle.zip', 'notes.md', 'page.html', 'icon.svg', 'Makefile']) expect(nonImages).toContain(name)
+  expect(nonImages).not.toContain('<img')
+  expect(nonImages).not.toContain('Open image:')
+
+  const svgOcc = renderToStaticMarkup(
+    createElement(Attachments, {
+      occurrences: [{ target: { kind: 'binary', owner: { kind: 'message', seq: 1 }, part: 0, image: 0 }, name: 'icon.svg', mime: 'image/svg+xml', path: '/dd/icon.svg', removed: false }],
+    }),
+  )
+  expect(svgOcc).toContain('icon.svg')
+  expect(svgOcc).not.toContain('Open image:')
+
+  const pngAndPdf = renderToStaticMarkup(createElement(Attachments, { files: ['/dd/shot.png', '/dd/spec.pdf'] }))
+  expect(pngAndPdf).toContain('Open image: shot.png')
+  expect(pngAndPdf).toContain('spec.pdf')
+  expect(pngAndPdf).toContain('>View</button>')
 })

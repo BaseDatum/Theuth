@@ -72,7 +72,7 @@ use crate::loop_::{
     RestartTurn, ResumedTurn, Session, SessionState, SetBudgetNow, SetCompactionOverride,
     SetMemoryNow, SetPendingEffort, SetTalking, SetTitlePin, SetToolsetOverride,
     SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks,
-    text_of,
+    text_of, user_text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -9685,6 +9685,7 @@ fn ext_of(mime: &str) -> Option<&'static str> {
         "image/jpeg" | "image/jpg" => "jpg",
         "image/gif" => "gif",
         "image/webp" => "webp",
+        "image/svg+xml" => "svg",
         "application/pdf" => "pdf",
         _ => return None,
     })
@@ -12703,7 +12704,8 @@ pub(crate) fn render_with(
                 *seq,
                 HistoryEntry::User {
                     // 74 §3, §5: the stamp is the model's; the row's `at` is the human's clock.
-                    text: clock::strip_owned(text_of(&m.content)),
+                    // Inlined/pointer attachment parts render as `ContextAttachment` chips, not in the bubble.
+                    text: clock::strip_owned(user_text_of(&m.content)),
                     turn: opens.then_some(*seq),
                     context: context.cloned(),
                     peer: None,
@@ -13016,9 +13018,11 @@ const MAX_ATTACHMENT: u64 = 5 * 1024 * 1024;
 /// Largest PDF sent as a native document part (20 §2.5: Anthropic's 32 MB;
 /// its 100-page cap is left to the provider's error).
 const MAX_PDF: u64 = 32 * 1024 * 1024;
+/// Largest generic attachment (matches `rpc_attachments::MAX_GENERIC`).
+const MAX_GENERIC: u64 = 32 * 1024 * 1024;
 
-/// Rejects what a provider would (17 §3.1, 20 §2.5): missing/non-regular
-/// file, a mime that is neither `image/*` nor `application/pdf`, over the cap.
+/// Rejects missing/non-regular files or attachments over the cap for their kind:
+/// 5 MB for provider raster images and SVG, 32 MB for PDFs and generic files.
 fn check_files(files: &[PathBuf]) -> Result<(), String> {
     for f in files {
         let name = f.file_name().unwrap_or(f.as_os_str()).to_string_lossy();
@@ -13031,12 +13035,11 @@ fn check_files(files: &[PathBuf]) -> Result<(), String> {
             Err(e) => return Err(format!("attachment {name}: {e}")),
         };
         let mime = mime_guess::from_path(f).first_or_octet_stream();
-        let cap = if mime.type_() == mime_guess::mime::IMAGE {
-            MAX_ATTACHMENT
-        } else if mime == mime_guess::mime::APPLICATION_PDF {
-            MAX_PDF
-        } else {
-            return Err(format!("attachment {name}: {mime} is not an image or PDF"));
+        let cap = match mime.essence_str() {
+            "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp"
+            | "image/svg+xml" => MAX_ATTACHMENT,
+            "application/pdf" => MAX_PDF,
+            _ => MAX_GENERIC,
         };
         if meta.len() > cap {
             return Err(format!(
@@ -16115,12 +16118,21 @@ pub(crate) mod tests {
         std::fs::write(&png, b"\x89PNG").unwrap();
         let txt = dir.join("notes.txt");
         std::fs::write(&txt, b"hi").unwrap();
+        let zip = dir.join("bundle.zip");
+        std::fs::write(&zip, b"PK\x03\x04").unwrap();
+        let makefile = dir.join("Makefile");
+        std::fs::write(&makefile, b"all:\n\techo ok\n").unwrap();
         let pdf = dir.join("scan.pdf");
         std::fs::write(&pdf, b"%PDF-1.7").unwrap();
         let big_pdf = dir.join("big.pdf");
         std::fs::File::create(&big_pdf)
             .unwrap()
             .set_len(MAX_PDF + 1)
+            .unwrap();
+        let big_generic = dir.join("huge.zip");
+        std::fs::File::create(&big_generic)
+            .unwrap()
+            .set_len(MAX_GENERIC + 1)
             .unwrap();
         let big = dir.join("big.jpg");
         std::fs::File::create(&big)
@@ -16132,13 +16144,15 @@ pub(crate) mod tests {
         assert_eq!(check_files(std::slice::from_ref(&png)), Ok(()));
         // A PDF rides as a native document part, with its own (larger) cap.
         assert_eq!(check_files(std::slice::from_ref(&pdf)), Ok(()));
+        // Text, archive, and extensionless files are admitted under the generic cap.
+        assert_eq!(check_files(&[png, txt, zip, makefile]), Ok(()));
         assert_eq!(
             check_files(&[big_pdf]).unwrap_err(),
             "attachment big.pdf: 32.0 MB exceeds 32 MB"
         );
         assert_eq!(
-            check_files(&[png, txt]).unwrap_err(),
-            "attachment notes.txt: text/plain is not an image or PDF"
+            check_files(&[big_generic]).unwrap_err(),
+            "attachment huge.zip: 32.0 MB exceeds 32 MB"
         );
         assert_eq!(
             check_files(&[dir.join("gone.png")]).unwrap_err(),
@@ -16155,6 +16169,55 @@ pub(crate) mod tests {
             check_files(&[big]).unwrap_err(),
             "attachment big.jpg: 5.0 MB exceeds 5 MB"
         );
+    }
+
+    #[test]
+    fn history_reload_renders_text_and_pointer_attachments_as_chips_not_bubble_body() {
+        use genai::chat::{ContentPart, MessageContent};
+
+        let scratch = crate::test_dir("reload-chips");
+        let dir = scratch.path().to_path_buf();
+        let msg = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text("take a look".into()),
+            ContentPart::Text(
+                "the user attached: /work/readme.md\n\n```md\n# Title\n```".into(),
+            ),
+            ContentPart::Text(
+                "the user attached: /work/icon.svg\n\n```svg\n<svg/>\n```".into(),
+            ),
+            ContentPart::Text("the user attached: /work/archive.zip".into()),
+        ]));
+        let owner = ContextOwner::Message { seq: 0 };
+        let ctx = crate::context::entry(owner, &msg, &crate::context::Mask::default(), true, vec![]);
+        let messages = vec![(0, msg)];
+        let entries = BTreeMap::from([(0, ctx)]);
+        let mut history: Vec<HistoryEntry> = render_with(
+            &messages,
+            &entries,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .into_iter()
+        .map(|(_, e)| e)
+        .collect();
+        materialize(&mut history, &messages, &[], &dir);
+
+        let HistoryEntry::User { text, context, .. } = &history[0] else {
+            panic!("expected user history entry");
+        };
+        assert_eq!(text, "take a look");
+        let atts = &context.as_ref().expect("context").attachments;
+        assert_eq!(atts.len(), 3);
+        assert_eq!(atts[0].name, "readme.md");
+        assert_eq!(atts[0].mime, "text/markdown");
+        assert_eq!(atts[0].path, Some(PathBuf::from("/work/readme.md")));
+        assert_eq!(atts[1].name, "icon.svg");
+        assert_eq!(atts[1].mime, "image/svg+xml");
+        assert_eq!(atts[1].path, Some(PathBuf::from("/work/icon.svg")));
+        assert_eq!(atts[2].name, "archive.zip");
+        assert_eq!(atts[2].mime, "application/zip");
+        assert_eq!(atts[2].path, Some(PathBuf::from("/work/archive.zip")));
     }
 
     /// An `Agents` value (no actor, no tool registry) over a temp store: the

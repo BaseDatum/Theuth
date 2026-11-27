@@ -205,6 +205,15 @@ export function placeholderFor(o: { readOnly?: boolean; running: boolean; export
 const NONE = EMPTY.pastes
 const NO_SKILLS: readonly string[] = []
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
+
+/** Files on a paste event (any type — images, PDFs, zip, markdown, extensionless); empty for text pastes. */
+export function pastedFiles(data: { items?: ArrayLike<Pick<DataTransferItem, 'kind' | 'getAsFile'>>; files?: ArrayLike<File> }): File[] {
+  const fromItems = Array.from(data.items ?? [])
+    .filter((i) => i.kind === 'file')
+    .map((i) => i.getAsFile())
+    .filter((f): f is File => f !== null)
+  return fromItems.length > 0 ? fromItems : Array.from(data.files ?? [])
+}
 /**
  * Seed the next mount of `session`'s composer (`null` = the new chat at `/`; `panel` = a note page's panel) with `text`
  * and a held chip per reference in `refs` (59 §5.4 "Ask theuth…", 66 §7.8 "Attach to chat…").
@@ -1036,16 +1045,17 @@ export function Composer({
   const sendFile = useRef<(file: Blob) => Promise<Uploaded>>(null!)
   sendFile.current = async (file) => {
     const owner = priv && session ? session : undefined
-    const size = file.type.startsWith('image/')
-      ? createImageBitmap(file).then(
-          (b): [number, number] => {
-            const dims: [number, number] = [b.width, b.height]
-            b.close()
-            return dims
-          },
-          () => undefined,
-        )
-      : undefined
+    const size =
+      file.type.startsWith('image/') && file.type !== 'image/svg+xml'
+        ? createImageBitmap(file).then(
+            (b): [number, number] => {
+              const dims: [number, number] = [b.width, b.height]
+              b.close()
+              return dims
+            },
+            () => undefined,
+          )
+        : undefined
     const [path, dims] = await Promise.all([putAttachment(api, file, extFor(file), owner), size])
     seedFile(path, file, owner)
     return { path, dims }
@@ -1086,10 +1096,10 @@ export function Composer({
   }
 
   const onPaste = async (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const image = [...e.clipboardData.items].find((i) => i.type.startsWith('image/'))?.getAsFile()
-    if (image) {
+    const files = pastedFiles(e.clipboardData)
+    if (files.length > 0) {
       e.preventDefault()
-      addBlobs([image])
+      addBlobs(files)
       return
     }
     // 165: a rich paste with links becomes markdown; anything else is the plain text, as before.
@@ -1626,7 +1636,6 @@ export function Composer({
       <input
         ref={fileInput}
         type="file"
-        accept="image/*,application/pdf"
         multiple
         className="hidden"
         onChange={(e) => {
@@ -1845,15 +1854,7 @@ export function Composer({
                         fileInput.current?.click()
                         return
                       }
-                      const picked = await pickFiles({
-                        multiple: true,
-                        filters: [
-                          {
-                            name: 'Images and PDF',
-                            extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'pdf'],
-                          },
-                        ],
-                      })
+                      const picked = await pickFiles({ multiple: true })
                       if (picked) addFiles(picked)
                     }}
                   >

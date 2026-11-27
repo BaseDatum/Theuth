@@ -14,7 +14,7 @@ import type { ContextAttachment } from "@/rpc/bindings/method.agent.output"
 import { RemoveButton } from './MessageAssistant'
 import { useDisclosed, useScopeKey } from './disclosure'
 
-const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
+const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 
 /** A URL for an engine path via `resolveFile` (31 §9): immediate on macOS local; elsewhere `null` until the bytes arrive, `''` on failure.
  * `session` names a private owner (`privateOwner`, 51 §4.2): always over RPC, never `asset://`. */
@@ -92,7 +92,7 @@ function items(files: string[] | undefined, occurrences: ContextAttachment[] | u
       key: `o${i}`,
       name: o.name,
       path: o.path,
-      image: o.mime.startsWith('image/') || (!!o.path && IMAGE.test(o.path)),
+      image: (o.mime.startsWith('image/') && o.mime !== 'image/svg+xml') || (!!o.path && IMAGE.test(o.path)),
       pdf: o.mime === 'application/pdf',
       occurrence: o,
     }))

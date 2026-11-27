@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/bindings/client'
 import { type ConnState, RpcError } from '@/rpc/client'
-import { fmtBytes, forgetPrivate, pin, readText, readTextOnline, resolveDocument, resolveFile, unpin } from './files'
+import { extFor, extOf, fmtBytes, forgetPrivate, pin, readText, readTextOnline, resolveDocument, resolveFile, unpin } from './files'
 import { usePrivate } from './private'
 
 // A local desktop shell: the one configuration where `resolveFile` hands out `asset://` URLs.
@@ -159,4 +159,18 @@ test('an LRU eviction never revokes a pinned blob URL; the last unpin revokes it
 
 test('fmtBytes: decimal units, one decimal below 10 kB and for MB/GB', () => {
   expect([999, 1500, 105924, 24100000, 1e9].map(fmtBytes)).toEqual(['999 B', '1.5 kB', '106 kB', '24.1 MB', '1.0 GB'])
+})
+
+test('extFor keeps extensionless names empty and still derives extensions for named files and unnamed blobs', () => {
+  expect(extFor(new File(['all:'], 'Makefile', { type: '' }))).toBe('')
+  expect(extFor(new File(['all:'], 'Makefile', { type: 'application/octet-stream' }))).toBe('')
+  expect(extFor(new File(['MIT'], 'LICENSE', { type: 'text/plain' }))).toBe('')
+  expect(extFor(new File(['*.o'], '.gitignore', { type: 'text/plain' }))).toBe('')
+  expect(extOf('/dir.with.dot/Makefile')).toBe('')
+  expect(extFor(new File(['x'], 'archive.zip', { type: 'application/zip' }))).toBe('zip')
+  expect(extFor(new File(['x'], 'notes.MD', { type: 'text/markdown' }))).toBe('md')
+  expect(extFor(new File(['x'], 'icon.svg', { type: 'image/svg+xml' }))).toBe('svg')
+  expect(extFor(new Blob(['x'], { type: 'image/jpeg' }))).toBe('jpg')
+  expect(extFor(new Blob(['x'], { type: 'audio/mp4' }))).toBe('m4a')
+  expect(extFor(new Blob(['x'], { type: 'application/octet-stream' }))).toBe('')
 })

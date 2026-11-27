@@ -127,3 +127,36 @@ test('the composer guards submit on uploads and feeds the strip', async () => {
   expect(src).toContain('uploads={uploads}')
   expect(src).toMatch(/onChange=\{\(e\) => \{\n\s+addBlobs\(/)
 })
+
+test('zip, md, html, svg, and extensionless files render as non-image upload tiles and held name chips', async () => {
+  const { runs, upload } = deferred()
+  const files = [
+    new File(['pk'], 'bundle.zip', { type: 'application/zip' }),
+    new File(['# hi'], 'notes.md', { type: 'text/markdown' }),
+    new File(['<p>hi</p>'], 'page.html', { type: 'text/html' }),
+    new File(['<svg/>'], 'icon.svg', { type: 'image/svg+xml' }),
+    new File(['all:'], 'Makefile', { type: '' }),
+  ]
+  const landed = new Map<number, { kind: 'file'; path: string; w: number; h: number }>()
+  const draw = () =>
+    root.render(h(HeldStrip, { pastes: new Map(landed), onChange() {}, onRemove() {}, uploads: ctl.get(), onCancelUpload: ctl.cancel, onRetryUpload: ctl.retry }))
+  const ctl = createUploads(upload, (u) => {
+    landed.set(landed.size + 1, { kind: 'file', path: u.path, w: 0, h: 0 })
+    draw()
+  })
+  ctl.subscribe(() => act(draw))
+  act(draw)
+
+  ctl.start(files)
+  expect(tiles().map((t) => t.textContent)).toEqual(['bundle.zip', 'notes.md', 'page.html', 'icon.svg', 'Makefile'])
+  expect(host.querySelectorAll('img')).toHaveLength(0)
+  expect(URL.createObjectURL).not.toHaveBeenCalled()
+
+  files.forEach((f, i) => runs[i]?.resolve({ path: `/att/${f.name}` }))
+  await flush()
+
+  expect(tiles()).toHaveLength(0)
+  expect(host.querySelectorAll('img')).toHaveLength(0)
+  expect(host.querySelectorAll('[aria-label^="Open image:"]')).toHaveLength(0)
+  for (const f of files) expect(host.textContent).toContain(f.name)
+})
