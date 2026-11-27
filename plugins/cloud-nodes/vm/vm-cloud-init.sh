@@ -34,6 +34,21 @@ if ! id -u engine >/dev/null 2>&1; then
 	useradd -m -u 1000 -s /bin/bash engine
 fi
 
+# Agents on a node are meant to have root (owner decision, design doc 224 §9): passwordless sudo
+# for `engine`. Written to a temp file and checked with visudo before it goes live, so a bad line
+# can never lock sudo out.
+if [ ! -e /etc/sudoers.d/90-theuth-engine ]; then
+	printf 'engine ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/.90-theuth-engine.tmp
+	chmod 0440 /etc/sudoers.d/.90-theuth-engine.tmp
+	if visudo -cf /etc/sudoers.d/.90-theuth-engine.tmp; then
+		mv /etc/sudoers.d/.90-theuth-engine.tmp /etc/sudoers.d/90-theuth-engine
+		visudo -c >/dev/null || { rm -f /etc/sudoers.d/90-theuth-engine; echo "theuth-node: sudoers rejected"; }
+	else
+		rm -f /etc/sudoers.d/.90-theuth-engine.tmp
+		echo "theuth-node: sudoers drop-in invalid, not installed"
+	fi
+fi
+
 # The volume at /data: formatted once (never over an existing filesystem).
 for _ in $(seq 1 90); do [ -e "$dev" ] && break; sleep 2; done
 [ -e "$dev" ] || { echo "theuth-node: volume $dev missing"; exit 1; }
