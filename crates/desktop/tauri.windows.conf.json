@@ -23,6 +23,11 @@
       "desktop": {
         "schemes": ["theuth"]
       }
+    },
+    "updater": {
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

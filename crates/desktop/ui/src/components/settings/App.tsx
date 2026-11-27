@@ -1,8 +1,10 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getVersion } from '@tauri-apps/api/app'
+import { listen } from '@tauri-apps/api/event'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { LoaderCircle } from 'lucide-react'
+import { useEffect } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { Row, Section, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
@@ -62,7 +64,24 @@ export function App() {
     },
   })
   const install = useAction(installUpdate)
+  const { reset: resetInstall } = install
   // `install_update` answers before the quit handshake runs; `isSuccess` holds until the process is gone.
+  // Cancelling the pre-quit sheet emits `quit-cancel`, which resets the button back to "Install and restart".
+  useEffect(() => {
+    if (!desktop || !isTauri()) return
+    let gone = false
+    let off: (() => void) | undefined
+    void listen('quit-cancel', () => resetInstall())
+      .then((u) => {
+        if (gone) u()
+        else off = u
+      })
+      .catch(() => undefined)
+    return () => {
+      gone = true
+      off?.()
+    }
+  }, [desktop, resetInstall])
   const restarting = install.isPending || install.isSuccess
 
   return (

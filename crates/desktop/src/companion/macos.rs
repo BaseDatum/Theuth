@@ -34,14 +34,19 @@ pub fn init(app: &AppHandle) -> anyhow::Result<()> {
     set_alive(app, running);
     if running {
         tracing::info!("companion: already running");
-    } else if login_item::sync() == login_item::LoginItemStatus::Enabled {
-        tracing::info!("companion: login item enabled; launchd starts it (130 R1-2)");
-    } else if let Some(path) = locate() {
-        launch(app, &path);
     } else {
-        tracing::info!(
-            "companion: no bundle at Contents/{NESTED} and ${DEV_ENV} unset; not launching"
-        );
+        let _ = login_item::sync();
+        // Always launch when not running, even if `SMAppService` is `Enabled`: after
+        // `companion::terminate()` exits 0 on quit or update ("Install and restart"),
+        // launchd will not relaunch the login item until the next login. The companion's
+        // own single-instance guard in `main.swift` deduplicates any simultaneous launch at login.
+        if let Some(path) = locate() {
+            launch(app, &path);
+        } else {
+            tracing::info!(
+                "companion: no bundle at Contents/{NESTED} and ${DEV_ENV} unset; not launching"
+            );
+        }
     }
     watch(app);
     Ok(())

@@ -519,30 +519,31 @@ async fn check_and_apply_with(
             .await
             .with_context(|| updates.display().to_string())?;
         // Private name: another updater (other process or this one's foreground
-        // `--update` beside the tick loop) must never truncate the tarball this
+        // `--update` beside the tick loop) must never truncate the payload this
         // one verified and is about to unpack.
-        let tarball = updates.join(format!(
-            "theuth_{version}.{:016x}.tar.gz.part",
+        let ext = payload_temp_ext(&platform.url);
+        let archive = updates.join(format!(
+            "theuth_{version}.{:016x}.{ext}.part",
             rand::random::<u64>()
         ));
         match download(
             &client,
             &platform.url,
             &platform.signature,
-            &tarball,
+            &archive,
             pubkey_b64,
         )
         .await
         {
             Ok(()) => {
-                let result = install(&tarball, exe).await;
-                let _ = std::fs::remove_file(&tarball);
+                let result = install(&archive, exe).await;
+                let _ = std::fs::remove_file(&archive);
                 result?;
                 tracing::info!("update: applied {current} -> {version}");
                 return Ok(done);
             }
             Err(DownloadError::Transport(e)) => {
-                let _ = std::fs::remove_file(&tarball);
+                let _ = std::fs::remove_file(&archive);
                 if has_next {
                     tracing::warn!(
                         "update: download {} (from {endpoint}) failed ({e:#}); trying next endpoint",
@@ -557,7 +558,7 @@ async fn check_and_apply_with(
                 errors.push(format!("{endpoint} (payload {}): {e:#}", platform.url));
             }
             Err(DownloadError::Fatal(e)) => {
-                let _ = std::fs::remove_file(&tarball);
+                let _ = std::fs::remove_file(&archive);
                 return Err(e);
             }
         }
@@ -696,36 +697,56 @@ const HELPER_PREFIX: &str = "theuth-app-parser-";
 /// Prefix of the documents helper beside `theuth` (59 §3.2): the file is
 /// `theuth-documents-<protocol version>`, immutable per version.
 const DOC_HELPER_PREFIX: &str = "theuth-documents-";
-/// Upper bound on one tarball entry. A release `theuth` is ~330 MB today, the
+/// Upper bound on one archive entry. A release `theuth` is ~330 MB today, the
 /// helper ~60 MiB; the bound only stops a runaway header, not a real build.
 const MAX_ENTRY: u64 = 2 << 30;
 /// `theuth.new --app-parser-hash` budget: the probe answers from a constant.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `theuth-app-parser-<64 lowercase hex>`.
-fn is_helper_name(name: &str) -> bool {
-    name.strip_prefix(HELPER_PREFIX).is_some_and(|h| {
-        h.len() == 64
-            && h.bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-    })
+/// Temp-file extension derived from a payload URL (format detection in
+/// [`unpack`] inspects magic bytes rather than the filename).
+fn payload_temp_ext(url: &str) -> &'static str {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    if path.ends_with(".zip") {
+        "zip"
+    } else if path.ends_with(".tar.gz") || path.ends_with(".tgz") {
+        "tar.gz"
+    } else {
+        "pkg"
+    }
 }
 
-/// `theuth-documents-<digits and dots>`.
-fn is_doc_helper_name(name: &str) -> bool {
+/// `theuth-app-parser-<64 lowercase hex>` (with `exe_suffix`, e.g. `""` on Unix
+/// or `".exe"` on Windows).
+fn is_helper_name(name: &str, exe_suffix: &str) -> bool {
+    name.strip_prefix(HELPER_PREFIX)
+        .and_then(|rest| rest.strip_suffix(exe_suffix))
+        .is_some_and(|h| {
+            h.len() == 64
+                && h.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        })
+}
+
+/// `theuth-documents-<digits and dots>` (with `exe_suffix`, e.g. `""` on Unix
+/// or `".exe"` on Windows).
+fn is_doc_helper_name(name: &str, exe_suffix: &str) -> bool {
     name.strip_prefix(DOC_HELPER_PREFIX)
+        .and_then(|rest| rest.strip_suffix(exe_suffix))
         .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
 }
 
-/// Step 3: the payload holds `theuth`, at most one `theuth-app-parser-<hash>` and at most one
-/// `theuth-documents-<version>` (regular files, nothing else). All land beside `exe` as `<name>.new.<pid>-<nonce>`,
-/// `chmod 755`; when the payload ships an app-parser entry, the new `theuth` is asked which
-/// hash it was compiled against and must name the one shipped beside it (the entry is a
-/// compatibility stub since the in-process parser, apps-inproc-as-built-P1.md, and optional so a
-/// later release can drop it); then swap: helper first, then
-/// `theuth`, so a `theuth` that exists always has its helper. Same directory, so each
-/// swap is an atomic rename and the running image is untouched (39 §2.2 `ETXTBSY`);
-/// on Windows the running `theuth.exe` goes through `self-replace` (58 §0.5).
+/// Step 3: the payload (`.tar.gz` on Unix, `.zip` on Windows) holds `t` / `t.exe`,
+/// at most one `theuth-app-parser-<hash>[.exe]` and at most one
+/// `theuth-documents-<version>[.exe]` (regular files, nothing else). All land beside
+/// `exe` as `<stem>.new.<pid>-<nonce>[.exe]`, `chmod 755`; when the payload ships an
+/// app-parser entry, the new `theuth` is asked which hash it was compiled against and
+/// must name the one shipped beside it (the entry is a compatibility stub since the
+/// in-process parser, apps-inproc-as-built-P1.md, and optional so a later release can
+/// drop it); then swap: helper first, then `theuth`, so a `theuth` that exists always
+/// has its helper. Same directory, so each swap is an atomic rename and the running
+/// image is untouched (39 §2.2 `ETXTBSY`); on Windows the running `t.exe` goes
+/// through `self-replace` (58 §0.5).
 /// The staging names are private to this install (created with `create_new`),
 /// so two updaters aimed at one `theuth` never probe, rename, or delete each
 /// other's files: the pair that lands is always the pair that was probed. A
@@ -736,27 +757,27 @@ fn is_doc_helper_name(name: &str) -> bool {
 // ponytail: helpers accumulate one file per library hash; sweep them from a
 // place that knows every live `theuth` (a `t --gc-helpers` on the newest
 // binary) if the directory ever gets noisy.
-async fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
+async fn install(archive: &Path, exe: &Path) -> anyhow::Result<()> {
     let dir = exe.parent().context("current_exe has no parent")?;
     let tag = format!(".new.{}-{:016x}", std::process::id(), rand::random::<u64>());
     let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let result = match unpack(tarball, exe, dir, &tag, &mut staged) {
+    let result = match unpack(archive, exe, dir, &tag, &mut staged) {
         // `unpack` sorts `t` last.
         Ok(hash) => match &hash {
             Some(hash) => probe(&staged[staged.len() - 1].0, hash).await,
             None => Ok(()),
         }
         .and_then(|()| {
-                for (new, dest) in &staged {
-                    if dest != exe && dest.exists() {
-                        let _ = std::fs::remove_file(new);
-                        continue;
-                    }
-                    platform::files::replace_executable(new, dest)
-                        .with_context(|| format!("replace {}", dest.display()))?;
+            for (new, dest) in &staged {
+                if dest != exe && dest.exists() {
+                    let _ = std::fs::remove_file(new);
+                    continue;
                 }
-                Ok(())
-            }),
+                platform::files::replace_executable(new, dest)
+                    .with_context(|| format!("replace {}", dest.display()))?;
+            }
+            Ok(())
+        }),
         Err(e) => Err(e),
     };
     if result.is_err() {
@@ -796,73 +817,262 @@ async fn probe(new_theuth: &Path, hash: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Extract the validated entries to `<dest><tag>`, each created fresh
-/// (`create_new`) so the path is provably this install's; `staged` is filled in
-/// commit order (helpers, then `theuth`), including on error so the caller can
-/// clean up. Returns the app parser entry's hash, if the payload has one.
-fn unpack(
-    tarball: &Path,
-    exe: &Path,
-    dir: &Path,
-    tag: &str,
-    staged: &mut Vec<(PathBuf, PathBuf)>,
-) -> anyhow::Result<Option<String>> {
-    let file = std::fs::File::open(tarball).with_context(|| tarball.display().to_string())?;
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
-    let mut theuth = false;
-    let mut helper: Option<String> = None;
-    let mut doc_helper = false;
-    for entry in archive.entries().context("tarball")? {
-        let mut entry = entry.context("tarball entry")?;
-        let path = entry.path().context("tarball entry path")?;
-        let mut components = path.components();
-        let name = match (components.next(), components.next()) {
-            (Some(std::path::Component::Normal(n)), None) => n.to_str(),
-            _ => None,
+enum ArchiveFormat {
+    TarGz,
+    Zip,
+}
+
+fn detect_archive_format(file: &mut std::fs::File) -> anyhow::Result<ArchiveFormat> {
+    use std::io::{Read as _, Seek as _};
+
+    let mut magic = [0u8; 4];
+    let mut n = 0;
+    while n < magic.len() {
+        let read = file.read(&mut magic[n..]).context("read archive header")?;
+        if read == 0 {
+            break;
         }
-        .with_context(|| format!("tarball entry {path:?}: not a bare file name"))?
-        .to_owned();
-        if entry.header().entry_type() != tar::EntryType::Regular {
-            anyhow::bail!("tarball entry `{name}`: not a regular file");
+        n += read;
+    }
+    file.rewind().context("rewind archive")?;
+
+    let head = &magic[..n];
+    if head == b"PK\x03\x04" || head == b"PK\x05\x06" {
+        Ok(ArchiveFormat::Zip)
+    } else if head.starts_with(b"\x1f\x8b") {
+        Ok(ArchiveFormat::TarGz)
+    } else {
+        anyhow::bail!("unrecognized update archive format (magic: {head:02x?})");
+    }
+}
+
+fn exe_suffix_for(exe: &Path) -> &'static str {
+    if exe
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+    {
+        ".exe"
+    } else {
+        ""
+    }
+}
+
+fn validate_bare_name(raw: &str) -> anyhow::Result<&str> {
+    if raw.is_empty() || raw == "." || raw == ".." || raw.contains(['/', '\\', '\0', ':']) {
+        anyhow::bail!("invalid path characters");
+    }
+    let mut components = Path::new(raw).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(raw),
+        _ => anyhow::bail!("not a single path component"),
+    }
+}
+
+struct UnpackState<'a> {
+    exe: &'a Path,
+    dir: &'a Path,
+    tag: &'a str,
+    exe_suffix: &'a str,
+    cli_name: String,
+    theuth: bool,
+    helper: Option<String>,
+    doc_helper: bool,
+}
+
+impl<'a> UnpackState<'a> {
+    fn new(exe: &'a Path, dir: &'a Path, tag: &'a str, exe_suffix: &'a str) -> Self {
+        Self {
+            exe,
+            dir,
+            tag,
+            exe_suffix,
+            cli_name: format!("t{exe_suffix}"),
+            theuth: false,
+            helper: None,
+            doc_helper: false,
         }
-        let size = entry.header().size().context("tarball entry size")?;
-        if size > MAX_ENTRY {
-            anyhow::bail!("tarball entry `{name}`: {size} bytes exceeds {MAX_ENTRY}");
-        }
-        let (dup, dest) = if name == "t" {
-            (std::mem::replace(&mut theuth, true), exe.to_path_buf())
-        } else if is_helper_name(&name) {
+    }
+
+    fn stage_entry(
+        &mut self,
+        name: &str,
+        reader: &mut impl std::io::Read,
+        staged: &mut Vec<(PathBuf, PathBuf)>,
+    ) -> anyhow::Result<()> {
+        let (dup, dest) = if name == self.cli_name {
             (
-                helper
-                    .replace(name[HELPER_PREFIX.len()..].to_owned())
-                    .is_some(),
-                dir.join(&name),
+                std::mem::replace(&mut self.theuth, true),
+                self.exe.to_path_buf(),
             )
-        } else if is_doc_helper_name(&name) {
-            (std::mem::replace(&mut doc_helper, true), dir.join(&name))
+        } else if is_helper_name(name, self.exe_suffix) {
+            let hash = name
+                .strip_prefix(HELPER_PREFIX)
+                .and_then(|rest| rest.strip_suffix(self.exe_suffix))
+                .expect("validated by is_helper_name");
+            (
+                self.helper.replace(hash.to_owned()).is_some(),
+                self.dir.join(name),
+            )
+        } else if is_doc_helper_name(name, self.exe_suffix) {
+            (
+                std::mem::replace(&mut self.doc_helper, true),
+                self.dir.join(name),
+            )
         } else {
-            anyhow::bail!("tarball entry `{name}`: unexpected");
+            anyhow::bail!("archive entry `{name}`: unexpected");
         };
         if dup {
-            anyhow::bail!("tarball entry `{name}`: duplicate");
+            anyhow::bail!("archive entry `{name}`: duplicate");
         }
-        let new = dir.join(format!("{name}{tag}"));
+        let stem = name.strip_suffix(self.exe_suffix).unwrap_or(name);
+        let new = self
+            .dir
+            .join(format!("{stem}{}{}", self.tag, self.exe_suffix));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&new)
             .with_context(|| new.display().to_string())?;
         staged.push((new.clone(), dest));
-        std::io::copy(&mut entry, &mut file).with_context(|| new.display().to_string())?;
+        let copied = std::io::copy(&mut std::io::Read::take(reader, MAX_ENTRY + 1), &mut file)
+            .with_context(|| new.display().to_string())?;
+        if copied > MAX_ENTRY {
+            anyhow::bail!("archive entry `{name}`: exceeds {MAX_ENTRY} bytes");
+        }
         drop(file);
         platform::files::set_executable(&new).with_context(|| new.display().to_string())?;
+        Ok(())
     }
-    if !theuth {
-        anyhow::bail!("tarball has no `t` entry");
+
+    fn finish(self, staged: &mut [(PathBuf, PathBuf)]) -> anyhow::Result<Option<String>> {
+        if !self.theuth {
+            anyhow::bail!("archive has no `{}` entry", self.cli_name);
+        }
+        // Commit order: helper first, `t` last.
+        staged.sort_by_key(|(_, dest)| dest == self.exe);
+        Ok(self.helper)
     }
-    // Commit order: helper first, `t` last.
-    staged.sort_by_key(|(_, dest)| dest == exe);
-    Ok(helper)
+}
+
+/// Extract the validated entries from a `.tar.gz` or `.zip` payload to
+/// `<stem><tag><exe_suffix>`, each created fresh (`create_new`) so the path is
+/// provably this install's; `staged` is filled in commit order (helpers, then
+/// `theuth`), including on error so the caller can clean up. Returns the app
+/// parser entry's 64-hex hash (without any `.exe` suffix), if the payload has one.
+fn unpack(
+    archive_path: &Path,
+    exe: &Path,
+    dir: &Path,
+    tag: &str,
+    staged: &mut Vec<(PathBuf, PathBuf)>,
+) -> anyhow::Result<Option<String>> {
+    unpack_with_suffix(archive_path, exe, dir, tag, exe_suffix_for(exe), staged)
+}
+
+fn unpack_with_suffix(
+    archive_path: &Path,
+    exe: &Path,
+    dir: &Path,
+    tag: &str,
+    exe_suffix: &str,
+    staged: &mut Vec<(PathBuf, PathBuf)>,
+) -> anyhow::Result<Option<String>> {
+    let mut file =
+        std::fs::File::open(archive_path).with_context(|| archive_path.display().to_string())?;
+    let format = detect_archive_format(&mut file)?;
+    let mut state = UnpackState::new(exe, dir, tag, exe_suffix);
+    match format {
+        ArchiveFormat::TarGz => {
+            let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+            for entry in archive.entries().context("tarball")? {
+                let mut entry = entry.context("tarball entry")?;
+                let name = {
+                    let path = entry.path().context("tarball entry path")?;
+                    let raw = path
+                        .to_str()
+                        .with_context(|| format!("tarball entry {path:?}: not a bare file name"))?;
+                    validate_bare_name(raw)
+                        .with_context(|| format!("tarball entry {path:?}: not a bare file name"))?
+                        .to_owned()
+                };
+                if entry.header().entry_type() != tar::EntryType::Regular {
+                    anyhow::bail!("tarball entry `{name}`: not a regular file");
+                }
+                let size = entry.header().size().context("tarball entry size")?;
+                if size > MAX_ENTRY {
+                    anyhow::bail!("tarball entry `{name}`: {size} bytes exceeds {MAX_ENTRY}");
+                }
+                state.stage_entry(&name, &mut entry, staged)?;
+            }
+        }
+        ArchiveFormat::Zip => {
+            let mut archive = zip::ZipArchive::new(file).context("zip archive")?;
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i).context("zip entry")?;
+                let raw = entry.name().context("zip entry name")?.into_owned();
+                let name = validate_bare_name(&raw)
+                    .with_context(|| format!("zip entry {raw:?}: not a bare file name"))?
+                    .to_owned();
+                if !entry.is_file()
+                    || entry.unix_mode().is_some_and(|m| {
+                        let ft = m & 0o170000;
+                        ft != 0 && ft != 0o100000
+                    })
+                {
+                    anyhow::bail!("zip entry `{name}`: not a regular file");
+                }
+                let size = entry.size();
+                if size > MAX_ENTRY {
+                    anyhow::bail!("zip entry `{name}`: {size} bytes exceeds {MAX_ENTRY}");
+                }
+                state.stage_entry(&name, &mut entry, staged)?;
+            }
+        }
+    }
+    state.finish(staged)
+}
+
+/// True when `exe` is the desktop app's bundled `t` sidecar rather than a
+/// standalone CLI install (39 §3.3). The desktop app updates the whole bundle
+/// through `tauri-plugin-updater`; running the CLI self-updater inside the
+/// sidecar would conflict with the bundle (Windows) or report bogus
+/// "`t --update` on the node" prompts (Linux AppImage / `.deb` / `.rpm`).
+fn is_bundled_sidecar(exe: &Path, appdir: Option<&Path>, has_parent_pid: bool) -> bool {
+    if has_parent_pid {
+        return true;
+    }
+    let s = exe.to_string_lossy();
+    if s.contains(".app/Contents/MacOS/") || s.contains(".app\\Contents\\MacOS\\") {
+        return true;
+    }
+    if appdir.is_some_and(|d| !d.as_os_str().is_empty() && exe.starts_with(d)) {
+        return true;
+    }
+    exe.parent().is_some_and(|dir| {
+        dir.join("theuth-desktop").is_file() || dir.join("theuth-desktop.exe").is_file()
+    })
+}
+
+fn running_as_bundled_sidecar() -> bool {
+    if std::env::var_os("THEUTH_PARENT_PID").is_some() {
+        return true;
+    }
+    let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
+    let appdir_canon = appdir.as_deref().and_then(|d| d.canonicalize().ok());
+    let Ok(raw_exe) = std::env::current_exe() else {
+        return false;
+    };
+    if is_bundled_sidecar(&raw_exe, appdir.as_deref(), false) {
+        return true;
+    }
+    raw_exe.canonicalize().is_ok_and(|canon_exe| {
+        canon_exe != raw_exe
+            && is_bundled_sidecar(
+                &canon_exe,
+                appdir_canon.as_deref().or(appdir.as_deref()),
+                false,
+            )
+    })
 }
 
 /// The plugin (39 §3.2): registers [`UpdateActor`] as [`UPDATE_ACTOR`]; runs
@@ -910,10 +1120,7 @@ impl runtime::Plugin for UpdatePlugin {
             tracing::debug!("update: debug build, not checking");
             return Ok(());
         }
-        let bundled = std::env::current_exe()
-            .and_then(|p| p.canonicalize())
-            .is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"));
-        if bundled {
+        if running_as_bundled_sidecar() {
             tracing::debug!("update: bundled sidecar, the app owns it");
             return Ok(());
         }
@@ -2272,5 +2479,435 @@ mod tests {
 
         rt.shutdown.cancel();
         assert!(!task.await.unwrap());
+    }
+
+    enum ZipEntry<'a> {
+        File(&'a str, &'a [u8]),
+        Dir(&'a str),
+        Symlink(&'a str, &'a str),
+    }
+
+    fn zip_payload(dir: &Path, entries: &[ZipEntry<'_>]) -> PathBuf {
+        use std::io::Write as _;
+
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for entry in entries {
+            match entry {
+                ZipEntry::File(name, data) => {
+                    w.start_file(*name, opts).unwrap();
+                    w.write_all(data).unwrap();
+                }
+                ZipEntry::Dir(name) => {
+                    w.add_directory(*name, opts).unwrap();
+                }
+                ZipEntry::Symlink(name, target) => {
+                    w.add_symlink(*name, *target, opts).unwrap();
+                }
+            }
+        }
+        let bytes = w.finish().unwrap().into_inner();
+        let path = dir.join("theuth_0.2.0.zip.part");
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn installed_win() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("t.exe");
+        std::fs::write(&exe, b"old-win").unwrap();
+        std::fs::write(
+            dir.path().join(format!("{HELPER_PREFIX}{OLD_HASH}.exe")),
+            b"old win helper",
+        )
+        .unwrap();
+        (dir, exe)
+    }
+
+    #[test]
+    fn is_helper_name_accepts_unix_and_windows_suffixes() {
+        let unix_helper = format!("{HELPER_PREFIX}{HASH}");
+        let win_helper = format!("{HELPER_PREFIX}{HASH}.exe");
+        let upper_unix = format!("{HELPER_PREFIX}{}", HASH.to_uppercase());
+        let upper_win = format!("{HELPER_PREFIX}{}.exe", HASH.to_uppercase());
+
+        // Unix (`""`).
+        assert!(is_helper_name(&unix_helper, ""));
+        assert!(!is_helper_name(&win_helper, ""));
+        assert!(!is_helper_name("theuth-app-parser", ""));
+        assert!(!is_helper_name("theuth-app-parser-abc123", ""));
+        assert!(!is_helper_name(&upper_unix, ""));
+        assert!(is_doc_helper_name("theuth-documents-59.5", ""));
+        assert!(!is_doc_helper_name("theuth-documents-59.5.exe", ""));
+
+        // Windows (`".exe"`).
+        assert!(is_helper_name(&win_helper, ".exe"));
+        assert!(!is_helper_name(&unix_helper, ".exe"));
+        assert!(!is_helper_name("theuth-app-parser.exe", ".exe"));
+        assert!(!is_helper_name("theuth-app-parser-.exe", ".exe"));
+        assert!(!is_helper_name("theuth-app-parser-abc123.exe", ".exe"));
+        assert!(!is_helper_name(&format!("{HELPER_PREFIX}{}a.exe", HASH), ".exe"));
+        assert!(!is_helper_name(&upper_win, ".exe"));
+        assert!(is_doc_helper_name("theuth-documents-59.5.exe", ".exe"));
+        assert!(!is_doc_helper_name("theuth-documents-59.5", ".exe"));
+        assert!(!is_doc_helper_name("theuth-documents-59.5.new.exe", ".exe"));
+    }
+
+    #[test]
+    fn payload_temp_ext_derives_from_url() {
+        assert_eq!(
+            payload_temp_ext("https://example.com/theuth_2.32.0_windows-x86_64.zip"),
+            "zip"
+        );
+        assert_eq!(
+            payload_temp_ext("https://example.com/theuth.zip?X-Amz-Signature=deadbeef"),
+            "zip"
+        );
+        assert_eq!(
+            payload_temp_ext("https://example.com/theuth_2.32.0_macos-aarch64.tar.gz"),
+            "tar.gz"
+        );
+        assert_eq!(payload_temp_ext("https://example.com/theuth.tgz#frag"), "tar.gz");
+        assert_eq!(payload_temp_ext("https://example.com/latest/payload"), "pkg");
+    }
+
+    #[test]
+    fn is_bundled_sidecar_covers_macos_windows_linux_and_standalone() {
+        // macOS .app bundle (both slash styles).
+        assert!(is_bundled_sidecar(
+            Path::new("/Applications/theuth.app/Contents/MacOS/t"),
+            None,
+            false,
+        ));
+        assert!(is_bundled_sidecar(
+            Path::new(r"C:\theuth.app\Contents\MacOS\t"),
+            None,
+            false,
+        ));
+
+        // Windows desktop bundle: sibling `theuth-desktop.exe` beside `t.exe`.
+        let win_bundle = tempfile::tempdir().unwrap();
+        let win_exe = win_bundle.path().join("t.exe");
+        std::fs::write(&win_exe, b"").unwrap();
+        std::fs::write(win_bundle.path().join("theuth-desktop.exe"), b"").unwrap();
+        assert!(is_bundled_sidecar(&win_exe, None, false));
+
+        // Windows desktop-spawned sidecar via `THEUTH_PARENT_PID`.
+        assert!(is_bundled_sidecar(
+            Path::new(r"C:\tools\t.exe"),
+            None,
+            true,
+        ));
+
+        // Linux package bundle (.deb/.rpm/AppImage): sibling `theuth-desktop` beside `t`.
+        let linux_bundle = tempfile::tempdir().unwrap();
+        let linux_exe = linux_bundle.path().join("t");
+        std::fs::write(&linux_exe, b"").unwrap();
+        std::fs::write(linux_bundle.path().join("theuth-desktop"), b"").unwrap();
+        assert!(is_bundled_sidecar(&linux_exe, None, false));
+
+        // Linux AppImage mount via `$APPDIR`.
+        let appdir = Path::new("/tmp/.mount_theuthAbCdEf");
+        assert!(is_bundled_sidecar(
+            Path::new("/tmp/.mount_theuthAbCdEf/usr/bin/t"),
+            Some(appdir),
+            false,
+        ));
+        // Unrelated `$APPDIR` in environment must not suppress standalone CLI updates.
+        assert!(!is_bundled_sidecar(
+            Path::new("/usr/local/bin/t"),
+            Some(appdir),
+            false,
+        ));
+        // Empty `$APPDIR` must not match.
+        assert!(!is_bundled_sidecar(
+            Path::new("/usr/local/bin/t"),
+            Some(Path::new("")),
+            false,
+        ));
+
+        // Standalone CLI directory without `theuth-desktop` / `theuth-desktop.exe`.
+        let standalone = tempfile::tempdir().unwrap();
+        let standalone_unix = standalone.path().join("t");
+        let standalone_win = standalone.path().join("t.exe");
+        std::fs::write(&standalone_unix, b"").unwrap();
+        std::fs::write(&standalone_win, b"").unwrap();
+        assert!(!is_bundled_sidecar(&standalone_unix, None, false));
+        assert!(!is_bundled_sidecar(&standalone_win, None, false));
+
+        // A subdirectory named `theuth-desktop` is not a sibling executable file.
+        std::fs::create_dir(standalone.path().join("theuth-desktop")).unwrap();
+        assert!(!is_bundled_sidecar(&standalone_unix, None, false));
+
+        // Homebrew Cellar install is standalone (updated via `brew upgrade`).
+        assert!(!is_bundled_sidecar(
+            Path::new("/opt/homebrew/Cellar/theuth/2.32.0/bin/t"),
+            None,
+            false,
+        ));
+    }
+
+    #[tokio::test]
+    async fn unpack_zip_stages_windows_exe_and_helpers() {
+        let (dir, exe) = installed_win();
+        let helper = format!("{HELPER_PREFIX}{HASH}.exe");
+        let doc_helper = format!("{DOC_HELPER_PREFIX}59.5.exe");
+        let zp = zip_payload(
+            dir.path(),
+            &[
+                ZipEntry::File("t.exe", b"new-win-cli-binary"),
+                ZipEntry::File(&helper, b"new-win-helper-binary"),
+                ZipEntry::File(&doc_helper, b"new-win-docs-binary"),
+            ],
+        );
+
+        let mut staged = Vec::new();
+        let hash = unpack(&zp, &exe, dir.path(), ".new.42-deadbeef", &mut staged).unwrap();
+        // Hash passed to `probe` must NOT carry `.exe`.
+        assert_eq!(hash.as_deref(), Some(HASH));
+        assert_eq!(staged.len(), 3);
+        // `t.exe` is sorted last so helpers commit first.
+        assert_eq!(staged[2].1, exe);
+        assert_eq!(
+            staged[2].0.file_name().and_then(|n| n.to_str()),
+            Some("t.new.42-deadbeef.exe")
+        );
+        assert_eq!(std::fs::read(&staged[2].0).unwrap(), b"new-win-cli-binary");
+
+        // Helper keeps `.exe` on both staged path and destination path beside `t.exe`.
+        let helper_dest = dir.path().join(&helper);
+        let helper_stage = staged
+            .iter()
+            .find(|(_, dest)| *dest == helper_dest)
+            .expect("helper staged with .exe dest");
+        let expected_helper_stage = format!("{HELPER_PREFIX}{HASH}.new.42-deadbeef.exe");
+        assert_eq!(
+            helper_stage.0.file_name().and_then(|n| n.to_str()),
+            Some(expected_helper_stage.as_str())
+        );
+        assert_eq!(
+            std::fs::read(&helper_stage.0).unwrap(),
+            b"new-win-helper-binary"
+        );
+
+        let doc_dest = dir.path().join(&doc_helper);
+        let doc_stage = staged
+            .iter()
+            .find(|(_, dest)| *dest == doc_dest)
+            .expect("doc helper staged with .exe dest");
+        assert_eq!(
+            std::fs::read(&doc_stage.0).unwrap(),
+            b"new-win-docs-binary"
+        );
+
+        for (new, _) in &staged {
+            let _ = std::fs::remove_file(new);
+        }
+
+        // End-to-end `install` of a `t.exe`-only zip (no app-parser probe) works on every OS.
+        let zp_only_t = zip_payload(dir.path(), &[ZipEntry::File("t.exe", b"standalone-win")]);
+        install(&zp_only_t, &exe).await.unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"standalone-win");
+        assert_eq!(
+            std::fs::read(dir.path().join(format!("{HELPER_PREFIX}{OLD_HASH}.exe"))).unwrap(),
+            b"old win helper"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn install_zip_replaces_exe_and_probes_helper() {
+        let (dir, exe) = installed_win();
+        let helper = format!("{HELPER_PREFIX}{HASH}.exe");
+        let old_helper = format!("{HELPER_PREFIX}{OLD_HASH}.exe");
+        let new_theuth = fake_theuth(HASH);
+        let zp = zip_payload(
+            dir.path(),
+            &[
+                ZipEntry::File(&helper, b"win-helper"),
+                ZipEntry::File("t.exe", &new_theuth),
+            ],
+        );
+
+        install(&zp, &exe).await.unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), new_theuth);
+        assert_eq!(
+            std::fs::read(dir.path().join(&helper)).unwrap(),
+            b"win-helper"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(&old_helper)).unwrap(),
+            b"old win helper"
+        );
+        assert_eq!(
+            names(dir.path()),
+            sorted(&["t.exe", &helper, &old_helper, "theuth_0.2.0.zip.part"]),
+            "no .new leftovers"
+        );
+
+        // Probe mismatch in a `.zip` must abort and leave `t.exe` untouched.
+        let wrong_t = fake_theuth(OLD_HASH);
+        let zp_bad = zip_payload(
+            dir.path(),
+            &[
+                ZipEntry::File(&helper, b"win-helper-2"),
+                ZipEntry::File("t.exe", &wrong_t),
+            ],
+        );
+        install(&zp_bad, &exe).await.unwrap_err();
+        assert_eq!(std::fs::read(&exe).unwrap(), new_theuth);
+        assert_eq!(
+            names(dir.path()),
+            sorted(&["t.exe", &helper, &old_helper, "theuth_0.2.0.zip.part"]),
+            "failed zip probe must clean up staged files"
+        );
+    }
+
+    #[tokio::test]
+    async fn unpack_zip_rejects_bad_payloads_and_leaves_installation_intact() {
+        let helper = format!("{HELPER_PREFIX}{HASH}.exe");
+        let old_helper = format!("{HELPER_PREFIX}{OLD_HASH}.exe");
+        let unix_helper = format!("{HELPER_PREFIX}{HASH}");
+        let upper = format!("{HELPER_PREFIX}{}.exe", HASH.to_uppercase());
+
+        let cases: Vec<(&str, Vec<ZipEntry<'_>>)> = vec![
+            (
+                "traversal forward slash",
+                vec![ZipEntry::File("../evil.exe", b"new"), ZipEntry::File(&helper, b"h")],
+            ),
+            (
+                "traversal backslash",
+                vec![
+                    ZipEntry::File(r"..\evil.exe", b"new"),
+                    ZipEntry::File(&helper, b"h"),
+                ],
+            ),
+            (
+                "absolute unix path",
+                vec![ZipEntry::File("/t.exe", b"new"), ZipEntry::File(&helper, b"h")],
+            ),
+            (
+                "drive-qualified windows path",
+                vec![
+                    ZipEntry::File(r"C:\t.exe", b"new"),
+                    ZipEntry::File(&helper, b"h"),
+                ],
+            ),
+            (
+                "nested forward slash",
+                vec![
+                    ZipEntry::File("bin/t.exe", b"new"),
+                    ZipEntry::File(&helper, b"h"),
+                ],
+            ),
+            (
+                "nested backslash",
+                vec![
+                    ZipEntry::File(r"bin\t.exe", b"new"),
+                    ZipEntry::File(&helper, b"h"),
+                ],
+            ),
+            (
+                "unexpected stray file",
+                vec![
+                    ZipEntry::File("t.exe", b"new"),
+                    ZipEntry::File(&helper, b"h"),
+                    ZipEntry::File("stray.dll", b"x"),
+                ],
+            ),
+            (
+                "cli binary missing .exe suffix",
+                vec![ZipEntry::File("t", b"new"), ZipEntry::File(&helper, b"h")],
+            ),
+            (
+                "helper missing .exe suffix",
+                vec![
+                    ZipEntry::File("t.exe", b"new"),
+                    ZipEntry::File(&unix_helper, b"h"),
+                ],
+            ),
+            (
+                "short helper hash",
+                vec![
+                    ZipEntry::File("t.exe", b"new"),
+                    ZipEntry::File("theuth-app-parser-abc123.exe", b"h"),
+                ],
+            ),
+            (
+                "uppercase helper hash",
+                vec![
+                    ZipEntry::File("t.exe", b"new"),
+                    ZipEntry::File(&upper, b"h"),
+                ],
+            ),
+            (
+                "unqualified helper",
+                vec![
+                    ZipEntry::File("t.exe", b"new"),
+                    ZipEntry::File("theuth-app-parser.exe", b"h"),
+                ],
+            ),
+            (
+                "two helpers",
+                vec![
+                    ZipEntry::File("t.exe", b"new"),
+                    ZipEntry::File(&helper, b"h1"),
+                    ZipEntry::File(&old_helper, b"h2"),
+                ],
+            ),
+            ("no t.exe", vec![ZipEntry::File(&helper, b"h")]),
+            ("empty zip", vec![]),
+            (
+                "directory entry",
+                vec![
+                    ZipEntry::File("t.exe", b"new"),
+                    ZipEntry::File(&helper, b"h"),
+                    ZipEntry::Dir("d/"),
+                ],
+            ),
+            (
+                "symlink t.exe",
+                vec![
+                    ZipEntry::Symlink("t.exe", "/etc/passwd"),
+                    ZipEntry::File(&helper, b"h"),
+                ],
+            ),
+            (
+                "symlink helper",
+                vec![
+                    ZipEntry::File("t.exe", b"new"),
+                    ZipEntry::Symlink(&helper, "/etc/passwd"),
+                ],
+            ),
+        ];
+
+        for (what, entries) in cases {
+            let (dir, exe) = installed_win();
+            let zp = zip_payload(dir.path(), &entries);
+            let err = install(&zp, &exe).await.unwrap_err();
+            assert_eq!(std::fs::read(&exe).unwrap(), b"old-win", "{what}: {err:#}");
+            assert_eq!(
+                std::fs::read(dir.path().join(&old_helper)).unwrap(),
+                b"old win helper",
+                "{what}"
+            );
+            assert_eq!(
+                names(dir.path()),
+                sorted(&["t.exe", &old_helper, "theuth_0.2.0.zip.part"]),
+                "{what}: staged files must be removed ({err:#})"
+            );
+        }
+
+        // Unrecognized magic bytes fail cleanly with a descriptive error.
+        let (dir, exe) = installed_win();
+        let junk = dir.path().join("theuth_0.2.0.pkg.part");
+        std::fs::write(&junk, b"not an archive").unwrap();
+        let err = install(&junk, &exe).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("unrecognized update archive format"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old-win");
     }
 }

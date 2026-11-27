@@ -36,7 +36,7 @@ import { installPagePreview } from '@/lib/page-preview'
 import { startWebProfileSync } from '@/lib/web-profile'
 import { startWebViewAgent } from '@/lib/web-view-agent'
 import { startElementForms } from '@/lib/element-form'
-import { container, isDesktop, isIos } from '@/lib/platform'
+import { isDesktop, isIos } from '@/lib/platform'
 import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
 import { onOwnerChanged, onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
 import { usePrivateOwner } from '@/lib/private'
@@ -439,8 +439,8 @@ function useTauri(): void {
       offSlices = scope(LOCAL).sessions.subscribe((s) => useQuit.getState().send({ type: 'slices', slices: s.sessions }))
     }
     void primeNotifications()
-    // The updater swaps a `.app` bundle (update.rs `bundle_dir`): macOS only.
-    if (container() === 'macos') startUpdateListener()
+    // The updater handles macOS `.app`, Windows NSIS, and Linux AppImage (and safely reports package-managed Linux installs).
+    if (isDesktop()) startUpdateListener()
     // 53 decision 9: the eye applies to both windows from startup, not only on toggle; the command
     // exists on every desktop OS and no-ops where `island_capabilities().hide_from_share` is false.
     if (isDesktop()) void setHiddenFromCapture(useMeetingSettings.getState().hidden)

@@ -79,8 +79,13 @@ pub fn alive() -> bool {
 /// updater replaces `companion\`, which it cannot do while the exe runs). Blocks the caller: the quit worker
 /// (163 D1), or `RunEvent::Exit` for an exit that bypassed it. Any thread: `FindWindowW`, `PostMessageW`
 /// (posts, never waits on the rail's thread), `OpenMutexW` and `TerminateProcess` have no thread affinity.
+/// Also terminates any spawned child still in [`LAUNCHED`] that has not yet created its mutex.
 pub fn terminate() {
+    let mut launched = LAUNCHED.lock().unwrap_or_else(|p| p.into_inner()).take();
     if !mutex_held() {
+        if let Some(mut l) = launched {
+            terminate_launched(&mut l.child, QUIT_GRACE);
+        }
         return;
     }
     // SAFETY: plain Win32 queries; a null HWND is handled.
@@ -98,7 +103,16 @@ pub fn terminate() {
         std::thread::sleep(Duration::from_millis(50));
     }
     if !mutex_held() {
+        if let Some(mut l) = launched {
+            let _ = l.child.try_wait();
+        }
         return;
+    }
+    if pid == 0
+        && let Some(l) = launched.as_mut()
+        && matches!(l.child.try_wait(), Ok(None))
+    {
+        pid = l.child.id();
     }
     tracing::warn!("companion: did not quit in {QUIT_GRACE:?}; TerminateProcess");
     if pid != 0 {
@@ -116,6 +130,25 @@ pub fn terminate() {
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/IM", EXE])
             .status();
+    }
+}
+
+/// Kill a companion child we just spawned if it is still running before creating its mutex,
+/// and wait up to `grace` for it to exit so the exe handle is released before an updater runs.
+fn terminate_launched(child: &mut std::process::Child, grace: Duration) {
+    if !matches!(child.try_wait(), Ok(None)) {
+        return;
+    }
+    tracing::info!(
+        pid = child.id(),
+        "companion: terminating starting child before mutex creation"
+    );
+    if let Err(e) = child.kill() {
+        tracing::warn!(error = %e, "companion: kill starting child");
+    }
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -285,5 +318,22 @@ mod tests {
             (false, false)
         );
         assert_eq!(verdict(false, Some((true, LAUNCH_GRACE))), (false, false));
+    }
+
+    #[test]
+    fn terminate_launched_kills_a_starting_child_before_mutex() {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+        terminate_launched(&mut child, QUIT_GRACE);
+        assert!(
+            matches!(child.try_wait(), Ok(Some(_))),
+            "starting child should have exited"
+        );
     }
 }
