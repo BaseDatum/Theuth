@@ -131344,6 +131344,34 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.AskReply": {
+        "description": "What `vault_peer_ask` answers.",
+        "properties": {
+          "key": {
+            "description": "base64 K_dev, when approved at once.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The owner's name (labels the node's device method).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "default": false,
+            "description": "A prompt is showing on the owner.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pending"
+        ],
+        "type": "object"
+      },
       "method.secrets.output.AwsFormat": {
         "description": "AWS value shape for a `secret_request` destination.",
         "oneOf": [
@@ -131934,6 +131962,31 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.Kind": {
+        "description": "An unlock method's kind.",
+        "oneOf": [
+          {
+            "const": "keychain",
+            "description": "OS keychain (desktops).",
+            "type": "string"
+          },
+          {
+            "const": "password",
+            "description": "Master password (Argon2id).",
+            "type": "string"
+          },
+          {
+            "const": "device",
+            "description": "A paired owner engine releases the KEK over the mesh.",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "Legacy plaintext `secrets.key` (migrated Linux engines); unprotected.",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.output.ListPage": {
         "description": "One page of [`ExternalBackend::list`].",
         "properties": {
@@ -132009,6 +132062,40 @@
             "type": "object"
           }
         ]
+      },
+      "method.secrets.output.MethodView": {
+        "description": "One unlock method, as lists show it. Never key material.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`keychain` | `password` | `file` | the owner endpoint id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.Kind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "label": {
+            "description": "Human text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label",
+          "created_ms"
+        ],
+        "type": "object"
       },
       "method.secrets.output.RequestId": {
         "description": "Correlates a [`SecretsEvent::Requested`] with its [`Answer`].",
@@ -132389,6 +132476,36 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.UnlockDevice": {
+        "description": "A node this engine unlocks.",
+        "properties": {
+          "auto": {
+            "description": "Approve its unlock requests without a prompt.",
+            "type": "boolean"
+          },
+          "enrolled_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "node": {
+            "description": "Its endpoint id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "name",
+          "auto",
+          "enrolled_ms"
+        ],
+        "type": "object"
+      },
       "method.secrets.output.UnlockRequestView": {
         "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
         "properties": {
@@ -132423,6 +132540,115 @@
           "backend",
           "account",
           "reason"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.UnsealRequestView": {
+        "description": "A prompt waiting on this (owner) engine.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Prompt id.",
+            "type": "string"
+          },
+          "node": {
+            "description": "The asking node's endpoint id.",
+            "type": "string"
+          },
+          "node_name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "purpose": {
+            "description": "`unlock` | `enroll`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "node",
+          "node_name",
+          "purpose",
+          "created_ms"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.VaultStatus": {
+        "description": "`vault_status`.",
+        "properties": {
+          "asking": {
+            "description": "Owner engines a sealed engine is asking right now.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "engine": {
+            "description": "This engine's mesh id, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Why it is sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "description": "Every method.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.output.MethodView"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "This engine's name, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password_set": {
+            "description": "A `password` method exists.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "`unsealed` | `sealed`.",
+            "type": "string"
+          },
+          "unsealed_by": {
+            "description": "`keychain` | `file` | `password` | `device` | `memory`; `None` while sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warning": {
+            "description": "Loud text when the key is not protected.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "engine",
+          "name",
+          "state",
+          "unsealed_by",
+          "methods",
+          "password_set",
+          "warning",
+          "asking",
+          "error"
         ],
         "type": "object"
       },
@@ -132494,6 +132720,31 @@
           "write",
           "delete"
         ],
+        "type": "object"
+      },
+      "method.secrets.receiver.AskReply": {
+        "description": "What `vault_peer_ask` answers.",
+        "properties": {
+          "key": {
+            "description": "base64 K_dev, when approved at once.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The owner's name (labels the node's device method).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "default": false,
+            "description": "A prompt is showing on the owner.",
+            "type": "boolean"
+          }
+        },
         "type": "object"
       },
       "method.secrets.receiver.AwsFormat": {
@@ -133048,6 +133299,31 @@
         },
         "type": "object"
       },
+      "method.secrets.receiver.Kind": {
+        "description": "An unlock method's kind.",
+        "oneOf": [
+          {
+            "const": "keychain",
+            "description": "OS keychain (desktops).",
+            "type": "string"
+          },
+          {
+            "const": "password",
+            "description": "Master password (Argon2id).",
+            "type": "string"
+          },
+          {
+            "const": "device",
+            "description": "A paired owner engine releases the KEK over the mesh.",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "Legacy plaintext `secrets.key` (migrated Linux engines); unprotected.",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.receiver.ListPage": {
         "description": "One page of [`ExternalBackend::list`].",
         "properties": {
@@ -133122,6 +133398,40 @@
             "type": "object"
           }
         ]
+      },
+      "method.secrets.receiver.MethodView": {
+        "description": "One unlock method, as lists show it. Never key material.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`keychain` | `password` | `file` | the owner endpoint id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.Kind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "label": {
+            "description": "Human text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label",
+          "created_ms"
+        ],
+        "type": "object"
       },
       "method.secrets.receiver.RequestId": {
         "description": "Correlates a [`SecretsEvent::Requested`] with its [`Answer`].",
@@ -133490,6 +133800,36 @@
         ],
         "type": "object"
       },
+      "method.secrets.receiver.UnlockDevice": {
+        "description": "A node this engine unlocks.",
+        "properties": {
+          "auto": {
+            "description": "Approve its unlock requests without a prompt.",
+            "type": "boolean"
+          },
+          "enrolled_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "node": {
+            "description": "Its endpoint id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "name",
+          "auto",
+          "enrolled_ms"
+        ],
+        "type": "object"
+      },
       "method.secrets.receiver.UnlockRequestView": {
         "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
         "properties": {
@@ -133524,6 +133864,110 @@
           "backend",
           "account",
           "reason"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.UnsealRequestView": {
+        "description": "A prompt waiting on this (owner) engine.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Prompt id.",
+            "type": "string"
+          },
+          "node": {
+            "description": "The asking node's endpoint id.",
+            "type": "string"
+          },
+          "node_name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "purpose": {
+            "description": "`unlock` | `enroll`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "node",
+          "node_name",
+          "purpose",
+          "created_ms"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.VaultStatus": {
+        "description": "`vault_status`.",
+        "properties": {
+          "asking": {
+            "description": "Owner engines a sealed engine is asking right now.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "engine": {
+            "description": "This engine's mesh id, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Why it is sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "description": "Every method.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.receiver.MethodView"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "This engine's name, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password_set": {
+            "description": "A `password` method exists.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "`unsealed` | `sealed`.",
+            "type": "string"
+          },
+          "unsealed_by": {
+            "description": "`keychain` | `file` | `password` | `device` | `memory`; `None` while sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warning": {
+            "description": "Loud text when the key is not protected.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "methods",
+          "password_set",
+          "asking"
         ],
         "type": "object"
       },
@@ -167530,6 +167974,322 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "vault_add_device",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "owner",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_add_password",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "password",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_answer_unseal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "approve",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "always",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_change_password",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "old",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "new",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_forget_node",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "node",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_peer_ask",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "nonce",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "purpose",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.AskReply"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.AskReply"
+        }
+      },
+      "x-theuth-audience": "mesh",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_peer_grant",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "nonce",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "purpose",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "mesh",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_remove_method",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "vault_rotate",
       "paramStructure": "by-position",
       "params": [],
@@ -167576,6 +168336,181 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "nodes"
+    },
+    {
+      "name": "vault_seal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_set_auto_unlock",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "node",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "auto",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_status",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_unlock_devices",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.output.UnlockDevice"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.receiver.UnlockDevice"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_unseal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "password",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_unseal_requests",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.output.UnsealRequestView"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.receiver.UnsealRequestView"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
     },
     {
       "name": "vision_effort",
