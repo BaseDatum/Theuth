@@ -48,6 +48,7 @@ use crate::communication::{
 };
 
 use crate::CostService;
+#[cfg(not(target_os = "ios"))]
 use crate::acp_child::{AcpChild, CancelObserved};
 use crate::context::{
     ContextBreakdown, ContextEntry, ContextHistory, ContextOwner, ContextPiece, ContextRemoval,
@@ -78,40 +79,42 @@ use crate::peers::{
     WaitPeerTool, node_lines,
 };
 use crate::private::Scratch;
-use crate::skills::{
-    self, AddSkillRepoTool, AddSkillTool, LoadSkillTool, RemoveSkillRepoTool, RemoveSkillTool,
-    SyncSkillsTool,
-};
+#[cfg(not(target_os = "ios"))]
+use crate::skills::{AddSkillRepoTool, RemoveSkillRepoTool, SyncSkillsTool};
+use crate::skills::{self, AddSkillTool, LoadSkillTool, RemoveSkillTool};
 use crate::store::communication::{AcceptExchange, CommError};
 use crate::store::{self, Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
+#[cfg(not(target_os = "ios"))]
 use crate::{
-    AGENT_ACTOR, AcpLogin, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
-    AgentState, AncestorInfo, Ancestors, ArchiveSession, BroadcastOutcome, BroadcastReceipt,
-    BroadcastRequest, BroadcastRow, BroadcastTargets, Cancel, CancelLogin, CancelScope, Compact, CompactStyle,
-    ContextItems, DeleteSession, Delivery, DeskSession, EditTurn, EscalateModel, ForkSession,
-    GetCompactStyle, GetDefaultEffort, GetDefaultModel, GetEscalateModel, GetMaxSalvages,
-    GetMaxToolRounds, GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos,
-    GetVisionModel, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels,
-    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
+    AcpLogin, AddAcp, AddSkillRepo, AwsProfiles, ListAcp, ListAwsProfiles, ListRegistry, ModelRole,
+    Polish, PolishReply, RemoveAcp, RemoveSkillRepo, Rewrite, SetAwsProfile, SyncSkills,
+    cost::CallKind, polish,
+};
+use crate::{
+    AGENT_ACTOR, AddProvider, AddSkill, AgentConfig, AgentEvent, AgentInfo, AgentState,
+    AncestorInfo, Ancestors, ArchiveSession, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
+    BroadcastRow, BroadcastTargets, Cancel, CancelLogin, CancelScope, CellPromote, Compact,
+    CompactStyle, ContextItems, DeleteSession, Delivery, DeskSession, EditTurn, EscalateModel,
+    ForkSession, GetCompactStyle, GetDefaultEffort, GetDefaultModel, GetEscalateModel,
+    GetMaxSalvages, GetMaxToolRounds, GetStreamIdle, GetSubagentModel, GetSubagentTimeout,
+    GetTitleModel, GetTodos, GetVisionModel, Harvest, HistoryEntry, ListAgents, ListLogins,
+    ListModels, ListProviders, ListQueued, ListSessions, ListSkills, LoadSession, LoadSkill,
     Loaded, Login, LoginFinished, LoginInfo, Logout, MarkDesk, ModelInfo, NewRootSession,
     NewSession, PinSession, PinTitle, ProviderInfo, QueuedInput, ReadSession, Redo,
-    RefreshProviderModels, RefreshedModels, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, RenameSession, ResetRuntime, ResolveModel, SearchRefresh,
-    SearchSessionPage, SendInput, SessionActivity, SessionContextBreakdown, SessionModel,
-    SessionRead, SessionSummary, SetCompactStyle, SetCompaction, SetDeskModel, SetEffort,
-    SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel,
-    SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt, SideCall,
-    SideCallable, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
-    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, UserRenameSession, Withdraw, CellPromote,
-    effort_of,
+    RefreshProviderModels, RefreshedModels, Regenerate, RemoveContext, RemoveProvider, RemoveSkill,
+    RenameSession, ResetRuntime, ResolveModel, SearchRefresh, SearchSessionPage, SendInput,
+    SessionActivity, SessionContextBreakdown, SessionModel, SessionRead, SessionSummary,
+    SetCompactStyle, SetCompaction, SetDeskModel, SetEffort, SetEscalateModel, SetMaxSalvages,
+    SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTalk,
+    SetTitleModel, SetToolset, SetVisionModel, ShowPrompt, SideCall, SideCallable, SideReply,
+    SkillBody, SkillMeta, Steer, TALK_COALESCE_MS, TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo,
+    UseSkill, UserRenameSession, Withdraw, effort_of,
 };
 use crate::{
-    AdvisorConfig, DurableStore, GetPolishModel, ModelRole, Polish, PolishReply, Rewrite,
-    SessionCostQuery, SessionKind, SetPolishModel, SpendReportQuery, SubagentsConfig,
-    UnloadSession, cost::CallKind, polish,
+    AdvisorConfig, DurableStore, GetPolishModel, SessionCostQuery, SessionKind, SetPolishModel,
+    SpendReportQuery, SubagentsConfig, UnloadSession,
 };
-use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
     EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
     GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetAgentCompactorModel,
@@ -132,6 +135,7 @@ use tools::{
 };
 
 // 109: handler bodies in their own files so the waves do not collide.
+#[cfg(not(target_os = "ios"))]
 mod acp_resume; // 109 W4
 mod activity; // 155 W1
 pub(crate) mod advisor; // 125 W1
@@ -144,8 +148,12 @@ pub mod transfer; // 139 W2
 mod view; // 176 E1
 pub(crate) use view::observed_state; // 208: the graph's node state
 mod waits;
+#[cfg(not(target_os = "ios"))]
 pub use acp_resume::LastBootPass; // 146 D4
-pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
+pub use drain::{
+    Drain, DrainReport, IOS_BACKGROUND_REASON, OpenTurns, SuspendForBackground, ThawFromBackground,
+    drain_engine, draining, suspend_engine, suspended, thaw_engine,
+}; // 109 W5
 pub use pause::{
     HeldDesks, PauseReport, PauseTree, ReleaseTree, ResumeReport, ResumeTree, TreeSuspended,
 }; // 179
@@ -210,7 +218,7 @@ pub struct Agents {
     pub vision_error: Option<String>,
     catalog: Arc<Catalog>,
     /// Python runtime workers; `None` when the `monty` binary was not found (design doc 08 §9).
-    pool: Option<Arc<monty_pool::Pool>>,
+    pool: Option<Arc<repl::MontyPool>>,
     /// `configured(genai_namespace)`: whether genai can authenticate it.
     configured: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     pub(crate) store: Store,
@@ -225,8 +233,10 @@ pub struct Agents {
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
     /// 146: the boot pass's ACP respawn queue and counts, until settled.
+    #[cfg(not(target_os = "ios"))]
     boot: Option<acp_resume::Boot>,
     /// 146 D4: the last `BootPass` published, for a late `LastBootPass` ask.
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     last_boot: Option<crate::durability::BootPass>,
     /// 139 D16: sessions mid-release-drain → the drain's reason; `route`
     /// refuses their inputs (`transfer::draining_error`) until the demote
@@ -416,6 +426,7 @@ struct Live {
 #[derive(Clone)]
 pub(crate) enum LiveActor {
     Native(ActorRef<Session>),
+    #[cfg(not(target_os = "ios"))]
     Acp(ActorRef<AcpChild>),
 }
 
@@ -431,6 +442,7 @@ impl LiveActor {
     fn is_alive(&self) -> bool {
         match self {
             Self::Native(a) => a.is_alive(),
+            #[cfg(not(target_os = "ios"))]
             Self::Acp(a) => a.is_alive(),
         }
     }
@@ -439,6 +451,7 @@ impl LiveActor {
     async fn tell_input(&self, input: UserInput) -> anyhow::Result<()> {
         match self {
             Self::Native(a) => a.tell(input).await.map_err(|e| anyhow::anyhow!("{e}")),
+            #[cfg(not(target_os = "ios"))]
             Self::Acp(a) => a.tell(input).await.map_err(|e| anyhow::anyhow!("{e}")),
         }
     }
@@ -448,6 +461,7 @@ impl LiveActor {
             Self::Native(a) => {
                 let _ = a.tell(CancelTurn { keep }).await;
             }
+            #[cfg(not(target_os = "ios"))]
             Self::Acp(a) => {
                 let _ = a.tell(CancelTurn { keep }).await;
             }
@@ -459,6 +473,7 @@ impl LiveActor {
     async fn stop(&self) {
         match self {
             Self::Native(a) => transfer::stop_actor(a).await,
+            #[cfg(not(target_os = "ios"))]
             Self::Acp(a) => transfer::stop_actor(a).await,
         }
     }
@@ -466,6 +481,7 @@ impl LiveActor {
     async fn kill(&self) {
         match self {
             Self::Native(a) => a.kill(),
+            #[cfg(not(target_os = "ios"))]
             Self::Acp(a) => a.kill(),
         }
     }
@@ -473,6 +489,7 @@ impl LiveActor {
     async fn is_running(&self) -> bool {
         match self {
             Self::Native(a) => a.ask(IsRunning).await.unwrap_or(false),
+            #[cfg(not(target_os = "ios"))]
             Self::Acp(a) => a.ask(IsRunning).await.unwrap_or(false),
         }
     }
@@ -483,6 +500,7 @@ impl LiveActor {
     async fn resumed_turn(&self) -> Option<TurnId> {
         match self {
             Self::Native(a) => a.ask(ResumedTurn).await.unwrap_or_default(),
+            #[cfg(not(target_os = "ios"))]
             Self::Acp(_) => None,
         }
     }
@@ -491,6 +509,7 @@ impl LiveActor {
     fn native(&self) -> Result<&ActorRef<Session>, String> {
         match self {
             Self::Native(a) => Ok(a),
+            #[cfg(not(target_os = "ios"))]
             Self::Acp(_) => Err(NOT_NATIVE.into()),
         }
     }
@@ -873,6 +892,7 @@ pub struct Roster {
 
 /// `ask` → `()`. Registers (or replaces) a node the model may spawn on with
 /// `spawn_subagent{agent: name}` (32 §6.5; the `RegisterUserSink` shape).
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug)]
 pub struct RegisterNode {
     /// The name the model uses; one namespace with `agents.yaml`.
@@ -884,6 +904,7 @@ pub struct RegisterNode {
 }
 
 /// `ask` → `()`. Forgets a node; a live child on it is unaffected.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug)]
 pub struct UnregisterNode {
     /// The registered name.
@@ -998,15 +1019,20 @@ impl Agents {
             .as_ref()
             .map(|a| a.0.clone())
             .or_else(|| row.as_ref().and_then(|r| r.agent.clone()));
-        if let Some(name) = harness {
-            if private_root.is_some() {
-                anyhow::bail!("remote agents are unavailable in a private session");
+        if let Some(_name) = harness {
+            #[cfg(target_os = "ios")]
+            anyhow::bail!("external ACP harnesses are not supported on iOS");
+            #[cfg(not(target_os = "ios"))]
+            {
+                if private_root.is_some() {
+                    anyhow::bail!("remote agents are unavailable in a private session");
+                }
+                let (cwd, cap, skills) = acp.map_or((None, None, Vec::new()), |a| (a.1, a.2, a.3));
+                let actor = self
+                    .acp_session(id, row, parent, _name, cwd, pick, cap, skills)
+                    .await?;
+                return Ok((id, actor));
             }
-            let (cwd, cap, skills) = acp.map_or((None, None, Vec::new()), |a| (a.1, a.2, a.3));
-            let actor = self
-                .acp_session(id, row, parent, name, cwd, pick, cap, skills)
-                .await?;
-            return Ok((id, actor));
         }
         // 136 R-22: the cap set before a restart still meters the resumed turn.
         let budget = store.budget(id).await?;
@@ -1326,6 +1352,7 @@ impl Agents {
     /// gets the `always` skills plus `skills` written into its cwd first
     /// (75 §4); the actor removes them when it stops.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(not(target_os = "ios"))]
     async fn acp_session(
         &mut self,
         id: SessionId,
@@ -1749,6 +1776,7 @@ impl Agents {
                 // 146 D9: the harness owes work from this hand-off on
                 // (journaled before the tell: a crash in between reads as
                 // an owed prompt, which the respawn re-prompts).
+                #[cfg(not(target_os = "ios"))]
                 if let LiveActor::Acp(_) = &actor {
                     self.acp_journal_open(sid, "input", &text, None).await;
                 }
@@ -2477,6 +2505,7 @@ impl Agents {
             }
         };
         // 146 D9: the harness owes work from this hand-off on.
+        #[cfg(not(target_os = "ios"))]
         if let LiveActor::Acp(_) = &actor {
             self.acp_journal_open(to, "peer", &input.record.text, Some(&input.record.from))
                 .await;
@@ -2534,6 +2563,7 @@ impl Agents {
                 .tell(CancelPeerScope { scope })
                 .await
                 .map_err(|e| e.to_string()),
+            #[cfg(not(target_os = "ios"))]
             Some(LiveActor::Acp(_)) => Err(NOT_NATIVE.into()),
             None => Ok(()),
         };
@@ -2557,6 +2587,7 @@ impl Agents {
                 Some(LiveActor::Native(a)) => {
                     let _ = a.tell(CancelPeerScope { scope }).await;
                 }
+                #[cfg(not(target_os = "ios"))]
                 Some(acp @ LiveActor::Acp(_)) => acp.tell_cancel(None).await,
                 None => {}
             }
@@ -2643,6 +2674,7 @@ impl Agents {
     async fn child_finished(&mut self, child: SessionId, turn: TurnId, stop_reason: &str) {
         // 06 §3.5 (2026-09-24): harness work after its prompt returned;
         // no result exists and nothing is owed to the parent.
+        #[cfg(not(target_os = "ios"))]
         if stop_reason == crate::acp_child::HARNESS_CONTINUED {
             self.ledger.handed_off(child, turn);
             return;
@@ -2908,6 +2940,7 @@ impl Agents {
         }
         // 178 F1: an ACP prompt's run clock stops with it (a native turn
         // stops its own at the end of `drive`).
+        #[cfg(not(target_os = "ios"))]
         if matches!(
             self.sessions.get(&session).map(|l| &l.actor),
             Some(LiveActor::Acp(_))
@@ -3023,6 +3056,7 @@ impl Agents {
 /// proxying `load_skill` / `list_skills` / `send_message` and (193 §7) the
 /// registry's `read_file` / `edit` / `move_text` / `copy_text` / `indent` /
 /// `clip` to this engine.
+#[cfg(not(target_os = "ios"))]
 fn mcp_shim(
     data_dir: &Path,
     session: SessionId,
@@ -3063,6 +3097,7 @@ impl LiveActor {
     async fn ask_peer(&self, input: PeerInput) -> Result<(), String> {
         let r = match self {
             Self::Native(a) => a.ask(input).await,
+            #[cfg(not(target_os = "ios"))]
             Self::Acp(a) => a.ask(input).await,
         };
         match r {
@@ -3100,9 +3135,12 @@ impl Message<AgentEvent> for Agents {
         {
             self.acp_cut.remove(session);
         }
-        self.acp_journal_event(&ev).await; // 146 D9
-        if self.boot.is_some() {
-            self.boot_child_event(&ev).await; // 146 D2
+        #[cfg(not(target_os = "ios"))]
+        {
+            self.acp_journal_event(&ev).await; // 146 D9
+            if self.boot.is_some() {
+                self.boot_child_event(&ev).await; // 146 D2
+            }
         }
         match ev {
             // 109 LIVE: a turn resumed after a restart (`Turn::resume`)
@@ -3250,14 +3288,20 @@ impl Message<ActivityRegistered> for Agents {
         // 146 D9: one list, one pass — an ACP child's open turn (it owed a
         // prompt when the engine died) is the respawn's, a native one the
         // resume's.
+        #[cfg(not(target_os = "ios"))]
         let (acp_open, native) = self.split_acp_turns(&open).await;
-        let (acp_open, native) = self.unpaused_turns(acp_open, native).await;
+        #[cfg(target_os = "ios")]
+        let (acp_open, native) = (Vec::new(), open.clone());
+        let (_acp_open, native) = self.unpaused_turns(acp_open, native).await;
         self.resume_scan(&native).await;
-        let resuming = match self.cfg.durability.resume {
-            crate::durability::ResumeMode::Auto => native.len() as u32,
-            _ => 0,
-        };
-        self.respawn_acp_children(resuming, acp_open).await; // 109 W4 §7.3, 146 D1–D4, D9
+        #[cfg(not(target_os = "ios"))]
+        {
+            let resuming = match self.cfg.durability.resume {
+                crate::durability::ResumeMode::Auto => native.len() as u32,
+                _ => 0,
+            };
+            self.respawn_acp_children(resuming, _acp_open).await; // 109 W4 §7.3, 146 D1–D4, D9
+        }
         // 141 §7.8: watch-only children of a harness that did not come back.
         self.mark_observed_lost().await;
         // 109 §7.2: the spared child results, after the open turns are queued.
@@ -5102,6 +5146,7 @@ impl Message<crate::GetPolishEffort> for Agents {
 /// 153 §9: one `CallKind::Polish` side call on `ModelRole::Polish`, charged to
 /// `session` (theuth's desk when `None`), run detached; the reply fails closed
 /// to `refused` so the caller keeps the shaped text.
+#[cfg(not(target_os = "ios"))]
 impl Message<Polish> for Agents {
     type Reply = kameo::reply::DelegatedReply<Result<PolishReply, String>>;
 
@@ -5148,6 +5193,7 @@ impl Message<Polish> for Agents {
 
 /// 153 §13.6: the spoken instruction is the user message, the selection goes
 /// into the system prompt through `voice.rewrite_template`; charged to theuth's desk.
+#[cfg(not(target_os = "ios"))]
 impl Message<Rewrite> for Agents {
     type Reply = kameo::reply::DelegatedReply<Result<PolishReply, String>>;
 
@@ -5179,6 +5225,7 @@ impl Message<Rewrite> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Agents {
     /// The session a polish call is charged to and runs on: `session`, else
     /// theuth's desk (W-h), resumed from the store when idle. `Err` = why
@@ -5212,6 +5259,7 @@ impl Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 fn refused(why: impl Into<String>) -> PolishReply {
     PolishReply {
         refused: Some(why.into()),
@@ -5222,6 +5270,7 @@ fn refused(why: impl Into<String>) -> PolishReply {
 /// Ask `actor` the call and shape the answer: `timed out` → `refused: timeout`
 /// (§9.5), a provider error → `refused: <error>`, a reply that fails `check` →
 /// `refused: <why>`; `ms` and `model` are set whenever the model answered.
+#[cfg(not(target_os = "ios"))]
 async fn polish_call(
     actor: ActorRef<Session>,
     call: SideCall,
@@ -5567,6 +5616,7 @@ impl Agents {
     fn side_target(&self, session: SessionId) -> Result<ActorRef<Session>, String> {
         match self.sessions.get(&session).map(|l| &l.actor) {
             Some(LiveActor::Native(a)) => Ok(a.clone()),
+            #[cfg(not(target_os = "ios"))]
             Some(LiveActor::Acp(_)) => Err("session runs on an external harness".to_owned()),
             None => Err(format!("no live session {session}")),
         }
@@ -6194,14 +6244,16 @@ impl Agents {
         self.running.insert(session);
         let live = self.sessions.get(&session);
         let child = live.is_some_and(|l| l.parent.is_some());
-        let acp = matches!(live.map(|l| &l.actor), Some(LiveActor::Acp(_)));
         // 178 F1: an ACP prompt's run clock lives here (its journal turn is
         // the supervisor's); the drain reads it for the `suspended` row.
-        let acp_ran = if acp {
+        #[cfg(not(target_os = "ios"))]
+        let acp_ran = if matches!(live.map(|l| &l.actor), Some(LiveActor::Acp(_))) {
             self.acp_run_clock(session).await
         } else {
             0
         };
+        #[cfg(target_os = "ios")]
+        let acp_ran = 0;
         if child
             && self
                 .child_turns
@@ -6229,6 +6281,7 @@ impl Agents {
     /// 178 F1: start the run clock of the ACP session's open journal turn
     /// (146 D9: one per prompt, kept open across a restart and respawned on)
     /// from the run time its journal holds; returns that run time (ms).
+    #[cfg(not(target_os = "ios"))]
     async fn acp_run_clock(&self, session: SessionId) -> u64 {
         let store = self.store_for(session);
         let turn = match store.open_turn(session).await {
@@ -8496,23 +8549,26 @@ impl Agents {
     /// runs it — its parent, or the nearest ACP ancestor when nested. No
     /// live harness: nothing to tell; the row is already lost or terminal.
     async fn cancel_observed(&self, row: SessionSummary) {
-        let mut parent = row.parent;
-        let mut hops = 0;
-        while let Some(p) = parent
-            && hops < 8
+        #[cfg(not(target_os = "ios"))]
         {
-            if let Some(LiveActor::Acp(a)) = self.live(p) {
-                let _ = a.tell(CancelObserved { child: row.id }).await;
-                return;
+            let mut parent = row.parent;
+            let mut hops = 0;
+            while let Some(p) = parent
+                && hops < 8
+            {
+                if let Some(LiveActor::Acp(a)) = self.live(p) {
+                    let _ = a.tell(CancelObserved { child: row.id }).await;
+                    return;
+                }
+                parent = self
+                    .store_for(p)
+                    .session(p)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|r| r.parent);
+                hops += 1;
             }
-            parent = self
-                .store_for(p)
-                .session(p)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|r| r.parent);
-            hops += 1;
         }
         tracing::info!(session = %row.id, "cancel: watch-only child has no live harness");
     }
@@ -8521,12 +8577,15 @@ impl Agents {
     /// harness is not live become `unknown` / "lost contact"; each is
     /// published so an open UI updates.
     async fn mark_observed_lost(&self) {
+        #[cfg(not(target_os = "ios"))]
         let live: Vec<SessionId> = self
             .sessions
             .iter()
             .filter(|(_, l)| matches!(l.actor, LiveActor::Acp(_)) && l.actor.is_alive())
             .map(|(id, _)| *id)
             .collect();
+        #[cfg(target_os = "ios")]
+        let live: Vec<SessionId> = Vec::new();
         let lost = match self.store.mark_observed_lost(&live).await {
             Ok(lost) => lost,
             Err(e) => {
@@ -8943,6 +9002,7 @@ impl Message<RemoveSkill> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<AddSkillRepo> for Agents {
     type Reply = Result<Vec<SkillMeta>, String>;
 
@@ -8955,6 +9015,7 @@ impl Message<AddSkillRepo> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<RemoveSkillRepo> for Agents {
     type Reply = Result<(), String>;
 
@@ -8967,6 +9028,7 @@ impl Message<RemoveSkillRepo> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<SyncSkills> for Agents {
     type Reply = Vec<tools::git::SyncResult>;
 
@@ -9390,6 +9452,7 @@ async fn load_session(
         tracing::error!(session = %m.session, "hidden_turns: {e:#}");
         0
     });
+    let mesh_id = row.as_ref().and_then(|r| r.mesh_id.clone());
     let (model, effort, agent, harness_model, context_size, name, parent, project, kind, observed) =
         row.map(|r| {
             (
@@ -9453,6 +9516,7 @@ async fn load_session(
         todos,
         communication: None,
         project,
+        mesh_id,
         retention,
         resume,
         kind,
@@ -10588,6 +10652,7 @@ impl Message<SearchRefresh> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<ListAwsProfiles> for Agents {
     type Reply = Result<AwsProfiles, String>;
 
@@ -10600,6 +10665,7 @@ impl Message<ListAwsProfiles> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<SetAwsProfile> for Agents {
     type Reply = Result<AwsProfiles, String>;
 
@@ -11008,6 +11074,7 @@ const NOT_NATIVE_OPTION: &str =
 /// `ask` → `Result<Vec<acp::ConfigOption>, String>` (75 §8): the config
 /// options of `session`'s live harness process; `Err` when the session is
 /// not an ACP child or its process is gone.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Copy, Debug)]
 pub struct HarnessOptions {
     /// An ACP child.
@@ -11019,6 +11086,7 @@ pub struct HarnessOptions {
 /// alias `model` / `effort`, `value` one of its listed values. Mid-turn the
 /// change is queued for the turn's end (`pending: true`). A missing option
 /// or an unlisted value is refused with the list.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug)]
 pub struct SetHarnessOption {
     /// An ACP child.
@@ -11029,6 +11097,7 @@ pub struct SetHarnessOption {
     pub value: String,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Agents {
     /// The live ACP actor of `session`; the refusal otherwise. Never resumes
     /// a stopped child: a gone process has no options to show or set.
@@ -11047,6 +11116,7 @@ impl Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<HarnessOptions> for Agents {
     type Reply = Result<Vec<acp::ConfigOption>, String>;
 
@@ -11064,6 +11134,7 @@ impl Message<HarnessOptions> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<SetHarnessOption> for Agents {
     type Reply = Result<acp::SetOptionResult, String>;
 
@@ -11097,6 +11168,7 @@ impl Message<SetHarnessOption> for Agents {
 /// remote node's session (its ACP session belongs to another engine) and a
 /// row without a stored harness session id. Explicit user intent: the
 /// parent's state is not a gate here (unlike the boot pass).
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Copy, Debug)]
 pub struct ResumeChild {
     /// An ACP child.
@@ -11104,6 +11176,7 @@ pub struct ResumeChild {
 }
 
 /// What [`ResumeChild`] did (146 D8): the toast's two sentences.
+#[cfg(not(target_os = "ios"))]
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -11116,6 +11189,7 @@ pub enum ChildResumed {
     Idle,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<ResumeChild> for Agents {
     type Reply = Result<ChildResumed, String>;
 
@@ -11190,9 +11264,11 @@ impl Message<ResumeChild> for Agents {
 }
 
 /// 176 A1: how often idle ACP children are looked for.
+#[cfg(not(target_os = "ios"))]
 const PARK_EVERY: Duration = Duration::from_secs(60);
 /// 176 A1: longest one child's park probe may take; a busy child mailbox
 /// is skipped this round rather than holding this one.
+#[cfg(not(target_os = "ios"))]
 const PARK_PROBE: Duration = Duration::from_secs(2);
 
 /// `tell` (176 A1): park every external ACP child idle at least `.0` — its
@@ -11203,9 +11279,11 @@ const PARK_PROBE: Duration = Duration::from_secs(2);
 /// [`ParkRound`]. Until then the candidates are in `Agents.parking`, where
 /// `route` and `enqueue_peer` hold their inputs, so nothing is told into a
 /// mailbox that is about to stop.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Copy, Debug)]
 pub struct ParkIdle(pub Duration);
 
+#[cfg(not(target_os = "ios"))]
 impl Message<ParkIdle> for Agents {
     type Reply = ();
 
@@ -11242,6 +11320,7 @@ impl Message<ParkIdle> for Agents {
 /// 176 A1, off the mailbox: the Jobs counts, then every child probed at
 /// once, each bounded by [`PARK_PROBE`]. `(session, actor, parked)` per
 /// candidate; a Jobs actor that does not answer parks none this round.
+#[cfg(not(target_os = "ios"))]
 async fn park_round(
     children: Vec<(SessionId, ActorRef<AcpChild>, bool)>,
     after: Duration,
@@ -11289,8 +11368,10 @@ async fn park_round(
 /// `sessions` (when the entry is still that actor) for `parked`; either way
 /// the inputs held meanwhile are replayed — into the live child, or through
 /// `session()` into its resume.
+#[cfg(not(target_os = "ios"))]
 struct ParkRound(Vec<(SessionId, kameo::actor::ActorId, bool)>);
 
+#[cfg(not(target_os = "ios"))]
 impl Message<ParkRound> for Agents {
     type Reply = ();
 
@@ -11552,7 +11633,7 @@ impl Agents {
             }
         }
         for live in self.sessions.values() {
-            if let LiveActor::Native(a) = &live.actor
+            if let Ok(a) = live.actor.native()
                 && live.actor.is_alive()
             {
                 let _ = a.tell(CatalogChanged(self.catalog.clone())).await;
@@ -12321,6 +12402,7 @@ impl Message<NewSession> for Agents {
 }
 
 /// One `/acp` row, unprobed.
+#[cfg(not(target_os = "ios"))]
 fn acp_info(name: String, e: &acp::Entry) -> acp::EntryInfo {
     acp::EntryInfo {
         name,
@@ -12333,6 +12415,7 @@ fn acp_info(name: String, e: &acp::Entry) -> acp::EntryInfo {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<ListAcp> for Agents {
     type Reply = kameo::reply::DelegatedReply<Vec<acp::EntryInfo>>;
 
@@ -12367,6 +12450,7 @@ impl Message<ListAcp> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<AddAcp> for Agents {
     type Reply = kameo::reply::DelegatedReply<Result<acp::EntryInfo, String>>;
 
@@ -12399,6 +12483,7 @@ impl Message<AddAcp> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<RemoveAcp> for Agents {
     type Reply = Result<(), String>;
 
@@ -12413,6 +12498,7 @@ impl Message<RemoveAcp> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<AcpLogin> for Agents {
     type Reply = kameo::reply::DelegatedReply<Result<String, String>>;
 
@@ -12442,6 +12528,7 @@ impl Message<AcpLogin> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<RegisterNode> for Agents {
     type Reply = ();
 
@@ -12453,6 +12540,7 @@ impl Message<RegisterNode> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<UnregisterNode> for Agents {
     type Reply = ();
 
@@ -12464,6 +12552,7 @@ impl Message<UnregisterNode> for Agents {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<ListRegistry> for Agents {
     type Reply = kameo::reply::DelegatedReply<Result<Vec<acp::registry::RegistryAgent>, String>>;
 
@@ -13115,6 +13204,16 @@ pub(crate) fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> 
 // ponytail: IMDS/ECS metadata without env hints is not detected; add a cached async probe if EC2 users ask.
 fn bedrock_configured(auth: &Auth) -> bool {
     let env = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    let ambient = {
+        #[cfg(not(target_os = "ios"))]
+        {
+            crate::aws::ambient_profile_exists()
+        }
+        #[cfg(target_os = "ios")]
+        {
+            false
+        }
+    };
     auth.key("bedrock_api").is_some()
         || env("BEDROCK_API_KEY")
         || env("AWS_BEARER_TOKEN_BEDROCK")
@@ -13123,7 +13222,7 @@ fn bedrock_configured(auth: &Auth) -> bool {
         || env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
         || env("AWS_CONTAINER_CREDENTIALS_FULL_URI")
         || env("AWS_WEB_IDENTITY_TOKEN_FILE")
-        || crate::aws::ambient_profile_exists()
+        || ambient
 }
 
 /// The vision fallback's id/capability rule (52 §3.1), shared by
@@ -13305,7 +13404,15 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     crate::claude_code::start(&rt.data_dir, auth.clone(), rt.shutdown.clone());
     // A harness-wide ceiling on Python workers (08 §9), decoupled from the
     // per-tree child caps (01 §2.6); lazy, so idle trees cost nothing.
-    // The worker is this binary (08 §9).
+    // On iOS (or with `--features inproc-monty`), workers run on dedicated
+    // 6 MiB OS threads inside this process (no `current_exe()` subprocess).
+    #[cfg(any(target_os = "ios", feature = "inproc-monty"))]
+    let pool = Some(repl::open_inproc_pool(if cfg!(target_os = "ios") {
+        2
+    } else {
+        repl::REPL_POOL_MAX
+    }));
+    #[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
     let pool = match std::env::current_exe() {
         Ok(exe) => repl::open_pool(&exe, repl::REPL_POOL_MAX).await,
         Err(e) => {
@@ -13326,17 +13433,38 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .map_err(|e| tracing::warn!("agent.title_model: {e}"))
             .ok()
     });
-    // 153 §9.2: the polish slot lives under `voice.`, read the same way; unresolvable → warn, chain falls through.
-    let polish_model = rt
+    #[cfg(not(target_os = "ios"))]
+    let (voice_polish_model, voice_polish_effort, voice_polish_enabled) = rt
         .section::<voice::VoiceConfig>("voice")
-        .ok()
-        .and_then(|v| v.polish_model)
-        .and_then(|id| {
-            catalog
-                .resolve(&id, &*configured)
-                .map_err(|e| tracing::warn!("voice.polish_model: {e}"))
-                .ok()
+        .map_or((None, None, true), |v| {
+            (v.polish_model, v.polish_effort, v.polish_enabled)
         });
+    #[cfg(target_os = "ios")]
+    let (voice_polish_model, voice_polish_effort, voice_polish_enabled) = {
+        fn default_true() -> bool {
+            true
+        }
+        #[derive(serde::Deserialize)]
+        struct VoicePolish {
+            #[serde(default)]
+            polish_model: Option<String>,
+            #[serde(default)]
+            polish_effort: Option<String>,
+            #[serde(default = "default_true")]
+            polish_enabled: bool,
+        }
+        rt.section::<VoicePolish>("voice")
+            .map_or((None, None, true), |v| {
+                (v.polish_model, v.polish_effort, v.polish_enabled)
+            })
+    };
+    // 153 §9.2: the polish slot lives under `voice.`, read the same way; unresolvable → warn, chain falls through.
+    let polish_model = voice_polish_model.and_then(|id| {
+        catalog
+            .resolve(&id, &*configured)
+            .map_err(|e| tracing::warn!("voice.polish_model: {e}"))
+            .ok()
+    });
     let subagent_model = cfg.subagents.model.as_deref().and_then(|id| {
         catalog
             .resolve(id, &*configured)
@@ -13382,10 +13510,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         title: cfg.title_effort.clone(),
         vision: cfg.vision_effort.clone(),
         escalate: cfg.escalate_effort.clone(),
-        polish: rt
-            .section::<voice::VoiceConfig>("voice")
-            .ok()
-            .and_then(|v| v.polish_effort),
+        polish: voice_polish_effort,
         knowledge_harvester: cfg.knowledge_harvester_effort.clone(),
     };
     let nodes = Nodes::default();
@@ -13493,6 +13618,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         costs.install();
     }
     let cell_jobs = Arc::new(CellJobs::default());
+    #[cfg(not(target_os = "ios"))]
     let idle_stop = Duration::from_secs(cfg.acp.idle_stop_secs);
     let agents = Agents::spawn_with_mailbox(
         Agents {
@@ -13506,9 +13632,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             title_model: Arc::new(RwLock::new(title_model)),
             polish_model: Arc::new(RwLock::new(polish_model)),
             // 204: `voice.polish_enabled`, default on; unreadable section → on.
-            polish_enabled: rt
-                .section::<voice::VoiceConfig>("voice")
-                .map_or(true, |v| v.polish_enabled),
+            polish_enabled: voice_polish_enabled,
             subagent_model: Arc::new(RwLock::new(subagent_model)),
             subagent_effort: Arc::new(RwLock::new(cfg.subagents.effort.clone())),
             desk_models: HashMap::new(),
@@ -13528,6 +13652,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             endless: endless.clone(),
             sessions: HashMap::new(),
             running: HashSet::new(),
+            #[cfg(not(target_os = "ios"))]
             boot: None,
             last_boot: None,
             draining_sessions: HashMap::new(),
@@ -13606,6 +13731,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         });
     }
     // 176 A1: idle ACP children are parked, checked once a minute.
+    #[cfg(not(target_os = "ios"))]
     if !idle_stop.is_zero() {
         let agents = agents.clone();
         let shutdown = rt.shutdown.clone();
@@ -13736,21 +13862,24 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let _ = reg
             .ask(RegisterTool(Arc::new(AddSkillTool { dir: dir.clone() })))
             .await;
+        #[cfg(not(target_os = "ios"))]
+        {
+            let _ = reg
+                .ask(RegisterTool(Arc::new(AddSkillRepoTool {
+                    dir: dir.clone(),
+                })))
+                .await;
+            let _ = reg
+                .ask(RegisterTool(Arc::new(RemoveSkillRepoTool {
+                    dir: dir.clone(),
+                })))
+                .await;
+            let _ = reg
+                .ask(RegisterTool(Arc::new(SyncSkillsTool { dir: dir.clone() })))
+                .await;
+        }
         let _ = reg
-            .ask(RegisterTool(Arc::new(RemoveSkillTool { dir: dir.clone() })))
-            .await;
-        let _ = reg
-            .ask(RegisterTool(Arc::new(AddSkillRepoTool {
-                dir: dir.clone(),
-            })))
-            .await;
-        let _ = reg
-            .ask(RegisterTool(Arc::new(RemoveSkillRepoTool {
-                dir: dir.clone(),
-            })))
-            .await;
-        let _ = reg
-            .ask(RegisterTool(Arc::new(SyncSkillsTool { dir })))
+            .ask(RegisterTool(Arc::new(RemoveSkillTool { dir })))
             .await;
         let _ = reg
             .ask(RegisterTool(Arc::new(SpawnSubagentTool {
@@ -14228,38 +14357,50 @@ impl Message<CreateSession> for Agents {
         // child of our own `acp/agents.yaml` entry, `model` goes to it through
         // its model option (unresolved: it is the harness's id, not ours) and
         // the durable path below is not taken.
-        if let Some(harness) = &m.options.harness {
-            if m.options.retention != Retention::Durable {
-                return Err("an external harness cannot open a private session".into());
-            }
-            // Ours only: a node's harness never chains on to another node.
-            let entries = acp::load(&self.rt.data_dir).map_err(|e| format!("{e:#}"))?;
-            if !entries.contains_key(harness) {
-                return Err(acp::unknown(harness, &entries));
-            }
-            let cwd = m.options.cwd.as_deref().map(PathBuf::from);
-            let (id, _) = self
-                .session(
-                    None,
-                    None,
-                    Some((harness.clone(), cwd, None, Vec::new())),
-                    (m.options.model.as_deref(), None),
-                )
-                .await
-                .map_err(|e| format!("{e:#}"))?;
-            if project.is_some() {
-                self.store
-                    .set_project(id, project.as_deref())
+        if let Some(_harness) = &m.options.harness {
+            #[cfg(target_os = "ios")]
+            return Err("external harnesses are not supported on iOS".into());
+            #[cfg(not(target_os = "ios"))]
+            {
+                let harness = _harness;
+                if m.options.retention != Retention::Durable {
+                    return Err("an external harness cannot open a private session".into());
+                }
+                // Ours only: a node's harness never chains on to another node.
+                let entries = acp::load(&self.rt.data_dir).map_err(|e| format!("{e:#}"))?;
+                if !entries.contains_key(harness) {
+                    return Err(acp::unknown(harness, &entries));
+                }
+                let cwd = m.options.cwd.as_deref().map(PathBuf::from);
+                let (id, _) = self
+                    .session(
+                        None,
+                        None,
+                        Some((harness.clone(), cwd, None, Vec::new())),
+                        (m.options.model.as_deref(), None),
+                    )
                     .await
-                    .map_err(|e| e.to_string())?;
-                self.search.invalidate();
+                    .map_err(|e| format!("{e:#}"))?;
+                if project.is_some() {
+                    self.store
+                        .set_project(id, project.as_deref())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    self.search.invalidate();
+                }
+                if let Some(mesh_id) = m.options.mesh_id.as_deref().filter(|s| !s.is_empty()) {
+                    self.store
+                        .set_mesh_id(id, Some(mesh_id))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                return Ok(SessionOpen {
+                    session: id,
+                    root: id,
+                    retention: Retention::Durable,
+                    lease_secret: None,
+                });
             }
-            return Ok(SessionOpen {
-                session: id,
-                root: id,
-                retention: Retention::Durable,
-                lease_secret: None,
-            });
         }
         // Session-only model (`meetings/02-live.md` §0.2): resolved now so a typo
         // fails the create, not the first turn; the default and config.yaml stay.
@@ -14308,6 +14449,12 @@ impl Message<CreateSession> for Agents {
             if let Some(nb) = m.options.notebook.as_deref().filter(|n| !n.is_empty()) {
                 self.store
                     .set_notebook(id, Some(nb))
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            if let Some(mesh_id) = m.options.mesh_id.as_deref().filter(|s| !s.is_empty()) {
+                self.store
+                    .set_mesh_id(id, Some(mesh_id))
                     .await
                     .map_err(|e| e.to_string())?;
             }
@@ -14371,6 +14518,12 @@ impl Message<CreateSession> for Agents {
         if let Some(cwd) = &m.options.cwd {
             store
                 .set_cwd(root, Path::new(cwd))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(mesh_id) = m.options.mesh_id.as_deref().filter(|s| !s.is_empty()) {
+            store
+                .set_mesh_id(root, Some(mesh_id))
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -14685,6 +14838,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         desk_models: HashMap::new(),
         desk_efforts: HashMap::new(),
         running: HashSet::new(),
+        #[cfg(not(target_os = "ios"))]
         boot: None,
         last_boot: None,
         draining_sessions: HashMap::new(),
@@ -16034,6 +16188,7 @@ pub(crate) mod tests {
     /// 0065: a contact's message consumed on A and replicated to B. B holds no
     /// exchange record, yet its `load_session` and `session_read` mark the row
     /// with A's typed provenance (contact_mode full).
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn a_replica_marks_a_consumed_contact_row_with_the_owner_provenance() {
         use crate::communication::ShareMode;
@@ -16383,9 +16538,12 @@ pub(crate) mod tests {
             Some("testvis/blind")
         );
         // Re-read as the `voice.` section the boot path deserialises.
-        let all: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
-        let v: voice::VoiceConfig = serde_yaml::from_value(all["voice"].clone()).unwrap();
-        assert_eq!(v.polish_model.as_deref(), Some("testvis/blind"));
+        #[cfg(not(target_os = "ios"))]
+        {
+            let all: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+            let v: voice::VoiceConfig = serde_yaml::from_value(all["voice"].clone()).unwrap();
+            assert_eq!(v.polish_model.as_deref(), Some("testvis/blind"));
+        }
 
         assert!(
             agents
@@ -16806,15 +16964,19 @@ pub(crate) mod tests {
         assert_eq!(new.title_effort.as_deref(), Some("low"));
         assert_eq!(new.vision_effort.as_deref(), Some("8000"));
         assert_eq!(new.escalate_effort.as_deref(), Some("high"));
-        let v: voice::VoiceConfig = serde_yaml::from_str("polish_model: a/p\n").unwrap();
-        assert_eq!(v.polish_effort, None);
-        let v: voice::VoiceConfig = serde_yaml::from_str("polish_effort: low\n").unwrap();
-        assert_eq!(v.polish_effort.as_deref(), Some("low"));
+        #[cfg(not(target_os = "ios"))]
+        {
+            let v: voice::VoiceConfig = serde_yaml::from_str("polish_model: a/p\n").unwrap();
+            assert_eq!(v.polish_effort, None);
+            let v: voice::VoiceConfig = serde_yaml::from_str("polish_effort: low\n").unwrap();
+            assert_eq!(v.polish_effort.as_deref(), Some("low"));
+        }
     }
 
     /// 153 §9.1: an agent prompt is never polished — no model call, no session
     /// lookup, `refused: "agent prompt"`; a human destination with no session
     /// and no desk fails closed with `refused: "no session"`.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn polish_refuses_agent_prompt() {
         let (_scratch, a) = agents().await;
@@ -16849,6 +17011,7 @@ pub(crate) mod tests {
     /// 204: with `voice.polish_enabled: false` a human destination is refused `polish off`
     /// before any target lookup or model call (no `model`, `ms` 0); the switch persists to
     /// config.yaml and turning it back on restores the chain. Old configs default to on.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn polish_switch_off_never_calls_a_model() {
         let v: voice::VoiceConfig = serde_yaml::from_str("polish_model: a/p\n").unwrap();
@@ -21542,9 +21705,11 @@ pub(crate) mod tests {
 
     /// A dialer that never connects: the actor it backs stays alive with
     /// `dead` set, the shape of a child whose harness is gone.
+    #[cfg(not(target_os = "ios"))]
     #[derive(Debug)]
     struct Offline;
 
+    #[cfg(not(target_os = "ios"))]
     #[async_trait::async_trait]
     impl acp::Dialer for Offline {
         async fn dial(&self) -> Result<acp::LineDuplex, String> {
@@ -21556,6 +21721,7 @@ pub(crate) mod tests {
     /// session, for an ACP row whose harness is not in `agents.yaml` (a
     /// node's session), for one with no stored harness session id, and (141
     /// §5.4) for a watch-only row with the watch-only text.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn resume_child_refuses_native_node_and_unstored() {
         let (_scratch, a) = agents().await;
@@ -21605,6 +21771,7 @@ pub(crate) mod tests {
     /// the respawn from the row, and a row without a stored ACP session id
     /// is refused before anything is stopped. A stored skill name that no
     /// longer exists does not block the resume (75 §4).
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn resume_child_replaces_the_live_actor() {
         let (_scratch, mut a) = agents().await;
@@ -21674,6 +21841,7 @@ pub(crate) mod tests {
     /// idle child (last row assistant text) is only reconnected (`Idle`, no
     /// turn); a child whose last turn was cancelled is `Idle` too, whatever
     /// its last row.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn resume_child_prompts_a_midprompt_child() {
         let (_scratch, mut a) = agents().await;
@@ -22792,6 +22960,7 @@ pub(crate) mod tests {
     }
 
     /// A fake node `box` on `a`: the harness side of its one connection.
+    #[cfg(not(target_os = "ios"))]
     fn node(a: &Agents, name: &str) -> crate::acp_child::tests::Fake {
         let (fake, dialer) = crate::acp_child::tests::Fake::new();
         a.nodes
@@ -22802,6 +22971,7 @@ pub(crate) mod tests {
     }
 
     /// A spawn of a child of `parent` on node `node`.
+    #[cfg(not(target_os = "ios"))]
     fn spawn_on(parent: SessionId, node: &str, name: &str, task: &str) -> SpawnChild {
         SpawnChild {
             agent: Some(node.into()),
@@ -22813,6 +22983,7 @@ pub(crate) mod tests {
     /// child starts at once from the external pool; with the one external
     /// slot taken, a second node child queues while a native spawn still
     /// starts.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn native_and_external_pools_are_separate() {
         let (_scratch, a) = agents().await;
@@ -22857,6 +23028,7 @@ pub(crate) mod tests {
     /// T6 (D6): a node harness that drops mid-prompt ends the spawn turn as
     /// `error`, and the supervisor — bus-subscribed here, as in production —
     /// releases the external permit with the turn.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn harness_exit_releases_the_external_permit() {
         let (_scratch, a) = agents().await;
@@ -22975,6 +23147,7 @@ pub(crate) mod tests {
     /// forwarded to the harness actor that runs it; with
     /// `capabilities.cancel` that is a `session/cancel` on the child's own
     /// id. The parent's turn is untouched.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn cancel_of_an_observed_child_is_forwarded_to_its_harness() {
         let (_scratch, a) = agents().await;
@@ -23081,6 +23254,7 @@ pub(crate) mod tests {
     /// R2.4: a follow-up turn on an ACP child (a human message after its
     /// spawn turn ended) holds no permit but is timed like the spawn turn,
     /// so a prompt that never returns cannot keep the child running forever.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn follow_up_acp_turns_get_the_runtime_timer() {
         let (_scratch, a) = agents().await;
@@ -23129,6 +23303,7 @@ pub(crate) mod tests {
     /// 193 B1: an ACP child's seat cwd is its own spawn cwd, its write_root the parent's.
     /// (A relative path resolving in that cwd: tools'
     /// `text::tests::an_acp_childs_relative_path_resolves_in_its_own_cwd`.)
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn acp_child_seat_is_its_spawn_cwd_with_the_parents_write_root() {
         let (_scratch, a) = agents().await;
@@ -23421,6 +23596,7 @@ pub(crate) mod tests {
     /// two restarts — opened 50 min ago, drained at 15 s of run time, resumed,
     /// drained again at 40 s — is timed on its next `TurnStarted` from the
     /// drains' cumulative `ran_ms` (40 s), never its wall-clock age.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn twice_resumed_acp_child_counts_run_time_once() {
         use crate::durability::StepKind;
@@ -24221,6 +24397,7 @@ pub(crate) mod tests {
     /// own (a turn mid-way when the pause lands); a later prompt answers
     /// `pong`. A cancel after the first prompt ends the pending one
     /// `cancelled`; the first prompt's (the pause's) is never answered.
+    #[cfg(not(target_os = "ios"))]
     const HANGING_ACP: &str = r#"while IFS= read -r line; do
   id=$(printf '%s' "$line" | grep -o '"id":[^,}]*' | head -n1 | cut -d: -f2-)
   method=$(printf '%s' "$line" | grep -o '"method":"[^"]*"' | head -n1 | cut -d'"' -f4)
@@ -24247,6 +24424,7 @@ done
 
     /// A root `p` with an ACP child `c` mid-turn on [`HANGING_ACP`] with
     /// `hang` hanging prompts; the pause drains for 2 s.
+    #[cfg(not(target_os = "ios"))]
     async fn acp_mid_turn(
         hang: usize,
     ) -> (
@@ -24303,6 +24481,7 @@ done
     }
 
     /// How many prompts the harness of [`acp_mid_turn`] has read.
+    #[cfg(not(target_os = "ios"))]
     fn prompts(scratch: &crate::TestDir) -> usize {
         std::fs::read_to_string(scratch.path().join("methods"))
             .unwrap_or_default()
@@ -24382,6 +24561,7 @@ done
     /// the harness reports reaches the parent's subtree as
     /// `HarnessModelChanged` on the child, and the roster shows it. A
     /// native spawn carries its session model.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn spawned_children_announce_their_model() {
         let (scratch, a) = agents().await;
@@ -24472,6 +24652,7 @@ done
     /// 179 SHOULD-FIX 7: an ACP child cut by the pause keeps its journal
     /// turn open (its cancel hands the paused parent nothing) and is
     /// re-prompted on the un-pause.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn paused_acp_child_resumes_on_unpause() {
         let (scratch, agents, store, p, c, mut rx) = acp_mid_turn(1).await;
@@ -24499,6 +24680,7 @@ done
     /// 179 MUST-FIX 1: an un-pause sent while the pause still drains waits
     /// for the stop, then resumes the suspended turn — never skipping the
     /// draining actor as live and leaving the turn unheld.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn unpause_during_the_pause_drain_resumes_after_the_stop() {
         let _flag = drain::DRAIN_FLAG.lock().await;
@@ -24531,6 +24713,7 @@ done
     }
 
     /// Whether `session`'s open journal turn closes within 5 s.
+    #[cfg(not(target_os = "ios"))]
     async fn journal_closes(store: &Store, session: SessionId) -> bool {
         for _ in 0..200 {
             if store.open_turn(session).await.unwrap().is_none() {
@@ -24544,6 +24727,7 @@ done
     /// 179 PAUSE3: the cut marker of a child the pause stopped (whose own
     /// `cancelled` end never came) goes with its re-prompt; the next real
     /// cancel is a turn end — journal closed, parent told, cap released.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn acp_cancel_after_unpause_is_not_swallowed() {
         let _flag = drain::DRAIN_FLAG.lock().await;
@@ -24742,6 +24926,7 @@ done
     /// `Idle` again when the prompt returns. (The boot trigger's own gate is
     /// `acp_resume::tests::respawn_decision_table`; it only accepts a local
     /// harness, which no test can dial, so the actor is told directly here.)
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn respawned_acp_child_counts_as_running() {
         let (_scratch, a) = agents().await;
@@ -24805,6 +24990,7 @@ done
     /// 176: a local harness — the `Fake` dials and runs no process — as a
     /// shell loop: one session, every prompt answered `pong`; each process
     /// appends its pid to `pids` and every method it reads to `methods`.
+    #[cfg(not(target_os = "ios"))]
     const FAKE_ACP: &str = r#"echo $$ >> "$DIR/pids"
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | grep -o '"id":[^,}]*' | head -n1 | cut -d: -f2-)
@@ -24824,6 +25010,7 @@ done
     /// 176 A1/A2: an idle local harness child past the threshold is parked
     /// — its process gone, the parent still sees it idle — and the next
     /// input resumes it with `session/load` and is answered.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn idle_acp_child_parks_and_resumes() {
         let (scratch, a) = agents().await;
@@ -24962,6 +25149,7 @@ done
     /// 176 R1: a park round never holds this mailbox. With the child's
     /// mailbox stuck on a `set_config_option` its harness has not answered,
     /// the round waits on the probe while `GetCompactStyle` answers at once.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn park_round_runs_off_the_mailbox() {
         let (_scratch, a) = agents().await;

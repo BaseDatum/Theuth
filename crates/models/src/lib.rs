@@ -7,7 +7,141 @@
 //! [`accelerator`] is the `models.accelerator` knob those users (and the candle engine) read.
 
 pub mod accelerator;
+#[cfg(not(target_os = "ios"))]
 pub mod onnx;
+
+/// Minimal ONNX Runtime stub on iOS, where `ort` and `libloading` are not linked.
+#[cfg(target_os = "ios")]
+pub mod onnx {
+    use std::ops::{Deref, DerefMut};
+    use std::path::{Path, PathBuf};
+    use std::sync::MutexGuard;
+    use std::time::Duration;
+
+    /// The runtime's directory name under `<data_dir>/models/`.
+    pub const DIR: &str = "onnxruntime";
+
+    /// The ONNX Runtime library file name ([`platform::ort::ort_library_name`]).
+    pub const LIB: &str = platform::ort::ort_library_name();
+
+    /// Plugin execution providers' directory name under `<data_dir>/models/onnxruntime/`.
+    pub const PLUGIN_DIR: &str = "plugins";
+
+    /// The WebGPU plugin execution provider library file name.
+    pub const WEBGPU_LIB: &str = "libonnxruntime_providers_webgpu.dylib";
+
+    /// ORT's name for the CPU execution provider.
+    pub const CPU_EP: &str = "CPUExecutionProvider";
+
+    /// ORT's name for the DirectML execution provider.
+    pub const DML_EP: &str = "DmlExecutionProvider";
+
+    /// ORT's name for the WebGPU execution provider.
+    pub const WEBGPU_EP: &str = "WebGpuExecutionProvider";
+
+    /// Record `models.webgpu_adapter` (no-op on iOS).
+    pub fn prefer_webgpu_adapter(_substring: Option<String>) {}
+
+    /// ONNX Runtime is not available on iOS.
+    pub fn ort_lib(_data_dir: &Path) -> Result<PathBuf, String> {
+        Err("ONNX Runtime is not available on iOS".to_owned())
+    }
+
+    /// Always `false` on iOS.
+    pub fn ort_ready() -> bool {
+        false
+    }
+
+    /// Always [`CPU_EP`] on iOS.
+    pub fn ep() -> &'static str {
+        CPU_EP
+    }
+
+    /// Always empty on iOS.
+    pub fn devices() -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Always `None` on iOS.
+    pub fn webgpu_device() -> Option<String> {
+        None
+    }
+
+    /// Always `None` on iOS.
+    pub fn runtime_version() -> Option<&'static str> {
+        None
+    }
+
+    /// `<data_dir>/models/onnxruntime/plugins/<WEBGPU_LIB>`.
+    pub fn webgpu_plugin_path(data_dir: &Path) -> PathBuf {
+        data_dir
+            .join("models")
+            .join(DIR)
+            .join(PLUGIN_DIR)
+            .join(WEBGPU_LIB)
+    }
+
+    /// `<data_dir>/models/onnxruntime/<LIB>`.
+    pub fn runtime_path(data_dir: &Path) -> PathBuf {
+        data_dir.join("models").join(DIR).join(LIB)
+    }
+
+    /// No WebGPU run lock waits on iOS.
+    pub fn gpu_wait_stats() -> (u64, Duration, Duration) {
+        (0, Duration::ZERO, Duration::ZERO)
+    }
+
+    /// No WebGPU run lock on iOS.
+    pub fn gpu_guard(_on_gpu: bool) -> Option<MutexGuard<'static, ()>> {
+        None
+    }
+
+    /// Plain call on iOS (no WebGPU run lock).
+    pub fn gpu_serial<T>(_on_gpu: bool, f: impl FnOnce() -> T) -> T {
+        f()
+    }
+
+    /// Always `false` on iOS.
+    pub fn gpu_lock_free() -> bool {
+        false
+    }
+
+    /// Wrapper matching the desktop `Guarded<T>` API without a WebGPU run lock.
+    pub struct Guarded<T> {
+        inner: T,
+        on_gpu: bool,
+    }
+
+    impl<T> Guarded<T> {
+        /// Wrap `inner`.
+        pub fn new(inner: T, on_gpu: bool) -> Self {
+            Self { inner, on_gpu }
+        }
+
+        /// Whether this model was constructed for GPU execution.
+        pub fn on_gpu(&self) -> bool {
+            self.on_gpu
+        }
+
+        /// No WebGPU run lock on iOS.
+        pub fn guard(&self) -> Option<MutexGuard<'static, ()>> {
+            None
+        }
+    }
+
+    impl<T> Deref for Guarded<T> {
+        type Target = T;
+        fn deref(&self) -> &T {
+            &self.inner
+        }
+    }
+
+    impl<T> DerefMut for Guarded<T> {
+        fn deref_mut(&mut self) -> &mut T {
+            &mut self.inner
+        }
+    }
+}
 
 use std::collections::BTreeMap;
 use std::path::Path;

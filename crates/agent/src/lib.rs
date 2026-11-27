@@ -96,12 +96,14 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     ]).expect("agent RPC composition")
 }
 
+#[cfg(not(target_os = "ios"))]
 pub mod acp_child;
 pub mod activity;
 pub mod advisor;
 pub mod ask;
 pub mod attach;
 pub mod cell_nudge;
+#[cfg(not(target_os = "ios"))]
 mod aws;
 mod backend;
 mod claude_code;
@@ -122,9 +124,11 @@ pub mod local;
 pub mod loop_;
 pub mod notebook_context;
 pub mod notebooks;
+#[cfg(not(target_os = "ios"))]
 pub mod overview_audio;
 pub mod overviews;
 pub mod peers;
+#[cfg(not(target_os = "ios"))]
 pub mod polish;
 pub mod project;
 pub mod projects;
@@ -218,6 +222,7 @@ pub use activity::{
     ActivityConfig, ChildStalled, PeerStateWord, PeerWaitRegistered, StallPhase, WaitPeer,
 };
 pub use auto_archive::AutoArchiveConfig;
+#[cfg(not(target_os = "ios"))]
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
     AnswerPeerRequest, ChannelChat, ChannelOrigin, ChannelVia, CommunicationChanged,
@@ -263,9 +268,11 @@ pub use lifecycle::{
     SessionOpen,
 };
 pub use models::LimitSource;
+#[cfg(not(target_os = "ios"))]
+pub use supervisor::{RegisterNode, UnregisterNode};
 pub use supervisor::{
     ActivityOf, Agents, Broadcast, Identity, IdentitySource, InboxPersona, InstallIdentitySource,
-    ListActivity, RegisterNode, UnregisterNode,
+    ListActivity, SuspendForBackground, ThawFromBackground, suspend_engine, suspended, thaw_engine,
 };
 #[cfg(feature = "test-support")]
 pub use supervisor::{spawn_engine_agents, spawn_test_agents};
@@ -940,6 +947,7 @@ pub struct GetPolishEnabled;
 
 /// `ask` → `Result<PolishReply, String>`: polish a dictation transcript for a human reader
 /// (153 §9) on `ModelRole::Polish`, charged to `session` when given.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Polish {
     /// The shaped transcript.
@@ -951,6 +959,7 @@ pub struct Polish {
 }
 
 /// `ask` → `Result<PolishReply, String>`: rewrite `selection` per `instruction` (153 §13.6).
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Rewrite {
     /// The spoken instruction (the user message).
@@ -1717,6 +1726,11 @@ pub struct Loaded {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub observed: Option<ObservedMeta>,
+    /// Optional mesh identifier tagging an on-device session for multi-mesh
+    /// mobile UIs (Shape A); stored on the root, inherited by descendants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub mesh_id: Option<String>,
 }
 
 /// 109 §10.3: [`Loaded.resume`] — the session has an open turn (interrupted
@@ -2694,6 +2708,7 @@ pub struct RemoveSkill {
 }
 
 /// `ask` → `Result<Vec<SkillMeta>, String>`: clone a skill repo; returns its skills.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddSkillRepo {
     /// Git URL.
@@ -2703,6 +2718,7 @@ pub struct AddSkillRepo {
 }
 
 /// `ask` → `Result<(), String>`: delete a cloned skill repo.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemoveSkillRepo {
     /// Directory name.
@@ -2710,6 +2726,7 @@ pub struct RemoveSkillRepo {
 }
 
 /// `ask` → `Vec<SyncResult>`: `git pull` every skill repo.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct SyncSkills;
 
@@ -3279,6 +3296,7 @@ pub struct SetSessionProject {
 
 /// `ask` → `Vec<acp::EntryInfo>`: configured external harnesses
 /// (`<data_dir>/acp/agents.yaml`); `probe` runs `initialize` against each.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListAcp {
     /// Spawn each harness and report whether `initialize` succeeds.
@@ -3287,6 +3305,7 @@ pub struct ListAcp {
 
 /// `ask` → `Result<acp::EntryInfo, String>`: install a registry agent by id
 /// and write its `agents.yaml` entry (design doc 06 §3.1).
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddAcp {
     /// Registry id.
@@ -3294,6 +3313,7 @@ pub struct AddAcp {
 }
 
 /// `ask` → `Result<(), String>`: delete an `agents.yaml` entry and its `bin/<name>`.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemoveAcp {
     /// Entry name.
@@ -3302,6 +3322,7 @@ pub struct RemoveAcp {
 
 /// `ask` → `Result<String, String>`: authenticate a configured ACP harness
 /// (`agents.yaml`) and return its fresh probe status.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AcpLogin {
     /// Entry name in `agents.yaml`.
@@ -3313,6 +3334,7 @@ pub struct AcpLogin {
 
 /// `ask` → `Result<Vec<acp::registry::RegistryAgent>, String>`: the ACP
 /// registry (cached a day; offline serves the cache).
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListRegistry;
 
@@ -3418,8 +3440,60 @@ impl ObservedState {
 }
 
 /// How a watch-only child's cost relates to its parent's (141 §7.6, D8); the
-/// acp adapters choose it per frame, so the one type lives there.
+/// acp adapters choose it per frame, so the one type lives there on desktop.
+#[cfg(not(target_os = "ios"))]
 pub use acp::CostRule;
+
+/// How a watch-only child's cost relates to its parent's (141 §7.6, D8).
+/// Wire-compatible stand-in when the desktop `acp` crate is excluded on iOS.
+#[cfg(target_os = "ios")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum CostRule {
+    /// The child's cost is its own meter rows and rolls up.
+    Counted,
+    /// Already inside the parent's meter; display-only.
+    InsideParent,
+    /// Reported by the harness, not aggregated.
+    DisplayOnly,
+    /// Not on the wire.
+    Unreported,
+}
+
+#[cfg(target_os = "ios")]
+impl CostRule {
+    /// The stored string form (`sessions.observed_cost_rule`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Counted => "counted",
+            Self::InsideParent => "inside_parent",
+            Self::DisplayOnly => "display_only",
+            Self::Unreported => "unreported",
+        }
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl fmt::Display for CostRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl FromStr for CostRule {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "counted" => Ok(Self::Counted),
+            "inside_parent" => Ok(Self::InsideParent),
+            "display_only" => Ok(Self::DisplayOnly),
+            "unreported" => Ok(Self::Unreported),
+            _ => Err(format!("unknown CostRule: {s:?}")),
+        }
+    }
+}
 
 /// Watch-only facts of an `observed` row (141 §5.1), carried on
 /// [`AgentInfo`], [`SessionSummary`], [`Loaded`] and
@@ -3541,6 +3615,11 @@ pub struct SessionSummary {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub observed: Option<ObservedMeta>,
+    /// Optional mesh identifier tagging an on-device session for multi-mesh
+    /// mobile UIs (Shape A); stored on the root, inherited by descendants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub mesh_id: Option<String>,
 }
 
 fn one() -> u32 {

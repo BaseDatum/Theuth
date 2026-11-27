@@ -65,11 +65,19 @@ async fn setup(cells: Vec<String>) -> Option<(Harness, ActorRef<ToolRegistry>)> 
         return None;
     };
     let mut h = Harness::new(Script(cells)).await;
-    h.pool = Some(
-        repl::open_pool(Path::new(&worker), 1)
-            .await
-            .expect("Monty worker"),
-    );
+    #[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
+    {
+        h.pool = Some(
+            repl::open_pool(Path::new(&worker), 1)
+                .await
+                .expect("Monty worker"),
+        );
+    }
+    #[cfg(any(target_os = "ios", feature = "inproc-monty"))]
+    {
+        let _ = &worker;
+        h.pool = Some(repl::open_inproc_pool(1));
+    }
     let registry = tools::registry::start(&h.rt).await.unwrap();
     registry
         .ask(tools::SetApprovals {

@@ -305,6 +305,7 @@ pub struct Fetcher {
     reqwest: Arc<dyn HttpClient>,
     /// The Chrome-emulating client; `None` when `impersonate` is `never` or
     /// the build failed (then the `Reqwest` fallback carries [`STEALTH_NOT_BUILT`]).
+    #[cfg(not(target_os = "ios"))]
     stealth: Option<Arc<dyn HttpClient>>,
     impersonate: Impersonate,
     /// Under `OnChallenge`: escalate to `stealth` on a diagnosed 403/503 challenge.
@@ -375,6 +376,7 @@ impl Fetcher {
         let defaults = crate::WebConfig::default();
         Ok(Self {
             reqwest: client::build(ClientKind::Reqwest, &cfg)?,
+            #[cfg(not(target_os = "ios"))]
             stealth: None,
             impersonate: Impersonate::Never,
             header_ladder: defaults.header_ladder,
@@ -453,18 +455,21 @@ impl Fetcher {
         self.lan = self
             .lan
             .map(|twin| Box::new(twin.with_policy(impersonate, header_ladder, accept_language)));
-        self.stealth = match impersonate {
-            Impersonate::Never => None,
-            Impersonate::OnChallenge | Impersonate::Always => {
-                match client::build(ClientKind::WreqChrome, &self.cfg) {
-                    Ok(c) => Some(c),
-                    Err(e) => {
-                        tracing::debug!(error = %e, "stealth client unavailable; reqwest fallback");
-                        None
+        #[cfg(not(target_os = "ios"))]
+        {
+            self.stealth = match impersonate {
+                Impersonate::Never => None,
+                Impersonate::OnChallenge | Impersonate::Always => {
+                    match client::build(ClientKind::WreqChrome, &self.cfg) {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            tracing::debug!(error = %e, "stealth client unavailable; reqwest fallback");
+                            None
+                        }
                     }
                 }
-            }
-        };
+            };
+        }
         self
     }
 
@@ -535,20 +540,28 @@ impl Fetcher {
     /// reqwest. A wanted-but-unbuilt stealth rung is the reqwest client with
     /// [`STEALTH_NOT_BUILT`] noted once.
     fn rungs(&self, notes: &mut Vec<String>) -> Vec<Arc<dyn HttpClient>> {
-        let mut stealth = || {
-            self.stealth.clone().unwrap_or_else(|| {
-                if !notes.iter().any(|n| n == STEALTH_NOT_BUILT) {
-                    notes.push(STEALTH_NOT_BUILT.to_owned());
+        #[cfg(target_os = "ios")]
+        {
+            let _ = notes;
+            vec![Arc::clone(&self.reqwest)]
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            let mut stealth = || {
+                self.stealth.clone().unwrap_or_else(|| {
+                    if !notes.iter().any(|n| n == STEALTH_NOT_BUILT) {
+                        notes.push(STEALTH_NOT_BUILT.to_owned());
+                    }
+                    Arc::clone(&self.reqwest)
+                })
+            };
+            match self.impersonate {
+                Impersonate::Always => vec![stealth()],
+                Impersonate::OnChallenge if self.header_ladder => {
+                    vec![Arc::clone(&self.reqwest), stealth()]
                 }
-                Arc::clone(&self.reqwest)
-            })
-        };
-        match self.impersonate {
-            Impersonate::Always => vec![stealth()],
-            Impersonate::OnChallenge if self.header_ladder => {
-                vec![Arc::clone(&self.reqwest), stealth()]
+                Impersonate::OnChallenge | Impersonate::Never => vec![Arc::clone(&self.reqwest)],
             }
-            Impersonate::OnChallenge | Impersonate::Never => vec![Arc::clone(&self.reqwest)],
         }
     }
 

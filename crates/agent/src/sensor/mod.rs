@@ -4,20 +4,24 @@
 //! validation call [`SensorRunner`].
 
 mod bridge;
+#[cfg(not(target_os = "ios"))]
 mod cpython;
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
+#[cfg(not(target_os = "ios"))]
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use kameo::actor::ActorRef;
-use monty_pool::Pool;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Semaphore;
 use tools::ToolRegistry;
+
+use crate::repl::MontyPool as Pool;
 
 /// Lines of a sensor file the header may occupy (40 §4.1).
 const HEADER_LINES: usize = 16;
@@ -404,20 +408,27 @@ impl SensorRunner {
             timeout,
         };
         if meta.needs_cpython {
-            // 40 §4.4: nothing secret reaches a child Python in v1.
-            if args.values().any(|v| v.contains("{{secret:")) {
-                return Err(SensorError::Failed(
-                    "cpython sensors cannot use secrets in v1".into(),
-                ));
+            #[cfg(target_os = "ios")]
+            {
+                return Err(SensorError::NeedsCpython);
             }
-            let python = find_cpython().ok_or(SensorError::NeedsCpython)?;
-            let shim = self.sensors_dir().join(".shim.py");
-            if !shim.is_file() {
-                return Err(SensorError::Unavailable(
-                    "sensor runtime: .shim.py missing (install_builtins)".into(),
-                ));
+            #[cfg(not(target_os = "ios"))]
+            {
+                // 40 §4.4: nothing secret reaches a child Python in v1.
+                if args.values().any(|v| v.contains("{{secret:")) {
+                    return Err(SensorError::Failed(
+                        "cpython sensors cannot use secrets in v1".into(),
+                    ));
+                }
+                let python = find_cpython().ok_or(SensorError::NeedsCpython)?;
+                let shim = self.sensors_dir().join(".shim.py");
+                if !shim.is_file() {
+                    return Err(SensorError::Unavailable(
+                        "sensor runtime: .shim.py missing (install_builtins)".into(),
+                    ));
+                }
+                return cpython::run(&python, &shim, &call).await;
             }
-            return cpython::run(&python, &shim, &call).await;
         }
         let pool = self
             .pool
@@ -708,7 +719,8 @@ fn decode(raw: Value, profile: &SensorProfile) -> Result<SensorRun, SensorError>
 
 /// A CPython on `PATH` (40 §1.3): `python3`, then `python`, then Windows `py -3`.
 /// Verified with `--version` once per process and cached. `None` = `# needs:
-/// cpython` sensors are refused.
+/// cpython` sensors are refused. Always `None` on iOS (no subprocesses).
+#[cfg(not(target_os = "ios"))]
 pub fn find_cpython() -> Option<PathBuf> {
     static FOUND: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
         let names: &[&str] = if cfg!(windows) {
@@ -726,6 +738,13 @@ pub fn find_cpython() -> Option<PathBuf> {
     FOUND.clone()
 }
 
+/// On iOS, subprocess spawning is forbidden so CPython sensors are always unavailable.
+#[cfg(target_os = "ios")]
+pub fn find_cpython() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "ios"))]
 fn python_works(p: &Path) -> bool {
     let mut cmd = std::process::Command::new(p);
     if cfg!(windows) && p.file_stem().is_some_and(|s| s == "py") {

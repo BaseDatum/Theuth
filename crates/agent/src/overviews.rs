@@ -560,19 +560,28 @@ async fn run(
     }];
     file_artifact(session, notebook, &call_id).await?;
     if kind == OverviewKind::Audio {
-        let script = match content {
-            Some(c) => c,
-            None => read_artifact(session, &call_id).await?,
-        };
-        let (mp3, mp3_version, note) = crate::overview_audio::render(rt, session, &script).await?;
-        file_artifact(session, notebook, &mp3).await?;
-        shown.push(Shown {
-            name: "overview.mp3".to_owned(),
-            call_id: mp3,
-            version: mp3_version,
-            created_ms: chrono::Utc::now().timestamp_millis(),
-            note,
-        });
+        #[cfg(target_os = "ios")]
+        {
+            let _ = content;
+            anyhow::bail!("audio overviews are not supported on iOS");
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            let script = match content {
+                Some(c) => c,
+                None => read_artifact(session, &call_id).await?,
+            };
+            let (mp3, mp3_version, note) =
+                crate::overview_audio::render(rt, session, &script).await?;
+            file_artifact(session, notebook, &mp3).await?;
+            shown.push(Shown {
+                name: "overview.mp3".to_owned(),
+                call_id: mp3,
+                version: mp3_version,
+                created_ms: chrono::Utc::now().timestamp_millis(),
+                note,
+            });
+        }
     }
     Ok(shown)
 }

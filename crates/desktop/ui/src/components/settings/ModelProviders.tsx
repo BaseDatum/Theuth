@@ -1,9 +1,11 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Copy, MoreHorizontal, Radar, RefreshCw, RotateCcw, Trash2, UserPlus } from 'lucide-react'
-import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
+import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { copyToClipboard } from '@/lib/code-copy'
+import { isIos } from '@/lib/platform'
+import { closeAuthBrowser, onAuthBrowserDismissed, openAuthBrowser } from '@/lib/tauri'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import {
@@ -78,18 +80,49 @@ export function ModelProviders() {
   )
 }
 
+/**
+ * True when signing into `name` is adding/authenticating a second account for a provider kind that already has a
+ * logged-in sibling, so iOS uses an ephemeral browser session (`ASWebAuthenticationSession` without shared cookies).
+ */
+export function isSecondaryLogin(
+  name: string,
+  providers: readonly Pick<ProviderInfo, 'name' | 'account_of'>[] | undefined,
+  logins: readonly Pick<LoginInfo, 'name' | 'logged_in'>[] | undefined,
+  explicitKind?: string,
+): boolean {
+  const row = providers?.find((p) => p.name === name)
+  const kind = explicitKind ?? row?.account_of ?? name
+  const siblings = new Set<string>([kind])
+  for (const p of providers ?? []) {
+    if (p.account_of === kind || p.name === kind) siblings.add(p.name)
+  }
+  siblings.delete(name)
+  return (logins ?? []).some((l) => l.logged_in && siblings.has(l.name))
+}
+
 /** A provider's OAuth login (the TUI's `/login`): Log in opens the browser, Log out forgets the tokens. */
-function useLogins() {
+function useLogins(providers?: readonly ProviderInfo[]) {
   const canQuery1 = useQuerySupport(["list_logins"])
   const api = useApi()
   const active = useEngines((s) => s.active)
   const logins = useQuery({ enabled: canQuery1, queryKey: queryKeys.logins, queryFn: () => api.list_logins() })
-  // The engine's `login` opens the browser on its own host (here, or the node over link, 31 §9): the URL is only shown
-  // here, as text, until `LoginFinished`. Opening it here too would start a second sign-in.
+  // On desktop the engine's `login` opens the browser on its own host (here, or the node over link, 31 §9): the URL is
+  // only shown as text until `LoginFinished`. On iOS, the embedded local engine cannot spawn a browser itself, so the
+  // shell opens `SFSafariViewController` / `ASWebAuthenticationSession` via `openAuthBrowser`.
   const [pending, setPending] = useState<{ name: string; url: string; local: boolean } | null>(null)
-  const login = useAction(async (name: string) => {
+  const pendingRef = useRef(pending)
+  pendingRef.current = pending
+  const apiRef = useRef(api)
+  apiRef.current = api
+  const login = useAction(async (arg: string | { name: string; kind?: string }) => {
+    const name = typeof arg === 'string' ? arg : arg.name
+    const kind = typeof arg === 'string' ? undefined : arg.kind
+    const local = active === LOCAL
     const url = await api.login(name)
-    setPending({ name, url, local: active === LOCAL })
+    setPending({ name, url, local })
+    if (isIos() && local) {
+      void openAuthBrowser(url, isSecondaryLogin(name, providers, logins.data, kind))
+    }
   })
   // A logout changes which providers `list_models` may offer (52 §3.2); a login refreshes via `LoginFinished`.
   const logout = useAction((name: string) => api.logout(name), { keys: [queryKeys.logins, queryKeys.models] })
@@ -97,11 +130,24 @@ function useLogins() {
     () =>
       on("agent.login@1", 'LoginFinished', (e) => {
         setPending(null)
+        if (isIos()) void closeAuthBrowser()
         if (e.error) toast.error(`${e.provider}: ${e.error}`)
         else toast.success(`Logged in to ${e.provider}`)
       }),
     [],
   )
+  useEffect(() => {
+    if (!isIos()) return
+    const off = onAuthBrowserDismissed(() => {
+      const cur = pendingRef.current
+      if (!cur?.local) return
+      setPending(null)
+      void apiRef.current.cancel_login(cur.name).catch(() => undefined)
+    })
+    return () => {
+      void off.then((f) => f())
+    }
+  }, [])
   return { list: logins.data, pending, login, logout }
 }
 
@@ -339,7 +385,7 @@ function ProviderList() {
     queryKey: queryKeys.providers,
     queryFn: () => api.list_providers(),
   })
-  const logins = useLogins()
+  const logins = useLogins(providers.data)
   const rows = orderProviders(providers.data)
   // Until the providers answer, every login would look unpaired.
   const paired = pairLogins(rows, providers.data ? (logins.list ?? []) : [])
@@ -563,7 +609,7 @@ function ProviderList() {
       <CustomProviderForm form={form} names={names} onChange={setForm} pending={add.isPending} onSubmit={() => add.mutate(form)} />
       {dialog?.kind === 'reset' && <ResetModels name={dialog.name} label={BUILTIN_LABEL[dialog.name] ?? dialog.name} reset={reset} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'account' && target && (
-        <AddAccount kind={target.name} supportsLogin={target.supports_login} names={names} onLogin={(n) => logins.login.mutate(n)} onClose={() => setDialog(null)} />
+        <AddAccount kind={target.name} supportsLogin={target.supports_login} names={names} onLogin={(n) => logins.login.mutate({ name: n, kind: target.name })} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'remove' && <RemoveProvider name={dialog.name} account={!!target?.account_of} remove={remove} onClose={() => setDialog(null)} />}
     </Section>
@@ -944,6 +990,7 @@ function Bedrock() {
   const d = aws.data
   const stale = !!d?.selected && !d.profiles.includes(d.selected)
   // Something to pick, or a stale explicit choice to clear; otherwise the status line says it all.
+  if (!canQuery5) return null
   const pick = !!d && (d.profiles.length > 0 || !!d.selected)
 
   return (

@@ -151,6 +151,7 @@ impl Store {
     }
 
     /// 191: this engine's `added_ms` as the rows other machines wrote about it say.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) async fn self_added_ms(&self) -> anyhow::Result<Option<u64>> {
         let row: Option<(i64,)> =
             sqlx::query_as("SELECT added_ms FROM peers WHERE id = ? AND removed_ms IS NULL")

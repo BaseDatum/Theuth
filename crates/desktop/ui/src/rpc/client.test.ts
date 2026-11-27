@@ -85,7 +85,7 @@ test('a notification while the ping waits behind a slow engine proves the socket
   expect(t.resets).toBe(0)
 })
 
-test('a loopback transport is not probed on foreground: its sockets do not half-open', async () => {
+test('a loopback transport is not probed on foreground on desktop: its sockets do not half-open', async () => {
   const t = new Fake(true)
   new RpcClient(t)
   t.state('open')
@@ -94,6 +94,19 @@ test('a loopback transport is not probed on foreground: its sockets do not half-
   expect(requests(t)).toEqual([])
   await vi.advanceTimersByTimeAsync(5_000)
   expect(t.resets).toBe(0)
+})
+
+test('on iOS, foreground still probes a loopback transport because iOS suspends local sockets in the background', async () => {
+  vi.stubGlobal('window', Object.assign(new EventTarget(), { __TAURI_INTERNALS__: {} }))
+  vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15', maxTouchPoints: 5 })
+  const t = new Fake(true)
+  new RpcClient(t)
+  t.state('open')
+  await vi.advanceTimersByTimeAsync(1)
+  foreground()
+  expect(requests(t).map((r) => r.method)).toEqual(['ping'])
+  await vi.advanceTimersByTimeAsync(5_000)
+  expect(t.resets).toBe(1)
 })
 
 test('a loopback transport still skips the backoff on foreground while reconnecting', () => {

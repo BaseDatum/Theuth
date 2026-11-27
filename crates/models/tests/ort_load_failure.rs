@@ -4,6 +4,8 @@
 //! hand every later caller the load error instead of a path. Process-wide state: this test
 //! binary holds only this test, and it never loads a real runtime.
 
+#![cfg(not(target_os = "ios"))]
+
 use std::path::PathBuf;
 
 fn scratch_data_dir(tag: &str) -> PathBuf {

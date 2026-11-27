@@ -10,7 +10,8 @@ use runtime::SessionId;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Gate, ListServers, Mcp, McpHomeAction, McpLogin, McpLogout, McpProgress,
-    McpServer, Progress, RemoveServer, RepoInfo, SetGate, SetMcpHome, StartServer, SyncMcp,
+    McpServer, McpTestResult, Progress, RemoveServer, RepoInfo, SetGate, SetMcpHome, StartServer,
+    SyncMcp, TestServer,
 };
 
 #[rpc_core_macros::rpc_descriptors(owner = "mcp-server", descriptors = rpc_descriptors, audience = "owner")]
@@ -45,6 +46,13 @@ pub trait McpApi {
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
+    /// Probe a candidate MCP server entry without writing any file or registering tools.
+    #[method(name = "test_mcp_server")]
+    async fn test_mcp_server(
+        &self,
+        name: String,
+        entry: serde_json::Value,
+    ) -> RpcResult<McpTestResult>;
     /// Remove (or disable) an MCP server entry.
     #[method(name = "remove_mcp_server")]
     async fn remove_mcp_server(&self, name: String) -> RpcResult<()>;
@@ -129,6 +137,14 @@ impl McpApiServer for Server {
 
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer> {
         ask::<Mcp, _>(tools::MCP_ACTOR, AddServer { name, entry }).await
+    }
+
+    async fn test_mcp_server(
+        &self,
+        name: String,
+        entry: serde_json::Value,
+    ) -> RpcResult<McpTestResult> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, TestServer { name, entry }).await
     }
 
     async fn remove_mcp_server(&self, name: String) -> RpcResult<()> {

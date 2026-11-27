@@ -16,9 +16,6 @@ artifact = { workspace = true }
 rpc-core = { workspace = true }
 rpc-core-macros = { workspace = true }
 agent = { workspace = true }
-roster = { workspace = true }
-schedule = { workspace = true }
-autoresearch = { workspace = true }  # 140 §4.1 the study draft card (`study_draft.rs`): the spec, its validation, the drafts dir
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -31,6 +28,11 @@ parking_lot = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+roster = { workspace = true }
+schedule = { workspace = true }
+autoresearch = { workspace = true }  # 140 §4.1 the study draft card (`study_draft.rs`): the spec, its validation, the drafts dir
 
 [dev-dependencies]
 figment = { workspace = true }

@@ -4,6 +4,8 @@
 //! contact's, Sky 20:28) of a loopback page still runs through the embedded browser. One test:
 //! the browser actor is a process-global name.
 
+#![cfg(not(target_os = "ios"))]
+
 use kameo::actor::Spawn;
 use scrape::{Scrape, ScrapeConfig};
 use url::Url;

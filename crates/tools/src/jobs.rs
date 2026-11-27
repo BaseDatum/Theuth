@@ -12,13 +12,20 @@
 //! supervisor's sink arrives through [`InstallActivity`].
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
+#[cfg(not(target_os = "ios"))]
+use std::io::Read;
+#[cfg(any(not(target_os = "ios"), test))]
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::pin::{Pin, pin};
+use std::pin::Pin;
+#[cfg(not(target_os = "ios"))]
+use std::pin::pin;
+#[cfg(any(not(target_os = "ios"), test))]
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_os = "ios"))]
 use brush_core::{ExecutionParameters, ProcessGroupPolicy, Shell, SourceInfo};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -27,12 +34,17 @@ use platform::ProcessTree;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Notify, oneshot};
-use tokio::task::{AbortHandle, JoinHandle};
+use tokio::sync::Notify;
+#[cfg(not(target_os = "ios"))]
+use tokio::sync::oneshot;
+use tokio::task::AbortHandle;
+#[cfg(not(target_os = "ios"))]
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId, Rejected};
 use crate::journal::{JobKind, JobRow, JobState, PtyScreenRow};
+#[cfg(any(not(target_os = "ios"), test))]
 use crate::pty::{Mark, MarkKind};
 use crate::resources::CloseAck;
 use crate::{Risk, Tool, ToolCx, ToolOutput};
@@ -44,22 +56,27 @@ const MAX_OUTPUT: usize = 64 * 1024;
 /// Bytes of recent output kept per job for stubs, `jobs` and [`JobView`].
 const TAIL: usize = 8 * 1024;
 /// Bytes of tail quoted in the still-running `shell` reply.
+#[cfg(not(target_os = "ios"))]
 const STUB_TAIL: usize = 2 * 1024;
 /// Finished rows kept per session before the oldest go.
 const MAX_ROWS: usize = 32;
 /// Minimum spacing of [`JobEvent::Output`] / [`JobEvent::Screen`] per job.
+#[cfg(not(target_os = "ios"))]
 pub(crate) const OUTPUT_EVERY: Duration = Duration::from_millis(500);
 /// How long a job's result waits for what the command left behind (open
 /// pipes, `&` jobs, killed groups) before that becomes its own operation.
+#[cfg(not(target_os = "ios"))]
 pub(crate) const SETTLE: Duration = Duration::from_secs(1);
 /// After SIGKILL, a process group still answering signal 0 past this is
 /// reported unknown rather than waited for.
+#[cfg(not(target_os = "ios"))]
 pub(crate) const KILL_WAIT: Duration = Duration::from_secs(2);
 /// Spacing of the signal-0 liveness poll on an owned process group.
 pub(crate) const GROUP_POLL: Duration = Duration::from_millis(50);
 /// Retained-terminal budget across every session (51 §7.4); each PTY is
 /// charged [`crate::pty::RESERVE`] at `start` until its handle is evicted.
 /// 512 MiB ≈ 80 live PTYs engine-wide (the estimate, not measured RSS).
+#[cfg(not(target_os = "ios"))]
 pub(crate) const PTY_BUDGET: usize = 512 << 20;
 /// 171 §12.1 inv. 3: the `name` prefix of a user-cell kernel job. Reserved:
 /// `start` refuses it without `StartPty.cell`.
@@ -74,7 +91,9 @@ pub(crate) const CELL_LOG: &str = ".cell.log";
 pub const CELL_COMMAND: &str = " (user cell kernel)";
 /// 171 §5.5: a mark sequence split across chunks is completed from this
 /// much carried tail; OSC 7 carries a path, so it gets [`OSC7_CARRY`].
+#[cfg(any(not(target_os = "ios"), test))]
 const MARK_CARRY: usize = 32;
+#[cfg(any(not(target_os = "ios"), test))]
 const OSC7_CARRY: usize = 1024;
 
 /// Is `name` a user-cell kernel job's (`cell:<label>`)?
@@ -401,10 +420,12 @@ pub struct JobView {
 }
 
 /// Receives a finished job's shell (14 §0.5: last finished wins).
+#[cfg(not(target_os = "ios"))]
 pub type PutBack = Arc<dyn Fn(Shell) + Send + Sync>;
 
 /// `ask` → [`StartReply`]: spawn `command` on `shell` as a job and wait up to
 /// the actor's grace for it to exit.
+#[cfg(not(target_os = "ios"))]
 pub struct Start {
     /// Owning session.
     pub session: SessionId,
@@ -438,6 +459,7 @@ pub struct Start {
 }
 
 /// Reply to [`Start`].
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, kameo::Reply)]
 pub enum StartReply {
     /// Exited within grace: the `shell` tool output, today's shape.
@@ -628,6 +650,7 @@ pub(crate) struct Launch<M> {
 }
 
 /// What the pipe-job asker waits on after [`Launch`].
+#[cfg(not(target_os = "ios"))]
 pub(crate) struct Running {
     pub(crate) done: oneshot::Receiver<ToolOutput>,
     pub(crate) claimable: Arc<AtomicBool>,
@@ -657,21 +680,27 @@ pub(crate) async fn admit_job(
 /// writes it: the row the actor retains after the exit keeps the tail and
 /// the path, never the descriptor (`close`, `writer_done`).
 pub(crate) struct Log {
+    #[cfg(any(not(target_os = "ios"), test))]
     file: Option<std::fs::File>,
     tail: VecDeque<u8>,
+    #[cfg(not(target_os = "ios"))]
     pending: VecDeque<u8>,
     /// Readers still feeding `push` (one per pipe drain); the file goes
     /// with the last one.
+    #[cfg(not(target_os = "ios"))]
     writers: usize,
     /// Bytes appended so far, after redaction: the file offset of the next
     /// chunk (171 §5.5 `Mark::offset`).
+    #[cfg(any(not(target_os = "ios"), test))]
     written: u64,
     /// 171 §5.5: set for a user-cell PTY job; `None` for every other log.
+    #[cfg(any(not(target_os = "ios"), test))]
     marks: Option<MarkScan>,
 }
 
 /// 171 §5.5: where a cell job's shell-integration marks go, and the tail
 /// of the last chunk that may begin one.
+#[cfg(any(not(target_os = "ios"), test))]
 struct MarkScan {
     tx: tokio::sync::mpsc::Sender<Mark>,
     carry: Vec<u8>,
@@ -679,17 +708,25 @@ struct MarkScan {
 
 impl Log {
     pub(crate) fn new(file: Option<std::fs::File>) -> Self {
+        #[cfg(all(target_os = "ios", not(test)))]
+        let _ = file;
         Self {
+            #[cfg(any(not(target_os = "ios"), test))]
             file,
             tail: VecDeque::with_capacity(TAIL),
+            #[cfg(not(target_os = "ios"))]
             pending: VecDeque::new(),
+            #[cfg(not(target_os = "ios"))]
             writers: 0,
+            #[cfg(any(not(target_os = "ios"), test))]
             written: 0,
+            #[cfg(any(not(target_os = "ios"), test))]
             marks: None,
         }
     }
 
     /// 171 §5.5: scan every chunk from now on for marks and send them to `tx`.
+    #[cfg(any(not(target_os = "ios"), test))]
     pub(crate) fn scan_marks_to(&mut self, tx: tokio::sync::mpsc::Sender<Mark>) {
         self.marks = Some(MarkScan {
             tx,
@@ -699,15 +736,20 @@ impl Log {
 
     /// Drop the file: the output is drained, or nobody will read on.
     pub(crate) fn close(&mut self) {
-        self.file = None;
+        #[cfg(any(not(target_os = "ios"), test))]
+        {
+            self.file = None;
+        }
     }
 
     /// One more reader feeds this log; paired with [`Log::writer_done`].
+    #[cfg(not(target_os = "ios"))]
     fn writer(&mut self) {
         self.writers += 1;
     }
 
     /// A reader hit EOF (or died): the last one closes the file.
+    #[cfg(not(target_os = "ios"))]
     fn writer_done(&mut self) {
         self.writers -= 1;
         if self.writers == 0 {
@@ -727,6 +769,7 @@ impl Log {
     /// tail and `JobEvent::Output`. Known secret values are scrubbed first —
     /// best effort, a value split across two chunks escapes; `run`'s pass
     /// over the whole render is the exact one (37 §3.4).
+    #[cfg(any(not(target_os = "ios"), test))]
     pub(crate) fn push(&mut self, chunk: &[u8]) {
         let text = String::from_utf8_lossy(chunk);
         let clean = crate::secrets::redact(&text);
@@ -746,6 +789,7 @@ impl Log {
         }
         self.written += chunk.len() as u64;
         keep_last(&mut self.tail, chunk);
+        #[cfg(not(target_os = "ios"))]
         keep_last(&mut self.pending, chunk);
     }
 
@@ -760,7 +804,7 @@ impl Log {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 impl Log {
     pub(crate) fn is_open(&self) -> bool {
         self.file.is_some()
@@ -769,10 +813,10 @@ impl Log {
 
 /// `ask` → the finished rows of `session` that still hold a descriptor
 /// (`"j3 log"`, `"j4 pty"`): the D1/D2 probe.
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 pub(crate) struct OpenHandles(pub(crate) SessionId);
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 impl Message<OpenHandles> for Jobs {
     type Reply = Vec<String>;
 
@@ -806,6 +850,7 @@ fn keep_last(buf: &mut VecDeque<u8>, chunk: &[u8]) {
 /// is skipped. On return `carry` holds the strict prefix of a mark that ended
 /// the chunk, up to [`MARK_CARRY`] bytes ([`OSC7_CARRY`] for an OSC 7 path),
 /// or nothing.
+#[cfg(any(not(target_os = "ios"), test))]
 pub(crate) fn scan_marks(carry: &mut Vec<u8>, base: u64, chunk: &[u8]) -> Vec<Mark> {
     let start = base - carry.len() as u64;
     let mut buf = std::mem::take(carry);
@@ -845,6 +890,7 @@ pub(crate) fn scan_marks(carry: &mut Vec<u8>, base: u64, chunk: &[u8]) -> Vec<Ma
 }
 
 /// [`parse_mark`]'s verdict on bytes starting at an ESC.
+#[cfg(any(not(target_os = "ios"), test))]
 enum Parsed {
     /// A complete OSC of `len` bytes; `Some` when it is a mark.
     Done(Option<(MarkKind, Option<i32>, Option<String>)>, usize),
@@ -855,6 +901,7 @@ enum Parsed {
 }
 
 /// Parse one mark at `s[0] == ESC`.
+#[cfg(any(not(target_os = "ios"), test))]
 fn parse_mark(s: &[u8]) -> Parsed {
     const P133: &[u8] = b"\x1b]133;";
     const P7: &[u8] = b"\x1b]7;file://";
@@ -904,6 +951,7 @@ fn parse_mark(s: &[u8]) -> Parsed {
 }
 
 /// `%XX` → the byte; anything else verbatim; lossy UTF-8.
+#[cfg(any(not(target_os = "ios"), test))]
 fn percent_decode(s: &[u8]) -> String {
     percent_encoding::percent_decode(s)
         .decode_utf8_lossy()
@@ -914,7 +962,9 @@ fn percent_decode(s: &[u8]) -> String {
 /// once the reaper reported it: when this engine started, why it is lost
 /// (139 §7.1) and, for a PTY, the last stored screen.
 pub(crate) struct Lost {
+    #[cfg(not(target_os = "ios"))]
     pub(crate) restarted_at: chrono::DateTime<chrono::Utc>,
+    #[cfg(not(target_os = "ios"))]
     pub(crate) reason: LostReason,
     pub(crate) screen: Option<PtyScreenRow>,
 }
@@ -946,6 +996,7 @@ pub(crate) struct Job {
     pub(crate) on_pty: bool,
     /// The pseudo-terminal, for PTY jobs (22 §4.8); `None` for a pipe job or
     /// once evicted under the budget (51 §7.4).
+    #[cfg(not(target_os = "ios"))]
     pub(crate) pty: Option<Arc<crate::pty::PtyHandle>>,
     /// `Some` for a job a previous engine lost (109 §5.4).
     pub(crate) lost: Option<Lost>,
@@ -995,6 +1046,22 @@ impl Job {
     }
 
     fn view(&self, session: SessionId) -> JobView {
+        #[cfg(not(target_os = "ios"))]
+        let tail = match (&self.pty, &self.lost) {
+            (Some(pty), _) => pty.screen().0.join("\n"),
+            (
+                None,
+                Some(Lost {
+                    screen: Some(s), ..
+                }),
+            ) => s.text.clone(),
+            (None, _) => lock(&self.log).tail_text(TAIL),
+        };
+        #[cfg(target_os = "ios")]
+        let tail = match &self.lost {
+            Some(Lost { screen: Some(s) }) => s.text.clone(),
+            _ => lock(&self.log).tail_text(TAIL),
+        };
         JobView {
             session,
             id: self.id.clone(),
@@ -1002,16 +1069,7 @@ impl Job {
             state: self.state(),
             secs: self.secs(),
             log: self.log_path.clone(),
-            tail: match (&self.pty, &self.lost) {
-                (Some(pty), _) => pty.screen().0.join("\n"),
-                (
-                    None,
-                    Some(Lost {
-                        screen: Some(s), ..
-                    }),
-                ) => s.text.clone(),
-                (None, _) => lock(&self.log).tail_text(TAIL),
-            },
+            tail,
             name: self.name.clone(),
             pty: self.on_pty,
             exit_code: match self.exit {
@@ -1044,14 +1102,30 @@ impl SessionJobs {
     /// returns how many retained terminals went with them.
     pub(crate) fn push(&mut self, job: Job) -> usize {
         self.jobs.push(job);
+        #[cfg(not(target_os = "ios"))]
         let mut evicted = 0;
         while self.jobs.len() > MAX_ROWS {
             match self.jobs.iter().position(|j| j.exit.is_some()) {
-                Some(i) => evicted += usize::from(self.jobs.remove(i).pty.is_some()),
+                Some(i) => {
+                    let removed = self.jobs.remove(i);
+                    #[cfg(not(target_os = "ios"))]
+                    {
+                        evicted += usize::from(removed.pty.is_some());
+                    }
+                    #[cfg(target_os = "ios")]
+                    let _ = removed;
+                }
                 None => break,
             }
         }
-        evicted
+        #[cfg(not(target_os = "ios"))]
+        {
+            evicted
+        }
+        #[cfg(target_os = "ios")]
+        {
+            0
+        }
     }
 
     /// 171F3 R2: the next `j<n>`, never one the session used before. After an
@@ -1102,7 +1176,9 @@ fn highest_logged(dir: &Path) -> u32 {
 #[derive(kameo::Actor)]
 pub struct Jobs {
     pub(crate) rt: Runtime,
+    #[cfg(not(target_os = "ios"))]
     pub(crate) grace: Duration,
+    #[cfg(not(target_os = "ios"))]
     timeout: Duration,
     pub(crate) sessions: HashMap<SessionId, SessionJobs>,
     /// [`InstallActivity`]; `None` until the supervisor registers.
@@ -1112,8 +1188,10 @@ pub struct Jobs {
     pub(crate) live: HashMap<OperationId, Activity>,
     /// Bytes charged against [`PTY_BUDGET`]: one [`crate::pty::RESERVE`]
     /// per job whose `pty` is `Some`.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) pty_bytes: usize,
     /// Snapshot renders admitted at once (51 §7.4).
+    #[cfg(not(target_os = "ios"))]
     pub(crate) snapshots: Arc<tokio::sync::Semaphore>,
     /// Pending reminder timers per session (`reminder.rs`); their guards
     /// live in `live` like any job's.
@@ -1123,9 +1201,11 @@ pub struct Jobs {
     /// `jobs` / `pty_screens` rows are written through it.
     pub(crate) journal: Arc<dyn crate::Journal>,
     /// 109 §5.3: the PTY screen snapshot timer (`durability.pty_snapshot_secs`).
+    #[cfg(not(target_os = "ios"))]
     pub(crate) pty_snapshot: Duration,
     /// 155 §6.6: the static `tools.pty_reaction_secs` / `pty_tree_cpu_pct`
     /// pair every PTY job task reads.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) pty_thresholds: crate::PtyThresholds,
 }
 
@@ -1133,23 +1213,32 @@ impl Jobs {
     /// Build with the runtime (log dir, bus), the inline-reply grace and the
     /// per-job deadline.
     pub fn new(rt: Runtime, grace: Duration, timeout: Duration) -> Self {
+        #[cfg(target_os = "ios")]
+        let _ = (grace, timeout);
         Self {
             rt,
+            #[cfg(not(target_os = "ios"))]
             grace,
+            #[cfg(not(target_os = "ios"))]
             timeout,
             sessions: HashMap::new(),
             activity: None,
             live: HashMap::new(),
+            #[cfg(not(target_os = "ios"))]
             pty_bytes: 0,
+            #[cfg(not(target_os = "ios"))]
             snapshots: Arc::new(tokio::sync::Semaphore::new(crate::pty::SNAPSHOTS)),
             reminders: HashMap::new(),
             journal: Arc::new(crate::NoopJournal),
+            #[cfg(not(target_os = "ios"))]
             pty_snapshot: Duration::from_secs(5),
+            #[cfg(not(target_os = "ios"))]
             pty_thresholds: crate::PtyThresholds::from_config(&crate::ToolsConfig::default()),
         }
     }
 
     /// 109 §5.4: a job a previous engine lost, by exact id or name.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) fn lost(&self, session: SessionId, id: &str) -> Option<&Job> {
         let jobs = self.sessions.get(&session)?;
         jobs.jobs
@@ -1180,12 +1269,18 @@ impl Jobs {
     /// Add a row, releasing the terminal charge of whatever it evicts.
     pub(crate) fn push(&mut self, session: SessionId, job: Job) {
         let evicted = self.sessions.entry(session).or_default().push(job);
-        self.pty_bytes -= evicted * crate::pty::RESERVE;
+        #[cfg(not(target_os = "ios"))]
+        {
+            self.pty_bytes -= evicted * crate::pty::RESERVE;
+        }
+        #[cfg(target_os = "ios")]
+        let _ = evicted;
     }
 
     /// Drop exited jobs' terminals, oldest first across every session, until
     /// `need` more bytes fit under [`PTY_BUDGET`] or none are left (51 §7.4).
     /// Live scrollback is never trimmed: vt100 exposes no way to.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) fn make_room(&mut self, need: usize) {
         while self.pty_bytes + need > PTY_BUDGET {
             let oldest = self
@@ -1208,15 +1303,19 @@ impl Jobs {
 /// Spawn and register the actor, and kill every running job when `rt.shutdown`
 /// fires (00 §12: the `setsid` escape stays).
 pub fn start(rt: &Runtime, grace: Duration, timeout: Duration) -> anyhow::Result<ActorRef<Jobs>> {
+    #[cfg_attr(target_os = "ios", allow(unused_mut))]
     let mut actor = Jobs::new(rt.clone(), grace, timeout);
-    if let Ok(secs) = rt
-        .config
-        .extract_inner::<u64>("durability.pty_snapshot_secs")
+    #[cfg(not(target_os = "ios"))]
     {
-        actor.pty_snapshot = Duration::from_secs(secs.max(1));
-    }
-    if let Ok(cfg) = crate::registry::config(rt) {
-        actor.pty_thresholds = crate::PtyThresholds::from_config(&cfg);
+        if let Ok(secs) = rt
+            .config
+            .extract_inner::<u64>("durability.pty_snapshot_secs")
+        {
+            actor.pty_snapshot = Duration::from_secs(secs.max(1));
+        }
+        if let Ok(cfg) = crate::registry::config(rt) {
+            actor.pty_thresholds = crate::PtyThresholds::from_config(&cfg);
+        }
     }
     let jobs = Jobs::spawn_with_mailbox(actor, runtime::subscriber_mailbox());
     jobs.register(JOBS_ACTOR)?;
@@ -1229,6 +1328,7 @@ pub fn start(rt: &Runtime, grace: Duration, timeout: Duration) -> anyhow::Result
     Ok(jobs)
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<Start> for Jobs {
     type Reply = DelegatedReply<StartReply>;
 
@@ -1338,6 +1438,7 @@ impl Message<Start> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<Launch<Start>> for Jobs {
     type Reply = Result<Running, String>;
 
@@ -1534,6 +1635,7 @@ impl Message<Launch<Adopt>> for Jobs {
                 task,
                 name: None,
                 on_pty: false,
+                #[cfg(not(target_os = "ios"))]
                 pty: None,
                 lost: None,
                 kind: JobKind::Promoted,
@@ -1758,6 +1860,7 @@ impl Message<CloseSessions> for Jobs {
                     kill(&job.pgids);
                     tasks.push((job.id, job.task));
                 }
+                #[cfg(not(target_os = "ios"))]
                 if job.pty.is_some() {
                     self.pty_bytes -= crate::pty::RESERVE;
                 }
@@ -1855,6 +1958,7 @@ impl Jobs {
     async fn kill_lost(&mut self, only: Option<SessionId>) {
         let now = chrono::Utc::now().timestamp_millis();
         let mut rows = Vec::new();
+        #[cfg(not(target_os = "ios"))]
         let mut screens = Vec::new();
         for (session, sj) in &self.sessions {
             if only.is_some_and(|s| s != *session) {
@@ -1862,6 +1966,7 @@ impl Jobs {
             }
             for job in sj.jobs.iter().filter(|j| j.exit.is_none()) {
                 rows.push(job.row(*session, JobState::Running, Some(JobExit::Lost), Some(now)));
+                #[cfg(not(target_os = "ios"))]
                 if let Some(pty) = &job.pty {
                     screens.push((Arc::clone(pty), *session, job.id.clone()));
                 }
@@ -1870,6 +1975,7 @@ impl Jobs {
         for row in rows {
             self.journal.job(row).await;
         }
+        #[cfg(not(target_os = "ios"))]
         for (pty, session, id) in screens {
             pty.snapshot_to_store(&*self.journal, session, &id).await;
         }
@@ -1904,6 +2010,7 @@ impl Jobs {
                 // Nothing observes a terminal past shutdown / a transfer:
                 // release every charge, and the pty's descriptors with it
                 // (a `Live` in flight may still hold the `Arc`).
+                #[cfg(not(target_os = "ios"))]
                 if let Some(pty) = job.pty.take() {
                     pty.release();
                     self.pty_bytes = self.pty_bytes.saturating_sub(crate::pty::RESERVE);
@@ -1922,7 +2029,10 @@ impl Message<Reaped> for Jobs {
             screen,
             tail,
             deliver,
+            #[cfg(not(target_os = "ios"))]
             reason,
+            #[cfg(target_os = "ios")]
+            reason: _,
         } in m.jobs
         {
             let session = row.session;
@@ -1972,9 +2082,12 @@ impl Message<Reaped> for Jobs {
                     task: tokio::spawn(async {}).abort_handle(),
                     name: row.name,
                     on_pty: pty,
+                    #[cfg(not(target_os = "ios"))]
                     pty: None,
                     lost: Some(Lost {
+                        #[cfg(not(target_os = "ios"))]
                         restarted_at: m.restarted_at,
+                        #[cfg(not(target_os = "ios"))]
                         reason,
                         screen,
                     }),
@@ -2022,6 +2135,7 @@ impl Message<crate::InstallJournal> for Jobs {
 
 /// Snapshot of the recorded trees, one per group (pipeline members share
 /// the first member's; `setup`'s hook adds them to it).
+#[cfg(not(target_os = "ios"))]
 fn groups(trees: &Mutex<Vec<ProcessTree>>) -> Vec<ProcessTree> {
     lock(trees).clone()
 }
@@ -2040,6 +2154,7 @@ pub(crate) fn kill(trees: &Mutex<Vec<ProcessTree>>) -> Vec<ProcessTree> {
 /// zombie still counts, so this also waits out the reaper) or `deadline`;
 /// `true` once the tree is gone. Actual process evidence, not output
 /// idleness: only our own descendants are in a recorded tree.
+#[cfg(not(target_os = "ios"))]
 pub(crate) async fn group_gone(tree: &ProcessTree, deadline: Option<tokio::time::Instant>) -> bool {
     loop {
         if !tree.alive() {
@@ -2058,6 +2173,7 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Log file (none for a quiet job: `log_path` absent), exec params and the
 /// read ends of the output pipes for one job.
+#[cfg(not(target_os = "ios"))]
 fn setup(
     dir: &std::path::Path,
     log_path: Option<&std::path::Path>,
@@ -2120,6 +2236,7 @@ fn setup(
 }
 
 /// Everything one job task owns.
+#[cfg(not(target_os = "ios"))]
 struct Run {
     rt: Runtime,
     me: ActorRef<Jobs>,
@@ -2162,6 +2279,7 @@ struct Run {
 /// One output pipe being read: the first ≤ 64 KiB (+1 so `truncate` still
 /// marks the cut) land in `head` as they arrive, so the finished output has
 /// what was collected even when the reader outlives the command.
+#[cfg(not(target_os = "ios"))]
 struct Drain {
     head: Arc<Mutex<Vec<u8>>>,
     task: JoinHandle<std::io::Result<()>>,
@@ -2181,6 +2299,7 @@ struct Drain {
 /// (output past that point is lost), a job that stopped rather than exited,
 /// a group that survived SIGKILL past [`KILL_WAIT`]. A group alive after a
 /// normal exit is legitimately ours and is waited for.
+#[cfg(not(target_os = "ios"))]
 async fn settle(
     bg: Vec<brush_core::jobs::Job>,
     drains: Vec<JoinHandle<std::io::Result<()>>>,
@@ -2217,6 +2336,7 @@ async fn settle(
 /// The job's own result is never held up or overridden by it: a root marked
 /// unknown would lose its `FinishedWithResult`, so uncertainty about the
 /// tail lives on the child alone.
+#[cfg(not(target_os = "ios"))]
 async fn linger(
     job: &Activity,
     id: &JobId,
@@ -2239,6 +2359,7 @@ async fn linger(
 }
 
 /// Publish the bytes since the last `Output`, if any.
+#[cfg(not(target_os = "ios"))]
 async fn flush(rt: &Runtime, session: SessionId, id: &JobId, log: &Mutex<Log>) {
     let pending: Vec<u8> = std::mem::take(&mut lock(log).pending).into();
     if !pending.is_empty() {
@@ -2256,6 +2377,7 @@ async fn flush(rt: &Runtime, session: SessionId, id: &JobId, log: &Mutex<Log>) {
 /// what follows is lost) — never reported as one or the other by default.
 /// Either way the reader signs off the log: the second one to end closes
 /// the log file (D1), whether or not anything still awaits the task.
+#[cfg(not(target_os = "ios"))]
 fn drain(mut r: std::io::PipeReader, log: Arc<Mutex<Log>>) -> Drain {
     let head: Arc<Mutex<Vec<u8>>> = Arc::default();
     lock(&log).writer();
@@ -2284,6 +2406,7 @@ fn drain(mut r: std::io::PipeReader, log: Arc<Mutex<Log>>) -> Drain {
     Drain { head, task }
 }
 
+#[cfg(not(target_os = "ios"))]
 async fn run(mut j: Run) {
     // 109 §5.1: the row exists from the spawn on; `pgid` follows with the
     // first group, the exit settles it. A quiet job has no row.
@@ -2474,6 +2597,7 @@ async fn run(mut j: Run) {
     let _ = j.done.send(out);
 }
 
+#[cfg(not(target_os = "ios"))]
 pub(crate) fn sep(body: &str) -> &'static str {
     if body.is_empty() || body.ends_with('\n') {
         ""
@@ -2491,6 +2615,7 @@ fn truncate(mut s: String) -> String {
     s
 }
 
+#[cfg(not(target_os = "ios"))]
 fn render(stdout: &[u8], stderr: &[u8]) -> String {
     let mut s = String::from_utf8_lossy(stdout).into_owned();
     if !stderr.is_empty() {
@@ -2621,6 +2746,7 @@ impl Tool for CancelJobTool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[cfg(not(target_os = "ios"))]
     use crate::shell::ShellTool;
 
     pub(crate) struct Fx {
@@ -2705,10 +2831,12 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn spawn_job(fx: &Fx, command: &str) -> StartReply {
         spawn_quiet(fx, command, false).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn spawn_quiet(fx: &Fx, command: &str, quiet: bool) -> StartReply {
         fx.jobs
             .ask(Start {
@@ -2878,6 +3006,7 @@ pub(crate) mod tests {
     }
 
     /// Polls until the only job's state leaves `running`.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) async fn settled(fx: &Fx, within: Duration) -> JobView {
         let deadline = Instant::now() + within;
         loop {
@@ -2890,6 +3019,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn inline_when_fast() {
         let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
@@ -2913,6 +3043,7 @@ pub(crate) mod tests {
 
     /// 37 §3.2: a quiet job past grace still replies `Done`, and nothing of
     /// it reaches the bus, the log dir or the `jobs` table.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn quiet_job_is_invisible() {
         let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
@@ -2929,6 +3060,7 @@ pub(crate) mod tests {
     /// 47 §4.2 rule 3 / §4.1: the job is admitted (`Kind::Job`) before it
     /// runs; a result the tool call did not return rides the guard as
     /// `FinishedWithResult` — and only then, never as a bare `Finished`.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn stub_result_settles_with_result() {
         use crate::activity::test_sink::Seen;
@@ -2951,6 +3083,7 @@ pub(crate) mod tests {
 
     /// Inline and quiet results are consumed by the tool call: the guard
     /// settles bare, so the supervisor owes no second wake (47 §3.2).
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn inline_and_quiet_settle_bare() {
         use crate::activity::test_sink::Seen;
@@ -2981,6 +3114,7 @@ pub(crate) mod tests {
     /// `command` returns `Done` with `output` within `SETTLE`, leaves a
     /// `&` child behind as an open child operation of the job, and that
     /// operation finishes — never unknown — once the child actually exits.
+    #[cfg(not(target_os = "ios"))]
     async fn background_child_stays_owned(command: &str, output: &str) {
         use crate::activity::test_sink::Seen;
         let (fx, ledger, seen) = certified(Duration::from_secs(5), Duration::from_secs(60)).await;
@@ -3021,6 +3155,7 @@ pub(crate) mod tests {
     /// 47 §4.2 rule 4: a `&` child holding the pipe past the command's return
     /// is this session's work until it exits; the job's result is not held up
     /// and keeps what the reader had collected.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn background_child_keeps_a_pipe_operation_open() {
         background_child_stays_owned("sleep 2 & echo bg", "bg\nexit code: 0").await;
@@ -3030,6 +3165,7 @@ pub(crate) mod tests {
     /// that already exited: no pipe is held and the shell's job table is
     /// empty — the recorded process group is the evidence, never the
     /// command text.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn redirected_background_process_stays_owned() {
         background_child_stays_owned(
@@ -3042,6 +3178,7 @@ pub(crate) mod tests {
     /// Doubt about the tail (a dead reader, a group that survived SIGKILL)
     /// blocks as unknown on the child operation only: the job still settles
     /// with the result it owes, so the model is woken with what there is.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn uncertain_tail_still_delivers_the_result() {
         use crate::activity::test_sink::Seen;
@@ -3086,6 +3223,7 @@ pub(crate) mod tests {
     }
 
     /// Setup failure after admission settles the guard: no leaked blocker.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn setup_error_settles_admission() {
         use crate::activity::test_sink::Seen;
@@ -3110,6 +3248,7 @@ pub(crate) mod tests {
 
     /// A supervisor rejecting the admission is an ordinary tool error and the
     /// process never runs.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn rejected_admission_runs_nothing() {
         let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
@@ -3128,6 +3267,7 @@ pub(crate) mod tests {
     /// 47 §4.2 rule 7: a job running before any supervisor existed is adopted
     /// on install — reported unknown, then settled by its own producer with
     /// the result it still owes; a job started after install is admitted.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn install_adopts_running_jobs() {
         use crate::activity::test_sink::Seen;
@@ -3161,6 +3301,7 @@ pub(crate) mod tests {
         assert!(!v.contains(&Seen::Finished(pre)), "{v:?}");
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn stub_then_finished_event() {
         let fx = fixture(Duration::from_millis(200), Duration::from_secs(60)).await;
@@ -3189,6 +3330,7 @@ pub(crate) mod tests {
     /// restart) numbers past every log already there — `j<n>.log` and a
     /// kernel's `j<n>.cell.log` alike — skips an id whose log appears later,
     /// and never rewrites an earlier log.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn ids_are_never_reused_across_a_restart() {
         let mut fx = fixture(Duration::ZERO, Duration::from_secs(60)).await;
@@ -3222,6 +3364,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read_to_string(&stray).unwrap(), "not mine\n");
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn cancel_kills_group() {
         let fx = fixture(Duration::from_millis(200), Duration::from_secs(60)).await;
@@ -3278,6 +3421,7 @@ pub(crate) mod tests {
 
     /// 14 §1.2 as-built: the model's own `cancel_job` gets no `<job_result>`
     /// — the event is inline with the one-line notice, the output dropped.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn tool_cancel_is_inline_and_quiet() {
         let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
@@ -3301,6 +3445,7 @@ pub(crate) mod tests {
 
     /// LIVE-GLYPHS A3: a running job and a pending reminder make one row;
     /// once the job has exited and nothing else is live, no row.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn live_counts_rows_running_jobs_and_pending_reminders() {
         let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
@@ -3342,6 +3487,7 @@ pub(crate) mod tests {
         assert!(fx.jobs.ask(LiveCounts).await.unwrap().is_empty());
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn deadline() {
         let fx = fixture(Duration::from_millis(100), Duration::from_millis(500)).await;
@@ -3352,6 +3498,7 @@ pub(crate) mod tests {
         assert_eq!(settled(&fx, Duration::from_secs(3)).await.state, "timeout");
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn state_last_finished_wins() {
         let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
@@ -3392,6 +3539,7 @@ pub(crate) mod tests {
         assert_eq!(pwd.content, "/tmp\nexit code: 0");
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn close_sessions_kills_reaps_and_removes_logs() {
         let fx = fixture(Duration::from_millis(200), Duration::from_secs(60)).await;
@@ -3427,6 +3575,7 @@ pub(crate) mod tests {
     }
     /// 109: a journal that records every row, noting for each `jobs` row
     /// whether its process group answered signal 0 at write time.
+    #[cfg(not(target_os = "ios"))]
     #[derive(Default)]
     pub(crate) struct RecJournal {
         pub(crate) jobs: Mutex<Vec<(JobRow, bool)>>,
@@ -3434,6 +3583,7 @@ pub(crate) mod tests {
         pub(crate) waits: Mutex<Vec<Option<crate::journal::WaitRow>>>,
     }
 
+    #[cfg(not(target_os = "ios"))]
     impl crate::Journal for RecJournal {
         fn call_started(&self, _: SessionId, _: &str) -> futures::future::BoxFuture<'_, ()> {
             Box::pin(async {})
@@ -3473,6 +3623,7 @@ pub(crate) mod tests {
     }
 
     /// A fixture with a [`RecJournal`] installed.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) async fn journaled(grace: Duration, timeout: Duration) -> (Fx, Arc<RecJournal>) {
         let fx = fixture(grace, timeout).await;
         let journal = Arc::new(RecJournal::default());
@@ -3484,6 +3635,7 @@ pub(crate) mod tests {
     }
 
     /// Poll the journal until `pred` holds on the `jobs` rows.
+    #[cfg(not(target_os = "ios"))]
     pub(crate) async fn rows_until(
         journal: &RecJournal,
         within: Duration,
@@ -3502,6 +3654,7 @@ pub(crate) mod tests {
 
     /// 109 §5.1: a shell job writes `running` (then with its pgid), and
     /// `settled` with its exit; a quiet job writes nothing.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn job_rows_follow_the_job() {
         let (fx, journal) = journaled(Duration::from_secs(3), Duration::from_secs(60)).await;
@@ -3530,6 +3683,7 @@ pub(crate) mod tests {
 
     /// 109 §5.5: every running row is written `exit = lost` while its
     /// group is still alive, and only then is the group killed.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn killall_writes_lost_before_kill() {
         let (fx, journal) = journaled(Duration::ZERO, Duration::from_secs(600)).await;
@@ -3565,6 +3719,7 @@ pub(crate) mod tests {
     /// row goes to disk `exit = lost` while the group is alive, then the
     /// group dies and the job lists `lost` here; another session's job is
     /// untouched.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn kill_session_writes_lost_before_kill_and_spares_others() {
         let (fx, journal) = journaled(Duration::ZERO, Duration::from_secs(600)).await;
@@ -3639,6 +3794,7 @@ pub(crate) mod tests {
     }
 
     /// 109 §4.4: the `shell` grace wait is a `job` wait while it lasts.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn grace_wait_writes_and_clears_a_job_wait() {
         let (fx, journal) = journaled(Duration::from_millis(200), Duration::from_secs(60)).await;
@@ -3749,10 +3905,13 @@ pub(crate) mod tests {
             "{finished:?}"
         );
         // The next job of the session numbers past the lost ones.
-        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 5").await else {
-            panic!("expected Running");
-        };
-        assert_eq!(id.0, "j8");
+        #[cfg(not(target_os = "ios"))]
+        {
+            let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 5").await else {
+                panic!("expected Running");
+            };
+            assert_eq!(id.0, "j8");
+        }
     }
 
     // ---- 171 §5.5 mark scan ----

@@ -1,9 +1,12 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useSearch } from '@tanstack/react-router'
-import { ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react'
-import { Fragment, useState } from 'react'
+import { ChevronRight, RefreshCw, Trash2 } from 'lucide-react'
+import { AddMcpDialog } from '@/components/library/AddMcpDialog'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
+import { isIos } from '@/lib/platform'
+import { closeAuthBrowser, onAuthBrowserDismissed, openAuthBrowser } from '@/lib/tauri'
 import { type HomeAction, homeActions, homeChip, stateText } from '@/components/library/mcp-home'
 import { AlwaysAskSelect } from '@/components/library/AlwaysAskSelect'
 import { segments } from '@/components/library/names'
@@ -25,7 +28,6 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Select,
   SelectContent,
@@ -34,7 +36,6 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { serverKey } from '@/lib/always-ask'
@@ -49,6 +50,7 @@ import type { McpToolInfo } from "@/rpc/bindings/method.mcp_2dserver.output"
 import type { Risk, ToolCategoryInfo } from "@/rpc/bindings/method.agent.output"
 import type { SyncResult } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
+import { on as onEvent } from '@/store/sessions'
 
 /** A switch is on, hidden in this chat, or globally off. */
 type SwitchState = 'on' | 'session' | 'always'
@@ -120,9 +122,14 @@ function useMcpActions(session: string | null): Actions {
       },
       { keys },
     ),
-    // As Settings' provider logins: the engine's `mcp_login` opens the browser on its own host (here, or the node over
-    // link, 31 §9), so the URL is only shown here; opening it here too would start a second sign-in.
-    login: useAction(async (server: string) => ({ url: await api.mcp_login(server), local: active === LOCAL })),
+    // On desktop the engine's `mcp_login` opens the browser on its own host (here, or the node over link, 31 §9), so
+    // the URL is only shown here. On iOS, the embedded local engine cannot open a browser, so we launch `openAuthBrowser`.
+    login: useAction(async (server: string) => {
+      const local = active === LOCAL
+      const url = await api.mcp_login(server)
+      if (isIos() && local) void openAuthBrowser(url, false)
+      return { url, local }
+    }),
     logout: useAction((server: string) => api.mcp_logout(server), { keys }),
     // 187: which machine runs it (`mcp/homes.yaml`).
     home: useAction((v: { server: string; action: McpHomeAction }) => api.set_mcp_home(v.server, v.action), { keys }),
@@ -156,6 +163,7 @@ export function Tools({ session }: { session: string | null }) {
   const canQuery1 = useQuerySupport(["list_mcp"])
   const canQuery1_2 = useQuerySupport(["mcp_status"])
   const canCategorize = useQuerySupport(['list_tool_categories', 'set_mcp_category'])
+  const canSync = useQuerySupport(['sync_mcp'])
   const api = useApi()
   const hidden = useDrafts((s) => s.settings.hidden)
   const servers = useQuery({ enabled: canQuery1,
@@ -178,16 +186,18 @@ export function Tools({ session }: { session: string | null }) {
       title="Servers"
       actions={
         <>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={act.sync.isPending}
-            onClick={() => act.sync.mutate(undefined)}
-          >
-            <RefreshCw className={act.sync.isPending ? 'animate-spin' : undefined} />
-            Sync
-          </Button>
-          <AddPopover add={act.add} />
+          {canSync && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={act.sync.isPending}
+              onClick={() => act.sync.mutate(undefined)}
+            >
+              <RefreshCw className={act.sync.isPending ? 'animate-spin' : undefined} />
+              Sync
+            </Button>
+          )}
+          <AddMcpDialog session={session} />
         </>
       }
     >
@@ -222,49 +232,7 @@ export function Tools({ session }: { session: string | null }) {
   )
 }
 
-function AddPopover({ add }: { add: Actions['add'] }) {
-  const [open, setOpen] = useState(false)
-  const [text, setText] = useState('')
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm">
-          <Plus />
-          Add
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-[min(380px,calc(100vw-2rem))] space-y-2">
-        <p className="text-sm text-fg-secondary">A git URL to clone, or one server as JSON.</p>
-        <Textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={5}
-          spellCheck={false}
-          className="font-mono text-xs"
-          placeholder={
-            'https://github.com/org/server.git\n{"name": {"command": "npx", "args": ["-y", "…"]}}'
-          }
-        />
-        <div className="flex justify-end">
-          <Button
-            size="sm"
-            disabled={text.trim().length === 0 || add.isPending}
-            onClick={() =>
-              add.mutate(text.trim(), {
-                onSuccess: () => {
-                  setText('')
-                  setOpen(false)
-                },
-              })
-            }
-          >
-            Add
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
-}
+
 
 function ServerRow({
   server: s,
@@ -284,7 +252,36 @@ function ServerRow({
 }) {
   const [open, setOpen] = useState(false)
   const [pending, setPending] = useState<{ url: string; local: boolean } | null>(null)
+  const pendingRef = useRef(pending)
+  pendingRef.current = pending
   const engineName = useConnection((st) => st.info?.name)
+  useEffect(() => {
+    if (!isIos() || !pending?.local || s.auth === 'required') return
+    setPending(null)
+    void closeAuthBrowser()
+  }, [pending, s.auth])
+  useEffect(() => {
+    if (!isIos()) return
+    const offProgress = onEvent("tools.mcp-progress@1", 'McpProgress', (e) => {
+      if (!pendingRef.current?.local || !e.connected.includes(s.name)) return
+      setPending(null)
+      void closeAuthBrowser()
+    })
+    const offLogin = onEvent("agent.login@1", 'LoginFinished', (e) => {
+      if (!pendingRef.current?.local || e.provider !== s.name) return
+      setPending(null)
+      void closeAuthBrowser()
+    })
+    const offDismissed = onAuthBrowserDismissed(() => {
+      if (!pendingRef.current?.local) return
+      setPending(null)
+    })
+    return () => {
+      offProgress()
+      offLogin()
+      void offDismissed.then((f) => f())
+    }
+  }, [s.name])
   const sw = serverSwitch(s)
   const live = s.tools.some((t) => t.registered !== null)
   const on = sw !== 'always' && s.connected

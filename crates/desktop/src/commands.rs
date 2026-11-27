@@ -3,11 +3,32 @@
 //! the quit handshake. Attachments go through RPC `put_attachment` (31 §9) so
 //! every container shares one path.
 
+#[cfg(any(desktop, target_os = "ios"))]
+use std::path::PathBuf;
+
+#[cfg(any(desktop, target_os = "ios"))]
+use serde::Serialize;
+#[cfg(any(desktop, target_os = "ios"))]
+use tauri::{AppHandle, Manager};
 #[cfg(desktop)]
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{State, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(desktop)]
-use crate::launch::{Connection, Launch, StartupProgress};
+use crate::launch::{Launch, StartupProgress};
+
+/// What the webview needs to open the WebSocket (18 §2 step 5; Phase 2 iOS embedded engine).
+#[cfg(any(desktop, target_os = "ios"))]
+#[derive(Clone, Serialize)]
+pub struct Connection {
+    /// `ws://<listen>/?token=<token>`.
+    pub url: String,
+    /// Contents of `<data_dir>/token`.
+    pub token: String,
+    /// The daemon's data directory (attachments are written under it).
+    pub data_dir: PathBuf,
+    /// True when this app started the daemon and owns its lifecycle.
+    pub owned: bool,
+}
 
 /// 221 §9.1 Copy (`ui/src/lib/secret-clipboard.ts`): the general pasteboard's change count right after the
 /// webview wrote a secret to it; `None` off macOS (the webview then compares the text itself).
@@ -151,10 +172,20 @@ pub fn startup_status(launch: State<'_, Launch>) -> StartupProgress {
     launch.startup_status()
 }
 
-/// No local daemon on this platform: the UI's `invoke('connection')` fails
+/// Connect to the in-process embedded iOS engine (starting it lazily if needed) and return its
+/// loopback WebSocket URL, token, and data directory.
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub async fn connection(app: AppHandle) -> Result<Connection, String> {
+    app.state::<crate::ios_engine::IosEngine>()
+        .connection(&app)
+        .await
+}
+
+/// No local daemon on Android: the UI's `invoke('connection')` fails
 /// cleanly and it uses the paired harnesses instead (31 §7). Same command name
 /// so the frontend does not branch on the container.
-#[cfg(mobile)]
+#[cfg(target_os = "android")]
 #[tauri::command]
 pub fn connection() -> Result<(), String> {
     Err("no local daemon on this platform".into())

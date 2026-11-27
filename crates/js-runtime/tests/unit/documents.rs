@@ -273,6 +273,7 @@ async fn js_exception_is_an_error_reply_and_the_runtime_survives() {
 }
 
 /// 3b: a runaway script is terminated from the watchdog; queued jobs fail with it; the runtime is rebuilt.
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn deadline_terminates_a_runaway_script_and_rebuilds() {
     let t = thread(limits());
@@ -304,6 +305,7 @@ async fn deadline_terminates_a_runaway_script_and_rebuilds() {
 }
 
 /// 3c: the heap ceiling terminates instead of aborting the process; the runtime is rebuilt.
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn heap_limit_terminates_and_rebuilds() {
     let t = thread(Limits {
@@ -442,6 +444,7 @@ async fn cancelling_the_token_ends_the_thread() {
 /// fix the runtime was kept and the late reply answered the next request; now the failure is fatal, the
 /// runtime is rebuilt, and the next request (even one sent after the late reply would have fired) gets its
 /// own answer.
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn an_event_loop_error_mid_request_is_fatal_and_the_next_request_gets_its_own_reply() {
     let t = thread(limits());
@@ -532,6 +535,7 @@ async fn restart_fails_the_queued_requests_and_the_next_one_runs_fresh() {
 }
 
 /// A fatal failure reports `rebuilt` on its own ticket only.
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn only_the_failing_request_reports_the_rebuild() {
     let t = thread(limits());
@@ -542,6 +546,27 @@ async fn only_the_failing_request_reports_the_rebuild() {
     let queued = queued.settled().await;
     assert_eq!(spin.result, Err(Error::Timeout));
     assert!(spin.rebuilt);
+    assert_eq!(queued.result, Err(Error::Timeout));
+    assert!(!queued.rebuilt);
+}
+
+/// On JSC (no public terminate_execution API), a finite wall-clock deadline overrun still reports `rebuilt`
+/// on its own ticket only and fails queued document requests with `Error::Timeout`.
+#[cfg(any(target_os = "ios", feature = "jsc"))]
+#[tokio::test]
+async fn only_the_failing_request_reports_the_rebuild() {
+    let t = thread(Limits {
+        deadline: Duration::from_millis(250),
+        first_deadline: Duration::from_millis(1500),
+        ..DOCUMENTS.limits
+    });
+    round_trip(&t, "before").await;
+    let slow = t.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 400) {} }".into());
+    let queued = t.enqueue(json!({ "id": 5, "op": "outline", "doc": "d" }).to_string());
+    let slow = slow.settled().await;
+    let queued = queued.settled().await;
+    assert_eq!(slow.result, Err(Error::Timeout));
+    assert!(slow.rebuilt);
     assert_eq!(queued.result, Err(Error::Timeout));
     assert!(!queued.rebuilt);
 }

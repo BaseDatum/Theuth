@@ -63,18 +63,20 @@ export function ModelDefaults() {
           onChange={(v) => setSubagentModel.mutate(v)}
         />
       </Row>
-      <Row stack label="theuth agent" description="The built-in root on the Agents page: its desk and the work it starts for tasks.">
-        <ModelCombobox
-          aria-label="theuth agent model"
-          className="max-w-64 max-md:w-full max-md:max-w-none"
-          models={models.data ?? []}
-          value={theuthModel.data?.id}
-          none={SAME_AS_NEW}
-          effort={theuth && theuth.efforts.length > 0 ? { levels: theuth.efforts, current: theuthEffort.data, onSelect: (level) => setTheuthEffort.mutate(level) } : undefined}
-          disabled={theuthModel.isPending || setTheuthModel.isPending || setTheuthEffort.isPending}
-          onChange={(v) => setTheuthModel.mutate(v)}
-        />
-      </Row>
+      {canQuery1_3 && (
+        <Row stack label="theuth agent" description="The built-in root on the Agents page: its desk and the work it starts for tasks.">
+          <ModelCombobox
+            aria-label="theuth agent model"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
+            models={models.data ?? []}
+            value={theuthModel.data?.id}
+            none={SAME_AS_NEW}
+            effort={theuth && theuth.efforts.length > 0 ? { levels: theuth.efforts, current: theuthEffort.data, onSelect: (level) => setTheuthEffort.mutate(level) } : undefined}
+            disabled={theuthModel.isPending || setTheuthModel.isPending || setTheuthEffort.isPending}
+            onChange={(v) => setTheuthModel.mutate(v)}
+          />
+        </Row>
+      )}
     </Section>
   )
 }

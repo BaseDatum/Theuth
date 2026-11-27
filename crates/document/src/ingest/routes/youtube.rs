@@ -3,6 +3,7 @@
 //! through `yt-dlp` when it is on PATH (or `notebooks.youtube_ytdlp`) and the audio route.
 
 use std::path::PathBuf;
+#[cfg(not(target_os = "ios"))]
 use std::time::Duration;
 
 use crate::ingest::captions;
@@ -14,18 +15,27 @@ pub use captions::video_id;
 /// Caption blocks span about a minute (§4.1).
 pub const BLOCK_MS: u64 = 60_000;
 /// A `yt-dlp` download.
+#[cfg(not(target_os = "ios"))]
 const YTDLP_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
 /// `notebooks.youtube_ytdlp`, else `yt-dlp` on PATH; `None` → no audio route.
 pub fn ytdlp(ctx: &Ctx) -> Option<PathBuf> {
-    if let Some(p) = &ctx.cfg.youtube_ytdlp {
-        let p = PathBuf::from(p);
-        return p.is_file().then_some(p);
+    #[cfg(target_os = "ios")]
+    {
+        let _ = ctx;
+        None
     }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join("yt-dlp"))
-        .find(|p| p.is_file())
+    #[cfg(not(target_os = "ios"))]
+    {
+        if let Some(p) = &ctx.cfg.youtube_ytdlp {
+            let p = PathBuf::from(p);
+            return p.is_file().then_some(p);
+        }
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .map(|d| d.join("yt-dlp"))
+            .find(|p| p.is_file())
+    }
 }
 
 pub async fn preflight(
@@ -81,25 +91,33 @@ pub async fn extract(
             None => anyhow::anyhow!("{NO_ROUTE}: yt-dlp is not on PATH (notebooks.youtube_ytdlp)"),
         });
     };
-    let out = ctx
-        .data_dir
-        .join("attachments")
-        .join(format!("{video}.m4a"));
-    std::fs::create_dir_all(ctx.data_dir.join("attachments"))?;
-    if !out.is_file() {
-        download(&bin, &watch, &out).await?;
+    #[cfg(target_os = "ios")]
+    {
+        let _ = (bin, url, progress);
+        unreachable!("ytdlp() always returns None on iOS")
     }
-    let mut ex = super::audio::transcribe(&out, progress).await?;
-    let details = reqwest_free_details(ctx, &watch).await;
-    ex.title = details.title.or(ex.title);
-    ex.meta = serde_json::json!({ "url": url, "video": video, "route": "audio", "channel": details.channel, "captions_error": caption_err.map(|e| format!("{e:#}")) });
-    ex.blob = Some(out.to_string_lossy().into_owned());
-    ex.origin = Some(SourceOrigin::Youtube {
-        video: video.to_owned(),
-        url: url.to_owned(),
-        route: YoutubeRoute::Audio,
-    });
-    Ok(ex)
+    #[cfg(not(target_os = "ios"))]
+    {
+        let out = ctx
+            .data_dir
+            .join("attachments")
+            .join(format!("{video}.m4a"));
+        std::fs::create_dir_all(ctx.data_dir.join("attachments"))?;
+        if !out.is_file() {
+            download(&bin, &watch, &out).await?;
+        }
+        let mut ex = super::audio::transcribe(&out, progress).await?;
+        let details = reqwest_free_details(ctx, &watch).await;
+        ex.title = details.title.or(ex.title);
+        ex.meta = serde_json::json!({ "url": url, "video": video, "route": "audio", "channel": details.channel, "captions_error": caption_err.map(|e| format!("{e:#}")) });
+        ex.blob = Some(out.to_string_lossy().into_owned());
+        ex.origin = Some(SourceOrigin::Youtube {
+            video: video.to_owned(),
+            url: url.to_owned(),
+            route: YoutubeRoute::Audio,
+        });
+        Ok(ex)
+    }
 }
 
 /// Step 1: the watch page, `captionTracks`, the track as `json3`, `## [mm:ss]` blocks.
@@ -152,6 +170,7 @@ async fn captions_route(ctx: &Ctx, video: &str, watch: &str) -> anyhow::Result<E
 }
 
 /// Title and channel for the audio route (one fetch; a failure just leaves them empty).
+#[cfg(not(target_os = "ios"))]
 async fn reqwest_free_details(ctx: &Ctx, watch: &str) -> captions::Details {
     match super::url::fetcher(ctx) {
         Ok(f) => match f.fetch_html(watch, 2_000_000).await {
@@ -167,6 +186,7 @@ async fn reqwest_free_details(ctx: &Ctx, watch: &str) -> captions::Details {
 }
 
 /// `yt-dlp -x --audio-format m4a -o <out> <url>`: fixed argv, the id validated above (§15).
+#[cfg(not(target_os = "ios"))]
 async fn download(bin: &std::path::Path, watch: &str, out: &std::path::Path) -> anyhow::Result<()> {
     let mut cmd = tokio::process::Command::new(bin);
     cmd.args(["-x", "--audio-format", "m4a", "--no-playlist", "-o"])

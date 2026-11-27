@@ -102,8 +102,16 @@ import { usePluginCommands } from '@/lib/plugins'
 import { openTalkView } from '@/components/tiles/open'
 import { useTileHost } from '@/components/tiles/host'
 
-/** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory. */
-export type DraftCreate = { private: boolean; project: string | null; endless: boolean }
+/** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory; `meshId` scopes a local chat to a paired mesh (Shape A). */
+export type DraftCreate = {
+  private: boolean
+  project: string | null
+  endless: boolean
+  /** Shape A: mesh id for a local chat, `null` for device-only, or `undefined` when unscoped / not yet chosen. */
+  meshId?: string | null
+  /** True when the user has >1 paired mesh on the local engine and must pick a mesh (or device-only) before sending. */
+  needsMeshChoice?: boolean
+}
 /** The draft with every switch off: what `new_session()` would create. */
 export const PLAIN_DRAFT: DraftCreate = { private: false, project: null, endless: false }
 
@@ -120,6 +128,7 @@ export function createOptions(draft: DraftCreate, pick: { model: string | null; 
     model: pick.model,
     effort: pick.effort,
     memory: draft.endless ? 'endless' : undefined,
+    ...(draft.meshId !== undefined ? { mesh_id: draft.meshId } : {}),
   }
 }
 
@@ -1135,12 +1144,14 @@ export function Composer({
         if (draftCreate?.endless && (!client || !supports(client.discovery, endlessRequirements))) throw new UnsupportedCapability('fractal context')
         if (draftCreate?.private && !usePrivate.getState().acknowledged)
           throw new Error('Acknowledge the private session notice first')
+        if (draftCreate?.needsMeshChoice)
+          throw new Error('Choose a mesh (or "This device only") before sending')
         // A switch on needs `create_session` with the pick in it; `openDraftSession` takes a bare pick there too, else `new_session()`.
         // 183 §5.6: on another machine the chat opens at once with the message pending, and a failure comes back to this
         // draft with the text (a split pane's draft leaf via `onUncreated`).
         await sendFirst({
           api,
-          options: draftCreate && (draftCreate.private || draftCreate.project || draftCreate.endless) ? createOptions(draftCreate, useDrafts.getState().pick) : null,
+          options: draftCreate && (draftCreate.private || draftCreate.project || draftCreate.endless || draftCreate.meshId !== undefined) ? createOptions(draftCreate, useDrafts.getState().pick) : null,
           input: clientId,
           machine: (engine) => (engine !== mesh?.self_id ? engineLabel(engine, mesh?.peers) : null),
           created: async (id, open, pick) => {
@@ -1863,7 +1874,13 @@ export function Composer({
                 <StopButton count={descendants} ring={ring} onStop={stop} />
               </>
             ) : (
-              <SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading} onSend={() => gesture('press')} sent={sent} playing={playing} arrive={arrive} onArrived={() => setArrive(false)} />
+              <SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading ?? (draftCreate?.needsMeshChoice ? 'Choose a mesh first' : null)}
+                onSend={() => gesture('press')}
+                sent={sent}
+                playing={playing}
+                arrive={arrive}
+                onArrived={() => setArrive(false)}
+              />
             ))}
         </div>
       </div>

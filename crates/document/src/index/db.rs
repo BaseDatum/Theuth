@@ -4,7 +4,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Once};
+use std::sync::LazyLock;
+#[cfg(not(target_os = "ios"))]
+use std::sync::Once;
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -46,6 +48,7 @@ pub struct BlockRow {
 
 /// One `nb_vec` row to write: the chunk's identity and its vector (or `None` when the model is
 /// absent — the row is skipped).
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug)]
 pub struct VecRow {
     pub block: String,
@@ -80,6 +83,7 @@ pub struct Lexical {
 
 /// A vector hit, in cosine-distance order (nearest first); the distance itself is not read —
 /// RRF uses the rank.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct Nearest {
     pub doc: String,
@@ -87,6 +91,7 @@ pub struct Nearest {
 }
 
 /// Register `vec0` for every connection this process opens from now on (once).
+#[cfg(not(target_os = "ios"))]
 pub fn register_vec() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -130,6 +135,7 @@ impl Index {
         {
             return Ok(ix.clone());
         }
+        #[cfg(not(target_os = "ios"))]
         register_vec();
         let opts = SqliteConnectOptions::new()
             .filename(root.join(FILE))
@@ -142,27 +148,30 @@ impl Index {
             .await?;
         sqlx::query(CREATE_BLOCKS).execute(&db).await?;
         sqlx::query(CREATE_STATE).execute(&db).await?;
-        let existing: Option<(String,)> =
-            sqlx::query_as("SELECT sql FROM sqlite_master WHERE name = 'nb_vec'")
-                .fetch_optional(&db)
-                .await?;
-        let want = format!("float[{dims}]");
-        if let Some((sql,)) = &existing
-            && !sql.contains(&want)
+        #[cfg(not(target_os = "ios"))]
         {
-            tracing::info!("index: nb_vec dims changed to {dims}; vectors rebuild");
-            sqlx::query("DROP TABLE nb_vec").execute(&db).await?;
-            sqlx::query("UPDATE nb_index_state SET model = NULL, dims = NULL")
-                .execute(&db)
-                .await?;
+            let existing: Option<(String,)> =
+                sqlx::query_as("SELECT sql FROM sqlite_master WHERE name = 'nb_vec'")
+                    .fetch_optional(&db)
+                    .await?;
+            let want = format!("float[{dims}]");
+            if let Some((sql,)) = &existing
+                && !sql.contains(&want)
+            {
+                tracing::info!("index: nb_vec dims changed to {dims}; vectors rebuild");
+                sqlx::query("DROP TABLE nb_vec").execute(&db).await?;
+                sqlx::query("UPDATE nb_index_state SET model = NULL, dims = NULL")
+                    .execute(&db)
+                    .await?;
+            }
+            // Only the dims (a number) are interpolated.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS nb_vec USING vec0(\
+                 rowid INTEGER PRIMARY KEY, embedding {want}, doc TEXT, block TEXT, chunk INTEGER, sha TEXT)"
+            )))
+            .execute(&db)
+            .await?;
         }
-        // Only the dims (a number) are interpolated.
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS nb_vec USING vec0(\
-             rowid INTEGER PRIMARY KEY, embedding {want}, doc TEXT, block TEXT, chunk INTEGER, sha TEXT)"
-        )))
-        .execute(&db)
-        .await?;
         let ix = Index { db, dims };
         POOLS.lock().insert(root.to_path_buf(), ix.clone());
         Ok(ix)
@@ -177,6 +186,7 @@ impl Index {
     }
 
     /// Every `nb_index_state` row, as `doc → model`.
+    #[cfg(not(target_os = "ios"))]
     pub async fn models(&self) -> anyhow::Result<HashMap<String, Option<String>>> {
         let rows: Vec<(String, Option<String>)> =
             sqlx::query_as("SELECT doc, model FROM nb_index_state")
@@ -186,6 +196,7 @@ impl Index {
     }
 
     /// `doc`'s vectors by chunk sha (reused across a re-index when the chunk text is unchanged).
+    #[cfg(not(target_os = "ios"))]
     pub async fn vectors(&self, doc: &str) -> anyhow::Result<HashMap<String, Vec<u8>>> {
         let rows: Vec<(String, Vec<u8>)> =
             sqlx::query_as("SELECT sha, embedding FROM nb_vec WHERE doc = ?")
@@ -200,7 +211,7 @@ impl Index {
         &self,
         doc: &str,
         blocks: &[BlockRow],
-        vectors: &[VecRow],
+        #[cfg(not(target_os = "ios"))] vectors: &[VecRow],
         state: &State,
     ) -> anyhow::Result<()> {
         let mut tx = self.db.begin().await?;
@@ -208,6 +219,7 @@ impl Index {
             .bind(doc)
             .execute(&mut *tx)
             .await?;
+        #[cfg(not(target_os = "ios"))]
         sqlx::query("DELETE FROM nb_vec WHERE doc = ?")
             .bind(doc)
             .execute(&mut *tx)
@@ -228,6 +240,7 @@ impl Index {
             .execute(&mut *tx)
             .await?;
         }
+        #[cfg(not(target_os = "ios"))]
         for v in vectors {
             sqlx::query(
                 "INSERT INTO nb_vec (embedding, doc, block, chunk, sha) VALUES (?, ?, ?, ?, ?)",
@@ -259,11 +272,13 @@ impl Index {
     /// Drop every row of `doc`.
     pub async fn delete(&self, doc: &str) -> anyhow::Result<()> {
         let mut tx = self.db.begin().await?;
-        for sql in [
+        let stmts: &[&'static str] = &[
             "DELETE FROM nb_blocks WHERE doc = ?",
+            #[cfg(not(target_os = "ios"))]
             "DELETE FROM nb_vec WHERE doc = ?",
             "DELETE FROM nb_index_state WHERE doc = ?",
-        ] {
+        ];
+        for &sql in stmts {
             sqlx::query(sql).bind(doc).execute(&mut *tx).await?;
         }
         tx.commit().await?;
@@ -309,6 +324,7 @@ impl Index {
     }
 
     /// `vec0` top-`k` nearest to `embedding` (f32 little-endian bytes) within `docs` when given.
+    #[cfg(not(target_os = "ios"))]
     pub async fn nearest(
         &self,
         embedding: &[u8],
@@ -330,6 +346,7 @@ impl Index {
     }
 
     /// The rows of `(doc, block)` pairs — the vector hits' text.
+    #[cfg(not(target_os = "ios"))]
     pub async fn rows(&self, keys: &[(String, String)]) -> anyhow::Result<Vec<Lexical>> {
         let mut out = Vec::with_capacity(keys.len());
         for (doc, block) in keys {
@@ -372,6 +389,7 @@ pub fn fts_query(q: &str) -> String {
 }
 
 /// f32s as the little-endian bytes `vec0` stores.
+#[cfg(not(target_os = "ios"))]
 pub fn to_blob(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
@@ -390,6 +408,7 @@ mod tests {
         assert_eq!(fts_query("  -  "), "");
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn vec0_loads_and_answers_knn() {
         let dir = tempfile::tempdir().unwrap();

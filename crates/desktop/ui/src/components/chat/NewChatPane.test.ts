@@ -13,7 +13,8 @@ import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.inp
 import type { EngineStats } from "@/rpc/bindings/method.nodes.output"
 import type { Peer } from "@/rpc/bindings/method.nodes.output"
 import { PLAIN_DRAFT, createOptions } from './Composer'
-import { CreateOptions, machineRows, pickMachine, vanishedTarget } from './NewChatPane'
+import { CreateOptions, MeshBar, machineRows, meshChoiceRequired, pairedMeshesOf, pickMachine, vanishedTarget } from './NewChatPane'
+import { type Engine, LOCAL, useEngines } from '@/link/engines'
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -156,4 +157,67 @@ test('183 R1: a target that left the mesh is cleared back to this machine; a pre
   expect(vanishedTarget(machineRows({ ...mesh, peers: [] }), true, 'b')).toBe(true)
   // The roster has not loaded yet: nothing is known to have vanished.
   expect(vanishedTarget([], false, 'b')).toBe(false)
+})
+
+const meshRow = (id: string, name: string, meshName?: string, pairedAt = 1): Engine => ({
+  id,
+  name,
+  kind: 'mesh',
+  meshName,
+  relayHost: 'relay.test',
+  secure: true,
+  pairedAt,
+  lastSeen: pairedAt,
+  order: 0,
+})
+
+test('Shape A multi-mesh picker: hidden for 0 or 1 paired meshes; shown and required for >1 paired meshes on LOCAL', () => {
+  const m1 = meshRow('m1', 'Work Hub', 'Work')
+  const m2 = meshRow('m2', 'Home Hub', 'Home')
+  const unpaired = meshRow('m3', 'Pending', 'Pending', 0)
+  const singleEngine: Engine = { ...m1, id: 'e1', kind: 'engine', meshName: undefined }
+
+  expect(pairedMeshesOf([m1, unpaired, singleEngine])).toEqual([m1])
+
+  // 0 or 1 paired mesh: no choice required, picker stays hidden.
+  expect(meshChoiceRequired(LOCAL, [], false, undefined)).toBe(false)
+  expect(meshChoiceRequired(LOCAL, [m1], false, undefined)).toBe(false)
+  useEngines.setState({ active: LOCAL, engines: [] })
+  useDrafts.getState().spend()
+  expect(render({ target: createElement(MeshBar, { priv: false }) })).not.toContain('Mesh:')
+  useEngines.setState({ active: LOCAL, engines: [m1] })
+  expect(render({ target: createElement(MeshBar, { priv: false }) })).not.toContain('Mesh:')
+
+  // >1 paired meshes on LOCAL: choice required until a mesh or "This device only" (null) is picked.
+  expect(meshChoiceRequired(LOCAL, [m1, m2], false, undefined)).toBe(true)
+  expect(meshChoiceRequired(LOCAL, [m1, m2], false, 'm1')).toBe(false)
+  expect(meshChoiceRequired(LOCAL, [m1, m2], false, null)).toBe(false)
+  expect(meshChoiceRequired(LOCAL, [m1, m2], false, 'removed')).toBe(true)
+  // Private chats or non-LOCAL active engines never demand a mesh choice.
+  expect(meshChoiceRequired(LOCAL, [m1, m2], true, undefined)).toBe(false)
+  expect(meshChoiceRequired('m1', [m1, m2], false, undefined)).toBe(false)
+
+  expect(render({ target: createElement(MeshBar, { priv: false, active: LOCAL, engines: [m1, m2] }) })).toContain('aria-label="Mesh: Choose mesh…"')
+  expect(render({ target: createElement(MeshBar, { priv: false, active: LOCAL, engines: [m1, m2], meshId: 'm1' }) })).toContain('aria-label="Mesh: Work"')
+  expect(render({ target: createElement(MeshBar, { priv: false, active: LOCAL, engines: [m1, m2], meshId: null }) })).toContain('aria-label="Mesh: This device only"')
+})
+
+test('Shape A: chosen mesh_id (or null for device-only) rides through createOptions and openDraftSession into create_session', async () => {
+  const calls: CreateSessionOptions[] = []
+  const api = { create_session: async (o: CreateSessionOptions) => (calls.push(o), { session: 's-mesh' }), new_session: async () => 'plain' } as unknown as Api
+
+  // Unscoped draft omits mesh_id.
+  expect('mesh_id' in createOptions(PLAIN_DRAFT)).toBe(false)
+
+  // Scoped to a paired mesh.
+  expect(createOptions({ ...PLAIN_DRAFT, meshId: 'm1' })).toMatchObject({ mesh_id: 'm1' })
+  useDrafts.getState().setCreate({ mesh_id: 'm1' })
+  await openDraftSession(api, createOptions({ ...PLAIN_DRAFT, meshId: 'm1' }))
+  expect(calls[0]).toMatchObject({ mesh_id: 'm1' })
+  expect(useDrafts.getState().settings.create?.mesh_id).toBeUndefined()
+
+  // Explicitly scoped to "This device only" (`mesh_id: null`).
+  useDrafts.getState().setCreate({ mesh_id: null })
+  await openDraftSession(api, createOptions({ ...PLAIN_DRAFT, meshId: null }))
+  expect(calls[1]).toMatchObject({ mesh_id: null })
 })

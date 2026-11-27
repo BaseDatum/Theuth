@@ -18,7 +18,7 @@ export const tools: SettingsCategory = {
   icon: Wrench,
   tabs: [
     { required: { methods: ['list_tool_categories', 'upsert_tool_category', 'delete_tool_category', 'set_mcp_category', 'set_tool_category', 'set_default_tool_categories'], topics: [] }, id: 'categories', scope: 'machine', copyable: true, label: 'Categories', icon: FolderKanban, Component: ToolCategoriesTab },
-    { required: {"methods":["add_mcp_repo","add_mcp_server","list_mcp","mcp_login","mcp_logout","mcp_status","mesh_status","remove_mcp_server","set_mcp_gate","set_mcp_hidden","set_mcp_home","sync_mcp"],"topics":[]}, id: 'tools', scope: 'everywhere', copyable: false, label: 'MCP', icon: Server, Component: McpServersTab },
+    { required: {"methods":["add_mcp_server","list_mcp","mcp_login","mcp_logout","mcp_status","remove_mcp_server","set_mcp_gate","set_mcp_hidden","set_mcp_home"],"topics":[]}, id: 'tools', scope: 'everywhere', copyable: false, label: 'MCP', icon: Server, Component: McpServersTab },
     { required: {"methods":["list_builtins","set_builtins_disabled","set_mcp_hidden"],"topics":[]}, id: 'builtins', scope: 'machine', copyable: true, label: 'Builtins', icon: Blocks, Component: BuiltinsTab },
     { required: {"methods":["search_provider_test","search_settings_get","search_settings_set","search_status","search_test","set_secret"],"topics":[]}, id: 'search', scope: 'machine', copyable: true, copyNote: "API keys are never copied.", label: 'Web search', icon: SearchIcon, Component: Search },
     { required: {"methods":["mcp_server_audit","mcp_server_get","mcp_server_rotate_token","mcp_server_set"],"topics":[]}, id: 'mcp', scope: 'machine', copyable: false, copyNote: "Its token is this machine's.", label: 'Serve over MCP', icon: Plug, Component: Mcp },

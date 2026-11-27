@@ -11,6 +11,7 @@ mod db;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::LazyLock;
 
+#[cfg(not(target_os = "ios"))]
 use decision::embed::{EMBED_ACTOR, Embed, EmbedActor, EmbedInfo, Info, Tokens};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
@@ -26,7 +27,9 @@ use crate::meta::{DocId, DocKind, DocumentChanged};
 use crate::notebook::ItemKind;
 use crate::store::{Store, sha256};
 use chunk::Block;
-use db::{BlockRow, Index, Lexical, State, VecRow};
+#[cfg(not(target_os = "ios"))]
+use db::VecRow;
+use db::{BlockRow, Index, Lexical, State};
 
 /// Kinds the index walks (§7.1).
 pub const INDEXABLE: [DocKind; 6] = [
@@ -47,6 +50,7 @@ const SNIPPET_CHARS: usize = 160;
 /// `store.list` cap per kind on a rebuild.
 const WALK_LIMIT: u32 = 10_000;
 /// Texts per `Embed` message (the actor's forward batch, §7.2), so a query waits ≤ one batch.
+#[cfg(not(target_os = "ios"))]
 const EMBED_BATCH: usize = 32;
 
 /// The `notebooks:` keys this module reads (§14); other workers read theirs from the same
@@ -66,8 +70,12 @@ pub struct IndexConfig {
 
 impl Default for IndexConfig {
     fn default() -> Self {
+        #[cfg(not(target_os = "ios"))]
+        let embedding_model = decision::embed::DEFAULT_MODEL.to_owned();
+        #[cfg(target_os = "ios")]
+        let embedding_model = "embed-gte-modernbert-base".to_owned();
         Self {
-            embedding_model: decision::embed::DEFAULT_MODEL.to_owned(),
+            embedding_model,
             chunk_tokens: 400,
             chunk_overlap: 0.15,
             chunk_min_tokens: 5,
@@ -75,6 +83,7 @@ impl Default for IndexConfig {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl IndexConfig {
     fn params(&self) -> chunk::Params {
         chunk::Params {
@@ -290,10 +299,12 @@ impl Message<SearchNotebooks> for DocumentActor {
 impl DocumentActor {
     /// The indexer over this actor's store and `notebooks` config.
     pub(crate) fn indexer(&self, me: ActorRef<DocumentActor>) -> Indexer {
+        #[cfg(not(target_os = "ios"))]
         let cfg: IndexConfig = self.rt.section("notebooks").unwrap_or_default();
         Indexer {
             actor: me,
             store: self.store.clone(),
+            #[cfg(not(target_os = "ios"))]
             cfg,
         }
     }
@@ -312,6 +323,7 @@ static WRITE: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::M
 pub struct Indexer {
     actor: ActorRef<DocumentActor>,
     store: Store,
+    #[cfg(not(target_os = "ios"))]
     cfg: IndexConfig,
 }
 
@@ -321,11 +333,13 @@ impl Indexer {
         &self.store
     }
 
+    #[cfg(not(target_os = "ios"))]
     fn embed_actor(&self) -> Option<ActorRef<EmbedActor>> {
         ActorRef::<EmbedActor>::lookup(EMBED_ACTOR).ok().flatten()
     }
 
     /// The installed model, `None` when the actor or its checkpoint directory is absent.
+    #[cfg(not(target_os = "ios"))]
     async fn model(&self) -> Option<EmbedInfo> {
         if let Err(e) = decision::embed::check_name(&self.cfg.embedding_model) {
             static WARNED: std::sync::Once = std::sync::Once::new();
@@ -336,6 +350,7 @@ impl Indexer {
     }
 
     /// Unit vectors for `texts`, `None` when the model is absent or failed (lexical-only then).
+    #[cfg(not(target_os = "ios"))]
     async fn embed(&self, texts: &[String]) -> Option<Vec<Vec<f32>>> {
         let actor = self.embed_actor()?;
         let mut out = Vec::with_capacity(texts.len());
@@ -358,6 +373,7 @@ impl Indexer {
 
     /// Tokens per text: the model's tokenizer, else `chars / 4`.
     async fn tokens(&self, texts: &[String]) -> Vec<usize> {
+        #[cfg(not(target_os = "ios"))]
         if let Some(actor) = self.embed_actor()
             && let Ok(n) = actor
                 .ask(Tokens {
@@ -415,17 +431,21 @@ impl Indexer {
         if !INDEXABLE.contains(&meta.kind) {
             return Ok(());
         }
+        #[cfg(not(target_os = "ios"))]
         let model = self.model().await;
-        let ix = Index::open(
-            self.store.root(),
-            model.as_ref().map_or(DEFAULT_DIMS, |m| m.dims),
-        )
-        .await?;
+        #[cfg(not(target_os = "ios"))]
+        let dims = model.as_ref().map_or(DEFAULT_DIMS, |m| m.dims);
+        #[cfg(target_os = "ios")]
+        let dims = DEFAULT_DIMS;
+        let ix = Index::open(self.store.root(), dims).await?;
         let blocks = self.blocks(doc, meta.kind).await?;
         let texts: Vec<String> = blocks.iter().map(|b| b.text.clone()).collect();
         let shas: Vec<String> = texts.iter().map(|t| sha256(t.as_bytes())).collect();
         let content_sha = sha256(format!("{}\n{}", meta.title, shas.join("\n")).as_bytes());
+        #[cfg(not(target_os = "ios"))]
         let model_name = model.as_ref().map(|m| m.model.clone());
+        #[cfg(target_os = "ios")]
+        let model_name: Option<String> = None;
         let state = ix.state(doc.as_str()).await?;
         let same_model = state.as_ref().is_some_and(|s| s.model == model_name);
         if same_model
@@ -461,62 +481,79 @@ impl Indexer {
                 tokens: tokens[i] as i64,
             });
         }
-        let mut vectors = Vec::new();
-        let mut embedded = None;
-        if model.is_some() {
-            let chunks = chunk::chunk(&blocks, &tokens, &self.cfg.params());
-            // Unchanged chunks keep their vector — only when the same model made it (§7.5).
-            let old = if same_model {
-                ix.vectors(doc.as_str()).await?
-            } else {
-                HashMap::new()
-            };
-            let mut pending: Vec<(usize, String)> = Vec::new();
-            let mut blobs: Vec<Option<Vec<u8>>> = Vec::with_capacity(chunks.len());
-            for (i, c) in chunks.iter().enumerate() {
-                let sha = sha256(c.text.as_bytes());
-                match old.get(&sha) {
-                    Some(blob) => blobs.push(Some(blob.clone())),
-                    None => {
-                        blobs.push(None);
-                        pending.push((i, c.text.clone()));
+        #[cfg(not(target_os = "ios"))]
+        let (vectors, state_model, state_dims) = {
+            let mut vectors = Vec::new();
+            let mut embedded = None;
+            if model.is_some() {
+                let chunks = chunk::chunk(&blocks, &tokens, &self.cfg.params());
+                // Unchanged chunks keep their vector — only when the same model made it (§7.5).
+                let old = if same_model {
+                    ix.vectors(doc.as_str()).await?
+                } else {
+                    HashMap::new()
+                };
+                let mut pending: Vec<(usize, String)> = Vec::new();
+                let mut blobs: Vec<Option<Vec<u8>>> = Vec::with_capacity(chunks.len());
+                for (i, c) in chunks.iter().enumerate() {
+                    let sha = sha256(c.text.as_bytes());
+                    match old.get(&sha) {
+                        Some(blob) => blobs.push(Some(blob.clone())),
+                        None => {
+                            blobs.push(None);
+                            pending.push((i, c.text.clone()));
+                        }
                     }
                 }
-            }
-            let fresh = if pending.is_empty() {
-                Some(Vec::new())
-            } else {
-                self.embed(&pending.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>())
-                    .await
-            };
-            if let Some(fresh) = fresh {
-                for ((i, _), v) in pending.iter().zip(fresh) {
-                    blobs[*i] = Some(db::to_blob(&v));
-                }
-                vectors = chunks
-                    .iter()
-                    .zip(blobs)
-                    .enumerate()
-                    .filter_map(|(ord, (c, blob))| {
-                        Some(VecRow {
-                            block: blocks[c.first].id.clone(),
-                            chunk: ord as i64,
-                            sha: sha256(c.text.as_bytes()),
-                            embedding: blob?,
+                let fresh = if pending.is_empty() {
+                    Some(Vec::new())
+                } else {
+                    self.embed(&pending.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>())
+                        .await
+                };
+                if let Some(fresh) = fresh {
+                    for ((i, _), v) in pending.iter().zip(fresh) {
+                        blobs[*i] = Some(db::to_blob(&v));
+                    }
+                    vectors = chunks
+                        .iter()
+                        .zip(blobs)
+                        .enumerate()
+                        .filter_map(|(ord, (c, blob))| {
+                            Some(VecRow {
+                                block: blocks[c.first].id.clone(),
+                                chunk: ord as i64,
+                                sha: sha256(c.text.as_bytes()),
+                                embedding: blob?,
+                            })
                         })
-                    })
-                    .collect();
-                embedded = model.clone();
+                        .collect();
+                    embedded = model.clone();
+                }
             }
-        }
+            (
+                vectors,
+                embedded.as_ref().map(|m| m.model.clone()),
+                embedded.as_ref().map(|m| m.dims as i64),
+            )
+        };
+        #[cfg(target_os = "ios")]
+        let (state_model, state_dims): (Option<String>, Option<i64>) = (None, None);
         let state = State {
             doc: doc.as_str().to_owned(),
             content_sha: Some(content_sha),
-            model: embedded.as_ref().map(|m| m.model.clone()),
-            dims: embedded.as_ref().map(|m| m.dims as i64),
+            model: state_model,
+            dims: state_dims,
             indexed_ms: Some(now_ms()),
         };
-        ix.replace(doc.as_str(), &rows, &vectors, &state).await
+        ix.replace(
+            doc.as_str(),
+            &rows,
+            #[cfg(not(target_os = "ios"))]
+            &vectors,
+            &state,
+        )
+        .await
     }
 
     /// Drop `doc`'s rows.
@@ -526,12 +563,11 @@ impl Indexer {
     }
 
     async fn remove_unlocked(&self, doc: &DocId) -> anyhow::Result<()> {
-        let model = self.model().await;
-        let ix = Index::open(
-            self.store.root(),
-            model.as_ref().map_or(DEFAULT_DIMS, |m| m.dims),
-        )
-        .await?;
+        #[cfg(not(target_os = "ios"))]
+        let dims = self.model().await.map_or(DEFAULT_DIMS, |m| m.dims);
+        #[cfg(target_os = "ios")]
+        let dims = DEFAULT_DIMS;
+        let ix = Index::open(self.store.root(), dims).await?;
         ix.delete(doc.as_str()).await
     }
 
@@ -544,12 +580,13 @@ impl Indexer {
         }
         docs.sort_by_key(|d| std::cmp::Reverse(d.updated_ms));
         let live: BTreeSet<&str> = docs.iter().map(|d| d.id.as_str()).collect();
+        #[cfg(not(target_os = "ios"))]
         let model = self.model().await;
-        let ix = Index::open(
-            self.store.root(),
-            model.as_ref().map_or(DEFAULT_DIMS, |m| m.dims),
-        )
-        .await?;
+        #[cfg(not(target_os = "ios"))]
+        let dims = model.as_ref().map_or(DEFAULT_DIMS, |m| m.dims);
+        #[cfg(target_os = "ios")]
+        let dims = DEFAULT_DIMS;
+        let ix = Index::open(self.store.root(), dims).await?;
         for gone in ix.indexed_docs().await? {
             if !live.contains(gone.as_str()) {
                 ix.delete(&gone).await?;
@@ -565,10 +602,11 @@ impl Indexer {
                 }
             }
         }
-        tracing::info!(
-            "index: walked {n} documents ({failed} failed), model {}",
-            model.as_ref().map_or("none", |m| m.model.as_str())
-        );
+        #[cfg(not(target_os = "ios"))]
+        let model_label = model.as_ref().map_or("none", |m| m.model.as_str());
+        #[cfg(target_os = "ios")]
+        let model_label = "none";
+        tracing::info!("index: walked {n} documents ({failed} failed), model {model_label}");
         Ok(())
     }
 
@@ -609,12 +647,13 @@ impl Indexer {
         }
         let kinds = args.kinds.filter(|k| !k.is_empty());
         let k = 4 * limit;
+        #[cfg(not(target_os = "ios"))]
         let model = self.model().await;
-        let ix = Index::open(
-            self.store.root(),
-            model.as_ref().map_or(DEFAULT_DIMS, |m| m.dims),
-        )
-        .await?;
+        #[cfg(not(target_os = "ios"))]
+        let dims = model.as_ref().map_or(DEFAULT_DIMS, |m| m.dims);
+        #[cfg(target_os = "ios")]
+        let dims = DEFAULT_DIMS;
+        let ix = Index::open(self.store.root(), dims).await?;
 
         let fts = db::fts_query(query);
         let lexical = if fts.is_empty() {
@@ -624,38 +663,44 @@ impl Indexer {
                 .await?
         };
 
-        let mut nearest = Vec::new();
-        let qtext = [query.to_owned()];
-        if let Some(m) = &model
-            && let Some(q) = self.embed(&qtext).await
-            && let Some(q) = q.first()
-        {
-            // §7.5: a document's vectors count only when its model is the current one.
-            let models = ix.models().await?;
-            let over = if kinds.is_some() { 4 * k } else { k };
-            let near = ix.nearest(&db::to_blob(q), docs.as_deref(), over).await?;
-            let keys: Vec<(String, String)> = near
-                .into_iter()
-                .filter(|n| {
-                    models
-                        .get(&n.doc)
-                        .is_some_and(|mm| mm.as_deref() == Some(m.model.as_str()))
-                })
-                .map(|n| (n.doc, n.block))
-                .collect();
-            let rows = ix.rows(&keys).await?;
-            let by_key: HashMap<(String, String), Lexical> = rows
-                .into_iter()
-                .map(|r| ((r.doc.clone(), r.block.clone()), r))
-                .collect();
-            for key in keys {
-                if let Some(r) = by_key.get(&key)
-                    && kinds.as_ref().is_none_or(|ks| ks.contains(&r.kind))
-                {
-                    nearest.push(r.clone());
+        #[cfg(not(target_os = "ios"))]
+        let nearest = {
+            let mut nearest = Vec::new();
+            let qtext = [query.to_owned()];
+            if let Some(m) = &model
+                && let Some(q) = self.embed(&qtext).await
+                && let Some(q) = q.first()
+            {
+                // §7.5: a document's vectors count only when its model is the current one.
+                let models = ix.models().await?;
+                let over = if kinds.is_some() { 4 * k } else { k };
+                let near = ix.nearest(&db::to_blob(q), docs.as_deref(), over).await?;
+                let keys: Vec<(String, String)> = near
+                    .into_iter()
+                    .filter(|n| {
+                        models
+                            .get(&n.doc)
+                            .is_some_and(|mm| mm.as_deref() == Some(m.model.as_str()))
+                    })
+                    .map(|n| (n.doc, n.block))
+                    .collect();
+                let rows = ix.rows(&keys).await?;
+                let by_key: HashMap<(String, String), Lexical> = rows
+                    .into_iter()
+                    .map(|r| ((r.doc.clone(), r.block.clone()), r))
+                    .collect();
+                for key in keys {
+                    if let Some(r) = by_key.get(&key)
+                        && kinds.as_ref().is_none_or(|ks| ks.contains(&r.kind))
+                    {
+                        nearest.push(r.clone());
+                    }
                 }
             }
-        }
+            nearest
+        };
+        #[cfg(target_os = "ios")]
+        let nearest: Vec<Lexical> = Vec::new();
 
         // Fuse: 1/(60+rank) per list, summed per block; a lexical row keeps its snippet.
         let mut fused: HashMap<(String, String), (f32, Lexical, bool)> = HashMap::new();

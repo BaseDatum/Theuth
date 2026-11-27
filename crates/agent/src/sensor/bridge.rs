@@ -16,9 +16,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
 use kameo::actor::ActorRef;
-use monty_pool::{
-    MountSpec, MountSpecMode, Pool, PoolError, ReplConfig, ResumeValue, TurnEvent, on_print_sync,
-};
 use monty_types::{
     CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, OsPolicy, ResourceLimits,
     SleepMode,
@@ -28,7 +25,10 @@ use serde_json::Value;
 use tools::{ErasedTool, Risk, SessionResources, ToolCx, ToolOutput, ToolSpec};
 
 use super::{Call, SensorError, SensorMeta, SensorProfile};
-use crate::repl::{from_monty, stubs, to_monty};
+use crate::repl::{
+    MontyPool as Pool, MountSpec, MountSpecMode, PoolError, ReplConfig, ResumeValue, TurnEvent,
+    from_monty, on_print_sync, stubs, to_monty,
+};
 
 /// The allowlist (40 §4.3) with each tool's positional parameter order: the
 /// order [`stubs`] renders (required in schema order, then optional by name),

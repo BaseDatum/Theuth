@@ -16,7 +16,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -83,19 +83,25 @@ struct Holder {
     closed: oneshot::Receiver<()>,
 }
 
-/// The listener of one [`callback`]: closing it on drop (success, error, timeout, cancel, or the
-/// future dropped unpolled) then signals [`Holder::closed`] and clears its [`LISTENING`] entry.
+/// Dual-stack loopback listeners for one [`callback`]: always IPv4, plus IPv6 when available.
+struct BoundListeners {
+    v4: TcpListener,
+    v6: Option<TcpListener>,
+}
+
+/// The listener(s) of one [`callback`]: closing them on drop (success, error, timeout, cancel, or
+/// the future dropped unpolled) then signals [`Holder::closed`] and clears its [`LISTENING`] entry.
 struct Listening {
-    listener: Option<TcpListener>,
+    listeners: Option<BoundListeners>,
     port: u16,
     id: u64,
-    /// Dropped after `listener` (in `drop`), so its receiver resolves once the port is free.
+    /// Dropped after `listeners` (in `drop`), so its receiver resolves once the port is free.
     _closed: oneshot::Sender<()>,
 }
 
 impl Drop for Listening {
     fn drop(&mut self) {
-        drop(self.listener.take());
+        drop(self.listeners.take());
         let mut map = listening();
         if map.get(&self.port).is_some_and(|h| h.id == self.id) {
             map.remove(&self.port);
@@ -103,34 +109,46 @@ impl Drop for Listening {
     }
 }
 
-/// `127.0.0.1:port` with `SO_REUSEADDR` (not on Windows, where it lets another socket share a
-/// bound port), so the closed connections of the last login, in `TIME_WAIT`, never block a rebind.
-/// Errors name the address; a port held by another program says so.
-fn bind(port: u16) -> std::io::Result<TcpListener> {
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let listen = || {
-        let socket = TcpSocket::new_v4()?;
-        #[cfg(not(windows))]
-        socket.set_reuseaddr(true)?;
-        socket.bind(addr)?;
-        socket.listen(16)
+fn listen_addr(addr: SocketAddr) -> std::io::Result<TcpListener> {
+    let socket = match addr {
+        SocketAddr::V4(_) => TcpSocket::new_v4()?,
+        SocketAddr::V6(_) => TcpSocket::new_v6()?,
     };
-    listen().map_err(|e| {
-        let why = match e.kind() {
-            std::io::ErrorKind::AddrInUse => format!(
-                "{addr} is in use by another program; quit it (or finish its sign-in), then try again"
-            ),
-            _ => format!("cannot listen on {addr}: {e}"),
-        };
-        std::io::Error::new(e.kind(), why)
-    })
+    #[cfg(not(windows))]
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    socket.listen(16)
 }
 
-/// Bind `127.0.0.1:port` (0 = ephemeral), serve exactly one redirect, reply
-/// with a "you can close this tab" page. Returns the bound port and a future
-/// resolving to the full redirect URL (`http://127.0.0.1:<port>/path?code=…`).
-/// Requests without a query string (favicon probes) are answered 404 and
-/// ignored. The caller owns the deadline.
+/// Bind `127.0.0.1:port` (0 = ephemeral) and, when IPv6 loopback is available, `[::1]:<bound_port>`,
+/// both with `SO_REUSEADDR` (not on Windows, where it lets another socket share a bound port), so
+/// closed connections from the last login in `TIME_WAIT` never block a rebind. IPv6 bind failures
+/// are ignored gracefully so IPv4-only hosts keep working. Errors name the IPv4 address; a port
+/// held by another program says so.
+fn bind(port: u16) -> std::io::Result<(u16, BoundListeners)> {
+    let addr4 = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let v4 = listen_addr(addr4).map_err(|e| {
+        let why = match e.kind() {
+            std::io::ErrorKind::AddrInUse => format!(
+                "{addr4} is in use by another program; quit it (or finish its sign-in), then try again"
+            ),
+            _ => format!("cannot listen on {addr4}: {e}"),
+        };
+        std::io::Error::new(e.kind(), why)
+    })?;
+    let bound_port = v4.local_addr()?.port();
+    let addr6 = SocketAddr::from((Ipv6Addr::LOCALHOST, bound_port));
+    let v6 = listen_addr(addr6)
+        .inspect_err(|e| tracing::debug!("oauth: ignoring IPv6 loopback bind on {addr6}: {e}"))
+        .ok();
+    Ok((bound_port, BoundListeners { v4, v6 }))
+}
+
+/// Bind `127.0.0.1:port` and `[::1]:port` (0 = ephemeral; IPv6 best-effort),
+/// serve exactly one redirect, and reply with a "you can close this tab" page.
+/// Returns the bound port and a future resolving to the full redirect URL
+/// (`http://127.0.0.1:<port>/path?code=…`). Requests without a query string
+/// (favicon probes) are answered 404 and ignored. The caller owns the deadline.
 ///
 /// One wait per port in this process: a callback still waiting on `port` is ended first (its
 /// future resolves `Err` starting with [`CANCELLED`]) and its listener closed before binding.
@@ -147,8 +165,7 @@ pub async fn callback(
         // `Err` = closed: the sender is dropped right after the listener.
         let _ = tokio::time::timeout(RELEASE_WAIT, old.closed).await;
     }
-    let listener = bind(port)?;
-    let port = listener.local_addr()?.port();
+    let (port, listeners) = bind(port)?;
     let id = NEXT_LISTENER.fetch_add(1, Ordering::Relaxed);
     let cancel = Arc::new(Notify::new());
     let (closed_tx, closed) = oneshot::channel();
@@ -161,26 +178,33 @@ pub async fn callback(
         },
     );
     let held = Listening {
-        listener: Some(listener),
+        listeners: Some(listeners),
         port,
         id,
         _closed: closed_tx,
     };
     Ok((port, async move {
-        let Some(listener) = held.listener.as_ref() else {
-            unreachable!("the listener is only taken on drop")
+        let Some(listeners) = held.listeners.as_ref() else {
+            unreachable!("the listeners are only taken on drop")
         };
         tokio::select! {
             () = cancel.notified() => Err(format!("{CANCELLED}: another sign-in took 127.0.0.1:{port}")),
-            back = serve(listener, port) => back,
+            back = serve(listeners, port) => back,
         }
     }))
 }
 
 /// The accept loop of [`callback`]: the first request with a query is the redirect.
-async fn serve(listener: &TcpListener, port: u16) -> Result<String, String> {
+async fn serve(listeners: &BoundListeners, port: u16) -> Result<String, String> {
     loop {
-        let (mut sock, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        let accepted = match &listeners.v6 {
+            Some(v6) => tokio::select! {
+                r = listeners.v4.accept() => r,
+                r = v6.accept() => r,
+            },
+            None => listeners.v4.accept().await,
+        };
+        let (mut sock, _) = accepted.map_err(|e| e.to_string())?;
         let mut head = Vec::new();
         let mut buf = [0u8; 1024];
         while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() < 16 * 1024 {
@@ -1133,6 +1157,27 @@ mod tests {
         assert_eq!(
             got.await.unwrap().unwrap(),
             format!("http://127.0.0.1:{port}/cb?code=abc&state=xyz")
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_accepts_ipv6_loopback_when_available() {
+        if std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_err() {
+            return;
+        }
+        let (port, got) = callback(0).await.unwrap();
+        let got = tokio::spawn(got);
+        let client = reqwest::Client::new();
+        let r = client
+            .get(format!("http://[::1]:{port}/cb?code=v6&state=xyz"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(r.text().await.unwrap().contains("Logged in"));
+        assert_eq!(
+            got.await.unwrap().unwrap(),
+            format!("http://127.0.0.1:{port}/cb?code=v6&state=xyz")
         );
     }
 

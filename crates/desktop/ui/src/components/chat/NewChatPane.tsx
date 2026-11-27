@@ -27,6 +27,7 @@ import { newChatPopout } from '@/lib/popout'
 import { VIEW, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import { type Engine, LOCAL, useEngines } from '@/link/engines'
 import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
 import type { EngineClass } from "@/rpc/bindings/method.nodes.output"
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
@@ -220,6 +221,91 @@ export function MachineBar({ priv }: { priv: boolean }) {
   )
 }
 
+/** Paired meshes reachable from this device (`kind === 'mesh'` and `pairedAt > 0`). */
+export const pairedMeshesOf = (engines: readonly Engine[]): Engine[] =>
+  engines.filter((e) => e.kind === 'mesh' && e.pairedAt > 0)
+
+/**
+ * Shape A multi-mesh scoping: when starting a non-private chat on the local engine (`active === LOCAL`) and the
+ * device is paired with more than one mesh, the user must explicitly choose which mesh the chat belongs to (or
+ * "This device only", stored as `mesh_id: null`) before sending.
+ */
+export function meshChoiceRequired(
+  active: string,
+  engines: readonly Engine[],
+  priv: boolean,
+  meshId: string | null | undefined,
+): boolean {
+  if (active !== LOCAL || priv) return false
+  const paired = pairedMeshesOf(engines)
+  if (paired.length <= 1) return false
+  if (meshId === undefined) return true
+  return meshId !== null && !paired.some((m) => m.id === meshId)
+}
+
+/**
+ * Shape A multi-mesh picker: shown on `active === LOCAL` only when more than one mesh is paired. Lets the user scope
+ * the new on-device chat to a specific paired mesh (`mesh_id: id`) or keep it device-only (`mesh_id: null`).
+ */
+export function MeshBar({ priv, active: activeProp, engines: enginesProp, meshId: meshIdProp }: { priv: boolean; active?: string; engines?: readonly Engine[]; meshId?: string | null }) {
+  const storeActive = useEngines((s) => s.active)
+  const storeEngines = useEngines((s) => s.engines)
+  const storeMeshId = useDrafts((s) => s.settings.create?.mesh_id)
+  const active = activeProp ?? storeActive
+  const engines = enginesProp ?? storeEngines
+  const meshId = meshIdProp !== undefined ? meshIdProp : storeMeshId
+  const setCreate = useDrafts((s) => s.setCreate)
+  const mid = useId()
+  const paired = pairedMeshesOf(engines)
+  const stale = typeof meshId === 'string' && !paired.some((m) => m.id === meshId)
+  useEffect(() => {
+    if (stale) setCreate({ mesh_id: undefined })
+  }, [stale, setCreate])
+  if (active !== LOCAL || paired.length <= 1) return null
+  const chosen = typeof meshId === 'string' ? paired.find((m) => m.id === meshId) : undefined
+  const label = meshId === null ? 'This device only' : chosen ? (chosen.meshName ?? chosen.name) : 'Choose mesh…'
+  const unchosen = !priv && meshId !== null && !chosen
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <Label htmlFor={mid} className="text-fg-secondary">
+        Mesh
+      </Label>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            id={mid}
+            variant="outline"
+            size="sm"
+            disabled={priv}
+            title={priv ? 'A private chat stays on this device' : undefined}
+            aria-label={`Mesh: ${label}`}
+            className={cn(unchosen && 'border-fg-accent/50 text-foreground')}
+          >
+            {label}
+            <ChevronDown className="size-4" aria-hidden="true" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-[min(18rem,calc(100vw-2rem))]">
+          {paired.map((m) => {
+            const name = m.meshName ?? m.name
+            return (
+              <DropdownMenuItem key={m.id} onSelect={() => setCreate({ mesh_id: m.id })}>
+                <span className="min-w-0 flex-1 truncate">{name}</span>
+                {meshId === m.id && <Check className="size-3.5" aria-hidden="true" />}
+              </DropdownMenuItem>
+            )
+          })}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => setCreate({ mesh_id: null })}>
+            <span className="min-w-0 flex-1 truncate">This device only</span>
+            {meshId === null && <Check className="size-3.5" aria-hidden="true" />}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  )
+}
+
 /**
  * The new-chat body shared by the `/new` route and a draft pane: header, prompt, composer, create options.
  * Nothing exists until the first send's `new_session` / `create_session` reply (`openDraftSession`) names the session.
@@ -247,10 +333,16 @@ export function NewChat({
   const privateSupported = useSupported(privateRequirements)
   // 137 §11.3: the ∞ switch starts at `agent.endless.default_chat` and is remembered per draft only.
   const api = useApi()
+  const active = useEngines((s) => s.active)
+  const engines = useEngines((s) => s.engines)
   const create = useDrafts((s) => s.settings.create)
   const setCreate = useDrafts((s) => s.setCreate)
   const priv = create?.retention === 'private'
   const project = create?.project ?? null
+  const pairedMeshes = pairedMeshesOf(engines)
+  const rawMeshId = create?.mesh_id
+  const meshId = active === LOCAL && !priv && pairedMeshes.length > 1 ? rawMeshId : undefined
+  const needsMeshChoice = meshChoiceRequired(active, engines, priv, rawMeshId)
   const lastPreset = useRef(preset)
   useEffect(() => {
     if (preset !== undefined && (lastPreset.current !== preset || useDrafts.getState().settings.create?.project === undefined))
@@ -259,7 +351,13 @@ export function NewChat({
   }, [preset])
   const endlessSettings = useQuery({ enabled: canQuery2, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
   const endlessOn = create?.memory ? create.memory === 'endless' : canQuery2 && (endlessSettings.data?.default_chat ?? false)
-  const draft: DraftCreate = { private: priv, project: project?.trim() || null, endless: endlessOn }
+  const draft: DraftCreate = {
+    private: priv,
+    project: project?.trim() || null,
+    endless: endlessOn,
+    ...(meshId !== undefined ? { meshId } : {}),
+    ...(needsMeshChoice ? { needsMeshChoice: true } : {}),
+  }
   return (
     <>
       <Header session={null} first={first} onClose={onClose} popout={newChatPopout(pane ?? mountKey, preset)} />
@@ -281,7 +379,12 @@ export function NewChat({
           endless={endlessOn}
           onEndless={(on) => setCreate({ memory: on ? 'endless' : 'epochs' })}
           settings={endlessSettings.data}
-          target={<MachineBar priv={priv} />}
+          target={
+            <>
+              <MachineBar priv={priv} />
+              <MeshBar priv={priv} />
+            </>
+          }
         />
       </div>
     </>

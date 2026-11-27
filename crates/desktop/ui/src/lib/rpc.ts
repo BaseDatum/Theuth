@@ -9,6 +9,8 @@ import type { EndlessProgress } from "@/rpc/bindings/event.agent_2eendless_2dpro
 import { useConnection } from '@/store/connection'
 import { on, onTopic } from '@/store/sessions'
 import { isPopout, openPopout } from '@/lib/popout'
+import { isIos } from '@/lib/platform'
+import { closeAuthBrowser } from '@/lib/tauri'
 import { applySandboxEvent } from '@/store/sandboxes'
 import { useUnlockRequests } from '@/store/unlock-requests'
 import { endlessFixture } from '@/dev/endless-fixture'
@@ -320,6 +322,7 @@ export function useInvalidateOn(): void {
       }),
       on("tools.mcp-progress@1", 'McpProgress', () => void qc.invalidateQueries({ queryKey: ['mcp'] })),
       on("agent.login@1", 'LoginFinished', () => {
+        if (isIos()) void closeAuthBrowser()
         void qc.invalidateQueries({ queryKey: queryKeys.logins })
         models()
       }),

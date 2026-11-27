@@ -255,7 +255,9 @@ pub(super) async fn tree_in(store: &Store, desk: SessionId) -> Vec<SessionId> {
 fn same(a: &LiveActor, b: &LiveActor) -> bool {
     match (a, b) {
         (LiveActor::Native(x), LiveActor::Native(y)) => x.id() == y.id(),
+        #[cfg(not(target_os = "ios"))]
         (LiveActor::Acp(x), LiveActor::Acp(y)) => x.id() == y.id(),
+        #[cfg(not(target_os = "ios"))]
         _ => false,
     }
 }
@@ -302,9 +304,12 @@ impl Agents {
     /// `acp_cut`, paired with [`TreeStopped`] in either order.
     pub(super) async fn cut_by_pause(&mut self, session: SessionId) -> bool {
         if self.paused_root(session).await.is_some() {
-            let acp = matches!(self.sessions.get(&session), Some(l) if matches!(l.actor, LiveActor::Acp(_)));
-            if !self.acp_cut.remove(&session) && acp {
-                self.acp_cut.insert(session);
+            #[cfg(not(target_os = "ios"))]
+            {
+                let acp = matches!(self.sessions.get(&session), Some(l) if matches!(l.actor, LiveActor::Acp(_)));
+                if !self.acp_cut.remove(&session) && acp {
+                    self.acp_cut.insert(session);
+                }
             }
             return true;
         }
@@ -344,6 +349,7 @@ impl Agents {
         let mut resumed = Vec::new();
         for &session in sessions {
             let open = match self.live(session) {
+                #[cfg(not(target_os = "ios"))]
                 Some(LiveActor::Acp(_)) => None,
                 _ => self.store.open_turn(session).await.ok().flatten(),
             };
@@ -493,10 +499,11 @@ impl Message<TreeStopped> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: TreeStopped, _: &mut Context<Self, Self::Reply>) {
-        for (session, actor, cut) in m.stopped {
+        for (session, actor, _cut) in m.stopped {
             // An ACP child's cancel arrives as a `TurnFinished` — before or
             // after this stop; `cut_by_pause` pairs the two.
-            if cut && matches!(actor, LiveActor::Acp(_)) && !self.acp_cut.remove(&session) {
+            #[cfg(not(target_os = "ios"))]
+            if _cut && matches!(actor, LiveActor::Acp(_)) && !self.acp_cut.remove(&session) {
                 self.acp_cut.insert(session);
             }
             if !self

@@ -4,6 +4,9 @@
 //! plugin builds and signs its records through [`ShareKey`]. [`crate::net::Net::dial_alpn`] is
 //! the transport half (D18).
 
+#[cfg(target_os = "ios")]
+use crate::identity::{PublicKey, SecretKey, Signature};
+#[cfg(not(target_os = "ios"))]
 use iroh::{PublicKey, SecretKey, Signature};
 use secrets::Vault;
 use tokio::sync::broadcast;
@@ -108,7 +111,7 @@ pub fn subscribe_removals() -> Option<broadcast::Receiver<EngineId>> {
     crate::net().map(|n| n.subscribe_removals())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 mod tests {
     use super::*;
 

@@ -4,9 +4,8 @@
 
 use std::collections::HashMap;
 
-use codeindex::LocateStatus;
 use document::cite_check::{check_theuth_links, judge, links, sha8};
-use document::{Citation, CiteKind};
+use document::{Citation, CiteKind, LocateStatus};
 use surface::anchor::{Locator, TheuthAnchor, TheuthKind};
 
 fn cite(a: &TheuthAnchor, status: LocateStatus, available: bool, text: Option<&str>) -> Citation {

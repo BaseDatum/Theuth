@@ -152,10 +152,10 @@ mod tests {
     }
 
     /// 218 §5: the table is node-local — not attached to the session log, so 0077 left the
-    /// wire schema at 70; 219's `0078_session_always_ask` bumped it to 78 since.
+    /// wire schema at 70; `0078_session_always_ask` (78) and `0080_session_mesh_id` (80) bumped it since.
     #[tokio::test]
     async fn node_local_no_wire_bump() {
-        assert_eq!(crate::store::SESSIONS_WIRE_SCHEMA, 78);
+        assert_eq!(crate::store::SESSIONS_WIRE_SCHEMA, 80);
         assert!(
             !super::super::capture::ATTACHED
                 .iter()

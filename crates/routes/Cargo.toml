@@ -10,7 +10,6 @@ description = "Learn a site's JSON routes from the browser session and replay th
 runtime = { workspace = true }
 tools = { workspace = true }
 web = { workspace = true }
-browser = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
@@ -24,6 +23,9 @@ url = { workspace = true }
 psl = { workspace = true }
 chrono = { workspace = true }
 zeroize = { workspace = true }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+browser = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

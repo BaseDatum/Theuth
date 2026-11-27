@@ -77,7 +77,11 @@ targets:
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: QuartzCore.framework
+      - sdk: AuthenticationServices.framework
+      - sdk: JavaScriptCore.framework
+      - sdk: SafariServices.framework
       - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
       - sdk: UIKit.framework
       - sdk: WebKit.framework
     preBuildScripts:

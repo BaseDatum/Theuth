@@ -36,6 +36,7 @@ fn row(parent: Option<SessionId>, updated: u64) -> SessionSummary {
         kind: SessionKind::Chat,
         memory: Default::default(),
         observed: None,
+        mesh_id: None,
     }
 }
 

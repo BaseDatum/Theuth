@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useLinkFailure } from '@/components/link/LinkFailure'
+import { isIos } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngineTree, useEngines } from '@/link/engines'
 import { retryPair } from '@/link/nodes'
@@ -56,7 +57,8 @@ export function useMembersLine(id: string): string | null {
 /**
  * 31 §7.5 `● Studio Mac ▾`: every engine with its presence dot, nodes nested one step
  * under their parent (32 §8.1), "Add engine…", "Manage…". Hidden when the local
- * daemon is the only engine — today's desktop UI unchanged. Nodes include their
+ * daemon is the only engine on desktop — today's desktop UI unchanged — while staying
+ * shown on iOS so users can always reach "Pair with a mesh…". Nodes include their
  * parent: `build-box · via Studio Mac`.
  */
 export function EngineSwitcher({ className, compact = false }: { className?: string; compact?: boolean }) {
@@ -69,7 +71,7 @@ export function EngineSwitcher({ className, compact = false }: { className?: str
   const setActive = useEngines((s) => s.setActive)
   const info = useConnection((s) => s.info)
   const localPresence = useLocalPresence()
-  if (engines.length === 0 && hasLocal()) return null
+  if (engines.length === 0 && hasLocal() && !isIos()) return null
 
   const presenceOf = (id: string): Presence => (id === LOCAL ? localPresence : (presence[id] ?? 'offline'))
   const current = engines.find((h) => h.id === active)
@@ -144,7 +146,7 @@ export function EngineSwitcher({ className, compact = false }: { className?: str
         <DropdownMenuItem onSelect={() => void navigate({ to: '/link' })}>
           <Plus /> Pair with a mesh…
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void navigate({ to: '/settings/$tab', params: { tab: 'machine' }, search: {} })}>
+        <DropdownMenuItem onSelect={() => void navigate({ to: '/settings/$tab', params: { tab: isIos() ? 'devices' : 'machine' }, search: {} })}>
           <Settings2 /> Manage…
         </DropdownMenuItem>
       </DropdownMenuContent>

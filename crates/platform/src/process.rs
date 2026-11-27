@@ -115,19 +115,40 @@ pub fn hide_console(cmd: &mut std::process::Command) {
     imp::hide_console(cmd);
 }
 
-/// This machine's hostname, read once (`hostname`, a hidden console child);
-/// `"theuth"` when that fails or prints nothing.
+/// This machine's hostname, read once (`libc::gethostname` on Unix;
+/// `hostname` with a hidden console on Windows); `"theuth"` when that fails
+/// or returns an empty name.
 pub fn hostname() -> &'static str {
-    static HOSTNAME: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-        let mut cmd = std::process::Command::new("hostname");
-        hide_console(&mut cmd);
-        cmd.output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "theuth".to_owned())
-    });
+    static HOSTNAME: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| read_hostname().unwrap_or_else(|| "theuth".to_owned()));
     &HOSTNAME
+}
+
+#[cfg(unix)]
+fn read_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: `buf` is writable for `buf.len()` bytes; `gethostname` writes at most `buf.len()`.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast::<libc::c_char>(), buf.len()) } != 0 {
+        return None;
+    }
+    // Guarantee NUL termination even if the OS filled the entire buffer.
+    buf[buf.len() - 1] = 0;
+    let s = std::ffi::CStr::from_bytes_until_nul(&buf)
+        .ok()?
+        .to_str()
+        .ok()?
+        .trim();
+    (!s.is_empty()).then(|| s.to_owned())
+}
+
+#[cfg(not(unix))]
+fn read_hostname() -> Option<String> {
+    let mut cmd = std::process::Command::new("hostname");
+    hide_console(&mut cmd);
+    cmd.output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|s| !s.is_empty())
 }
 
 /// This machine's facts (183 §5.6): `name` is the mesh name once the mesh
@@ -154,6 +175,7 @@ fn build_machine(name: &str) -> Machine {
             .ok()
             .and_then(|t| os_release_name(&t)),
         "macos" => Some("macOS".to_owned()),
+        "ios" => Some("iOS".to_owned()),
         "windows" => Some("Windows".to_owned()),
         _ => None,
     };
@@ -187,9 +209,12 @@ pub fn set_machine_name(name: &str) {
 #[cfg(unix)]
 mod imp {
     use std::io;
+    #[cfg(not(target_os = "ios"))]
     use std::time::Duration;
 
-    use super::{Signal, TREE_MAX, TreeSample};
+    #[cfg(not(target_os = "ios"))]
+    use super::TREE_MAX;
+    use super::{Signal, TreeSample};
 
     #[derive(Clone, Copy, Debug)]
     pub struct Tree(i32);
@@ -200,14 +225,33 @@ mod imp {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub fn adopt(leader: u32) -> io::Result<Tree> {
         Ok(Tree(leader as i32))
     }
 
+    #[cfg(target_os = "ios")]
+    pub fn adopt(_leader: u32) -> io::Result<Tree> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "process trees are not supported on iOS",
+        ))
+    }
+
+    #[cfg(not(target_os = "ios"))]
     pub fn add(_: &Tree, _: u32) -> io::Result<()> {
         Ok(())
     }
 
+    #[cfg(target_os = "ios")]
+    pub fn add(_: &Tree, _: u32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "process trees are not supported on iOS",
+        ))
+    }
+
+    #[cfg(not(target_os = "ios"))]
     fn signo(sig: Signal) -> i32 {
         match sig {
             Signal::Int => libc::SIGINT,
@@ -218,6 +262,7 @@ mod imp {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub fn signal(t: &Tree, sig: Signal) -> io::Result<()> {
         // SAFETY: killpg takes two integers and touches no memory.
         if unsafe { libc::killpg(t.0, signo(sig)) } == 0 {
@@ -227,9 +272,23 @@ mod imp {
         }
     }
 
+    #[cfg(target_os = "ios")]
+    pub fn signal(_: &Tree, _: Signal) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "process trees are not supported on iOS",
+        ))
+    }
+
+    #[cfg(not(target_os = "ios"))]
     pub fn alive(t: &Tree) -> bool {
         // SAFETY: as above; signal 0 only checks for members.
         unsafe { libc::killpg(t.0, 0) == 0 }
+    }
+
+    #[cfg(target_os = "ios")]
+    pub fn alive(_: &Tree) -> bool {
+        false
     }
 
     pub fn pid_alive(pid: u32) -> bool {
@@ -244,6 +303,7 @@ mod imp {
         Ok(())
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub fn own_session(cmd: &mut tokio::process::Command) {
         // SAFETY: `setsid` is async-signal-safe and touches no parent state.
         unsafe {
@@ -256,10 +316,14 @@ mod imp {
         }
     }
 
+    #[cfg(target_os = "ios")]
+    pub fn own_session(_cmd: &mut tokio::process::Command) {}
+
     pub fn hide_console(_: &mut std::process::Command) {}
 
     /// Unix walk: the leader plus every descendant reachable through live
     /// parent links (an orphan reparented to init is no longer ours).
+    #[cfg(not(target_os = "ios"))]
     pub fn sample(t: &Tree) -> Option<TreeSample> {
         let mut pids = vec![t.0];
         let mut cpu = Duration::ZERO;
@@ -286,6 +350,11 @@ mod imp {
             i += 1;
         }
         Some(TreeSample { processes, cpu })
+    }
+
+    #[cfg(target_os = "ios")]
+    pub fn sample(_: &Tree) -> Option<TreeSample> {
+        None
     }
 
     #[cfg(target_os = "macos")]
@@ -360,7 +429,7 @@ mod imp {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     mod os {
         //! Linux (and other procfs unices): `/proc/<pid>/stat` fields 4
         //! (ppid), 14 and 15 (utime, stime in clock ticks).
@@ -590,9 +659,15 @@ mod tests {
         assert_eq!(os_release_name("ID=x\n"), None);
     }
 
+    #[cfg(not(target_os = "ios"))]
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn hostname_is_non_empty() {
+        assert!(!hostname().is_empty());
+    }
 
     #[test]
     fn own_pid_is_alive_and_a_dead_pid_is_not() {
@@ -601,7 +676,7 @@ mod tests {
         assert!(!pid_alive(i32::MAX as u32));
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "ios")))]
     #[test]
     fn tree_of_a_child_group_dies_with_kill() {
         use std::os::unix::process::CommandExt as _;
@@ -621,7 +696,7 @@ mod tests {
 
     /// 155 §6.2: `sample` counts the leader's descendants and sums a CPU
     /// that only grows; a tree whose leader is reaped reads `None`.
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "ios")))]
     #[test]
     fn sample_counts_descendants_and_cpu_grows() {
         use std::os::unix::process::CommandExt as _;
