@@ -19,7 +19,7 @@ pub fn open_app(name: &str) -> io::Result<()> {
     imp::open_app(name)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "ios")))]
 mod imp {
     use std::ffi::OsStr;
     use std::io;
@@ -51,6 +51,25 @@ mod imp {
         } else {
             detached(Command::new(name))
         }
+    }
+}
+
+#[cfg(target_os = "ios")]
+mod imp {
+    use std::ffi::OsStr;
+    use std::io;
+
+    pub fn open(target: &OsStr) -> io::Result<()> {
+        tracing::debug!(
+            target = %target.to_string_lossy(),
+            "platform::open::open is a no-op on iOS"
+        );
+        Ok(())
+    }
+
+    pub fn open_app(name: &str) -> io::Result<()> {
+        tracing::debug!(app = name, "platform::open::open_app is a no-op on iOS");
+        Ok(())
     }
 }
 

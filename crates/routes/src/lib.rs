@@ -4,7 +4,9 @@
 //! handle behind the `site_*` tools (44 §3, §4). No actor: nothing outside
 //! this crate asks it, so 44 §6's messages are methods.
 
-use std::collections::{BTreeMap, HashMap};
+#[cfg(any(not(target_os = "ios"), test))]
+use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,10 +17,13 @@ use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use url::{Position, Url};
+#[cfg(any(not(target_os = "ios"), test))]
+use url::Position;
+use url::Url;
 use web::fetch::Fetcher;
 use zeroize::Zeroizing;
 
+#[cfg(not(target_os = "ios"))]
 mod capture;
 mod classify;
 mod replay;
@@ -160,6 +165,7 @@ impl Routes {
             }))
     }
 
+    #[cfg(any(not(target_os = "ios"), test))]
     async fn merge(
         &self,
         root: Option<&Path>,
@@ -237,6 +243,7 @@ impl Routes {
     /// # Errors
     /// No browser actor, a failed navigation, an unparseable capture, or a
     /// store write failure.
+    #[cfg(not(target_os = "ios"))]
     pub async fn learn(
         &self,
         session: SessionId,
@@ -301,10 +308,26 @@ impl Routes {
         })
     }
 
+    /// Learning routes from a browser session is not supported on iOS.
+    ///
+    /// # Errors
+    /// Always returns an unsupported-platform error on iOS.
+    #[cfg(target_os = "ios")]
+    pub async fn learn(
+        &self,
+        session: SessionId,
+        root: Option<&Path>,
+        url: Option<&Url>,
+    ) -> anyhow::Result<LearnReply> {
+        let _ = (session, root, url);
+        anyhow::bail!("site_learn is not supported on iOS")
+    }
+
     /// Merge one domain's classified routes into the store and its credential
     /// values into the session map (later values win). A non-empty jar
     /// `cookie` marks every route `cookies: true` and adds `cookie` to its
     /// `auth_headers`.
+    #[cfg(any(not(target_os = "ios"), test))]
     async fn absorb(
         &self,
         session: SessionId,
@@ -389,6 +412,7 @@ impl Routes {
 
 /// Group by the template's registrable domain, keeping rank order within a
 /// domain.
+#[cfg(any(not(target_os = "ios"), test))]
 fn group(learned: Vec<Learned>) -> BTreeMap<String, Vec<Learned>> {
     let mut out: BTreeMap<String, Vec<Learned>> = BTreeMap::new();
     for l in learned {
@@ -401,6 +425,7 @@ fn group(learned: Vec<Learned>) -> BTreeMap<String, Vec<Learned>> {
 }
 
 /// ≤ 3 distinct captured URLs with query and fragment dropped, capture order.
+#[cfg(any(not(target_os = "ios"), test))]
 fn first_urls(exs: &[Exchange]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(3);
     for ex in exs {
@@ -421,6 +446,7 @@ fn first_urls(exs: &[Exchange]) -> Vec<String> {
 /// The model-facing one-liner for a `learn` reply. Distinguishes the empty
 /// cases the model otherwise reads as one "zero": nothing captured, a full
 /// navigation (HTML + beacons, no JSON), or JSON with no record collections.
+#[cfg(any(not(target_os = "ios"), test))]
 fn hint(exs: &[Exchange], classified: bool, top_urls: &[String], domain: &str, n: usize) -> String {
     let captured = exs.len();
     if classified {

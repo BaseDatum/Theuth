@@ -113,12 +113,51 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSURLResponse", "NSUUID", "NSDictionary", "NSKeyValueObserving", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSError", "NSProcessInfo", "NSSet"] }
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "UIView", "UIScrollView", "UIWindow", "UIViewController", "UIAlertController", "UIControl", "UITextField", "UIImage", "objc2-core-foundation", "objc2-core-graphics", "block2"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIDevice", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "UIView", "UIScrollView", "UIWindow", "UIWindowScene", "UIViewController", "UIAlertController", "UIControl", "UITextField", "UIImage", "objc2-core-foundation", "objc2-core-graphics", "block2"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebsiteDataRecord", "WKNavigationDelegate", "WKNavigationAction", "WKNavigationResponse", "WKFrameInfo", "WKUIDelegate", "WKPreferences", "WKHTTPCookieStore", "WKContentWorld", "WKSnapshotConfiguration"] }
 # 209 §4.7 (`apple_tile.rs`): `web_view_call`'s snapshot, as on macOS; `UIImage` for its `CGImage`.
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace"] }
 png = { workspace = true }
 base64 = { workspace = true }
+# Phase 2 iOS embedded engine (`ios_engine.rs`): in-process slim engine on loopback `127.0.0.1:0`.
+runtime = { workspace = true }
+wire = { workspace = true }
+rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
+rpc = { workspace = true }
+platform = { workspace = true }
+models = { workspace = true }
+oauth = { workspace = true }
+tools = { workspace = true }
+secrets = { workspace = true }
+document = { workspace = true }
+knowledge = { workspace = true }
+web = { workspace = true }
+scrape = { workspace = true }
+routes = { workspace = true }
+artifact = { workspace = true }
+app = { workspace = true }
+search = { workspace = true }
+search-providers = { workspace = true }
+agent = { workspace = true }
+surface = { workspace = true }
+js-runtime = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+figment = { workspace = true }
+jsonrpsee = { workspace = true }
+kameo = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+serde_yaml = { workspace = true }
+dirs = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+schemars = { workspace = true }
 
 [build-dependencies]
 tauri-build = { workspace = true }

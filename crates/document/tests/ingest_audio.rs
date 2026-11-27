@@ -3,6 +3,8 @@
 //! parent is the data dir holding `models/onnxruntime`) — word-timed TDT through `voice::Engine`,
 //! rendered as `## [mm:ss]` blocks. Without the model the inference half is skipped loudly.
 
+#![cfg(not(target_os = "ios"))]
+
 use std::path::Path;
 use std::time::Instant;
 

@@ -123,7 +123,7 @@ pub(crate) async fn drain_session(
     let open = suspend_open_turn(store, m.session, m.reason).await;
     if let Some(live) = &live {
         // (2) No new model call opens (the loop reads the flag each round).
-        if let LiveActor::Native(a) = live {
+        if let Ok(a) = live.native() {
             let _ = a.tell(Draining).await;
         }
         // (3) In-flight tool calls finish or the deadline cancels them.

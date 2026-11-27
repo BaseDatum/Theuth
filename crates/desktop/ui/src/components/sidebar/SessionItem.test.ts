@@ -13,6 +13,7 @@ import type { SessionSummary } from '@/rpc/bindings/method.agent.output'
 import { useApprovals } from '@/store/approvals'
 import { empty } from '@/store/reduce'
 import { useSessions } from '@/store/sessions'
+import { LOCAL, useEngines } from '@/link/engines'
 import { SessionItem } from './SessionItem'
 
 const navigate = vi.fn()
@@ -34,12 +35,12 @@ const child = receiveComponent('method.agent.output.SessionSummary', { id: 'chil
 const glyph = (label: string) => document.querySelector(`[role="img"][aria-label="${label}"]`)!
 let unmount = async () => {}
 let client: QueryClient
-async function mount(subagents: SessionSummary[] = [child], endless = false, pinned = false, at: { owner?: string; here?: boolean } = {}) {
+async function mount(subagents: SessionSummary[] = [child], endless = false, pinned = false, at: { owner?: string; here?: boolean; meshId?: string | null } = {}) {
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
   client = new QueryClient()
   await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(SidebarProvider, null, createElement('div', { onClick: rowClick, onPointerDown: rowPointerDown, onMouseDown: rowMouseDown }, createElement(SessionItem, {
-    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned, archived: false, project: null, owner: at.owner ?? '', epoch: 1, here: at.here ?? true, running: true, endless, subagents, active: false, selected: false, selecting: false, select,
+    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned, archived: false, project: null, owner: at.owner ?? '', epoch: 1, here: at.here ?? true, meshId: at.meshId, running: true, endless, subagents, active: false, selected: false, selecting: false, select,
   }))) })))
   unmount = async () => { await act(async () => root.unmount()) }
 }
@@ -47,6 +48,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(canPopout).mockReturnValue(true)
   mesh.current = undefined
+  useEngines.setState({ active: LOCAL, engines: [] })
   usePanes.setState({ focused: null, drag: null })
   useSessions.setState({ sessions: {
     root: { ...empty('root'), activity: 'thinking', running: true, jobs: new Set(['j1', 'j2']), ptys: new Set(['pty1']), reminders: new Set(['r1']) },
@@ -194,4 +196,37 @@ test.each([
   mesh.current = { self_id: 'hub', self_name: '333', peers: [peer('p50', 'P50'), peer('xeus', 'xeus')], stats: [] }
   await mount([child], false, false, at)
   expect(badge()).toBe(name)
+})
+
+const meshBadge = () => document.querySelector<HTMLElement>('[data-mesh-chip]')?.textContent ?? null
+
+test('Shape A: on LOCAL, a session with meshId displays its paired mesh badge; hidden outside LOCAL or when meshId is null', async () => {
+  useEngines.setState({
+    active: LOCAL,
+    engines: [
+      { id: 'm1', name: 'Work Hub', kind: 'mesh', meshName: 'Work', relayHost: 'r.test', secure: true, pairedAt: 1, lastSeen: 1, order: 0 },
+      { id: 'm2', name: 'Home Hub', kind: 'mesh', relayHost: 'r.test', secure: true, pairedAt: 1, lastSeen: 1, order: 1 },
+    ],
+  })
+  await mount([child], false, false, { meshId: 'm1' })
+  expect(meshBadge()).toBe('Work')
+  await unmount()
+  document.body.innerHTML = ''
+
+  // Falls back to engine name when meshName is absent.
+  await mount([child], false, false, { meshId: 'm2' })
+  expect(meshBadge()).toBe('Home Hub')
+  await unmount()
+  document.body.innerHTML = ''
+
+  // Device-only chat (`meshId: null`) shows no mesh badge.
+  await mount([child], false, false, { meshId: null })
+  expect(meshBadge()).toBeNull()
+  await unmount()
+  document.body.innerHTML = ''
+
+  // Viewing a remote mesh directly (`active !== LOCAL`) shows no mesh badge.
+  useEngines.setState({ active: 'm1' })
+  await mount([child], false, false, { meshId: 'm1' })
+  expect(meshBadge()).toBeNull()
 })

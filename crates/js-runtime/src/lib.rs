@@ -42,8 +42,14 @@
 //! - a panic inside a deno_core builtin op (not ours, so not behind the panic guard): it unwinds into V8
 //!   through an `extern "C"` callback.
 
+#[cfg(any(target_os = "ios", feature = "jsc"))]
+mod jsc;
+#[cfg(any(target_os = "ios", feature = "jsc"))]
+use jsc as runtime;
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 mod runtime;
 mod thread;
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 mod watchdog;
 
 // The unit tests live under tests/unit/ (next to the golden integration tests) but compile into the library,

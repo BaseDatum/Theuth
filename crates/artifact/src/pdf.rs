@@ -262,7 +262,7 @@ fn engine(extra_fonts: &[PathBuf]) -> &'static Engine {
     ENGINE.get_or_init(|| {
         let files = Files::default();
         let fonts = TypstKitFontOptions::new()
-            .include_system_fonts(true)
+            .include_system_fonts(!cfg!(target_os = "ios"))
             .include_embedded_fonts(true)
             .include_dirs(extra_fonts.iter().cloned());
         let typst = TypstEngine::builder()

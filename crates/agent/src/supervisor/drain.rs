@@ -29,13 +29,23 @@ use crate::{AGENT_ACTOR, AgentEvent, HistoryEntry, ResumeState};
 /// `main.rs` after an rpc `shutdown` already drained) is a no-op.
 static DRAINING: AtomicBool = AtomicBool::new(false);
 
+/// Reversible suspension flag set by [`SuspendForBackground`] and cleared by
+/// [`ThawFromBackground`]. Separate from [`DRAINING`], which is a one-way
+/// process-exit latch.
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
+
 /// Whether a drain has begun in this process.
 pub fn draining() -> bool {
     DRAINING.load(Ordering::SeqCst)
 }
 
-/// Held by tests that set [`draining`] or need it unset: the flag is
-/// process-wide, so they would see each other's.
+/// Whether the engine is currently suspended for OS backgrounding (e.g. iOS).
+pub fn suspended() -> bool {
+    SUSPENDED.load(Ordering::SeqCst)
+}
+
+/// Held by tests that set [`draining`] or [`suspended`] or need them unset:
+/// the flags are process-wide, so tests serialize on this mutex.
 #[cfg(test)]
 pub(crate) static DRAIN_FLAG: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -53,6 +63,20 @@ pub struct Drain {
     /// `TurnSuspended.reason`: `shutdown` | `update` | `parent_gone`.
     pub reason: &'static str,
 }
+
+/// `ask` → [`DrainReport`]: reversible durable suspension for OS backgrounding
+/// (e.g. iOS `sceneDidEnterBackground`). Leaves [`DRAINING`] untouched so the
+/// process can resume cleanly on [`ThawFromBackground`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SuspendForBackground;
+
+/// `ask` → `u32`: reversible resume after [`SuspendForBackground`] (e.g. iOS
+/// `sceneWillEnterForeground`). Clears the suspension flag, tears down stale
+/// pre-freeze live turn handles, and immediately triggers `resume_scan` so
+/// interrupted turns resume without waiting for `stream_idle_secs`. Returns
+/// the number of open turns handed to the resume scan.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ThawFromBackground;
 
 /// What the drain did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, kameo::Reply)]
@@ -138,8 +162,12 @@ impl Message<Drain> for Agents {
             // reads the flag at each `round`); in-flight tool calls finish.
             let mut busy: Vec<LiveActor> = Vec::with_capacity(live.len());
             for actor in live {
-                if let LiveActor::Native(session) = &actor {
-                    let _ = session.tell(Draining).await;
+                match &actor {
+                    LiveActor::Native(session) => {
+                        let _ = session.tell(Draining).await;
+                    }
+                    #[cfg(not(target_os = "ios"))]
+                    LiveActor::Acp(_) => {}
                 }
                 if actor.is_running().await {
                     busy.push(actor);
@@ -188,6 +216,148 @@ impl Message<Drain> for Agents {
             });
         });
         reply
+    }
+}
+
+/// How long [`SuspendForBackground`] waits for cancelled streams to flush their
+/// partials before checkpointing the SQLite WAL (fits inside iOS's ~5 s
+/// background transition budget).
+const BG_SUSPEND_WAIT: Duration = Duration::from_secs(3);
+
+/// `TurnSuspended.reason` recorded by [`SuspendForBackground`].
+pub const IOS_BACKGROUND_REASON: &str = "ios_background";
+
+impl Message<SuspendForBackground> for Agents {
+    type Reply = DelegatedReply<DrainReport>;
+
+    async fn handle(
+        &mut self,
+        _: SuspendForBackground,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        SUSPENDED.store(true, Ordering::SeqCst);
+        let live: Vec<LiveActor> = self
+            .sessions
+            .values()
+            .filter(|l| l.actor.is_alive())
+            .map(|l| l.actor.clone())
+            .collect();
+        let (store, rt) = (self.store.clone(), self.rt.clone());
+        let held = self.held_roots();
+        tokio::spawn(async move {
+            // 1. Durably journal `suspended` for every open local turn first,
+            //    so an OS freeze or jetsam mid-suspend reads as a planned stop.
+            let open = store.open_turns(Scope::Here).await.unwrap_or_else(|e| {
+                tracing::error!("ios_background: open_turns: {e:#}");
+                Vec::new()
+            });
+            let open = not_held(&store, &held, open).await;
+            for (session, turn, _) in &open {
+                let mut payload = serde_json::json!({ "reason": IOS_BACKGROUND_REASON });
+                if let Some(ms) = crate::durability::run_clock::ran_ms(*turn) {
+                    payload["ran_ms"] = ms.into();
+                }
+                if let Err(e) = store
+                    .step(*session, *turn, StepKind::Suspended, None, &payload)
+                    .await
+                {
+                    tracing::error!(%session, %turn, "ios_background: suspended step: {e:#}");
+                }
+            }
+            // 2. Cancel active sessions so in-flight LLM streams flush their
+            //    live `assistant_partial` (via `Turn::stream` while
+            //    `suspending()`) and close HTTP sockets cleanly without
+            //    marking the turns cancelled.
+            let mut busy: Vec<LiveActor> = Vec::with_capacity(live.len());
+            for actor in live {
+                if actor.is_running().await {
+                    actor.tell_cancel(None).await;
+                    busy.push(actor);
+                }
+            }
+            let finished = wait_idle(Instant::now() + BG_SUSPEND_WAIT, &mut busy).await;
+            // 3. Publish `TurnSuspended` for every remaining open local turn.
+            let mut suspended_count = 0;
+            for (session, turn, _) in not_held(
+                &store,
+                &held,
+                store.open_turns(Scope::Here).await.unwrap_or_default(),
+            )
+            .await
+            {
+                suspended_count += 1;
+                rt.publish(AgentEvent::TurnSuspended {
+                    session,
+                    turn,
+                    reason: IOS_BACKGROUND_REASON.to_owned(),
+                })
+                .await;
+            }
+            // 4. Truncate the WAL into the main SQLite file before iOS freezes
+            //    or jetsams the process.
+            if let Err(e) = store.wal_checkpoint_truncate().await {
+                tracing::warn!("ios_background: wal_checkpoint_truncate: {e:#}");
+            }
+            tracing::info!(
+                suspended = suspended_count,
+                finished,
+                "ios_background: suspended and checkpointed"
+            );
+            tx.send(DrainReport {
+                suspended: suspended_count,
+                finished,
+            });
+        });
+        reply
+    }
+}
+
+impl Message<ThawFromBackground> for Agents {
+    type Reply = u32;
+
+    async fn handle(
+        &mut self,
+        _: ThawFromBackground,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        SUSPENDED.store(false, Ordering::SeqCst);
+        let open = self.open_here().await;
+        let (_, open) = self.unpaused_turns(Vec::new(), open).await;
+        let open_sessions: std::collections::HashSet<SessionId> =
+            open.iter().map(|(s, _, _)| *s).collect();
+        // Proactively tear down any stale live session handles left from
+        // pre-freeze (still marked running, dead, or holding an open turn) so
+        // `resume_scan` starts fresh actors instead of colliding with stale
+        // sockets or `inflight` tasks.
+        let stale: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(id, live)| {
+                !live.actor.is_alive()
+                    || self.running.contains(id)
+                    || open_sessions.contains(id)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            if let Some(live) = self.sessions.remove(&id) {
+                live.actor.kill().await;
+            }
+            self.running.remove(&id);
+            if let Some(timer) = self.child_turns.remove(&id).and_then(|ct| ct.timer) {
+                timer.abort();
+            }
+            crate::durability::run_clock::stop_session(id);
+            self.endless.detach(id);
+        }
+        let count = open.len() as u32;
+        if !open.is_empty() {
+            tracing::info!(open = count, "ios_background: thawing and resuming open turns");
+            self.resume_scan(&open).await;
+        }
+        count
     }
 }
 
@@ -279,6 +449,51 @@ pub async fn drain_engine(rt: &Runtime, reason: &'static str) -> DrainReport {
         Err(_) => {
             tracing::warn!("109: drain overran its deadline; exiting without it");
             DrainReport::default()
+        }
+    }
+}
+
+/// Suspend the local agent supervisor for OS backgrounding (e.g. iOS
+/// `sceneDidEnterBackground`): flushes live partials, cancels in-flight LLM
+/// streams, records `StepKind::Suspended { reason: "ios_background" }`, and
+/// runs `PRAGMA wal_checkpoint(TRUNCATE)`. Reversible via [`thaw_engine`].
+pub async fn suspend_engine(_rt: &Runtime) -> DrainReport {
+    let Ok(Some(agents)) = ActorRef::<Agents>::lookup(AGENT_ACTOR) else {
+        return DrainReport::default();
+    };
+    let report = tokio::time::timeout(
+        BG_SUSPEND_WAIT + Duration::from_secs(2),
+        agents.ask(SuspendForBackground),
+    )
+    .await;
+    match report {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            tracing::warn!("ios_background: suspend_engine: {e}");
+            DrainReport::default()
+        }
+        Err(_) => {
+            tracing::warn!("ios_background: suspend_engine timed out");
+            DrainReport::default()
+        }
+    }
+}
+
+/// Resume the local agent supervisor after [`suspend_engine`] (e.g. iOS
+/// `sceneWillEnterForeground`): clears the suspension latch, tears down stale
+/// pre-freeze handles, and triggers `resume_scan` immediately. Returns the
+/// number of open turns handed to the resume scan.
+pub async fn thaw_engine(_rt: &Runtime) -> u32 {
+    let Ok(Some(agents)) = ActorRef::<Agents>::lookup(AGENT_ACTOR) else {
+        SUSPENDED.store(false, Ordering::SeqCst);
+        return 0;
+    };
+    match agents.ask(ThawFromBackground).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("ios_background: thaw_engine: {e}");
+            SUSPENDED.store(false, Ordering::SeqCst);
+            0
         }
     }
 }
@@ -695,5 +910,75 @@ mod tests {
         let (state, partial) = Agents::resume_state(&a.store, sid, true, None).await;
         assert!(state.is_none(), "no banner: {state:?}");
         assert!(partial.is_none(), "no interrupted partial: {partial:?}");
+    }
+
+    /// `SuspendForBackground` / `ThawFromBackground`: reversible lifecycle that
+    /// leaves desktop's one-way `DRAINING` latch untouched, records
+    /// `StepKind::Suspended { reason: "ios_background" }` for local open turns,
+    /// checkpoints WAL, and triggers `resume_scan` immediately on thaw.
+    #[tokio::test]
+    async fn suspend_for_background_is_reversible_and_thaw_resumes() {
+        let _flag = DRAIN_FLAG.lock().await;
+        reset_draining();
+        SUSPENDED.store(false, Ordering::SeqCst);
+
+        let (_dir, mut b, foreign, foreign_turn) = b_holding_a_turn(false).await;
+        // Use `ResumeMode::Ask` so `resume_scan` does not spawn real model HTTP
+        // requests in this offline unit test while still verifying the full
+        // suspend -> thaw -> suspend -> thaw cycle.
+        std::sync::Arc::make_mut(&mut b.cfg).durability.resume = crate::durability::ResumeMode::Ask;
+        let (store, rt) = (b.store.clone(), b.rt.clone());
+        let (tx, mut events) = unbounded_channel();
+        let sink = Sink::spawn_with_mailbox(Sink(tx), runtime::subscriber_mailbox());
+        rt.subscribe::<Sink, AgentEvent>(&sink).await;
+        let (sid, turn) = own_turn(&b).await;
+        let agents = Agents::spawn(b);
+
+        // First suspend cycle.
+        let report = agents.ask(SuspendForBackground).await.unwrap();
+        assert!(suspended(), "SUSPENDED flag set");
+        assert!(!draining(), "desktop one-way DRAINING latch untouched");
+        assert_eq!(
+            report,
+            DrainReport {
+                suspended: 1,
+                finished: 0
+            }
+        );
+        let plan = store.resume_plan(sid, turn).await.unwrap();
+        assert_eq!(plan.kind, crate::durability::ResumeKind::Suspended);
+        let foreign_plan = store.resume_plan(foreign, foreign_turn).await.unwrap();
+        assert_eq!(
+            foreign_plan.kind,
+            crate::durability::ResumeKind::Interrupted,
+            "foreign turn untouched"
+        );
+        let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                ev,
+                Some(AgentEvent::TurnSuspended {
+                    session,
+                    turn: t,
+                    ref reason
+                }) if session == sid && t == turn && reason == IOS_BACKGROUND_REASON
+            ),
+            "{ev:?}"
+        );
+
+        // Thaw clears SUSPENDED and immediately scans the 1 open local turn.
+        let thawed = agents.ask(ThawFromBackground).await.unwrap();
+        assert!(!suspended(), "SUSPENDED cleared on thaw");
+        assert_eq!(thawed, 1);
+
+        // Reversible: a second background cycle works cleanly too.
+        let second = agents.ask(SuspendForBackground).await.unwrap();
+        assert!(suspended());
+        assert_eq!(second.suspended, 1);
+        let thawed_again = agents.ask(ThawFromBackground).await.unwrap();
+        assert!(!suspended());
+        assert_eq!(thawed_again, 1);
     }
 }

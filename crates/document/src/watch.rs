@@ -3,18 +3,27 @@
 //! its own exports by sha and imports everything else as `Principal::File`.
 //! A hub duty (69): [`crate::hub`] starts it on lease gain and cancels it on loss.
 
+#[cfg(not(target_os = "ios"))]
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(target_os = "ios"))]
+use std::path::PathBuf;
+#[cfg(not(target_os = "ios"))]
 use std::time::{Duration, Instant};
 
 use kameo::actor::ActorRef;
+#[cfg(not(target_os = "ios"))]
 use notify::Watcher;
+#[cfg(not(target_os = "ios"))]
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::actor::{DocumentActor, FileChanged};
+use crate::actor::DocumentActor;
+#[cfg(not(target_os = "ios"))]
+use crate::actor::FileChanged;
 use crate::meta::Binding;
 
+#[cfg(not(target_os = "ios"))]
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Watch `<data_dir>/knowledge` recursively until `cancel` fires.
@@ -23,51 +32,59 @@ pub fn start(
     actor: ActorRef<DocumentActor>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
-    let root = data_dir.join("knowledge");
-    std::fs::create_dir_all(&root)?;
-    // FSEvents reports resolved paths (`/tmp` → `/private/tmp`); the prefix must match them.
-    let root = std::fs::canonicalize(&root)?;
-    let (tx, mut rx) = mpsc::unbounded_channel::<PathBuf>();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(ev) = res {
-            for p in ev.paths {
-                let _ = tx.send(p);
-            }
-        }
-    })?;
-    watcher.watch(&root, notify::RecursiveMode::Recursive)?;
-    tokio::spawn(async move {
-        let _watcher = watcher;
-        let mut due: HashMap<PathBuf, Instant> = HashMap::new();
-        loop {
-            let next = due.values().min().copied();
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                p = rx.recv() => {
-                    let Some(p) = p else { break };
-                    if binding_of(&root, &p).is_some() {
-                        due.insert(p, Instant::now() + DEBOUNCE);
-                    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = (data_dir, actor, cancel);
+        Ok(())
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let root = data_dir.join("knowledge");
+        std::fs::create_dir_all(&root)?;
+        // FSEvents reports resolved paths (`/tmp` → `/private/tmp`); the prefix must match them.
+        let root = std::fs::canonicalize(&root)?;
+        let (tx, mut rx) = mpsc::unbounded_channel::<PathBuf>();
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(ev) = res {
+                for p in ev.paths {
+                    let _ = tx.send(p);
                 }
-                _ = async {
-                    match next {
-                        Some(t) => tokio::time::sleep_until(tokio::time::Instant::from_std(t)).await,
-                        None => std::future::pending().await,
+            }
+        })?;
+        watcher.watch(&root, notify::RecursiveMode::Recursive)?;
+        tokio::spawn(async move {
+            let _watcher = watcher;
+            let mut due: HashMap<PathBuf, Instant> = HashMap::new();
+            loop {
+                let next = due.values().min().copied();
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    p = rx.recv() => {
+                        let Some(p) = p else { break };
+                        if binding_of(&root, &p).is_some() {
+                            due.insert(p, Instant::now() + DEBOUNCE);
+                        }
                     }
-                } => {
-                    let now = Instant::now();
-                    let ready: Vec<PathBuf> = due.iter().filter(|(_, t)| **t <= now).map(|(p, _)| p.clone()).collect();
-                    for p in ready {
-                        due.remove(&p);
-                        if let Some(binding) = binding_of(&root, &p) {
-                            let _ = actor.tell(FileChanged { binding, path: p }).await;
+                    _ = async {
+                        match next {
+                            Some(t) => tokio::time::sleep_until(tokio::time::Instant::from_std(t)).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        let now = Instant::now();
+                        let ready: Vec<PathBuf> = due.iter().filter(|(_, t)| **t <= now).map(|(p, _)| p.clone()).collect();
+                        for p in ready {
+                            due.remove(&p);
+                            if let Some(binding) = binding_of(&root, &p) {
+                                let _ = actor.tell(FileChanged { binding, path: p }).await;
+                            }
                         }
                     }
                 }
             }
-        }
-    });
-    Ok(())
+        });
+        Ok(())
+    }
 }
 
 /// `knowledge/<id>.md` → `Binding::Knowledge(id)`; `.git`, `index.md`, `log.md` and non-markdown are not documents.

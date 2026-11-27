@@ -1,16 +1,16 @@
 use crate as agent;
 use crate::rpc_forward as forward;
 use crate::rpc_support::{RpcServerExt, owner_root};
-use crate::{
-    AddSkill, AddSkillRepo, Agents, ListSkills, LoadSkill, RemoveSkill, RemoveSkillRepo, SkillBody,
-    SkillMeta, SyncSkills, UseSkill,
-};
+#[cfg(not(target_os = "ios"))]
+use crate::{AddSkillRepo, RemoveSkillRepo, SyncSkills};
+use crate::{AddSkill, Agents, ListSkills, LoadSkill, RemoveSkill, SkillBody, SkillMeta, UseSkill};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::{Server, ask};
 use runtime::SessionId;
 use std::path::PathBuf;
+#[cfg(not(target_os = "ios"))]
 use tools::git::SyncResult;
 
 #[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
@@ -59,12 +59,15 @@ pub trait SkillsApi {
     #[method(name = "remove_skill")]
     async fn remove_skill(&self, name: String) -> RpcResult<()>;
     /// Clone a skill repo into `skills/<name>`; returns the skills it holds.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "add_skill_repo")]
     async fn add_skill_repo(&self, url: String, name: Option<String>) -> RpcResult<Vec<SkillMeta>>;
     /// Delete a cloned skill repo.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "remove_skill_repo")]
     async fn remove_skill_repo(&self, name: String) -> RpcResult<()>;
     /// `git pull` every skill repo.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "sync_skills")]
     async fn sync_skills(&self) -> RpcResult<Vec<SyncResult>>;
 }
@@ -175,14 +178,17 @@ impl SkillsApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, RemoveSkill { name }).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn add_skill_repo(&self, url: String, name: Option<String>) -> RpcResult<Vec<SkillMeta>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, AddSkillRepo { url, name }).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn remove_skill_repo(&self, name: String) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, RemoveSkillRepo { name }).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn sync_skills(&self) -> RpcResult<Vec<SyncResult>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SyncSkills).await
     }

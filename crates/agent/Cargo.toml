@@ -8,7 +8,6 @@ description = "Model loop (genai), session store (sqlite), skills, subagents"
 
 [dependencies]
 document = { workspace = true }
-codeindex = { workspace = true }
 rpc-core = { workspace = true }
 rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
@@ -24,8 +23,6 @@ oauth = { workspace = true }
 secrets = { workspace = true }
 surface = { workspace = true }
 cursor = { workspace = true }
-acp = { workspace = true }
-agent-client-protocol = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
@@ -43,12 +40,8 @@ kameo = { workspace = true }
 genai = { workspace = true }
 # 160 §5.3: the usage-limit pollers' GETs; the header sink sees genai's `reqwest` types.
 reqwest = { workspace = true }
-aws-profiles = { workspace = true }
 parking_lot = { workspace = true }
 sqlx = { workspace = true }
-# 68 §3: the session extension on the store's write connection; the vendored
-# build (workspace `[patch]`) compiles SQLITE_ENABLE_SESSION for every target.
-libsqlite3-sys = { version = "0.36", features = ["session"] }
 # 68 §2: `sessions.owner` is a mesh `EngineId`; only the id and the identity file loader are used.
 mesh = { workspace = true }
 nucleo = { workspace = true }
@@ -56,7 +49,7 @@ gray_matter = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 monty = { workspace = true }
-monty-pool = { workspace = true }
+monty-proto = { workspace = true }
 monty-types = { workspace = true }
 monty-fs = { workspace = true }
 regex = { workspace = true }
@@ -76,6 +69,16 @@ a2a-types = { workspace = true }
 # registry, no approval); `url` parses the POST host rule.
 web = { workspace = true }
 url = { workspace = true }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+codeindex = { workspace = true }
+acp = { workspace = true }
+agent-client-protocol = { workspace = true }
+aws-profiles = { workspace = true }
+# 68 §3: the session extension on the store's write connection; the vendored
+# build (workspace `[patch]`) compiles SQLITE_ENABLE_SESSION for every target.
+libsqlite3-sys = { version = "0.36", features = ["session"] }
+monty-pool = { workspace = true }
 # 144 §10: the audio overview asks the `voice` actor for a two-voice dialogue clip (`SynthesizeDialogue`).
 voice = { workspace = true }
 
@@ -91,6 +94,8 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "secrets/ts", "search/ts", "acp/ts", "models/ts", "aws-profiles/ts"]
 # 148 R1: `spawn_test_agents` — a model-less engine for dependent crates' tests.
 test-support = []
+# In-process Monty Python runtime (always active on iOS; opt-in on desktop for native tests).
+inproc-monty = []
 
 [lints]
 workspace = true

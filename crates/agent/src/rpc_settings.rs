@@ -1,7 +1,21 @@
 use crate as agent;
 use agent::rpc_forward as forward;
-use agent::{AcpLogin, SetModelFavorite, AddAcp, AddProvider, Agents, CancelLogin, CompactStyle, EscalateModel, GetCompactStyle, GetEscalateModel, GetSubagentModel, GetTitleModel, GetVisionModel, ListAcp, ListLogins, ListModels, ListProviders, ListRegistry, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog, AwsProfiles, ListAwsProfiles, SetAwsProfile, EndlessConfig, GetPolishModel, SetPolishModel};
+#[cfg(not(target_os = "ios"))]
 use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
+#[cfg(not(target_os = "ios"))]
+use agent::{
+    AcpLogin, AddAcp, AwsProfiles, ListAcp, ListAwsProfiles, ListRegistry, RemoveAcp,
+    SetAwsProfile,
+};
+use agent::{
+    AddProvider, AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, Agents, CancelLogin,
+    CompactStyle, EndlessConfig, EscalateModel, GetCompactStyle, GetEscalateModel, GetPolishModel,
+    GetSubagentModel, GetTitleModel, GetVisionModel, ListLogins, ListModels, ListProviders, Login,
+    LoginInfo, Logout, ModelInfo, ProviderInfo, RefreshProviderModels, RefreshedModels,
+    RemoveProvider, SetAdvisor, SetAdvisorDefaults, SetCompactStyle, SetEffort, SetEscalateModel,
+    SetMaxSalvages, SetMaxToolRounds, SetModel, SetModelFavorite, SetPolishModel, SetStreamIdle,
+    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, SyncBacklog,
+};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -161,9 +175,11 @@ pub trait AgentSettingsApi {
     #[method(name = "list_models", with_extensions)]
     async fn list_models(&self, engine: Option<String>) -> RpcResult<Vec<ModelInfo>>;
     /// AWS SDK-discovered profiles on this harness, plus its inference selection.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "list_aws_profiles")]
     async fn list_aws_profiles(&self) -> RpcResult<AwsProfiles>;
     /// Select the harness-wide Bedrock inference profile; `None` restores the AWS default chain.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "set_aws_profile")]
     async fn set_aws_profile(&self, profile: Option<String>) -> RpcResult<AwsProfiles>;
     /// With `session`: switch that session to `model` — that session only, whatever `manual`
@@ -239,6 +255,7 @@ pub trait AgentSettingsApi {
     /// An ACP child's harness config options (75 §8): model, effort/thinking,
     /// mode … as the harness lists them, with current values. Errors when the
     /// session is not an external harness or its process is gone.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "harness_options", with_extensions)]
     async fn harness_options(&self, session: SessionId) -> RpcResult<Vec<acp::ConfigOption>>;
     /// Set one harness config option on an ACP child (75 §8): `config_id` is
@@ -246,6 +263,7 @@ pub trait AgentSettingsApi {
     /// `options[].value`. Mid-turn the change is queued for the turn's end
     /// (`pending: true`). A missing option or an unlisted value is refused
     /// with the list. The model change follows as `HarnessModelChanged`.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "set_harness_option", with_extensions)]
     async fn set_harness_option(
         &self,
@@ -260,22 +278,28 @@ pub trait AgentSettingsApi {
     /// idle or cancelled one is only reconnected (`idle`). Errors when the
     /// session is native, belongs to a remote node, or has no stored harness
     /// session id.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "resume_child", with_extensions)]
     async fn resume_child(&self, session: SessionId) -> RpcResult<ChildResumed>;
     /// Configured external harnesses (`acp/agents.yaml`); `probe` runs `initialize` on each.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "list_acp")]
     async fn list_acp(&self, probe: bool) -> RpcResult<Vec<acp::EntryInfo>>;
     /// Install a registry agent as a harness entry (`binary` distributions are downloaded).
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "add_acp")]
     async fn add_acp(&self, id: String) -> RpcResult<acp::EntryInfo>;
     /// Remove a harness entry and its downloaded binary, if any.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "remove_acp")]
     async fn remove_acp(&self, name: String) -> RpcResult<()>;
     /// Authenticate a configured ACP harness (`authenticate` for agent-type methods,
     /// or returns the terminal login command), then re-probes and returns the fresh status.
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "acp_login")]
     async fn acp_login(&self, name: String, method: Option<String>) -> RpcResult<String>;
     /// The ACP agent registry (cached for a day; offline returns the cache).
+    #[cfg(not(target_os = "ios"))]
     #[method(name = "list_acp_registry")]
     async fn list_acp_registry(&self) -> RpcResult<Vec<acp::registry::RegistryAgent>>;
     /// Providers a user can log in to (design doc 05), with their status; account
@@ -606,10 +630,12 @@ impl AgentSettingsApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListModels).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn list_aws_profiles(&self) -> RpcResult<AwsProfiles> {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListAwsProfiles).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn set_aws_profile(&self, profile: Option<String>) -> RpcResult<AwsProfiles> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetAwsProfile { profile }).await
     }
@@ -771,6 +797,7 @@ impl AgentSettingsApiServer for Server {
         .await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn harness_options(
         &self,
         ext: &Extensions,
@@ -783,6 +810,7 @@ impl AgentSettingsApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, HarnessOptions { session }).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn set_harness_option(
         &self,
         ext: &Extensions,
@@ -812,6 +840,7 @@ impl AgentSettingsApiServer for Server {
         .await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn resume_child(&self, ext: &Extensions, session: SessionId) -> RpcResult<ChildResumed> {
         self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "resume_child", (session,)).await? {
@@ -820,22 +849,27 @@ impl AgentSettingsApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, ResumeChild { session }).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn list_acp(&self, probe: bool) -> RpcResult<Vec<acp::EntryInfo>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListAcp { probe }).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn add_acp(&self, id: String) -> RpcResult<acp::EntryInfo> {
         ask::<Agents, _>(agent::AGENT_ACTOR, AddAcp { id }).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn remove_acp(&self, name: String) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, RemoveAcp { name }).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn acp_login(&self, name: String, method: Option<String>) -> RpcResult<String> {
         ask::<Agents, _>(agent::AGENT_ACTOR, AcpLogin { name, method }).await
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn list_acp_registry(&self) -> RpcResult<Vec<acp::registry::RegistryAgent>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListRegistry).await
     }

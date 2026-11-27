@@ -538,6 +538,7 @@ export function SessionList({
                   owner={row.session.owner}
                   epoch={row.session.epoch}
                   here={row.session.here}
+                  meshId={row.session.mesh_id ?? null}
                   running={row.session.running}
                   endless={row.session.memory === 'endless'}
                   subagents={subs.get(row.session.id)}

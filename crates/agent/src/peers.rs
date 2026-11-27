@@ -62,7 +62,12 @@ pub struct SpawnSubagentArgs {
 /// Registered nodes (32 §6.5): name → (`describe` line, dialer). Written by
 /// `Agents` on `RegisterNode`/`UnregisterNode`, read live by the tool
 /// description, so the model sees a node the moment it is registered.
+#[cfg(not(target_os = "ios"))]
 pub(crate) type Nodes = Arc<RwLock<BTreeMap<String, (String, Arc<dyn acp::Dialer>)>>>;
+
+/// Registered node descriptions (on iOS ACP remote dialers are disabled).
+#[cfg(target_os = "ios")]
+pub(crate) type Nodes = Arc<RwLock<BTreeMap<String, String>>>;
 
 /// Non-blocking delegation to a child session.
 pub struct SpawnSubagentTool {
@@ -73,6 +78,7 @@ pub struct SpawnSubagentTool {
 }
 
 /// The configured harnesses, empty (and logged) when the file is unreadable.
+#[cfg(not(target_os = "ios"))]
 fn harnesses(data_dir: &std::path::Path) -> BTreeMap<String, acp::Entry> {
     acp::load(data_dir).unwrap_or_else(|e| {
         tracing::warn!("acp/agents.yaml: {e:#}");
@@ -81,6 +87,7 @@ fn harnesses(data_dir: &std::path::Path) -> BTreeMap<String, acp::Entry> {
 }
 
 /// A snapshot of the registered nodes' `describe` lines, by name.
+#[cfg(not(target_os = "ios"))]
 pub(crate) fn node_lines(nodes: &Nodes) -> BTreeMap<String, String> {
     nodes
         .read()
@@ -88,6 +95,12 @@ pub(crate) fn node_lines(nodes: &Nodes) -> BTreeMap<String, String> {
         .iter()
         .map(|(n, (d, _))| (n.clone(), d.clone()))
         .collect()
+}
+
+/// A snapshot of the registered nodes' `describe` lines, by name.
+#[cfg(target_os = "ios")]
+pub(crate) fn node_lines(nodes: &Nodes) -> BTreeMap<String, String> {
+    nodes.read().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
 /// The tool description's node line (32 §7, 67 §8); empty with no nodes.
@@ -104,6 +117,7 @@ pub(crate) fn describe_nodes(nodes: &BTreeMap<String, String>) -> String {
 }
 
 /// [`acp::unknown`] plus the registered node names, when there are any.
+#[cfg(not(target_os = "ios"))]
 pub(crate) fn unknown(
     name: &str,
     entries: &BTreeMap<String, acp::Entry>,
@@ -133,8 +147,9 @@ pub(crate) fn parse_agent(s: &str) -> Result<(Option<&str>, &str), String> {
 }
 
 /// The registered node `engine` names (67 §8): by name, else the one node
-/// whose mesh id starts with it ([`acp::Dialer::engine_id`]; a 32 node has
+/// whose mesh id starts with it (`acp::Dialer::engine_id`; a 32 node has
 /// none). Two id matches are no match.
+#[cfg(not(target_os = "ios"))]
 pub(crate) fn resolve_node(nodes: &Nodes, engine: &str) -> Option<String> {
     let nodes = nodes.read().unwrap_or_else(|p| p.into_inner());
     if nodes.contains_key(engine) {
@@ -148,6 +163,13 @@ pub(crate) fn resolve_node(nodes: &Nodes, engine: &str) -> Option<String> {
         (Some(one), None) => Some(one),
         _ => None,
     }
+}
+
+/// Resolve a registered node by name on iOS.
+#[cfg(target_os = "ios")]
+pub(crate) fn resolve_node(nodes: &Nodes, engine: &str) -> Option<String> {
+    let nodes = nodes.read().unwrap_or_else(|p| p.into_inner());
+    nodes.contains_key(engine).then(|| engine.to_owned())
 }
 
 /// `agent` with its engine part replaced by the registered node name
@@ -207,10 +229,13 @@ impl Tool for SpawnSubagentTool {
              `tools: read_only` (or `mutating`) caps what the subagent and its descendants may run at that risk (`destructive` = no cap); an investigation that must not change anything gets `read_only`. \
              A child that will compile, run a large test suite or otherwise load the machine gets the resource rules you are under in its brief - lock or job cap, scope, target directory - because an external harness cannot discover peers (see Guidance: Share the machine).",
         );
-        let line = acp::describe(&harnesses(&self.data_dir));
-        if !line.is_empty() {
-            s.push(' ');
-            s.push_str(&line);
+        #[cfg(not(target_os = "ios"))]
+        {
+            let line = acp::describe(&harnesses(&self.data_dir));
+            if !line.is_empty() {
+                s.push(' ');
+                s.push_str(&line);
+            }
         }
         let line = describe_nodes(&node_lines(&self.nodes));
         if !line.is_empty() {
@@ -231,19 +256,28 @@ impl Tool for SpawnSubagentTool {
         };
         let agent = args.agent.and_then(|a| canonical_agent(&self.nodes, &a));
         if let Some(agent) = &agent {
-            let known = harnesses(&self.data_dir);
-            let nodes = node_lines(&self.nodes);
-            let (harness, engine) = match parse_agent(agent) {
-                Ok(p) => p,
-                Err(e) => return Ok(ToolOutput::err(e)),
-            };
-            // A remote harness is checked on its node; the node must be one of ours.
-            let ok = match harness {
-                Some(_) => nodes.contains_key(engine),
-                None => known.contains_key(engine) || nodes.contains_key(engine),
-            };
-            if !ok {
-                return Ok(ToolOutput::err(unknown(engine, &known, &nodes)));
+            #[cfg(target_os = "ios")]
+            {
+                return Ok(ToolOutput::err(format!(
+                    "external agent `{agent}` is not supported on iOS; omit `agent` to spawn a native theuth subagent"
+                )));
+            }
+            #[cfg(not(target_os = "ios"))]
+            {
+                let known = harnesses(&self.data_dir);
+                let nodes = node_lines(&self.nodes);
+                let (harness, engine) = match parse_agent(agent) {
+                    Ok(p) => p,
+                    Err(e) => return Ok(ToolOutput::err(e)),
+                };
+                // A remote harness is checked on its node; the node must be one of ours.
+                let ok = match harness {
+                    Some(_) => nodes.contains_key(engine),
+                    None => known.contains_key(engine) || nodes.contains_key(engine),
+                };
+                if !ok {
+                    return Ok(ToolOutput::err(unknown(engine, &known, &nodes)));
+                }
             }
         }
         if agent.is_none() && !args.skills.is_empty() {
@@ -996,9 +1030,11 @@ mod tests {
     use super::*;
 
     /// A dialer for the description test: never dialled.
+    #[cfg(not(target_os = "ios"))]
     #[derive(Debug)]
     struct NoDial;
 
+    #[cfg(not(target_os = "ios"))]
     #[async_trait::async_trait]
     impl acp::Dialer for NoDial {
         async fn dial(&self) -> Result<acp::LineDuplex, String> {
@@ -1007,9 +1043,11 @@ mod tests {
     }
 
     /// A mesh engine for the resolution test: known by id, never dialled.
+    #[cfg(not(target_os = "ios"))]
     #[derive(Debug)]
     struct MeshId(&'static str);
 
+    #[cfg(not(target_os = "ios"))]
     #[async_trait::async_trait]
     impl acp::Dialer for MeshId {
         async fn dial(&self) -> Result<acp::LineDuplex, String> {
@@ -1023,6 +1061,7 @@ mod tests {
     /// 67 §8: `agent: "<harness>@<engine>"` resolves the engine by node name
     /// first, then by a unique mesh id prefix; a 32 node has no id; the
     /// spawn stores the canonical `<harness>@<node name>`.
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn engine_resolves_by_name_then_unique_id_prefix() {
         let nodes = Nodes::default();
@@ -1126,6 +1165,7 @@ mod tests {
         assert_eq!(cap_of(&args(None, Some("codex"))), Ok(None));
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn spawn_description_lists_configured_harnesses() {
         let scratch = crate::test_dir("peers");
@@ -1166,6 +1206,7 @@ mod tests {
 
     /// 32 §7: a registered node is offered after the harness line, sorted by
     /// name, and an unknown name's error lists it.
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn spawn_description_and_unknown_list_nodes() {
         let scratch = crate::test_dir("peers");

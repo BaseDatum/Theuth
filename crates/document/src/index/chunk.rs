@@ -15,6 +15,7 @@ pub struct Block {
 }
 
 /// The §14 numbers.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Params {
     /// `notebooks.chunk_tokens` (400).
@@ -26,6 +27,7 @@ pub struct Params {
 }
 
 /// One chunk: block indices into the input, the text that is embedded, its token count.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chunk {
     /// Index of the first block.
@@ -39,6 +41,7 @@ pub struct Chunk {
 }
 
 /// Chunk `blocks` given `tokens[i]` per block.
+#[cfg(not(target_os = "ios"))]
 pub fn chunk(blocks: &[Block], tokens: &[usize], p: &Params) -> Vec<Chunk> {
     debug_assert_eq!(blocks.len(), tokens.len());
     let overlap_budget = (p.max_tokens as f32 * p.overlap).round() as usize;
@@ -147,6 +150,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     const P: Params = Params {
         max_tokens: 10,
         overlap: 0.3,
@@ -156,6 +160,7 @@ mod tests {
     /// A heading starts a chunk and is prepended to every chunk under it; the budget splits;
     /// the overlap is the previous chunk's tail; a tiny chunk is dropped; every chunk maps to
     /// `[first, last]`.
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn headings_budget_overlap_and_minimum() {
         let blocks = vec![

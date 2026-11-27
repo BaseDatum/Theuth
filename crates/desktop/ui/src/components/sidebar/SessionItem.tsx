@@ -44,6 +44,7 @@ import { cn } from '@/lib/utils'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { type Activity, type SessionSlice, shownActivity, statusLine, useSessionField, useSessions } from '@/store/sessions'
 import { routed, useEngineLabel } from '@/lib/owner'
+import { type Engine, LOCAL, useEngines } from '@/link/engines'
 import { useMesh } from '@/components/tasks/queries'
 import type { MeshStatus } from '@/rpc/bindings/method.nodes.output'
 import { useApprovals } from '@/store/approvals'
@@ -222,6 +223,30 @@ export function MachineChip({ owner, epoch, here, className }: { owner: string; 
   if (!name) return null
   return (
     <span title={`runs on ${name} · epoch ${epoch}`} className={cn(CHIP, className)}>
+      {name}
+    </span>
+  )
+}
+
+/**
+ * Shape A multi-mesh scoping: when viewing the local engine (`active === LOCAL`), resolve a session's `mesh_id` to
+ * its paired mesh's display name (`meshName ?? name`); `undefined` outside `LOCAL`, when `meshId` is absent, or if
+ * the mesh is no longer in `engines`.
+ */
+export function meshBadgeName(active: string, engines: readonly Engine[], meshId: string | null | undefined): string | undefined {
+  if (active !== LOCAL || !meshId) return undefined
+  const m = engines.find((e) => e.id === meshId)
+  return m ? (m.meshName ?? m.name) : undefined
+}
+
+/** Subtle mesh badge for an on-device chat scoped to a paired mesh (`SessionSummary.mesh_id`). */
+export function MeshChip({ meshId, className }: { meshId?: string | null; className?: string }) {
+  const active = useEngines((s) => s.active)
+  const engines = useEngines((s) => s.engines)
+  const name = meshBadgeName(active, engines, meshId)
+  if (!name) return null
+  return (
+    <span title={`mesh ${name}`} data-mesh-chip="" className={cn(CHIP, className)}>
       {name}
     </span>
   )
@@ -440,6 +465,7 @@ export const SessionItem = memo(function SessionItem({
   owner,
   epoch,
   here,
+  meshId,
   running,
   endless,
   subagents,
@@ -461,6 +487,8 @@ export const SessionItem = memo(function SessionItem({
   owner: string
   epoch: number
   here: boolean
+  /** Shape A: paired mesh id this on-device session is scoped to, if any. */
+  meshId?: string | null
   /** 183 W-7: `list_sessions.running` — for a row owned elsewhere, the replica's open turn. */
   running: boolean
   /** 137 §11.3: `SessionSummary.memory === 'endless'`; the ∞ glyph after the title. */
@@ -480,6 +508,7 @@ export const SessionItem = memo(function SessionItem({
   const shown = useRowTitle(id, title, created)
   const tip = liveTags.length ? `${shown} · ${liveTags.join(', ')}` : shown
   const drag = useSessionDrag(id, shown)
+  const hasMeshChip = useEngines((s) => meshBadgeName(s.active, s.engines, meshId) !== undefined)
   // Inline editor: the title, or the name of a new project.
   const [editing, setEditing] = useState<RowEdit | null>(null)
   const [confirming, setConfirming] = useState(false)
@@ -501,7 +530,8 @@ export const SessionItem = memo(function SessionItem({
           ∞
         </span>
       )}
-      <MachineChip owner={owner} epoch={epoch} here={here} className="ml-auto" />
+      <MeshChip meshId={meshId} className="ml-auto" />
+      <MachineChip owner={owner} epoch={epoch} here={here} className={hasMeshChip ? undefined : 'ml-auto'} />
     </>
   )
 

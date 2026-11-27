@@ -310,8 +310,11 @@ impl runtime::Plugin for DocumentPlugin {
         // 144 §7.1: the block index — first run / model change in the background. The embedder registers in
         // the decision plugin, which starts after this one: wait for it (bounded) so the first walk embeds
         // instead of leaving every document lexical-only until its next edit.
-        let (a, rt2) = (actor.clone(), rt.clone());
+        let a = actor.clone();
+        #[cfg(not(target_os = "ios"))]
+        let rt2 = rt.clone();
         tokio::spawn(async move {
+            #[cfg(not(target_os = "ios"))]
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 rt2.lookup_when::<decision::embed::EmbedActor>(decision::embed::EMBED_ACTOR),

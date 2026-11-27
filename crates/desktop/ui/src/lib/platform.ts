@@ -28,6 +28,16 @@ export const isDesktop = (): boolean => {
   return c === 'macos' || c === 'linux' || c === 'windows'
 }
 
+/** The iOS shell (iPhone or iPad), which now embeds its own local engine. */
+export const isIos = (): boolean => container() === 'ios'
+
+/** iPadOS (iPad UA, or Macintosh UA with multi-touch). */
+export const isIpad = (): boolean => {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent
+  return /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+}
+
 /** Coarse pointer: fingers, not a mouse. */
 export const touch = (): boolean => typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
 

@@ -8,14 +8,13 @@
 
 use std::collections::HashMap;
 
-use codeindex::LocateStatus;
 use kameo::actor::ActorRef;
 use surface::anchor::{Locator, THEUTH_SCHEME, TheuthAnchor};
 use tools::ToolOutput;
 
 use crate::actor::{DocumentActor, Markdown};
 use crate::meta::{DocId, Principal};
-use crate::notebook::{Citation, CiteResolve};
+use crate::notebook::{Citation, CiteResolve, LocateStatus};
 
 /// The `theuth://` links of `markdown` the edit must check: every `](theuth://…)` href that parses,
 /// deduplicated, in document order. Malformed hrefs are not here; [`check`] refuses them.
@@ -132,7 +131,7 @@ pub fn judge(
 
 /// First 8 hex of `sha256(text)` with trailing whitespace trimmed — the `?s=` drift hash (§6.4).
 pub fn sha8(text: &str) -> String {
-    codeindex::locate::text_sha(text.trim_end())[..8].to_owned()
+    platform::sha256::hex(text.trim_end().as_bytes())[..8].to_owned()
 }
 
 /// The refusal line for a citation whose target is gone, `None` for `same` / `changed` / `moved`.

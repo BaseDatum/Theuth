@@ -128,7 +128,7 @@ pub async fn check_session_cites(cites: &mut [document::Citation]) {
                 if let Some(surface::anchor::Locator::Turn(t)) = anchor.locator
                     && t as usize > s.turns
                 {
-                    c.status = codeindex::LocateStatus::Missing;
+                    c.status = document::LocateStatus::Missing;
                 }
             }
             Ok(None) => c.available = false,

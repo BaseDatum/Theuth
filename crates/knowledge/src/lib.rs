@@ -100,7 +100,7 @@ impl Default for KnowledgeConfig {
             enabled: true,
             sync_secs: 300,
             lifetimes: Lifetimes::default(),
-            peek: true,
+            peek: !cfg!(target_os = "ios"),
             peek_threshold: 0.5,
             peek_checkpoint: "gliner".into(),
         }

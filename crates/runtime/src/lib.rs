@@ -35,6 +35,10 @@ pub struct Runtime {
     pub shutdown: CancellationToken,
     /// Plugin-neutral state shared by Runtime clones, keyed by component type.
     extensions: std::sync::Arc<parking_lot::Mutex<Extensions>>,
+    /// Set to `true` by [`Runtime::mark_plugins_started`] once every plugin has
+    /// finished starting, so [`Runtime::lookup_when`] stops polling for absent
+    /// actors.
+    plugins_started: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl Runtime {
@@ -47,13 +51,30 @@ impl Runtime {
             MessageBus::new(DeliveryStrategy::Guaranteed),
             subscriber_mailbox(),
         );
+        let (plugins_started, _) = tokio::sync::watch::channel(false);
         Self {
             bus,
             config,
             data_dir,
             shutdown: CancellationToken::new(),
             extensions: Default::default(),
+            plugins_started: std::sync::Arc::new(plugins_started),
         }
+    }
+
+    /// Signal that every plugin's [`Plugin::start`] has finished and no further
+    /// named actors will register. Once set, [`Runtime::lookup_when`] returns
+    /// `None` after one final registry check instead of polling until
+    /// [`Runtime::shutdown`].
+    pub fn mark_plugins_started(&self) {
+        self.plugins_started.send_if_modified(|started| {
+            if *started {
+                false
+            } else {
+                *started = true;
+                true
+            }
+        });
     }
 
     /// One slot per type; a private T lets only its owning crate reach the slot.
@@ -92,18 +113,28 @@ impl Runtime {
         Ok(self.config.extract_inner(name)?)
     }
 
-    /// `ActorRef::<A>::lookup(name)` until it resolves or `shutdown` fires (12 §2).
-    /// Polls every 50 ms: kameo's registry has no watch API.
+    /// `ActorRef::<A>::lookup(name)` until it resolves, `shutdown` fires, or
+    /// [`Runtime::mark_plugins_started`] has been called and a final check still
+    /// finds nothing (12 §2). Polls every 50 ms while plugins are still starting:
+    /// kameo's registry has no watch API.
     pub async fn lookup_when<A: kameo::actor::Actor>(
         &self,
         name: &'static str,
     ) -> Option<ActorRef<A>> {
+        let mut started = self.plugins_started.subscribe();
         loop {
+            // Read `started` before `lookup` so any registration that happened-before
+            // `mark_plugins_started` is guaranteed visible to the final check.
+            let done = *started.borrow_and_update();
             if let Ok(Some(r)) = ActorRef::<A>::lookup(name) {
                 return Some(r);
             }
+            if done {
+                return None;
+            }
             tokio::select! {
                 _ = self.shutdown.cancelled() => return None,
+                _ = started.changed() => {}
                 _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
             }
         }
@@ -556,6 +587,69 @@ mod tests {
         thread.join().unwrap();
         assert_eq!(rt.extension(|| 99_u32), 41);
         assert_eq!(rt.extension::<(u32, u8)>(|| panic!("initialized twice")), (41, 1));
+    }
+
+    #[tokio::test]
+    async fn lookup_when_returns_none_after_plugins_started() {
+        let rt = super::Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let cloned = rt.clone();
+        let waiting = tokio::spawn(async move {
+            cloned
+                .lookup_when::<super::MessageBus>("runtime-test-absent-actor")
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        rt.mark_plugins_started();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("lookup_when should wake promptly after mark_plugins_started")
+            .unwrap();
+        assert!(got.is_none());
+
+        // Calling lookup_when after mark_plugins_started also returns None immediately.
+        let again = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rt.lookup_when::<super::MessageBus>("runtime-test-absent-actor"),
+        )
+        .await
+        .expect("lookup_when should not block once plugins are started");
+        assert!(again.is_none());
+    }
+
+    #[tokio::test]
+    async fn lookup_when_finds_registered_actor_even_after_plugins_started() {
+        let rt = super::Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        rt.bus
+            .register("runtime-test-present-actor")
+            .expect("register test bus");
+        rt.mark_plugins_started();
+        let got = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rt.lookup_when::<super::MessageBus>("runtime-test-present-actor"),
+        )
+        .await
+        .expect("lookup_when should resolve immediately");
+        assert!(got.is_some());
+    }
+
+    #[tokio::test]
+    async fn lookup_when_keeps_polling_until_shutdown_when_unmarked() {
+        let rt = super::Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let cloned = rt.clone();
+        let waiting = tokio::spawn(async move {
+            cloned
+                .lookup_when::<super::MessageBus>("runtime-test-unmarked-actor")
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!waiting.is_finished());
+        rt.shutdown.cancel();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("lookup_when should exit on shutdown")
+            .unwrap();
+        assert!(got.is_none());
     }
 
     fn tmp() -> PathBuf {

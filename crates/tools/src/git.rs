@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_os = "ios"))]
 use tokio::process::Command;
 
 /// A checked-out repo directly under a source directory.
@@ -116,6 +117,7 @@ pub async fn sync_all(dir: &Path) -> Vec<SyncResult> {
 
 /// Run git with `args` (plus `extra` path appended), trimmed stdout on success,
 /// stderr as the error otherwise.
+#[cfg(not(target_os = "ios"))]
 async fn run(cwd: Option<&Path>, args: &[&str], extra: Option<&Path>) -> anyhow::Result<String> {
     let mut cmd = Command::new("git");
     cmd.args(args);
@@ -139,6 +141,12 @@ async fn run(cwd: Option<&Path>, args: &[&str], extra: Option<&Path>) -> anyhow:
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+#[cfg(target_os = "ios")]
+async fn run(cwd: Option<&Path>, args: &[&str], extra: Option<&Path>) -> anyhow::Result<String> {
+    let _ = (cwd, args, extra);
+    anyhow::bail!("git is not supported on iOS")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +166,7 @@ mod tests {
         assert!(!valid_name(""));
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn clone_pull_and_list_against_a_local_bare_repo() {
         let guard = crate::test_dir("git");

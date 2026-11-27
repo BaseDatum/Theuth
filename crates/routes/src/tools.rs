@@ -27,7 +27,7 @@ site_routes(url) lists what is already learned for a site. \
 Prefer this over scrape_url {rendered: true} when you need data, not prose; \
 a route that says drifted needs site_learn again.";
 
-/// Register the three tools and the prompt block.
+/// Register the routes tools and the prompt block.
 pub async fn register(reg: &ActorRef<ToolRegistry>, routes: Arc<Routes>) {
     let _ = reg
         .ask(RegisterPrompt {
@@ -35,6 +35,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, routes: Arc<Routes>) {
             text: PROMPT.to_owned(),
         })
         .await;
+    #[cfg(not(target_os = "ios"))]
     let _ = reg
         .ask(RegisterTool(Arc::new(SiteLearnTool(Arc::clone(&routes)))))
         .await;
@@ -109,6 +110,7 @@ fn rows(domain: &str, routes: &[Route]) -> String {
 }
 
 /// Arguments for [`SiteLearnTool`].
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SiteLearnArgs {
     /// Page to open in this session's browser first; omit to read what the
@@ -117,8 +119,10 @@ pub struct SiteLearnArgs {
 }
 
 /// `site_learn`: capture the session's XHR/fetch traffic, classify, merge.
+#[cfg(not(target_os = "ios"))]
 pub struct SiteLearnTool(pub Arc<Routes>);
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for SiteLearnTool {
     const NAME: &'static str = "site_learn";
@@ -257,6 +261,7 @@ impl Tool for SiteCallTool {
 }
 
 const _: () = {
+    #[cfg(not(target_os = "ios"))]
     assert!(!<SiteLearnTool as Tool>::DIRECT);
     assert!(!<SiteRoutesTool as Tool>::DIRECT);
     assert!(!<SiteCallTool as Tool>::DIRECT);

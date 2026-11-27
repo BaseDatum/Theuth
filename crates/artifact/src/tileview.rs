@@ -6,17 +6,18 @@
 //! only record — the UI parses it.
 
 use std::fmt::Write as _;
+#[cfg(not(target_os = "ios"))]
 use std::path::{Path, PathBuf};
 
 use document::{DocKind, Principal};
+#[cfg(not(target_os = "ios"))]
 use kameo::actor::ActorRef;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tools::{
-    Invoke, JobView, Jobs, ListJobs, ListTerminals, Risk, Tool, ToolCall, ToolCx, ToolOutput,
-    ToolRegistry,
-};
+#[cfg(not(target_os = "ios"))]
+use tools::{Invoke, JobView, Jobs, ListJobs, ListTerminals, ToolCall, ToolRegistry};
+use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::webview::clean_title;
 
@@ -27,9 +28,11 @@ pub(crate) const NO_APP: &str = "note: no app is connected; the card in the chat
 const MAX_BLOCK: usize = 64;
 
 /// The login shell's job name when the call names none (211 §5).
+#[cfg(not(target_os = "ios"))]
 const SHELL_NAME: &str = "shell";
 
 /// Arguments of `show_pty` (211 §5).
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ShowPtyArgs {
     /// An existing job to show: its id (`j3`) or the `name` given to `start`. A `start()`
@@ -79,11 +82,13 @@ impl wire::WireEvent for PtyViewOpened {
 /// `show_pty`: resolve the job (or start a terminal through `start`), publish
 /// [`PtyViewOpened`], return the receipt (211 §1, §5). `Mutating` for every call: the trait has
 /// no per-call risk, and a spawn runs a process; the nested `start` keeps its own gate.
+#[cfg(not(target_os = "ios"))]
 pub struct ShowPtyTool {
     /// For publishing the event.
     pub rt: Runtime,
 }
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for ShowPtyTool {
     const NAME: &'static str = "show_pty";
@@ -198,6 +203,7 @@ impl Tool for ShowPtyTool {
 }
 
 /// What a `show_pty` call does.
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug, PartialEq, Eq)]
 enum Plan {
     /// Show this existing job (id or name).
@@ -210,6 +216,7 @@ enum Plan {
 }
 
 /// 211 §5: `job` shows, `command` or nothing spawns, both is refused.
+#[cfg(not(target_os = "ios"))]
 fn plan(args: &ShowPtyArgs) -> Result<Plan, String> {
     let given = |s: &Option<String>| {
         s.as_deref()
@@ -229,6 +236,7 @@ fn plan(args: &ShowPtyArgs) -> Result<Plan, String> {
 }
 
 /// What a spawning call started, for the receipt's second line.
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug)]
 struct Spawned {
     command: String,
@@ -237,6 +245,7 @@ struct Spawned {
 }
 
 /// The tile a call opens.
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug)]
 struct JobTile {
     job: String,
@@ -248,6 +257,7 @@ struct JobTile {
 /// Start `command` through the registered `start` tool (its gate, `$SHELL -lc`, readiness and
 /// idle rules) as call `<call_id>.start`; the job id, or `start`'s refusal. The login shell never
 /// wakes the model with `<job_idle>`: it is the user's terminal.
+#[cfg(not(target_os = "ios"))]
 async fn start(
     cx: &ToolCx,
     command: &str,
@@ -287,6 +297,7 @@ async fn start(
 
 /// The user's login shell as a `start` command: `exec $SHELL -l` (fallback `/bin/zsh`), so the
 /// job is the shell itself rather than a wrapper around it.
+#[cfg(not(target_os = "ios"))]
 fn login_shell() -> String {
     let shell = std::env::var("SHELL")
         .ok()
@@ -296,6 +307,7 @@ fn login_shell() -> String {
 }
 
 /// `s` as one word for `$SHELL` (which may be csh or fish): bare when plain, else single-quoted.
+#[cfg(not(target_os = "ios"))]
 fn shell_word(s: &str) -> String {
     if s
         .chars()
@@ -309,6 +321,7 @@ fn shell_word(s: &str) -> String {
 
 /// `base`, else `base-2`, `base-3`, … — the first name no running job of the session holds
 /// (`start` refuses a duplicate among running jobs).
+#[cfg(not(target_os = "ios"))]
 fn free_name(jobs: &[JobView], base: &str) -> String {
     let taken = |n: &str| {
         jobs.iter()
@@ -325,6 +338,7 @@ fn free_name(jobs: &[JobView], base: &str) -> String {
 
 /// `send`/`screen`'s rule (22 §4.8) over every job of the session: exact id, else the newest
 /// running one named `query`, else the newest named `query`.
+#[cfg(not(target_os = "ios"))]
 fn resolve_job<'a>(jobs: &'a [JobView], query: &str) -> Option<&'a JobView> {
     let named = |j: &&JobView| j.name.as_deref() == Some(query);
     jobs.iter()
@@ -339,6 +353,7 @@ fn resolve_job<'a>(jobs: &'a [JobView], query: &str) -> Option<&'a JobView> {
 }
 
 /// The job's name, else its command, one line; the id when both are blank.
+#[cfg(not(target_os = "ios"))]
 fn default_job_title(j: &JobView) -> String {
     [j.name.as_deref(), Some(j.command.as_str())]
         .into_iter()
@@ -349,6 +364,7 @@ fn default_job_title(j: &JobView) -> String {
 }
 
 /// The text the model reads; the first line is fixed, one form per tile kind (211 §1, §5).
+#[cfg(not(target_os = "ios"))]
 fn job_receipt(v: &JobTile, session: SessionId, spawned: Option<&Spawned>, live: bool) -> String {
     let kind = if v.pty { "pty" } else { "job" };
     let mut s = format!(
@@ -719,8 +735,10 @@ fn note_receipt(title: &str, doc: &str, block: Option<&str>, live: bool) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_os = "ios"))]
     use tools::JobId;
 
+    #[cfg(not(target_os = "ios"))]
     fn job(id: &str, name: Option<&str>, command: &str, state: &str, pty: bool) -> JobView {
         JobView {
             session: SessionId::new(),
@@ -745,6 +763,7 @@ mod tests {
         serde_json::from_value(serde_json::json!("00000000-0000-0000-0000-000000000001")).unwrap()
     }
 
+    #[cfg(not(target_os = "ios"))]
     fn tile(pty: bool, running: bool) -> JobTile {
         JobTile {
             job: "j3".into(),
@@ -754,6 +773,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn pty_receipt_first_line() {
         let live = job_receipt(&tile(true, true), session(), None, true);
@@ -772,6 +792,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn job_receipt_first_line() {
         let r = job_receipt(&tile(false, true), session(), None, true);
@@ -784,6 +805,7 @@ mod tests {
         assert!(done.ends_with("\nThe job has finished; the tile shows its log."), "{done}");
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn spawned_receipt_second_line() {
         let sp = Spawned {
@@ -869,6 +891,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn name_resolves_to_id() {
         let jobs = [
@@ -893,6 +916,7 @@ mod tests {
         assert!(resolve_job(&jobs, "nope").is_none());
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn default_titles() {
         assert_eq!(
@@ -909,6 +933,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn plans_and_refusals() {
         let args = |job: Option<&str>, command: Option<&str>| ShowPtyArgs {
@@ -943,6 +968,7 @@ mod tests {
         assert!(plan(&named).unwrap_err().contains("only when starting"));
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn login_shell_names_and_quoting() {
         let running = |name: &str| job("j1", Some(name), "zsh", "running", true);

@@ -93,7 +93,7 @@ pub fn parse_pmset(out: &str) -> Power {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt as _;
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(parse_pmset(""), Power::Unknown);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn unix_probes_answer() {
         assert!(load1().is_some_and(|l| l >= 0.0));

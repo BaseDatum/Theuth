@@ -8,12 +8,14 @@ const UA = {
   macos: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)',
   linux: 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
   windows: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0',
+  iphone: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+  ipad: 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
 }
 
 /** A fresh module per shell: `LOCAL_NAME` and the hydration promise are computed once at import. */
-async function load(ua: string, tauri = true) {
+async function load(ua: string, tauri = true, maxTouchPoints = 0) {
   vi.stubGlobal('window', tauri ? { __TAURI_INTERNALS__: {} } : {})
-  vi.stubGlobal('navigator', { userAgent: ua, maxTouchPoints: 0 })
+  vi.stubGlobal('navigator', { userAgent: ua, maxTouchPoints })
   vi.stubEnv('VITE_THEUTH_URL', undefined)
   vi.stubEnv('VITE_THEUTH_TOKEN', undefined)
   vi.resetModules()
@@ -26,11 +28,14 @@ afterEach(() => {
 })
 
 test.each([
-  ['macos', 'This Mac'],
-  ['linux', 'This computer'],
-  ['windows', 'This PC'],
-] as const)('%s shell: local daemon, no pairing demanded, label %s', async (os, label) => {
-  const m = await load(UA[os])
+  ['macos', 0, 'This Mac'],
+  ['linux', 0, 'This computer'],
+  ['windows', 0, 'This PC'],
+  ['iphone', 5, 'This iPhone'],
+  ['ipad', 5, 'This iPad'],
+  ['macos', 5, 'This iPad'],
+] as const)('%s (touch=%d) shell: local engine, no pairing demanded, label %s', async (os, touch, label) => {
+  const m = await load(UA[os], true, touch)
   expect(m.hasLocal()).toBe(true)
   expect(m.LOCAL_NAME).toBe(label)
   await m.hydrateEngines()

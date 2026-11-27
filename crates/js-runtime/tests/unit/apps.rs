@@ -200,6 +200,7 @@ async fn js_exception_is_an_error_reply_and_the_runtime_survives() {
 }
 
 /// A runaway script is terminated from the watchdog; queued jobs fail with it; the runtime is rebuilt.
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn deadline_terminates_a_runaway_script_and_rebuilds() {
     let t = thread(limits());
@@ -233,7 +234,31 @@ async fn deadline_terminates_a_runaway_script_and_rebuilds() {
     round_trip(&t, "after request spin").await;
 }
 
+/// On JSC (no public terminate_execution API), a finite script that overruns the wall-clock deadline fails
+/// with `Error::Timeout`, queued checks re-run on the fresh runtime, and the runtime is rebuilt.
+#[cfg(any(target_os = "ios", feature = "jsc"))]
+#[tokio::test]
+async fn deadline_overrun_fails_with_timeout_and_rebuilds() {
+    let t = thread(Limits {
+        deadline: Duration::from_millis(250),
+        first_deadline: Duration::from_millis(1500),
+        ..Limits::default()
+    });
+    round_trip(&t, "before").await;
+    assert_eq!(t.generation(), 1);
+    let slow = t.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 400) {} }".into());
+    let queued = t.enqueue(check_line("q", PROTOTYPE));
+    assert_eq!(slow.await, Err(Error::Timeout));
+    ok(
+        &queued.await.expect("queued behind the overrun is served"),
+        "q",
+    );
+    wait_until("rebuild", || t.generation() == 2).await;
+    round_trip(&t, "after overrun").await;
+}
+
 /// The heap ceiling terminates instead of aborting the process; the runtime is rebuilt.
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn heap_limit_terminates_and_rebuilds() {
     let t = thread(Limits {
@@ -368,6 +393,7 @@ async fn cancelling_the_token_ends_the_thread() {
 
 /// The request's own promise is still pending when an unrelated rejection fails the event loop: fatal, the
 /// runtime is rebuilt, and the next requests each get their own answer.
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn an_event_loop_error_mid_request_is_fatal_and_the_next_request_gets_its_own_reply() {
     let t = thread(limits());
@@ -466,6 +492,7 @@ async fn a_dead_runtime_thread_is_respawned() {
 }
 
 /// Two bundles' handles are independent: each has its own thread and isolate and limits.
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn two_handles_run_two_isolates() {
     let a = thread(limits());
@@ -476,6 +503,28 @@ async fn two_handles_run_two_isolates() {
     round_trip(&a, "a").await;
     round_trip(&b, "b").await;
     assert_eq!(b.eval_raw("for (;;) {}".into()).await, Err(Error::Timeout));
+    round_trip(&a, "a unaffected").await;
+    assert_eq!(a.generation(), 1);
+    wait_until("rebuild", || b.generation() == 2).await;
+}
+
+/// Two JSC handles are independent: each owns its own context group, thread, and limits.
+#[cfg(any(target_os = "ios", feature = "jsc"))]
+#[tokio::test]
+async fn two_handles_run_two_contexts() {
+    let a = thread(limits());
+    let b = thread(Limits {
+        deadline: Duration::from_millis(250),
+        first_deadline: Duration::from_millis(1500),
+        ..limits()
+    });
+    round_trip(&a, "a").await;
+    round_trip(&b, "b").await;
+    assert_eq!(
+        b.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 400) {} }".into())
+            .await,
+        Err(Error::Timeout)
+    );
     round_trip(&a, "a unaffected").await;
     assert_eq!(a.generation(), 1);
     wait_until("rebuild", || b.generation() == 2).await;
@@ -507,6 +556,7 @@ fn init_platform_builds_an_isolate_on_a_plain_thread() {
 }
 
 /// Review m1: 1 runaway + 5 queued checks → the runaway times out, the 5 succeed on the fresh runtime.
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn one_runaway_does_not_fail_the_checks_queued_behind_it() {
     let t = thread(limits());
@@ -526,6 +576,7 @@ async fn one_runaway_does_not_fail_the_checks_queued_behind_it() {
 /// The mermaid spike's ordering bug, restated for re-run semantics: no job may run on the runtime a fatal
 /// failure gave up. The jobs queued before the failure and the one sent after seeing it all run on the fresh
 /// runtime (no mark there).
+#[cfg(not(any(target_os = "ios", feature = "jsc")))]
 #[tokio::test]
 async fn after_a_fatal_failure_no_job_runs_on_the_abandoned_runtime() {
     let t = thread(limits());

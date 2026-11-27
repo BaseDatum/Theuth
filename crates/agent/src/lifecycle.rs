@@ -77,6 +77,11 @@ pub struct CreateSessionOptions {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub engine: Option<String>,
+    /// Optional mesh identifier tagging an on-device session for multi-mesh
+    /// mobile UIs (Shape A). `None` for untagged sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub mesh_id: Option<String>,
 }
 
 /// Reply to `create_session` / `resume_private`: the opened session, its

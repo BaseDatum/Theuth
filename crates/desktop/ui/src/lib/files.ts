@@ -223,12 +223,12 @@ export async function readTextOnline(api: Api, client: Pick<RpcClient, 'onState'
 }
 
 /**
- * Put `blob` somewhere the user can reach. Browser: a download named `name`. Desktop shell on the local daemon:
+ * Put `blob` somewhere the user can reach. Browser and iOS: a download named `name`. Desktop shell on the local daemon:
  * the daemon's attachment store, revealed in the file manager (the only byte sink the shell has; no fs plugin).
  * ponytail: content-addressed name and fixed folder; `@tauri-apps/plugin-fs` + the `save()` dialog if Sky wants to pick.
  */
 export async function saveBlob(api: Api, blob: Blob, name: string, ext: string) {
-  if (container() === 'web') {
+  if (container() === 'web' || container() === 'ios') {
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `${name}.${ext}`

@@ -18,46 +18,57 @@ pub fn data_dir() -> std::path::PathBuf {
 /// stderr discarded, in its own session (a `zsh -i` that can reach the tty
 /// takes its foreground away from the TUI; a new process group alone still
 /// shares the session's tty). `Err` says why it gave no usable `PATH`.
-/// Windows has no login-shell environment problem: the current `PATH`.
+/// Windows and iOS have no login-shell environment problem: the current `PATH`.
 pub async fn login_path(shell: &OsStr, timeout: Duration) -> Result<String, String> {
-    if cfg!(windows) {
-        return std::env::var("PATH").map_err(|e| e.to_string());
+    #[cfg(any(windows, target_os = "ios"))]
+    {
+        let _ = (shell, timeout);
+        std::env::var("PATH").map_err(|e| e.to_string())
     }
-    let out = login_output(shell, r#"printf %s "$PATH""#, timeout).await?;
-    let path = String::from_utf8_lossy(&out).trim().to_owned();
-    if path.is_empty() {
-        return Err("printed an empty PATH".into());
+    #[cfg(not(any(windows, target_os = "ios")))]
+    {
+        let out = login_output(shell, r#"printf %s "$PATH""#, timeout).await?;
+        let path = String::from_utf8_lossy(&out).trim().to_owned();
+        if path.is_empty() {
+            return Err("printed an empty PATH".into());
+        }
+        Ok(path)
     }
-    Ok(path)
 }
 
 /// 171 §5.4: run `shell -l -i -c 'env -0'` under the same harness as
 /// [`login_path`] and parse the NUL-separated `KEY=VALUE` entries (first
 /// `=` splits; entries without one or with an empty key are skipped).
-/// Windows has no login shell: the process's own environment.
+/// Windows and iOS have no login shell: the process's own environment.
 pub async fn login_env(
     shell: &OsStr,
     timeout: Duration,
 ) -> Result<BTreeMap<String, String>, String> {
-    if cfg!(windows) {
-        return Ok(std::env::vars().collect());
+    #[cfg(any(windows, target_os = "ios"))]
+    {
+        let _ = (shell, timeout);
+        Ok(std::env::vars().collect())
     }
-    let out = login_output(shell, "env -0", timeout).await?;
-    let env: BTreeMap<String, String> = out
-        .split(|b| *b == 0)
-        .filter_map(|entry| {
-            let entry = String::from_utf8_lossy(entry);
-            let (k, v) = entry.split_once('=')?;
-            (!k.is_empty()).then(|| (k.to_owned(), v.to_owned()))
-        })
-        .collect();
-    if env.is_empty() {
-        return Err("printed no environment".into());
+    #[cfg(not(any(windows, target_os = "ios")))]
+    {
+        let out = login_output(shell, "env -0", timeout).await?;
+        let env: BTreeMap<String, String> = out
+            .split(|b| *b == 0)
+            .filter_map(|entry| {
+                let entry = String::from_utf8_lossy(entry);
+                let (k, v) = entry.split_once('=')?;
+                (!k.is_empty()).then(|| (k.to_owned(), v.to_owned()))
+            })
+            .collect();
+        if env.is_empty() {
+            return Err("printed no environment".into());
+        }
+        Ok(env)
     }
-    Ok(env)
 }
 
 /// `shell -l -i -c <script>`'s stdout under the harness both probes share.
+#[cfg(not(any(windows, target_os = "ios")))]
 async fn login_output(shell: &OsStr, script: &str, timeout: Duration) -> Result<Vec<u8>, String> {
     let mut cmd = tokio::process::Command::new(shell);
     cmd.args(["-l", "-i", "-c", script])
@@ -74,7 +85,7 @@ async fn login_output(shell: &OsStr, script: &str, timeout: Duration) -> Result<
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, not(target_os = "ios")))]
 mod tests {
     use super::*;
 

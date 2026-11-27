@@ -6,6 +6,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { type UnlistenFn, emitTo, listen } from '@tauri-apps/api/event'
 import { Window, getCurrentWindow } from '@tauri-apps/api/window'
+import { isDesktop, isIos } from './platform'
 
 /** `launch::Connection`: what the webview needs to open the WebSocket. */
 export type Connection = {
@@ -39,16 +40,20 @@ const devConnection = (): Connection => {
 export const connection = (): Promise<Connection> =>
   isTauri() ? invoke<Connection>('connection') : Promise.resolve(devConnection())
 
-/** The pty transcript so far; `onLaunchLog` carries the increments. */
+/** The pty transcript so far; `onLaunchLog` carries the increments. Desktop-only. */
 export const launchLog = (): Promise<string> =>
-  isTauri() ? invoke<string>('launch_log') : Promise.resolve('')
+  isDesktop() ? invoke<string>('launch_log') : Promise.resolve('')
 
 /**
  * Stop the daemon we own (if any) and connect again. 222: a non-forced relaunch of an engine still making progress
- * rejects with `starting: <label>` and leaves it running; `force` stops it anyway.
+ * rejects with `starting: <label>` and leaves it running; `force` stops it anyway. On iOS, re-reads `connection`.
  */
 export const relaunch = (force = false): Promise<Connection> =>
-  isTauri() ? invoke<Connection>('relaunch', { force }) : Promise.resolve(devConnection())
+  isDesktop()
+    ? invoke<Connection>('relaunch', { force })
+    : isIos()
+      ? invoke<Connection>('connection')
+      : Promise.resolve(devConnection())
 
 /** 222: the engine's `<data_dir>/startup.json`; readers tolerate unknown states, phases and fields. */
 export type StartupStatus = {
@@ -73,13 +78,13 @@ export type StartupStatus = {
 /** 222: the shell's tailer of `startup.json`; `status` is `null` while there is none for this engine (an older one). */
 export type StartupProgress = { status: StartupStatus | null; alive: boolean; stalled: boolean; waited_ms: number }
 
-/** The last `startup-progress` payload, for a screen mounted after the start began; `null` off Tauri. */
+/** The last `startup-progress` payload, for a screen mounted after the start began; `null` off desktop Tauri. */
 export const startupStatus = (): Promise<StartupProgress | null> =>
-  isTauri() ? invoke<StartupProgress>('startup_status') : Promise.resolve(null)
+  isDesktop() ? invoke<StartupProgress>('startup_status') : Promise.resolve(null)
 
-/** The webview finished its part of the quit sequence; the shell's quit worker takes it from here (163). */
+/** The webview finished its part of the quit sequence; the shell's quit worker takes it from here (163). Desktop-only. */
 export const quitAck = (): Promise<void> =>
-  isTauri() ? invoke<void>('quit_ack') : Promise.resolve()
+  isDesktop() ? invoke<void>('quit_ack') : Promise.resolve()
 
 const on = <T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> =>
   isTauri() ? listen<T>(event, (e) => cb(e.payload)) : Promise.resolve(() => {})
@@ -209,3 +214,14 @@ export const onVoiceKeyPlace = (cb: (p: VoiceKeyPlace) => void) => on<VoiceKeyPl
 /** The island left `placing` (Done, or a gesture started): Settings' button flips back. */
 export const voiceKeyPlaced = (): Promise<void> => (isTauri() ? emitTo('main', 'voice-key:placed', {}) : Promise.resolve())
 export const onVoiceKeyPlaced = (cb: () => void) => on<Record<string, never>>('voice-key:placed', cb)
+
+// iOS in-app OAuth sheet (`SFSafariViewController` / `ASWebAuthenticationSession`). No-ops outside iOS.
+/** Open an OAuth sign-in URL in the iOS in-app auth browser (`ephemeral` for secondary accounts); no-op outside iOS. */
+export const openAuthBrowser = (url: string, ephemeral = false): Promise<void> =>
+  isIos() ? invoke<void>('open_auth_browser', { url, ephemeral }) : Promise.resolve()
+/** Close the iOS in-app auth browser after `LoginFinished`; no-op outside iOS. */
+export const closeAuthBrowser = (): Promise<void> =>
+  isIos() ? invoke<void>('close_auth_browser') : Promise.resolve()
+/** Fired when the user manually closes the iOS auth browser before `LoginFinished`; no-op outside iOS. */
+export const onAuthBrowserDismissed = (cb: () => void): Promise<UnlistenFn> =>
+  isIos() ? on<null>('auth-browser-dismissed', () => cb()) : Promise.resolve(() => {})

@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent};
+#[cfg(not(target_os = "ios"))]
 use parking_lot::Mutex;
 use runtime::SessionId;
 use sqlx::sqlite::{
@@ -81,6 +82,7 @@ pub use durability::Scope;
 pub struct Store {
     /// Capture session on the write connection (68 §3); `None` on a private
     /// store. Declared first so it is deleted before the pools drop.
+    #[cfg(not(target_os = "ios"))]
     session: Arc<Mutex<Option<capture::Session>>>,
     /// A `:memory:` private store: one pool, no capture, no log.
     private: bool,
@@ -88,6 +90,7 @@ pub struct Store {
     /// without one (a lone engine: every `''` row is ours).
     me: Arc<str>,
     /// Column layout of every attached table, for splitting changesets.
+    #[cfg(not(target_os = "ios"))]
     tables: Arc<Vec<capture::TableMeta>>,
     /// Last `session_log.seq` this engine wrote (`MAX(seq)` at open).
     seq: Arc<AtomicI64>,
@@ -95,6 +98,7 @@ pub struct Store {
     /// committed): the next write transaction re-reads `seq` from the log.
     reseed: Arc<std::sync::atomic::AtomicBool>,
     /// Stamps log rows; origin = `me`.
+    #[cfg(not(target_os = "ios"))]
     clock: Arc<replica::Clock>,
     /// Last logged `seq`, for shippers waiting on new rows (68 §6; `log_watch`).
     log_tx: Arc<tokio::sync::watch::Sender<i64>>,
@@ -240,6 +244,7 @@ impl WriteTx<'_> {
     }
 
     /// The capture session's changes as `session_log` rows, inside the transaction.
+    #[cfg(not(target_os = "ios"))]
     async fn log(&mut self) -> anyhow::Result<()> {
         let store = self.store;
         let changeset = {
@@ -330,6 +335,12 @@ impl WriteTx<'_> {
         }
         Ok(())
     }
+
+    /// On iOS, SQLite's session extension is excluded; transactions commit directly.
+    #[cfg(target_os = "ios")]
+    async fn log(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// A write transaction with capture **disabled** (68 §6 "apply with the
@@ -359,6 +370,7 @@ impl DerefMut for ApplyTx<'_> {
 impl ApplyTx<'_> {
     /// Run `f` with the raw `sqlite3*` of the write connection (for
     /// `sqlite3changeset_apply`), the worker thread locked out meanwhile.
+    #[cfg(not(target_os = "ios"))]
     pub async fn with_raw<R>(
         &mut self,
         f: impl FnOnce(std::ptr::NonNull<libsqlite3_sys::sqlite3>) -> R,
@@ -469,6 +481,7 @@ struct SessionRow {
     observed_detail: Option<String>,
     observed_cost_rule: Option<String>,
     finished_at: Option<String>,
+    mesh_id: Option<String>,
 }
 
 /// Scalar subquery: column `$col` of the root above the outer `sessions` row
@@ -506,7 +519,9 @@ macro_rules! session_cols {
             " AS notebook, sessions.owner, sessions.epoch, sessions.kind, sessions.memory, \
              sessions.acp_session, sessions.observed_source, sessions.observed_state, sessions.observed_stop, \
              sessions.observed_cancel, sessions.observed_description, sessions.observed_tool_call, \
-             sessions.observed_detail, sessions.observed_cost_rule, sessions.finished_at"
+             sessions.observed_detail, sessions.observed_cost_rule, sessions.finished_at, ",
+            root_col!("mesh_id"),
+            " AS mesh_id"
         )
     };
 }
@@ -560,6 +575,7 @@ impl SessionRow {
             kind: advisor::kind_of(&r.kind),
             memory: r.memory.parse().unwrap_or_default(),
             observed,
+            mesh_id: r.mesh_id,
         })
     }
 
@@ -734,8 +750,9 @@ const ROOT_HOPS: usize = 32;
 /// apply these rows. **69 (201 PC):** `0069_endless_tail` adds the
 /// per-session tail override columns to `sessions`. **70 (201 P1):**
 /// `0070_endless_quality` adds `endless_nodes.quality`. **78 (219):**
-/// `0078_session_always_ask` adds `sessions.always_ask`.
-pub const SESSIONS_WIRE_SCHEMA: u32 = 78;
+/// `0078_session_always_ask` adds `sessions.always_ask`. **80:**
+/// `0080_session_mesh_id` adds `sessions.mesh_id`.
+pub const SESSIONS_WIRE_SCHEMA: u32 = 80;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -797,14 +814,18 @@ impl Store {
             Ok(_) => {}
             Err(e) => tracing::warn!("accounting: cost owner repair: {e:#}"),
         }
+        #[cfg(not(target_os = "ios"))]
         let session: Arc<Mutex<Option<capture::Session>>> = Arc::new(Mutex::new(None));
-        let slot = session.clone();
-        let write = SqlitePoolOptions::new()
+        #[cfg_attr(target_os = "ios", allow(unused_mut))]
+        let mut write_opts = SqlitePoolOptions::new()
             .max_connections(1)
             .min_connections(1)
             .idle_timeout(None)
-            .max_lifetime(None)
-            .after_connect(move |conn, _| {
+            .max_lifetime(None);
+        #[cfg(not(target_os = "ios"))]
+        {
+            let slot = session.clone();
+            write_opts = write_opts.after_connect(move |conn, _| {
                 let slot = slot.clone();
                 Box::pin(async move {
                     let db = conn.lock_handle().await?.as_raw_handle();
@@ -820,26 +841,37 @@ impl Store {
                     }
                     Ok(())
                 })
-            })
+            });
+        }
+        let write = write_opts
             .connect_with(opts.synchronous(SqliteSynchronous::Normal))
             .await
             .with_context(|| format!("open {} (writer)", path.display()))?;
+        #[cfg(not(target_os = "ios"))]
         let tables = table_meta(&read).await?;
         let (last_seq,): (Option<i64>,) = sqlx::query_as("SELECT MAX(seq) FROM session_log")
             .fetch_one(&read)
             .await?;
-        let (last_hlc,): (Option<String>,) = sqlx::query_as("SELECT MAX(hlc) FROM session_log")
-            .fetch_one(&read)
-            .await?;
-        let last = last_hlc
-            .as_deref()
-            .and_then(replica::Hlc::parse)
-            .map_or((0, 0), |h| (h.wall_ms, h.counter));
+        #[cfg(not(target_os = "ios"))]
+        let clock = {
+            let (last_hlc,): (Option<String>,) =
+                sqlx::query_as("SELECT MAX(hlc) FROM session_log")
+                    .fetch_one(&read)
+                    .await?;
+            let last = last_hlc
+                .as_deref()
+                .and_then(replica::Hlc::parse)
+                .map_or((0, 0), |h| (h.wall_ms, h.counter));
+            Arc::new(replica::Clock::new(hlc_origin(&me), last))
+        };
         let store = Self {
+            #[cfg(not(target_os = "ios"))]
             session,
             private: false,
-            clock: Arc::new(replica::Clock::new(hlc_origin(&me), last)),
+            #[cfg(not(target_os = "ios"))]
+            clock,
             me,
+            #[cfg(not(target_os = "ios"))]
             tables: Arc::new(tables),
             seq: Arc::new(AtomicI64::new(last_seq.unwrap_or(0))),
             reseed: Arc::default(),
@@ -884,14 +916,17 @@ impl Store {
             .await
             .context("run migrations")?;
         Ok(Self {
+            #[cfg(not(target_os = "ios"))]
             session: Arc::new(Mutex::new(None)),
             private: true,
             me: Arc::from(""),
+            #[cfg(not(target_os = "ios"))]
             tables: Arc::new(Vec::new()),
             seq: Arc::new(AtomicI64::new(0)),
             reseed: Arc::default(),
             log_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
+            #[cfg(not(target_os = "ios"))]
             clock: Arc::new(replica::Clock::new(hlc_origin(""), (0, 0))),
             write: pool.clone(),
             read: pool,
@@ -903,6 +938,21 @@ impl Store {
     /// Whether this is a private `:memory:` store (one pool, nothing captured).
     pub fn is_private(&self) -> bool {
         self.private
+    }
+
+    /// Flush and truncate the SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) on
+    /// the write connection so pending transactions are safely folded into the
+    /// main database file before OS suspension (e.g. iOS backgrounding).
+    /// No-op on private in-memory stores.
+    pub async fn wal_checkpoint_truncate(&self) -> anyhow::Result<()> {
+        if self.private {
+            return Ok(());
+        }
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&self.write)
+            .await
+            .context("PRAGMA wal_checkpoint(TRUNCATE)")?;
+        Ok(())
     }
 
     /// The read pool, for crate-internal probes (tests of pragmas and the like) and
@@ -934,6 +984,7 @@ impl Store {
     /// Close both pools. The capture session goes first: deleting it after
     /// its connection closed is undefined behaviour.
     pub async fn close(&self) {
+        #[cfg(not(target_os = "ios"))]
         drop(self.session.lock().take());
         self.write.close().await;
         self.read.close().await;
@@ -985,9 +1036,10 @@ impl Store {
         })
     }
 
-    fn set_capture(&self, on: bool) {
+    fn set_capture(&self, _on: bool) {
+        #[cfg(not(target_os = "ios"))]
         if let Some(session) = self.session.lock().as_ref() {
-            session.enable(on);
+            session.enable(_on);
         }
     }
 
@@ -3446,6 +3498,29 @@ impl Store {
         rows.into_iter().map(|r| r.summary(&self.me)).collect()
     }
 
+    /// [`Store::list_sessions`] optionally filtered to sessions tagged with
+    /// `mesh_id` (`None` returns all sessions, matching [`Store::list_sessions`]).
+    pub async fn list_sessions_for_mesh(
+        &self,
+        mesh_id: Option<&str>,
+    ) -> anyhow::Result<Vec<SessionSummary>> {
+        let Some(mesh_id) = mesh_id else {
+            return self.list_sessions().await;
+        };
+        self.stall().await;
+        let rows: Vec<SessionRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            session_cols!(),
+            " FROM sessions WHERE sessions.kind != 'advisor' AND ",
+            root_col!("mesh_id"),
+            " = ? ORDER BY pinned DESC, updated_at DESC, id DESC"
+        ))
+        .bind(mesh_id)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter().map(|r| r.summary(&self.me)).collect()
+    }
+
     /// The subtree under `root` (children, grandchildren, …) with each row's
     /// depth (1 = direct child), in pre-order: a parent right before its
     /// children, siblings oldest first (design doc 19 §2.1); advisor rows
@@ -3800,6 +3875,47 @@ impl Store {
         Ok(row.and_then(|(n,)| n))
     }
 
+    /// Tag the root above `session` with an optional mesh identifier (Shape A
+    /// multi-mesh mobile chats; `None` clears). Same root rule as
+    /// [`Store::set_project`]. Returns the root id; unknown `session` is an error.
+    pub async fn set_mesh_id(
+        &self,
+        session: SessionId,
+        mesh_id: Option<&str>,
+    ) -> anyhow::Result<SessionId> {
+        let mut tx = self.begin_write().await?;
+        let root: Option<(String,)> = sqlx::query_as(
+            "UPDATE sessions SET mesh_id = ? WHERE id = ( \
+                 WITH RECURSIVE up(id, parent) AS ( \
+                     SELECT id, parent FROM sessions WHERE id = ? \
+                     UNION ALL \
+                     SELECT p.id, p.parent FROM sessions p JOIN up ON p.id = up.parent) \
+                 SELECT id FROM up WHERE parent IS NULL) \
+             RETURNING id",
+        )
+        .bind(mesh_id)
+        .bind(session.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        root.map(|(id,)| id.parse().context("bad session id"))
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("no such session"))
+    }
+
+    /// Effective mesh identifier for `session`: its root's value; `None` if untagged.
+    pub async fn effective_mesh_id(&self, session: SessionId) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(concat!(
+            "SELECT ",
+            root_col!("mesh_id"),
+            " FROM sessions WHERE id = ?"
+        ))
+        .bind(session.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.and_then(|(m,)| m))
+    }
+
     /// 144 §8: the root sessions bound to `notebook`, newest first (the "Chats · 3 ▾" menu).
     pub async fn notebook_chats(&self, notebook: &str) -> anyhow::Result<Vec<SessionSummary>> {
         let rows: Vec<SessionRow> = sqlx::query_as(concat!(
@@ -4019,6 +4135,7 @@ async fn repair_cost_owners(pool: &SqlitePool) -> anyhow::Result<accounting::Own
 
 /// Column layout of every attached table (`PRAGMA table_info`), in
 /// [`capture::ATTACHED`] order; the session column must exist.
+#[cfg(not(target_os = "ios"))]
 async fn table_meta(pool: &SqlitePool) -> anyhow::Result<Vec<capture::TableMeta>> {
     let mut out = Vec::with_capacity(capture::ATTACHED.len());
     for (table, session_col) in capture::ATTACHED {
@@ -4044,6 +4161,7 @@ async fn table_meta(pool: &SqlitePool) -> anyhow::Result<Vec<capture::TableMeta>
 
 /// The HLC origin of this engine's log rows: its id, or `local` before it
 /// has one (such rows never ship; [`replica::Hlc::parse`] needs a non-empty origin).
+#[cfg(not(target_os = "ios"))]
 fn hlc_origin(me: &str) -> replica::PeerId {
     replica::PeerId(if me.is_empty() {
         "local".to_owned()
@@ -4686,8 +4804,8 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            78,
-            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity,endless_tail_mode,endless_tail_low,endless_tail_high,always_ask
+            80,
+            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity,endless_tail_mode,endless_tail_low,endless_tail_high,always_ask,mesh_id
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved,peer
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
 todo_snapshots: session_id,at_seq,k,source,items
@@ -4726,6 +4844,66 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
             "a replicated session table changed its columns: bump SESSIONS_WIRE_SCHEMA to the \
              migration that did it and take the snapshot again"
         );
+    }
+
+    #[tokio::test]
+    async fn session_mesh_id_tagging_and_wal_checkpoint() {
+        let (store, root_a, _dir) = fresh().await;
+        let root_b = SessionId::new();
+        store
+            .create_session(root_b, "m", None, None, None)
+            .await
+            .unwrap();
+        let child_a = SessionId::new();
+        store
+            .create_session(child_a, "m", Some(root_a), Some("worker"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(store.effective_mesh_id(root_a).await.unwrap(), None);
+        assert_eq!(
+            store.set_mesh_id(child_a, Some("mesh-alpha")).await.unwrap(),
+            root_a
+        );
+        assert_eq!(
+            store.effective_mesh_id(root_a).await.unwrap().as_deref(),
+            Some("mesh-alpha")
+        );
+        assert_eq!(
+            store.effective_mesh_id(child_a).await.unwrap().as_deref(),
+            Some("mesh-alpha")
+        );
+        assert_eq!(
+            store.session(child_a).await.unwrap().unwrap().mesh_id.as_deref(),
+            Some("mesh-alpha")
+        );
+
+        let alpha = store
+            .list_sessions_for_mesh(Some("mesh-alpha"))
+            .await
+            .unwrap();
+        let alpha_ids: Vec<SessionId> = alpha.iter().map(|s| s.id).collect();
+        assert!(alpha_ids.contains(&root_a));
+        assert!(alpha_ids.contains(&child_a));
+        assert!(!alpha_ids.contains(&root_b));
+
+        let all = store.list_sessions_for_mesh(None).await.unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Clearing mesh_id removes it from filtered results.
+        store.set_mesh_id(root_a, None).await.unwrap();
+        assert!(
+            store
+                .list_sessions_for_mesh(Some("mesh-alpha"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // WAL checkpoint succeeds on durable stores and is a no-op on private stores.
+        store.wal_checkpoint_truncate().await.unwrap();
+        let mem = Store::open_memory().await.unwrap();
+        mem.wal_checkpoint_truncate().await.unwrap();
     }
 
     /// 199: `0067_contact_files` applies, is node-local (not attached to the session

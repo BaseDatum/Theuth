@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+#[cfg(not(target_os = "ios"))]
 use decision::classify::{BoolItem, BoolVerdict};
 use kameo::actor::ActorRef;
 use schemars::JsonSchema;
@@ -14,12 +15,14 @@ use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::KnowledgeConfig;
 use crate::store::Knowledge;
-use crate::types::{AgentScope, Concept, Meta, Put, Source, Visibility};
+#[cfg(not(target_os = "ios"))]
+use crate::types::AgentScope;
+use crate::types::{Concept, Meta, Put, Source, Visibility};
 
 /// Name of [`GetTool`]; the loop counts its calls for harvest cadence (10 §5.1).
 pub const GET: &str = "knowledge_get";
 
-/// Name of [`PeekTool`]; the loop collects its relevant ids for the compaction head (212 §4.3).
+/// Name of `peek_memory`; the loop collects its relevant ids for the compaction head (212 §4.3).
 pub const PEEK: &str = "peek_memory";
 
 macro_rules! prompt_base {
@@ -97,10 +100,15 @@ pub async fn register(
     cfg: &KnowledgeConfig,
     peek: Arc<PeekSettings>,
 ) {
+    let prompt = if cfg!(target_os = "ios") {
+        PROMPT_WITHOUT_PEEK
+    } else {
+        PROMPT
+    };
     let _ = reg
         .ask(RegisterPrompt {
             plugin: "knowledge",
-            text: PROMPT.to_owned(),
+            text: prompt.to_owned(),
         })
         .await;
     let k = &knowledge;
@@ -130,15 +138,20 @@ pub async fn register(
         .ask(RegisterTool(Arc::new(RetitleTool(k.clone()))))
         .await;
     // 212: check memories against a question with the local decision model. Always
-    // registered; a session started with `knowledge.peek` off leaves it out of its list.
-    let peek = PeekTool {
-        knowledge: k.clone(),
-        judge: Arc::new(DecisionJudge {
-            checkpoint: cfg.peek_checkpoint.clone(),
-        }),
-        settings: peek,
-    };
-    let _ = reg.ask(RegisterTool(Arc::new(peek))).await;
+    // registered on desktop; a session started with `knowledge.peek` off leaves it out of its list.
+    #[cfg(not(target_os = "ios"))]
+    {
+        let peek = PeekTool {
+            knowledge: k.clone(),
+            judge: Arc::new(DecisionJudge {
+                checkpoint: cfg.peek_checkpoint.clone(),
+            }),
+            settings: peek,
+        };
+        let _ = reg.ask(RegisterTool(Arc::new(peek))).await;
+    }
+    #[cfg(target_os = "ios")]
+    let _ = (cfg, peek);
 }
 
 /// Text for the transcript, the same data as a Python value for the runtime.
@@ -320,19 +333,26 @@ fn render_concept(c: Concept) -> String {
 }
 
 /// Max chars of a `peek_memory` question (212 §3).
+#[cfg(not(target_os = "ios"))]
 const PEEK_QUESTION_CHARS: usize = 500;
 /// Max distinct ids per `peek_memory` call.
+#[cfg(not(target_os = "ios"))]
 const PEEK_MAX_IDS: usize = 12;
 /// Bytes of a memory the judge reads (title, description, body).
+#[cfg(not(target_os = "ios"))]
 const PEEK_STATE_BYTES: usize = 4096;
 /// Question chars quoted in the receipt's headline.
+#[cfg(not(target_os = "ios"))]
 const PEEK_HEADLINE_CHARS: usize = 80;
 /// Decision family the judge runs under (an unconfigured `tool.<x>` behaves as `tool`).
+#[cfg(not(target_os = "ios"))]
 const PEEK_FAMILY: &str = "tool.memory";
 /// Per-chunk budget of the judge.
+#[cfg(not(target_os = "ios"))]
 const PEEK_BUDGET_MS: u64 = 3000;
 
 /// Judges memories yes/no against a question (212 §3); the test seam of [`PeekTool`].
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 pub trait MemoryJudge: Send + Sync + 'static {
     /// One verdict per item, in input order.
@@ -340,11 +360,13 @@ pub trait MemoryJudge: Send + Sync + 'static {
 }
 
 /// The real judge: the local decision model's `Bool` question.
+#[cfg(not(target_os = "ios"))]
 pub struct DecisionJudge {
     /// Decision checkpoint (`knowledge.peek_checkpoint`).
     pub checkpoint: String,
 }
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl MemoryJudge for DecisionJudge {
     async fn judge(&self, items: Vec<BoolItem>) -> anyhow::Result<Vec<BoolVerdict>> {
@@ -354,6 +376,7 @@ impl MemoryJudge for DecisionJudge {
 }
 
 /// Arguments for [`PeekTool`].
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct PeekArgs {
     /// What you want to know (1–500 characters).
@@ -364,6 +387,7 @@ pub struct PeekArgs {
 
 /// `peek_memory` (212): the local decision model filters memories against a
 /// question; only the relevant ones come back in full.
+#[cfg(not(target_os = "ios"))]
 pub struct PeekTool {
     /// The bundle.
     pub knowledge: Arc<Knowledge>,
@@ -374,6 +398,7 @@ pub struct PeekTool {
 }
 
 /// One requested id's outcome.
+#[cfg(not(target_os = "ios"))]
 enum Peeked {
     /// Absent, or not visible to this session (same text: never reveal existence).
     Missing,
@@ -383,12 +408,14 @@ enum Peeked {
     Judged(Box<Concept>, Verdict),
 }
 
+#[cfg(not(target_os = "ios"))]
 enum Verdict {
     Relevant(f32),
     NotRelevant(Option<f32>),
     Undecided(String),
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Verdict {
     fn of(v: &BoolVerdict, threshold: f32) -> Self {
         if let Some(e) = &v.error {
@@ -404,6 +431,7 @@ impl Verdict {
 
 /// The judge's view of a memory: title, description (unless it repeats the title) and body
 /// (no frontmatter), cut to [`PEEK_STATE_BYTES`].
+#[cfg(not(target_os = "ios"))]
 fn peek_state(c: &Concept) -> String {
     let body = okf::Document::parse(&c.text).map_or_else(|_| c.text.clone(), |d| d.body);
     let (title, description) = (c.meta.title.trim(), c.meta.description.trim());
@@ -416,6 +444,7 @@ fn peek_state(c: &Concept) -> String {
 }
 
 /// Prefix of the judge errors that mean the model cannot answer at all (`decision::classify`).
+#[cfg(not(target_os = "ios"))]
 const PEEK_UNAVAILABLE: &str = "decision model unavailable";
 
 /// The ids a `peek_memory` receipt returned in full (its `` ### `id` — relevant `` lines),
@@ -428,6 +457,7 @@ pub fn peek_relevant_ids(receipt: &str) -> impl Iterator<Item = &str> {
     })
 }
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for PeekTool {
     const NAME: &'static str = PEEK;
@@ -1573,11 +1603,13 @@ mod tests {
     }
 
     /// Answers in order, or fails the whole call when `answers` is `None`.
+    #[cfg(not(target_os = "ios"))]
     struct FakeJudge {
         answers: Option<Vec<BoolVerdict>>,
         seen: parking_lot::Mutex<Vec<BoolItem>>,
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[async_trait::async_trait]
     impl MemoryJudge for FakeJudge {
         async fn judge(&self, items: Vec<BoolItem>) -> anyhow::Result<Vec<BoolVerdict>> {
@@ -1590,6 +1622,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     fn said(choice: bool, p: f32) -> BoolVerdict {
         BoolVerdict {
             p_true: Some(p),
@@ -1599,6 +1632,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     fn peek_tool(
         k: &Arc<Knowledge>,
         answers: Option<Vec<BoolVerdict>>,
@@ -1615,6 +1649,7 @@ mod tests {
         (tool, judge)
     }
 
+    #[cfg(not(target_os = "ios"))]
     fn peek_args(question: &str, ids: &[&str]) -> PeekArgs {
         PeekArgs {
             question: question.into(),
@@ -1622,6 +1657,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn peek_bundle(tag: &str) -> (tempfile::TempDir, Arc<Knowledge>) {
         let scratch = crate::test_dir(tag);
         let dir = scratch.path().to_path_buf();
@@ -1644,6 +1680,7 @@ mod tests {
         (scratch, k)
     }
 
+    #[cfg(not(target_os = "ios"))]
     async fn opened(k: &Knowledge, ids: &[&str]) -> Vec<u64> {
         let ids: Vec<String> = ids.iter().map(|&i| i.to_owned()).collect();
         let stats = k.stats(&ids).await.unwrap();
@@ -1653,6 +1690,7 @@ mod tests {
     /// 212 §5.1: relevant rows in full (as `knowledge_get` renders them, in
     /// request order, each an open), the rest one line each; the loop's
     /// parser finds exactly the relevant ids.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn peek_returns_relevant_in_full_and_the_rest_as_lines() {
         let (_scratch, k) = peek_bundle("kpeek").await;
@@ -1704,6 +1742,7 @@ mod tests {
     }
 
     /// 212 §5.2: no model → every row undecided, nothing pulled in or opened.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn peek_fails_closed_when_the_judge_is_unavailable() {
         let (_scratch, k) = peek_bundle("kpeek").await;
@@ -1730,6 +1769,7 @@ mod tests {
         assert_eq!(opened(&k, &["facts/a", "facts/b"]).await, [0, 0]);
     }
 
+    #[cfg(not(target_os = "ios"))]
     fn failed(error: &str) -> BoolVerdict {
         BoolVerdict {
             p_true: None,
@@ -1741,6 +1781,7 @@ mod tests {
 
     /// The closing line says why nothing answered: unavailable (the call failed, or every
     /// row says so) vs. not in time (timeouts; a retry can help).
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn peek_tells_unavailable_from_timed_out() {
         let (_scratch, k) = peek_bundle("kpeek").await;
@@ -1770,6 +1811,7 @@ mod tests {
     /// The judge's state: the description line only when it says more than the title; a
     /// multi-byte body is cut at 4096 bytes on a char boundary. The headline puts a
     /// multi-line question on one line.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn peek_state_and_headline() {
         let (_scratch, k) = peek_bundle("kpeek").await;
@@ -1815,6 +1857,7 @@ mod tests {
     }
 
     /// 212 §5.3: argument limits; dedupe keeps request order.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn peek_validates_question_and_ids() {
         let (_scratch, k) = peek_bundle("kpeek").await;
@@ -1850,8 +1893,10 @@ mod tests {
     }
 
     /// Puts its sessions in fixed scopes; unknown sessions are the user's.
+    #[cfg(not(target_os = "ios"))]
     struct Scopes(Vec<(runtime::SessionId, crate::AgentScope)>);
 
+    #[cfg(not(target_os = "ios"))]
     #[async_trait::async_trait]
     impl crate::Scoper for Scopes {
         fn scope_for(&self, s: runtime::SessionId) -> Option<crate::AgentScope> {
@@ -1870,6 +1915,7 @@ mod tests {
 
     /// 212 §5.4: another owner's private concept reads as `missing`, exactly
     /// like an absent one; the judge never sees it.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn peek_hides_what_the_session_may_not_see() {
         let (_scratch, k) = peek_bundle("kpeek").await;
@@ -1922,6 +1968,7 @@ mod tests {
 
     /// 212 §5.5–6: an `@commit` id is refused per row; `choice=true` under the
     /// threshold is not relevant.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn peek_refuses_revisions_and_applies_the_threshold() {
         let (_scratch, k) = peek_bundle("kpeek").await;
@@ -1946,6 +1993,7 @@ mod tests {
 
     /// 212 §15: Settings' switch refuses the next call without asking the judge, and a
     /// threshold change applies to the next call, both on the registered tool (no restart).
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn peek_follows_the_live_settings() {
         let (_scratch, k) = peek_bundle("kpeeklive").await;

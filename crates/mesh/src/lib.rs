@@ -16,9 +16,20 @@
 
 pub mod config;
 pub mod identity;
+#[cfg(target_os = "ios")]
+mod ios_impl;
+#[cfg(not(target_os = "ios"))]
 mod keys;
 pub mod lease;
+#[cfg(not(target_os = "ios"))]
 pub mod nearby;
+#[cfg(target_os = "ios")]
+#[path = "nearby_ios.rs"]
+pub mod nearby;
+#[cfg(not(target_os = "ios"))]
+pub mod net;
+#[cfg(target_os = "ios")]
+#[path = "net_ios.rs"]
 pub mod net;
 pub mod pairing;
 /// Provider-owned helpers used by RPC method owners.
@@ -30,20 +41,32 @@ pub mod tools;
 pub mod types;
 
 use std::collections::HashMap;
+#[cfg(not(target_os = "ios"))]
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(not(target_os = "ios"))]
+use std::sync::Mutex;
 use std::time::Duration;
 
+#[cfg(not(target_os = "ios"))]
 use futures::StreamExt as _;
+#[cfg(not(target_os = "ios"))]
 use iroh_gossip::TopicId;
+#[cfg(not(target_os = "ios"))]
 use iroh_gossip::api::Event as GossipEvent;
-use kameo::actor::{ActorRef, Spawn};
+use kameo::actor::ActorRef;
+#[cfg(not(target_os = "ios"))]
+use kameo::actor::Spawn;
+#[cfg(not(target_os = "ios"))]
 use kameo::message::{Context, Message};
+#[cfg(not(target_os = "ios"))]
 use kameo::reply::DelegatedReply;
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_os = "ios"))]
 use sha2::Digest as _;
 use tokio::sync::broadcast;
+#[cfg(not(target_os = "ios"))]
 use tokio_util::sync::CancellationToken;
 
 pub use config::MeshConfig;
@@ -54,7 +77,9 @@ pub use types::{
     PeerPath, QuarantinedPeer, RelayState, UnpairPreview,
 };
 
+#[cfg(not(target_os = "ios"))]
 use crate::identity::now_ms;
+#[cfg(not(target_os = "ios"))]
 use crate::lease::Candidate;
 use crate::net::Net;
 
@@ -65,9 +90,11 @@ pub const MESH_ACTOR: &str = "mesh";
 pub const DB: &str = "mesh.sqlite";
 
 /// How long the start-up rows wait for the replica plugin before they are written local-only.
+#[cfg(not(target_os = "ios"))]
 const ATTACH_WAIT: Duration = Duration::from_secs(10);
 
 /// 182 S9: how long past `lapse` a just-started engine follows an elder holder.
+#[cfg(not(target_os = "ios"))]
 const RESTART_HOLD_MS: u64 = 30_000;
 
 /// Directory under `data_dir` holding the endpoint identity (67 §4.1).
@@ -84,6 +111,7 @@ pub const DOCS_STALE_MS: u64 = 7 * 86_400_000;
 /// 184 §8.1: the floor over this engine's paired set: every peer heard (or, never heard, first
 /// listed) less than [`DOCS_STALE_MS`] ago advertises `docs_schema >= DOCS_SCHEMA`. A counted peer
 /// never heard counts as 0 (off until heard); one with no row at all fails.
+#[cfg(any(not(target_os = "ios"), test))]
 pub(crate) fn docs_floor(peers: &[EngineId], seen: &[store::DocsSeen], now: u64) -> bool {
     peers
         .iter()
@@ -99,6 +127,7 @@ pub(crate) fn docs_floor(peers: &[EngineId], seen: &[store::DocsSeen], now: u64)
 /// 184 §8.1, fail-closed: homes are on only when this engine's floor agrees and the holder says
 /// on — this engine itself when it holds the lease, else the holder's frame on its own
 /// authenticated control connection (`None`: no holder, no connection or no frame yet).
+#[cfg(any(not(target_os = "ios"), test))]
 pub(crate) fn docs_homes_on(
     floor_ok: bool,
     holder_is_me: bool,
@@ -263,44 +292,89 @@ pub fn stored_self_id(data_dir: &std::path::Path) -> Option<String> {
 }
 
 /// The bound endpoint, for [`is_paired`]; set once at plugin start.
+#[cfg(not(target_os = "ios"))]
 static NET: std::sync::OnceLock<Arc<Net>> = std::sync::OnceLock::new();
 
 /// 183 §7.2: the bound endpoint, for the a2a plugin's `theuth/a2a/1` reach; `None` before the
 /// mesh plugin bound it (or without a mesh).
 pub fn net() -> Option<Arc<Net>> {
-    NET.get().cloned()
+    #[cfg(not(target_os = "ios"))]
+    {
+        NET.get().cloned()
+    }
+    #[cfg(target_os = "ios")]
+    {
+        None
+    }
 }
 
 /// 182 S3/S8: `id` (a mesh engine id) is a paired peer of this engine;
 /// `None` (unknown) before the mesh plugin bound its endpoint.
 pub fn is_paired(id: &str) -> Option<bool> {
-    NET.get()
-        .map(|n| n.paired_ids().iter().any(|p| p.to_string() == id))
+    #[cfg(not(target_os = "ios"))]
+    {
+        NET.get()
+            .map(|n| n.paired_ids().iter().any(|p| p.to_string() == id))
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = id;
+        Some(false)
+    }
 }
 
 /// XTICK: this engine has a paired peer; `None` (unknown) before the mesh
 /// plugin bound its endpoint.
 pub fn has_peers() -> Option<bool> {
-    NET.get().map(|n| !n.paired_ids().is_empty())
+    #[cfg(not(target_os = "ios"))]
+    {
+        NET.get().map(|n| !n.paired_ids().is_empty())
+    }
+    #[cfg(target_os = "ios")]
+    {
+        Some(false)
+    }
 }
 
 /// 183 R1 (S8): the mesh engines connected right now (ids as text); `None`
 /// before the mesh plugin bound its endpoint (or without a mesh).
 pub fn connected_ids() -> Option<Vec<String>> {
-    NET.get()
-        .map(|n| n.connected().into_iter().map(|(id, _)| id.0).collect())
+    #[cfg(not(target_os = "ios"))]
+    {
+        NET.get()
+            .map(|n| n.connected().into_iter().map(|(id, _)| id.0).collect())
+    }
+    #[cfg(target_os = "ios")]
+    {
+        Some(Vec::new())
+    }
 }
 
 /// 183 §6.1: how many machines this engine is paired with; `None` before the mesh plugin bound
 /// its endpoint (or without a mesh). The agent's absent-`agent.communication` default reads it.
 pub fn paired_count() -> Option<usize> {
-    NET.get().map(|n| n.paired_ids().len())
+    #[cfg(not(target_os = "ios"))]
+    {
+        NET.get().map(|n| n.paired_ids().len())
+    }
+    #[cfg(target_os = "ios")]
+    {
+        Some(0)
+    }
 }
 
 /// 183 §6.3: when this engine last heard from `id` (ms since epoch), from the connection
 /// bookkeeping peer events keep, without asking the actor; `None` when never seen this run.
 pub fn last_seen_ms(id: &str) -> Option<u64> {
-    NET.get()?.last_seen(id)
+    #[cfg(not(target_os = "ios"))]
+    {
+        NET.get()?.last_seen(id)
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = id;
+        None
+    }
 }
 
 /// 183 §6.2 (W-14): `mesh.messaging_off`, kept current by the plugin and [`SetMessaging`].
@@ -322,6 +396,7 @@ pub fn messaging_off(id: &str) -> bool {
 
 /// `data_dir`'s mesh store opened read-only (before the mesh plugin starts);
 /// `None` without one.
+#[cfg(not(target_os = "ios"))]
 async fn stored_pool(data_dir: &std::path::Path) -> Option<sqlx::SqlitePool> {
     let path = data_dir.join(DB);
     if !path.exists() {
@@ -340,14 +415,22 @@ async fn stored_pool(data_dir: &std::path::Path) -> Option<sqlx::SqlitePool> {
 /// 182 M2a/S11: `data_dir`'s mesh store lists a paired peer — readable before
 /// the mesh plugin starts (read-only; `false` without a store).
 pub async fn has_stored_peers(data_dir: &std::path::Path) -> bool {
-    let Some(pool) = stored_pool(data_dir).await else {
-        return false;
-    };
-    let n: Result<(i64,), _> = sqlx::query_as("SELECT COUNT(*) FROM peers")
-        .fetch_one(&pool)
-        .await;
-    pool.close().await;
-    n.is_ok_and(|(n,)| n > 0)
+    #[cfg(not(target_os = "ios"))]
+    {
+        let Some(pool) = stored_pool(data_dir).await else {
+            return false;
+        };
+        let n: Result<(i64,), _> = sqlx::query_as("SELECT COUNT(*) FROM peers")
+            .fetch_one(&pool)
+            .await;
+        pool.close().await;
+        n.is_ok_and(|(n,)| n > 0)
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = data_dir;
+        false
+    }
 }
 
 /// XTICK: [`has_peers`] before the mesh plugin starts — the stored paired set
@@ -355,28 +438,36 @@ pub async fn has_stored_peers(data_dir: &std::path::Path) -> bool {
 /// tombstoned, not quarantined. A store from before 183 (no `peer_origin`
 /// yet) has no quarantine to leave out.
 pub async fn has_stored_paired(data_dir: &std::path::Path) -> bool {
-    let Some(pool) = stored_pool(data_dir).await else {
-        return false;
-    };
-    let me = stored_self_id(data_dir).unwrap_or_default();
-    let mut n: Result<(i64,), _> = sqlx::query_as(
-        "SELECT COUNT(*) FROM peers p WHERE p.id != ?1 AND p.removed_ms IS NULL \
-         AND NOT EXISTS (SELECT 1 FROM peer_origin o \
-             WHERE o.id = p.id AND o.quarantined AND NOT o.confirmed)",
-    )
-    .bind(&me)
-    .fetch_one(&pool)
-    .await;
-    if n.is_err() {
-        n = sqlx::query_as(
-            "SELECT COUNT(*) FROM peers p WHERE p.id != ?1 AND p.removed_ms IS NULL",
+    #[cfg(not(target_os = "ios"))]
+    {
+        let Some(pool) = stored_pool(data_dir).await else {
+            return false;
+        };
+        let me = stored_self_id(data_dir).unwrap_or_default();
+        let mut n: Result<(i64,), _> = sqlx::query_as(
+            "SELECT COUNT(*) FROM peers p WHERE p.id != ?1 AND p.removed_ms IS NULL \
+             AND NOT EXISTS (SELECT 1 FROM peer_origin o \
+                 WHERE o.id = p.id AND o.quarantined AND NOT o.confirmed)",
         )
         .bind(&me)
         .fetch_one(&pool)
         .await;
+        if n.is_err() {
+            n = sqlx::query_as(
+                "SELECT COUNT(*) FROM peers p WHERE p.id != ?1 AND p.removed_ms IS NULL",
+            )
+            .bind(&me)
+            .fetch_one(&pool)
+            .await;
+        }
+        pool.close().await;
+        n.is_ok_and(|(n,)| n > 0)
     }
-    pool.close().await;
-    n.is_ok_and(|(n,)| n > 0)
+    #[cfg(target_os = "ios")]
+    {
+        let _ = data_dir;
+        false
+    }
 }
 
 /// `ask` → `Result<MeshStatus, String>`: this engine, its peers, the lease.
@@ -506,6 +597,7 @@ pub struct RemovedPeers;
 /// What rides on the gossip topic (67 §4.3, §4.6). A heartbeat only confirms
 /// liveness: everything the election needs is the replicated `engine_stats`
 /// row, and `stats_hlc` names the version of that row the sender has written.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum GossipMsg {
     Heartbeat {
@@ -519,6 +611,7 @@ enum GossipMsg {
 }
 
 /// What this engine last heard from a peer.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug)]
 struct Seen {
     last_hb_ms: u64,
@@ -527,6 +620,7 @@ struct Seen {
     is_hub: bool,
 }
 
+#[cfg(not(target_os = "ios"))]
 struct Live {
     lease: LeaseState,
     seen: HashMap<EngineId, Seen>,
@@ -538,6 +632,7 @@ struct Live {
 }
 
 /// Shared by the actor and its background loops.
+#[cfg(not(target_os = "ios"))]
 struct Ctx {
     rt: Runtime,
     cfg: Mutex<MeshConfig>,
@@ -550,6 +645,7 @@ struct Ctx {
     live: Mutex<Live>,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Ctx {
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|p| p.into_inner())
@@ -949,11 +1045,20 @@ impl Ctx {
 }
 
 /// The [`MESH_ACTOR`] actor.
+#[cfg(not(target_os = "ios"))]
 #[derive(kameo::Actor)]
 pub struct Mesh {
     ctx: Arc<Ctx>,
 }
 
+/// The [`MESH_ACTOR`] actor (standalone stub on iOS where mesh networking is disabled).
+#[cfg(target_os = "ios")]
+#[derive(kameo::Actor)]
+pub struct Mesh {
+    _private: (),
+}
+
+#[cfg(not(target_os = "ios"))]
 impl Message<Status> for Mesh {
     type Reply = Result<MeshStatus, String>;
 
@@ -962,6 +1067,7 @@ impl Message<Status> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<AddPeer> for Mesh {
     type Reply = DelegatedReply<Result<Peer, String>>;
 
@@ -982,6 +1088,7 @@ impl Message<AddPeer> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<RemovePeer> for Mesh {
     type Reply = Result<(), String>;
 
@@ -990,6 +1097,7 @@ impl Message<RemovePeer> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<Unpair> for Mesh {
     type Reply = Result<(), String>;
 
@@ -998,6 +1106,7 @@ impl Message<Unpair> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Mesh {
     /// [`RemovePeer`] / [`Unpair`]: tombstone, push, recompute, then the rotation.
     async fn unpair(&mut self, id: &EngineId, reset_devices: bool) -> Result<(), String> {
@@ -1017,6 +1126,7 @@ impl Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<ConfirmPeer> for Mesh {
     type Reply = Result<(), String>;
 
@@ -1045,6 +1155,7 @@ impl Message<ConfirmPeer> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<SetHubPref> for Mesh {
     type Reply = Result<(), String>;
 
@@ -1065,6 +1176,7 @@ impl Message<SetHubPref> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<PairingString> for Mesh {
     type Reply = Result<String, String>;
 
@@ -1080,6 +1192,7 @@ impl Message<PairingString> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<ListStats> for Mesh {
     type Reply = Result<Vec<EngineStats>, String>;
 
@@ -1088,6 +1201,7 @@ impl Message<ListStats> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<Subscribe> for Mesh {
     type Reply = broadcast::Receiver<MeshEvent>;
 
@@ -1096,6 +1210,7 @@ impl Message<Subscribe> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<Nearby> for Mesh {
     type Reply = Result<Vec<NearbyEngine>, String>;
 
@@ -1104,6 +1219,7 @@ impl Message<Nearby> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<NearbyWatch> for Mesh {
     type Reply = Result<(), String>;
 
@@ -1112,6 +1228,7 @@ impl Message<NearbyWatch> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<PairNearby> for Mesh {
     type Reply = DelegatedReply<Result<PairCeremony, String>>;
 
@@ -1125,6 +1242,7 @@ impl Message<PairNearby> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<PairAnswer> for Mesh {
     type Reply = Result<(), String>;
 
@@ -1133,6 +1251,7 @@ impl Message<PairAnswer> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<SetMessaging> for Mesh {
     type Reply = Result<(), String>;
 
@@ -1150,6 +1269,7 @@ impl Message<SetMessaging> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<SetNearby> for Mesh {
     type Reply = Result<(), String>;
 
@@ -1161,6 +1281,7 @@ impl Message<SetNearby> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<Rename> for Mesh {
     type Reply = Result<(), String>;
 
@@ -1184,6 +1305,7 @@ impl Message<Rename> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<PreviewUnpair> for Mesh {
     type Reply = Result<UnpairPreview, String>;
 
@@ -1198,6 +1320,7 @@ impl Message<PreviewUnpair> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<RotateVault> for Mesh {
     type Reply = Result<secrets::RotationState, String>;
 
@@ -1206,6 +1329,7 @@ impl Message<RotateVault> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<DocsGate> for Mesh {
     type Reply = DocsGateState;
 
@@ -1214,6 +1338,7 @@ impl Message<DocsGate> for Mesh {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<RemovedPeers> for Mesh {
     type Reply = Vec<EngineId>;
 
@@ -1237,6 +1362,7 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<MeshEvent>().await
 }
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl runtime::Plugin for MeshPlugin {
     fn name(&self) -> &'static str {
@@ -1594,6 +1720,7 @@ pub fn actor() -> Option<ActorRef<Mesh>> {
 }
 
 /// Hand this engine's id to the secrets actor ([`secrets::SetEngine`]) once it is registered.
+#[cfg(not(target_os = "ios"))]
 async fn tell_secrets_engine(rt: Runtime, id: EngineId) {
     if let Some(s) = rt
         .lookup_when::<secrets::SecretsActor>(secrets::SECRETS_ACTOR)
@@ -1609,6 +1736,7 @@ mod tests {
 
     /// XTICK: before the plugin starts, "peered" is the stored paired set —
     /// this engine's own row, a tombstone and a quarantined row are no peer.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn stored_paired_leaves_out_self_tombstones_and_quarantine() {
         let dir = tempfile::tempdir().unwrap();
@@ -1646,6 +1774,7 @@ mod tests {
 
     /// 79 §6.6 (was roster→secrets, now mesh→secrets): once the mesh has its id,
     /// the secrets actor stamps the rows it writes with it, not the hostname.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn secrets_learns_the_engine_id_from_mesh() {
         let dir = tempfile::tempdir().unwrap();

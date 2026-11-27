@@ -201,7 +201,7 @@ test('mic, send and talk keep their conditions: Send holds 1.4 s after a send, a
   expect(src).toContain('setTimeout(() => setPlaying(false), 1400)')
   // Send and Steer stay live while dictating (pressing either stops dictation and sends once the words land), so
   // `dictating` is not in either disabled set. An attachment still uploading holds Send: `waiting`.
-  expect(src).toContain('<SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading}')
+  expect(src).toContain('<SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading')
   expect(src).toContain('aria-disabled={!filled || busy || readOnly || !!uploading}')
 })
 

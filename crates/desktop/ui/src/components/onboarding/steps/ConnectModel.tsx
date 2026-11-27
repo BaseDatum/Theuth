@@ -8,8 +8,10 @@ import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { openExternal } from '@/lib/platform'
+import { isIos, openExternal } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { closeAuthBrowser, onAuthBrowserDismissed, openAuthBrowser } from '@/lib/tauri'
+import { LOCAL, useEngines } from '@/link/engines'
 import { useQuerySupport } from '@/rpc/capabilities'
 import type { LocalServer } from '@/rpc/bindings/method.agent.output'
 import { on } from '@/store/sessions'
@@ -27,6 +29,8 @@ const KEYS = [queryKeys.models, queryKeys.providers, queryKeys.logins] as const
 
 /** Step 2: a subscription sign-in, an API key or a local server; Continue once `list_models` offers something. */
 export function ConnectModel({ onConnected, onBack, onNext }: { onConnected(provider: string): void; onBack(): void; onNext(): void }) {
+  const api = useApi()
+  const active = useEngines((s) => s.active)
   const models = useModels()
   const list = models.data ?? []
   const ready = list.length > 0
@@ -45,16 +49,33 @@ export function ConnectModel({ onConnected, onBack, onNext }: { onConnected(prov
   const [login, setLogin] = useState<Login>({ pending: null, failed: null })
   const loginRef = useRef(login)
   loginRef.current = login
+  const apiRef = useRef(api)
+  apiRef.current = api
+  const activeRef = useRef(active)
+  activeRef.current = active
   useEffect(
     () =>
       on('agent.login@1', 'LoginFinished', (e) => {
         const { next, provider } = loginFinished(loginRef.current, e)
         if (next === loginRef.current) return
         setLogin(next)
+        if (isIos()) void closeAuthBrowser()
         if (provider) connected(provider)
       }),
     [connected],
   )
+  useEffect(() => {
+    if (!isIos()) return
+    const off = onAuthBrowserDismissed(() => {
+      const cur = loginRef.current.pending
+      if (!cur || activeRef.current !== LOCAL) return
+      setLogin({ pending: null, failed: null })
+      void apiRef.current.cancel_login(cur.ns).catch(() => undefined)
+    })
+    return () => {
+      void off.then((f) => f())
+    }
+  }, [])
   const ModeIcon = MODES.find((m) => m.id === mode)?.icon ?? Sparkles
   return (
     <StepFrame
@@ -137,6 +158,7 @@ export function ConnectModel({ onConnected, onBack, onNext }: { onConnected(prov
 /** The sign-in cards: `login(ns)` opens the browser on the engine's host; `LoginFinished` (in `ConnectModel`) ends the wait. */
 function Subscriptions({ login: state, setLogin }: { login: Login; setLogin(f: (s: Login) => Login): void }) {
   const api = useApi()
+  const active = useEngines((s) => s.active)
   const canList = useQuerySupport(['list_logins'])
   const canLogin = useQuerySupport(['login'])
   const logins = useQuery({ enabled: canList, queryKey: queryKeys.logins, queryFn: () => api.list_logins() })
@@ -158,6 +180,7 @@ function Subscriptions({ login: state, setLogin }: { login: Login; setLogin(f: (
         await cancelling.current
         const url = await api.login(s.ns)
         setLogin((l) => (l.pending?.ns === s.ns ? { ...l, pending: { ns: s.ns, url } } : l))
+        if (isIos() && active === LOCAL) void openAuthBrowser(url, false)
       } catch (e) {
         setLogin((l) => (l.pending?.ns === s.ns ? { pending: null, failed: { ns: s.ns, message: errorText(e) } } : l))
       }

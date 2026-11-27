@@ -28,7 +28,8 @@ import { useToolsSheet } from './tools-sheet'
 import { onboardingHere } from '@/lib/onboarding/detect'
 import { useOnboarding } from '@/lib/onboarding/state'
 import { isPopout } from '@/lib/popout'
-import { isIsland, isOverlay } from '@/lib/tauri'
+import { isIos } from '@/lib/platform'
+import { isIsland, isOverlay, openAuthBrowser } from '@/lib/tauri'
 import { type PluginCommand, commandsOf, pluginStore, setCommandCard } from '@/lib/plugins'
 
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
@@ -663,9 +664,11 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!arg) return settings(navigate, 'providers')
       // A provider name first, else an MCP server.
       const url = await api.login(arg).catch(() => api.mcp_login(arg))
+      const local = useEngines.getState().active === LOCAL
+      if (isIos() && local) void openAuthBrowser(url, false)
       // The engine opens the browser on its own host (here, or the node over link, 31 §9); here the URL is only shown.
       toast.message(
-        useEngines.getState().active === LOCAL ? "Browser didn't open?" : `Sign in from the node (${useConnection.getState().info?.name ?? 'node'})`,
+        local ? "Browser didn't open?" : `Sign in from the node (${useConnection.getState().info?.name ?? 'node'})`,
         { description: url },
       )
       return

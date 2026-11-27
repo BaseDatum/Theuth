@@ -9,11 +9,46 @@
 use std::collections::BTreeMap;
 
 use data_encoding::BASE32_NOPAD;
+#[cfg(not(target_os = "ios"))]
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::now_ms;
 use crate::types::{EngineId, HubPref};
+
+/// Endpoint identifier stub on iOS (where `iroh` is gated out).
+#[cfg(target_os = "ios")]
+pub type EndpointId = crate::identity::PublicKey;
+
+/// Transport address stub on iOS (where `iroh` is gated out).
+#[cfg(target_os = "ios")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum TransportAddr {
+    /// Direct IP socket address.
+    Ip(std::net::SocketAddr),
+    /// Relay URL string.
+    Relay(String),
+}
+
+#[cfg(target_os = "ios")]
+impl std::fmt::Display for TransportAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ip(addr) => write!(f, "{addr}"),
+            Self::Relay(url) => f.write_str(url),
+        }
+    }
+}
+
+/// Endpoint address stub on iOS (where `iroh` is gated out).
+#[cfg(target_os = "ios")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointAddr {
+    /// Target endpoint id.
+    pub id: EndpointId,
+    /// Known transport addresses.
+    pub addrs: std::collections::BTreeSet<TransportAddr>,
+}
 
 /// Pairing TTL (as 31).
 pub const TTL_MS: u64 = 300_000;
@@ -241,7 +276,10 @@ mod tests {
 
     #[test]
     fn pairing_string_round_trip() {
+        #[cfg(not(target_os = "ios"))]
         let secret = iroh::SecretKey::generate();
+        #[cfg(target_os = "ios")]
+        let secret = crate::identity::SecretKey::generate();
         let p = Payload {
             id: secret.public(),
             name: "Sky’s Mac".into(),

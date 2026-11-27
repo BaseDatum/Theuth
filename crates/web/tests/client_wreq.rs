@@ -4,6 +4,8 @@
 //! the SSRF guard refuses a blocked hostname before any connection, and the
 //! configured timeouts fire.
 
+#![cfg(not(target_os = "ios"))]
+
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;

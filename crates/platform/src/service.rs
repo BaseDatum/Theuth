@@ -46,6 +46,12 @@ impl ServiceUnit {
     /// and stderr go to `<data_dir>/logs/service.log` where the format
     /// allows. `Err` for [`ServiceUnit::None`].
     pub fn install(self, argv: &[String], data_dir: &Path) -> anyhow::Result<Installed> {
+        #[cfg(target_os = "ios")]
+        {
+            let _ = (self, argv, data_dir);
+            anyhow::bail!("no service support on iOS")
+        }
+        #[cfg(not(target_os = "ios"))]
         match self {
             Self::LaunchAgent => {
                 let uid = uid()?;
@@ -132,6 +138,12 @@ impl ServiceUnit {
 
     /// Stop and remove the unit; returns what was removed. Data is untouched.
     pub fn uninstall(self) -> anyhow::Result<String> {
+        #[cfg(target_os = "ios")]
+        {
+            let _ = self;
+            anyhow::bail!("no service support on iOS; nothing to remove")
+        }
+        #[cfg(not(target_os = "ios"))]
         match self {
             Self::LaunchAgent => {
                 let uid = uid()?;
@@ -164,16 +176,17 @@ impl ServiceUnit {
 }
 
 /// Whether a service manager started this process (39 §3.4: it may exit for
-/// a restart): parent pid 1 or systemd's `INVOCATION_ID` on Unix. Windows:
-/// never, until the Task Scheduler path is verified (58 step 4).
+/// a restart): parent pid 1 or systemd's `INVOCATION_ID` on desktop Unix.
+/// Windows and iOS: never (iOS apps always have launchd as ppid 1 and cannot
+/// exit for a daemon self-restart).
 pub fn managed() -> bool {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "ios")))]
     {
         // SAFETY: getppid takes no arguments and cannot fail.
         let init = unsafe { libc::getppid() } == 1;
         init || std::env::var_os("INVOCATION_ID").is_some()
     }
-    #[cfg(not(unix))]
+    #[cfg(not(all(unix, not(target_os = "ios"))))]
     {
         false
     }
@@ -247,6 +260,7 @@ pub fn systemd_unit(argv: &[String]) -> String {
 }
 
 /// One `schtasks /tr` word: double-quoted when it has a space or quote.
+#[cfg(any(not(target_os = "ios"), test))]
 fn quote_win(a: &str) -> String {
     if a.contains([' ', '"']) {
         format!("\"{}\"", a.replace('"', "\\\""))
@@ -255,6 +269,7 @@ fn quote_win(a: &str) -> String {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 fn plist_path() -> anyhow::Result<PathBuf> {
     Ok(dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("no home dir"))?
@@ -262,6 +277,7 @@ fn plist_path() -> anyhow::Result<PathBuf> {
         .join(format!("{UNIT}.plist")))
 }
 
+#[cfg(not(target_os = "ios"))]
 fn systemd_path() -> anyhow::Result<PathBuf> {
     Ok(dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("no config dir"))?
@@ -270,12 +286,14 @@ fn systemd_path() -> anyhow::Result<PathBuf> {
 }
 
 /// The user's uid for `launchctl gui/<uid>`, from `id -u`.
+#[cfg(not(target_os = "ios"))]
 fn uid() -> anyhow::Result<u32> {
     let out = std::process::Command::new("id").arg("-u").output()?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().parse()?)
 }
 
 /// Run to completion; `true` on exit 0. Output is the user's to read.
+#[cfg(not(target_os = "ios"))]
 fn run(cmd: &str, args: &[&str]) -> bool {
     std::process::Command::new(cmd)
         .args(args)
@@ -284,6 +302,7 @@ fn run(cmd: &str, args: &[&str]) -> bool {
 }
 
 /// Delete a file, treating "already gone" as done.
+#[cfg(not(target_os = "ios"))]
 fn remove(p: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(p) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),

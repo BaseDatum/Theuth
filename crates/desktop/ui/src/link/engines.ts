@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
-import { container, isDesktop } from '@/lib/platform'
+import { container, isDesktop, isIos, isIpad } from '@/lib/platform'
 import type { LinkState } from '@/lib/link-status'
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import { idbGet, idbPut } from './idb'
@@ -34,11 +34,20 @@ export type MeshMembers = { online: number; total: number }
 /** `refused`: the engine answered the handshake with `CLOSE refused` — it no longer knows this device; pair again. */
 export type Presence = 'online' | 'offline' | 'connecting' | 'refused'
 
-/** The desktop's own daemon in the switcher. */
+/** This device's own local engine in the switcher. */
 export const LOCAL = 'local'
-/** Its label by shell ("This Mac" / "This PC" / "This computer"); `Info.name` replaces it once connected. */
-export const LOCAL_NAME = container() === 'macos' ? 'This Mac' : container() === 'windows' ? 'This PC' : 'This computer'
-/** The local daemon as an `Engine` row, so its nodes nest under it. */
+/** Its label by shell ("This iPad" / "This iPhone" / "This Mac" / "This PC" / "This computer"); `Info.name` replaces it once connected. */
+export const LOCAL_NAME =
+  container() === 'ios'
+    ? isIpad()
+      ? 'This iPad'
+      : 'This iPhone'
+    : container() === 'macos'
+      ? 'This Mac'
+      : container() === 'windows'
+        ? 'This PC'
+        : 'This computer'
+/** The local engine as an `Engine` row, so its nodes nest under it. */
 const LOCAL_ROW: Engine = { id: LOCAL, name: LOCAL_NAME, relayHost: '', secure: false, pairedAt: 0, lastSeen: 0, order: -1, kind: 'engine' }
 
 /** The on-disk record in IndexedDB store `harnesses`, key `state`: the field keeps its pre-rename name so existing installs hydrate. */
@@ -155,9 +164,9 @@ export function useEngineTree(): EngineTreeRow[] {
   return useMemo(() => engineTree(hasLocal() ? [LOCAL_ROW, ...hs] : hs), [hs])
 }
 
-/** Whether this container has a daemon of its own: a desktop shell (macOS, Linux, Windows), or a dev browser pointed at one. */
+/** Whether this container has a local engine of its own: desktop shell, iOS shell, or a dev browser pointed at one. */
 export const hasLocal = (): boolean =>
-  isDesktop() || (typeof import.meta.env.VITE_THEUTH_URL === 'string' && typeof import.meta.env.VITE_THEUTH_TOKEN === 'string')
+  isDesktop() || isIos() || (typeof import.meta.env.VITE_THEUTH_URL === 'string' && typeof import.meta.env.VITE_THEUTH_TOKEN === 'string')
 
 /** Nothing to connect to: no local daemon and no paired engine — show the `/link` onboarding. */
 export const useNeedsPairing = (): boolean => useEngines((s) => s.hydrated && s.engines.length === 0) && !hasLocal()

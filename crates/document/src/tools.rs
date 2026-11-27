@@ -3,9 +3,12 @@
 //! `ReadOnly`; the writers are `Mutating` (decision 15): each is one
 //! helper `edit` → one Y transaction → one update stamped `Principal::Agent`.
 
-use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "ios"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(not(target_os = "ios"))]
 use codeindex::{CODEINDEX_ACTOR, CodeindexActor, Locate, LocateAnchor, LocateStatus, Located};
 use kameo::actor::ActorRef;
 use schemars::JsonSchema;
@@ -13,8 +16,10 @@ use serde::{Deserialize, Serialize};
 use tools::registry::ToolRegistry;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
+#[cfg(not(target_os = "ios"))]
+use crate::actor::Markdown;
 use crate::actor::{
-    CreateBoard, CreateNote, DocumentActor, Edit, EditOutcome, Ensure, Lookup, Markdown, Outline,
+    CreateBoard, CreateNote, DocumentActor, Edit, EditOutcome, Ensure, Lookup, Outline,
 };
 use crate::helper::{Edit as BlockEdit, EditError};
 use crate::meta::{Binding, DocId, Principal};
@@ -96,10 +101,14 @@ pub async fn register(
     actor: ActorRef<DocumentActor>,
     data_dir: PathBuf,
 ) {
+    #[cfg(not(target_os = "ios"))]
+    let text = [PROMPT, "\n\n", BOARDS_PROMPT, "\n\n", WHITEBOARDS_PROMPT].concat();
+    #[cfg(target_os = "ios")]
+    let text = [PROMPT, "\n\n", WHITEBOARDS_PROMPT].concat();
     let _ = reg
         .ask(RegisterPrompt {
             plugin: "document",
-            text: [PROMPT, "\n\n", BOARDS_PROMPT, "\n\n", WHITEBOARDS_PROMPT].concat(),
+            text,
         })
         .await;
     let d = Docs::new(actor, data_dir);
@@ -273,6 +282,7 @@ impl Docs {
                 if let Some(refused) = self.check_cells(Some(&id), markdown, &replacing).await {
                     return Ok(refused);
                 }
+                #[cfg(not(target_os = "ios"))]
                 if let Some(refused) = self.check_excerpts(&id, markdown).await {
                     return Ok(refused);
                 }
@@ -344,6 +354,7 @@ impl Docs {
     /// hash: `missing` = the file or the range is not in the tree — 3 of 6 steering boards carried a link
     /// range past EOF, M3 "a link is never a dead end"). Fails open — nothing to check, no codeindex, no
     /// `root:` (not a board), or a root the index rejects — because only a real mismatch may stop a block.
+    #[cfg(not(target_os = "ios"))]
     async fn check_excerpts(&self, doc: &DocId, markdown: &str) -> Option<ToolOutput> {
         let excerpts = excerpt_anchors(markdown);
         let links = link_anchors(markdown);
@@ -461,6 +472,7 @@ fn check_fences(markdown: &str) -> Option<ToolOutput> {
 }
 
 /// One `Excerpt` of a `doc_insert`/`doc_replace` markdown, as the anchor `Locate` verifies.
+#[cfg(not(target_os = "ios"))]
 struct ExcerptAnchor {
     /// 1-based over the `json-render` fences (as `check_fences` counts).
     ordinal: usize,
@@ -469,6 +481,7 @@ struct ExcerptAnchor {
     anchor: LocateAnchor,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl ExcerptAnchor {
     /// The located error the model corrects from: what the tree holds now at `/props/text`.
     fn refusal(&self, l: &Located) -> String {
@@ -512,6 +525,7 @@ impl ExcerptAnchor {
 }
 
 /// Every `Excerpt` element of every valid `json-render` fence in `markdown`, with the hash of its text.
+#[cfg(not(target_os = "ios"))]
 fn excerpt_anchors(markdown: &str) -> Vec<ExcerptAnchor> {
     let mut out = Vec::new();
     for (ordinal, body) in surface::fences_of(markdown, "json-render") {
@@ -543,6 +557,7 @@ fn excerpt_anchors(markdown: &str) -> Vec<ExcerptAnchor> {
 /// Every `code:` link and every `Graph` node / `Sequence` step `ref` of `markdown` that names a file (block
 /// anchors are not files), as `(anchor as written, existence probe)` — no hash, no symbol, so `Locate`
 /// answers `same` when the range exists and `missing` when the file or the range does not.
+#[cfg(not(target_os = "ios"))]
 fn link_anchors(markdown: &str) -> Vec<(String, LocateAnchor)> {
     let mut raw: Vec<String> = markdown
         .split("](code:")
@@ -586,6 +601,7 @@ fn link_anchors(markdown: &str) -> Vec<(String, LocateAnchor)> {
 }
 
 /// `root:` of a leading `---` frontmatter (a board's, `actor::board_frontmatter`); `None` for any other document.
+#[cfg(not(target_os = "ios"))]
 fn frontmatter_root(markdown: &str) -> Option<String> {
     let header = markdown.strip_prefix("---\n")?.split("\n---").next()?;
     let value = header.lines().find_map(|l| l.strip_prefix("root:"))?.trim();
@@ -1406,6 +1422,7 @@ mod tests {
     /// 71 step 7b: the anchors `check_excerpts` sends — one per `Excerpt` element with the 7a hash
     /// convention — the board root read back from the frontmatter (plain and quoted), and the
     /// refusal text for each non-`same` status.
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn excerpt_anchors_root_and_refusal_text() {
         let md = "intro\n\n```json-render\n{\"root\":\"c\",\"elements\":{\"c\":{\"type\":\"Callout\",\"props\":{\"text\":\"ok\"}}}}\n```\n\n\

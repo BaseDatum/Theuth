@@ -7880,6 +7880,7 @@
             kind: Default::default(),
             memory: Default::default(),
             observed: None,
+            mesh_id: None,
         }
     }
 

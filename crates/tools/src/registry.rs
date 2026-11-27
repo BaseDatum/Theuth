@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(not(target_os = "ios"))]
 use brush_core::Shell;
 use kameo::actor::{ActorRef, Recipient, ReplyRecipient, Spawn};
 use kameo::message::{Context, Message};
@@ -31,10 +32,12 @@ use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::journal::{InstallJournal, Journal, NoopJournal, QuestionRow};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
+#[cfg(not(target_os = "ios"))]
+use crate::{pty, shell};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, PreviewCx, REGISTRY_ACTOR, Risk,
-    ToolCall, ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs, pty,
-    reminder, schema, shell,
+    ToolCall, ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs,
+    reminder, schema,
 };
 
 /// [`CloseTreeAll`]'s wait on one participant before its ack is `timeout`.
@@ -155,6 +158,7 @@ pub struct ToolRegistry {
     /// [`ParticipantsReady`] says so.
     expected: Vec<&'static str>,
     /// The `shell` tool's per-session shells, dropped for a closed subtree.
+    #[cfg(not(target_os = "ios"))]
     shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
     /// How long [`CloseTreeAll`] waits on one participant.
     close_timeout: Duration,
@@ -1151,6 +1155,7 @@ impl Message<CloseTreeAll> for ToolRegistry {
             .collect();
         let jobs = ActorRef::<Jobs>::lookup(JOBS_ACTOR).ok().flatten();
         let timeout = self.close_timeout;
+        #[cfg(not(target_os = "ios"))]
         let shells = Arc::clone(&self.shells);
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
@@ -1177,6 +1182,7 @@ impl Message<CloseTreeAll> for ToolRegistry {
             };
             let (mut acks, jobs) = futures::join!(futures::future::join_all(owners), jobs);
             acks.push(jobs);
+            #[cfg(not(target_os = "ios"))]
             {
                 let mut shells = lock(&shells);
                 for s in &tree.subtree {
@@ -3791,22 +3797,29 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Duration::from_secs(cfg.job_timeout_secs),
     )?;
 
-    let shell = shell::ShellTool::new(jobs.clone(), cfg.login_path);
-    let shells = shell.shells();
     let pty_idle = Arc::new(AtomicU64::new(cfg.pty_idle_secs));
-    let builtins: [DynTool; 20] = [
-        Arc::new(shell),
-        Arc::new(pty::StartTool::new(
-            jobs.clone(),
-            Arc::clone(&shells),
-            Duration::from_secs(cfg.pty_ready_timeout_secs),
-            Arc::clone(&pty_idle),
-            cfg.pty_shell.clone(),
-        )),
-        Arc::new(pty::SendTool(jobs.clone())),
-        Arc::new(pty::ScreenTool(jobs.clone())),
-        Arc::new(pty::WaitTool(jobs.clone())),
-        Arc::new(jobs::JobsTool(jobs.clone())),
+    let mut builtins: Vec<DynTool> = Vec::with_capacity(20);
+    #[cfg(not(target_os = "ios"))]
+    let shells = {
+        let shell = shell::ShellTool::new(jobs.clone(), cfg.login_path);
+        let shells = shell.shells();
+        builtins.extend([
+            Arc::new(shell) as DynTool,
+            Arc::new(pty::StartTool::new(
+                jobs.clone(),
+                Arc::clone(&shells),
+                Duration::from_secs(cfg.pty_ready_timeout_secs),
+                Arc::clone(&pty_idle),
+                cfg.pty_shell.clone(),
+            )),
+            Arc::new(pty::SendTool(jobs.clone())),
+            Arc::new(pty::ScreenTool(jobs.clone())),
+            Arc::new(pty::WaitTool(jobs.clone())),
+        ]);
+        shells
+    };
+    builtins.extend([
+        Arc::new(jobs::JobsTool(jobs.clone())) as DynTool,
         Arc::new(jobs::CancelJobTool(jobs.clone())),
         Arc::new(reminder::RemindMeInTool {
             jobs: jobs.clone(),
@@ -3824,7 +3837,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Arc::new(crate::text::Indent),
         Arc::new(crate::text::ClipTool),
         Arc::new(AskUserTool(ask)),
-    ];
+    ]);
     let registry = ToolRegistry::spawn_with_mailbox(
         ToolRegistry {
             tools: builtins.into_iter().map(|t| (t.spec().name, t)).collect(),
@@ -3867,6 +3880,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             journal: Arc::new(NoopJournal),
             participants: Vec::new(),
             expected: Vec::new(),
+            #[cfg(not(target_os = "ios"))]
             shells,
             close_timeout: CLOSE_TIMEOUT,
             pty_idle,
@@ -3947,6 +3961,7 @@ pub(crate) mod tests {
             journal: Arc::new(NoopJournal),
             participants: Vec::new(),
             expected: Vec::new(),
+            #[cfg(not(target_os = "ios"))]
             shells: Arc::default(),
             close_timeout: Duration::from_millis(100),
             pty_idle: Arc::default(),

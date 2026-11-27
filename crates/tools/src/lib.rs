@@ -60,6 +60,7 @@ pub mod resources;
 mod schema;
 pub mod seat;
 pub mod secrets;
+#[cfg(not(target_os = "ios"))]
 pub mod shell;
 pub mod text;
 pub mod textref;
@@ -97,8 +98,9 @@ pub use journal::{
 };
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpHomeAction, McpLogin, McpLogout, McpProgress,
-    McpServer, McpState, McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate,
-    SetMcpHome, StartServer, SyncMcp, peers_changed, set_machine, set_paired_check,
+    McpServer, McpState, McpTestResult, McpTestStatus, McpToolInfo, Progress, RemoveServer,
+    RepoInfo, Restart, SetGate, SetMcpHome, StartServer, SyncMcp, TestServer, peers_changed,
+    set_machine, set_paired_check,
 };
 pub use proctree::{PtyThresholds, TreeQuiet};
 pub use pty::{
