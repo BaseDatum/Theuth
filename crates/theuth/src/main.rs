@@ -2356,6 +2356,12 @@ async fn start_plugins(
     mut plugins: Vec<Box<dyn Plugin>>,
     env: subsystems::Env,
 ) -> anyhow::Result<()> {
+    // 227: `engine_caps` reports the same probe the subsystems gate used.
+    agent::rpc_machines::install_host_caps(agent::rpc_machines::HostCaps {
+        interactive: env.interactive,
+        display: env.display,
+        audio: env.audio,
+    });
     declare_plugins(rt, &mut plugins).await?;
     let names: Vec<&'static str> = plugins.iter().map(|p| p.name()).collect();
     let plan = subsystems::plan(&names, &subsystems::overrides(&rt.config), &env);

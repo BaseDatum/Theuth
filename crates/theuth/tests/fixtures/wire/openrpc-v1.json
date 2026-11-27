@@ -43184,6 +43184,21 @@
           }
         ]
       },
+      "method.agent.input.PressToken": {
+        "description": "What the UI passes with a call an owner press started. Advisory only: authority is the\nengine the app is connected to, which forwards the press only when its own\n`human_press` check of the calling connection passes.",
+        "properties": {
+          "at": {
+            "description": "When the press happened (ms since epoch).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "type": "object"
+      },
       "method.agent.input.PromptSuffix": {
         "description": "One saved prompt suffix.",
         "properties": {
@@ -47859,6 +47874,54 @@
         ],
         "type": "object"
       },
+      "method.agent.output.EngineCaps": {
+        "description": "What an engine's host offers ([`MachinesApi::engine_caps`]).",
+        "properties": {
+          "display": {
+            "description": "A display is reachable: macOS/iOS/Windows always; Linux a Wayland/X11 display or the\nnode's watchable desktop (`desktop.json`).",
+            "type": "boolean"
+          },
+          "engine": {
+            "description": "Mesh id (this engine's store id on a lone engine).",
+            "type": "string"
+          },
+          "headless": {
+            "description": "`!interactive_user`: a node nobody sits at.",
+            "type": "boolean"
+          },
+          "hub": {
+            "description": "This engine holds the hub lease (`true` with no mesh).",
+            "type": "boolean"
+          },
+          "interactive_user": {
+            "description": "A person drives this engine (desktop app, TUI, …), not a plain `t --headless`.",
+            "type": "boolean"
+          },
+          "mic": {
+            "description": "An input device is listed (`list_input_devices`); without the voice plugin, the\nstartup audio probe.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "platform": {
+            "description": "`std::env::consts::OS`: `macos`, `linux`, `ios`, `windows`, …",
+            "type": "string"
+          }
+        },
+        "required": [
+          "engine",
+          "name",
+          "platform",
+          "display",
+          "mic",
+          "interactive_user",
+          "headless",
+          "hub"
+        ],
+        "type": "object"
+      },
       "method.agent.output.EngineDesktop": {
         "description": "A noVNC target: connect to `ws_url` (websockify) with VNC `password`.",
         "properties": {
@@ -49924,6 +49987,83 @@
           "nanos"
         ],
         "type": "object"
+      },
+      "method.agent.output.NodeResult": {
+        "description": "One machine's row of [`MachinesApi::engine_call_all`].",
+        "properties": {
+          "engine": {
+            "description": "Mesh id.",
+            "type": "string"
+          },
+          "message": {
+            "description": "The error, for every status but `ok`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Display name (the mesh's; the id when unknown).",
+            "type": "string"
+          },
+          "restart_required": {
+            "description": "The change applies after theuth restarts there ([`restart_required`]).",
+            "type": "boolean"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.NodeStatus"
+              }
+            ],
+            "description": "How the call went."
+          },
+          "value": {
+            "description": "The answer on `ok`."
+          }
+        },
+        "required": [
+          "engine",
+          "name",
+          "status",
+          "restart_required"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.NodeStatus": {
+        "description": "One machine's outcome in [`MachinesApi::engine_call_all`].",
+        "oneOf": [
+          {
+            "const": "ok",
+            "description": "Applied; `value` is the method's answer.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The method answered an error (`message`).",
+            "type": "string"
+          },
+          {
+            "const": "offline",
+            "description": "Not connected, or no answer within 30 s.",
+            "type": "string"
+          },
+          {
+            "const": "sealed",
+            "description": "Its vault is sealed or locked.",
+            "type": "string"
+          },
+          {
+            "const": "not_applicable",
+            "description": "The method does not exist or its subsystem is not running there.",
+            "type": "string"
+          },
+          {
+            "const": "needs_press",
+            "description": "Needs the owner's press; this call had none.",
+            "type": "string"
+          }
+        ]
       },
       "method.agent.output.Notebook": {
         "description": "One notebook as `notebook_list` / `notebook_get` show it (144 §13.1).",
@@ -59200,6 +59340,54 @@
         ],
         "type": "object"
       },
+      "method.agent.receiver.EngineCaps": {
+        "description": "What an engine's host offers ([`MachinesApi::engine_caps`]).",
+        "properties": {
+          "display": {
+            "description": "A display is reachable: macOS/iOS/Windows always; Linux a Wayland/X11 display or the\nnode's watchable desktop (`desktop.json`).",
+            "type": "boolean"
+          },
+          "engine": {
+            "description": "Mesh id (this engine's store id on a lone engine).",
+            "type": "string"
+          },
+          "headless": {
+            "description": "`!interactive_user`: a node nobody sits at.",
+            "type": "boolean"
+          },
+          "hub": {
+            "description": "This engine holds the hub lease (`true` with no mesh).",
+            "type": "boolean"
+          },
+          "interactive_user": {
+            "description": "A person drives this engine (desktop app, TUI, …), not a plain `t --headless`.",
+            "type": "boolean"
+          },
+          "mic": {
+            "description": "An input device is listed (`list_input_devices`); without the voice plugin, the\nstartup audio probe.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "platform": {
+            "description": "`std::env::consts::OS`: `macos`, `linux`, `ios`, `windows`, …",
+            "type": "string"
+          }
+        },
+        "required": [
+          "engine",
+          "name",
+          "platform",
+          "display",
+          "mic",
+          "interactive_user",
+          "headless",
+          "hub"
+        ],
+        "type": "object"
+      },
       "method.agent.receiver.EngineDesktop": {
         "description": "A noVNC target: connect to `ws_url` (websockify) with VNC `password`.",
         "properties": {
@@ -61202,6 +61390,83 @@
           "nanos"
         ],
         "type": "object"
+      },
+      "method.agent.receiver.NodeResult": {
+        "description": "One machine's row of [`MachinesApi::engine_call_all`].",
+        "properties": {
+          "engine": {
+            "description": "Mesh id.",
+            "type": "string"
+          },
+          "message": {
+            "description": "The error, for every status but `ok`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Display name (the mesh's; the id when unknown).",
+            "type": "string"
+          },
+          "restart_required": {
+            "description": "The change applies after theuth restarts there ([`restart_required`]).",
+            "type": "boolean"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.NodeStatus"
+              }
+            ],
+            "description": "How the call went."
+          },
+          "value": {
+            "description": "The answer on `ok`."
+          }
+        },
+        "required": [
+          "engine",
+          "name",
+          "status",
+          "restart_required"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.NodeStatus": {
+        "description": "One machine's outcome in [`MachinesApi::engine_call_all`].",
+        "oneOf": [
+          {
+            "const": "ok",
+            "description": "Applied; `value` is the method's answer.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The method answered an error (`message`).",
+            "type": "string"
+          },
+          {
+            "const": "offline",
+            "description": "Not connected, or no answer within 30 s.",
+            "type": "string"
+          },
+          {
+            "const": "sealed",
+            "description": "Its vault is sealed or locked.",
+            "type": "string"
+          },
+          {
+            "const": "not_applicable",
+            "description": "The method does not exist or its subsystem is not running there.",
+            "type": "string"
+          },
+          {
+            "const": "needs_press",
+            "description": "Needs the owner's press; this call had none.",
+            "type": "string"
+          }
+        ]
       },
       "method.agent.receiver.Notebook": {
         "description": "One notebook as `notebook_list` / `notebook_get` show it (144 §13.1).",
@@ -152134,6 +152399,141 @@
       "x-theuth-owner": "roster"
     },
     {
+      "name": "engine_call",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "method",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "params",
+          "required": true,
+          "schema": true,
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "pressed",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.PressToken"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": true,
+        "x-theuth-receiverSchema": true
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "engine_call_all",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "method",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "params",
+          "required": true,
+          "schema": true,
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "engines",
+          "required": false,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "pressed",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.PressToken"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.NodeResult"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.NodeResult"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "engine_caps",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.EngineCaps"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.EngineCaps"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "engine_desktop",
       "paramStructure": "by-position",
       "params": [
@@ -164705,6 +165105,54 @@
               "type": "null"
             }
           ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "settings_values",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engines",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "keys",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "x-theuth-receiverSchema": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "object"
         }
       },
       "x-theuth-audience": "owner",

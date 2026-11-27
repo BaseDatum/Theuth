@@ -205,6 +205,14 @@ impl RpcPeer {
     }
 }
 
+/// 227 §2: extension marker on a request another engine of this owner's mesh forwarded over
+/// `theuth/rpc/1` with the owner's press: the forwarder verified its own caller was a human press
+/// before setting it, and only the receiving `rpc_forward::serve` inserts it — for a settings
+/// method on its allowlist, from a peer in the live paired set. Holds the forwarder's engine id.
+/// `secrets::rpc::human_press` counts it as a press; nothing else may insert it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForwardedPress(pub String);
+
 #[cfg(test)]
 mod internal_tests {
     use super::RpcPeer;

@@ -377,7 +377,7 @@ impl AgentToolingApiServer for Server {
             return Ok(r);
         }
         // §2.4: removing an entry this scope holds needs the human; adding never does.
-        if !on && !human_press(ext) {
+        if !on && !secrets::rpc::human_press(ext) {
             let state =
                 ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetAlwaysAsk { session }).await?;
             let own = if session.is_some() {
@@ -422,16 +422,6 @@ impl AgentToolingApiServer for Server {
 pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::DescribedModule::new(AgentToolingApiServer::into_rpc(server), rpc_descriptors())
         .expect("agent RPC descriptors")
-}
-
-/// 219 §2.4: a human press in the sense of 171 §12.1 invariant 1, the same rule as the share
-/// crate's `Consent::of_press`: an authenticated, open connection that is neither a share-link
-/// guest nor the internal peer (MCP console, ACP agent half, TUI, family-forwarded calls). What
-/// remains is the owner's desktop/app socket or a paired device, the set that can already
-/// resolve a human-only card, so skipping the card for them grants nothing the card withheld.
-fn human_press(ext: &Extensions) -> bool {
-    ext.get::<rpc_core::RpcPeer>()
-        .is_some_and(|p| p.guest().is_none() && !p.is_internal() && !p.is_closed())
 }
 
 /// 219 §2.4: the human-only card `always_ask.remove` for a removal that is not a press; a

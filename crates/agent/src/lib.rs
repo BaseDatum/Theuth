@@ -59,6 +59,8 @@ pub mod rpc_forward;
 pub mod rpc_jobs;
 /// Escape hatch on any mesh engine: `engine_terminal`, `engine_logs`, the `theuth/pty/1` relay.
 pub mod rpc_engine;
+/// 227: Settings by machine: `engine_call`, `engine_call_all`, `engine_caps`, `settings_values`.
+pub mod rpc_machines;
 /// Skill RPC server and client methods.
 pub mod rpc_skills;
 /// System prompt section RPC methods (list, edit, and reset core and plugin sections).
@@ -86,6 +88,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
         rpc_settings::rpc_module(server.clone()),
         rpc_jobs::rpc_module(server.clone()),
         rpc_engine::rpc_module(server.clone()),
+        rpc_machines::rpc_module(server.clone()),
         rpc_skills::rpc_module(server.clone()),
         rpc_prompts::rpc_module(server.clone()),
         rpc_suffixes::rpc_module(server.clone()),

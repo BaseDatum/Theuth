@@ -114,7 +114,10 @@ pub async fn methods(rt: Runtime, module: ModuleFactory) -> jsonrpsee::Methods {
     use wire::RuntimeWire as _;
     rt.register_wire_event::<api::StreamControl>().await
         .expect("rpc.stream contract");
-    module(new_server(rt)).into()
+    let methods: jsonrpsee::Methods = module(new_server(rt.clone())).into();
+    // 227: `engine_call` for this engine dispatches into this same API.
+    agent::rpc_machines::install_local_api(&rt, &methods);
+    methods
 }
 
 /// Start the server; returns the bound address. The server
