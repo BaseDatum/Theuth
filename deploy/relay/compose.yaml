@@ -2,6 +2,9 @@
 # iroh-relay for the engine mesh (design doc 67 §4.2) on a sibling hostname.
 #   RELAY_HOST=relay.example.com docker compose -f deploy/relay/compose.yaml up -d
 # Optional: COOKIE_SECRET=<64 hex chars> keeps browser cookies valid across restarts.
+# Optional: THEUTH_DO_OAUTH_CLIENT_ID / THEUTH_DO_OAUTH_CLIENT_SECRET (a DigitalOcean OAuth app whose
+# callback is https://$RELAY_HOST/oauth/digitalocean/callback) turn on Sign in with DigitalOcean for
+# cloud nodes (design doc 224); unset, /oauth/digitalocean/* answer 503.
 # The UI bundle is baked into the image at /web.
 #
 # iroh-relay terminates its own TLS (the QUIC probe on 7842/udp needs the
@@ -21,6 +24,9 @@ services:
     command: ["--listen", "0.0.0.0:8787", "--web", "/web"]
     environment:
       THEUTH_RELAY_COOKIE_SECRET: ${COOKIE_SECRET:-}
+      THEUTH_DO_OAUTH_CLIENT_ID: ${THEUTH_DO_OAUTH_CLIENT_ID:-}
+      THEUTH_DO_OAUTH_CLIENT_SECRET: ${THEUTH_DO_OAUTH_CLIENT_SECRET:-}
+      THEUTH_DO_OAUTH_REDIRECT: https://${RELAY_HOST:-relay.theuth.io}/oauth/digitalocean/callback
     expose:
       - "8787"
 
