@@ -12,8 +12,10 @@ import type { Api } from '@/rpc/bindings/client'
 import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
 import type { EngineStats } from "@/rpc/bindings/method.nodes.output"
 import type { Peer } from "@/rpc/bindings/method.nodes.output"
+import type { PeerSync } from '@/rpc/bindings/method.sessionsync.receiver'
+import { peerSyncById } from '@/lib/peer-sync'
 import { PLAIN_DRAFT, createOptions } from './Composer'
-import { CreateOptions, MeshBar, machineRows, meshChoiceRequired, pairedMeshesOf, pickMachine, vanishedTarget } from './NewChatPane'
+import { CreateOptions, MeshBar, machineRows, meshChoiceRequired, pairedMeshesOf, pickMachine, syncingTargetNote, vanishedTarget } from './NewChatPane'
 import { type Engine, LOCAL, useEngines } from '@/link/engines'
 
 vi.mock('@/lib/rpc', async (original) => ({
@@ -221,3 +223,72 @@ test('Shape A: chosen mesh_id (or null for device-only) rides through createOpti
   await openDraftSession(api, createOptions({ ...PLAIN_DRAFT, meshId: null }))
   expect(calls[1]).toMatchObject({ mesh_id: null })
 })
+
+const syncRow = (peer: string, over: Partial<PeerSync> = {}): PeerSync => ({
+  peer,
+  up: true,
+  head: 1000,
+  acked: 0,
+  behind_out: 1000,
+  held: false,
+  held_by_peer: false,
+  ...over,
+})
+
+test('bootstrapping peers in machineRows: unready while acked === 0 / null, ready once acked > 0, held peers unaffected', () => {
+  const bootstrapping = peerSyncById([
+    syncRow('cloud', { acked: 0, head: 1000 }),
+    syncRow('xeus', { acked: 0, head: 1000, held: true }),
+    syncRow('studio', { acked: 0, head: 1000 }), // unreachable — stays offline
+  ])
+  const rows = machineRows(MESH, NOW, bootstrapping)
+  // Cloud node is bootstrapping: disabled (`online: false`), marked `syncing: true`.
+  expect(rows.find((r) => r.id === 'cloud')).toEqual({
+    id: 'cloud',
+    name: 'cloud-1',
+    detail: 'Ubuntu · server',
+    status: 'Syncing mesh history…',
+    online: false,
+    syncing: true,
+    repos: [],
+  })
+  // Held older-schema peer is NOT marked syncing.
+  expect(rows.find((r) => r.id === 'xeus')).toEqual({
+    id: 'xeus',
+    name: 'xeus',
+    detail: 'Arch Linux · desktop',
+    status: 'LAN',
+    online: true,
+    repos: ['/home/sky/Develop/theuth'],
+  })
+  // Unreachable peer stays offline (not syncing).
+  expect(rows.find((r) => r.id === 'studio')).toEqual({
+    id: 'studio',
+    name: 'studio',
+    detail: '',
+    status: 'offline 3h',
+    online: false,
+    repos: [],
+  })
+
+  // Inline note for a draft targeting the syncing node.
+  const note = syncingTargetNote(rows, 'cloud', false)
+  expect(note).toBe('Waiting for cloud-1 to finish syncing mesh history…')
+  expect(syncingTargetNote(rows, 'cloud', true)).toBeNull()
+  expect(syncingTargetNote(rows, 'xeus', false)).toBeNull()
+  expect(render({ syncingNote: note })).toContain('Waiting for cloud-1 to finish syncing mesh history…')
+
+  // Once initial snapshot lands (`acked > 0`), flips back to online + via relay.
+  const synced = peerSyncById([syncRow('cloud', { acked: 1000, head: 1000, behind_out: 0 })])
+  const after = machineRows(MESH, NOW, synced)
+  expect(after.find((r) => r.id === 'cloud')).toEqual({
+    id: 'cloud',
+    name: 'cloud-1',
+    detail: 'Ubuntu · server',
+    status: 'via relay',
+    online: true,
+    repos: [],
+  })
+  expect(syncingTargetNote(after, 'cloud', false)).toBeNull()
+})
+

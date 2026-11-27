@@ -111,6 +111,8 @@ export type DraftCreate = {
   meshId?: string | null
   /** True when the user has >1 paired mesh on the local engine and must pick a mesh (or device-only) before sending. */
   needsMeshChoice?: boolean
+  /** Temporary send blocker with user-facing explanation (e.g. target node still syncing mesh history). */
+  waitingReason?: string | null
 }
 /** The draft with every switch off: what `new_session()` would create. */
 export const PLAIN_DRAFT: DraftCreate = { private: false, project: null, endless: false }
@@ -1146,6 +1148,8 @@ export function Composer({
           throw new Error('Acknowledge the private session notice first')
         if (draftCreate?.needsMeshChoice)
           throw new Error('Choose a mesh (or "This device only") before sending')
+        if (draftCreate?.waitingReason)
+          throw new Error(draftCreate.waitingReason)
         // A switch on needs `create_session` with the pick in it; `openDraftSession` takes a bare pick there too, else `new_session()`.
         // 183 §5.6: on another machine the chat opens at once with the message pending, and a failure comes back to this
         // draft with the text (a split pane's draft leaf via `onUncreated`).
@@ -1874,7 +1878,7 @@ export function Composer({
                 <StopButton count={descendants} ring={ring} onStop={stop} />
               </>
             ) : (
-              <SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading ?? (draftCreate?.needsMeshChoice ? 'Choose a mesh first' : null)}
+              <SendButton disabled={!filled || busy || readOnly || !!starting} waiting={uploading ?? (draftCreate?.needsMeshChoice ? 'Choose a mesh first' : (draftCreate?.waitingReason ?? null))}
                 onSend={() => gesture('press')}
                 sent={sent}
                 playing={playing}

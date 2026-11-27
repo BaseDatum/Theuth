@@ -26,6 +26,7 @@ import { useVaultApi } from '@/components/vault/api'
 import { PasswordForm } from '@/components/vault/PasswordForm'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { notify } from '@/lib/notify'
+import { isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
 import { cn } from '@/lib/utils'
 import { Capability } from '@/rpc/capabilities'
 import { CloudNodeWizard } from './CloudNodeWizard'
@@ -53,17 +54,26 @@ const DOT: Record<Tone, string> = {
   bad: 'bg-danger',
   warn: 'bg-warning',
   busy: 'bg-primary animate-pulse',
+  sync: 'bg-warning animate-pulse',
   muted: 'bg-fg-tertiary/40',
 }
 
-function Status({ node }: { node: CloudNode }) {
+function Status({ node, bootstrapping = false }: { node: CloudNode; bootstrapping?: boolean }) {
   // `sealed` is honoured only where the engine has the sealed vault (feat/sealed-vault).
   const vault = useVaultSupport()
-  const s = statusOf({ ...node, sealed: vault && node.sealed })
+  const s = statusOf({ ...node, sealed: vault && node.sealed }, bootstrapping)
   return (
-    <span title={s.hint ?? s.text} className={cn('inline-flex min-w-0 items-center gap-1.5 truncate text-[13px] whitespace-nowrap', s.tone === 'bad' && 'text-danger', s.tone === 'warn' && 'text-warning')}>
+    <span
+      data-syncing={s.tone === 'sync' ? '' : undefined}
+      title={s.hint ?? s.text}
+      className={cn(
+        'inline-flex min-w-0 items-center gap-1.5 truncate text-[13px] whitespace-nowrap',
+        s.tone === 'bad' && 'text-danger',
+        (s.tone === 'warn' || s.tone === 'sync') && 'text-warning',
+      )}
+    >
       <span className={cn('inline-block size-[7px] shrink-0 rounded-full', DOT[s.tone])} />
-      {s.text}
+      <span className="truncate">{s.text}</span>
     </span>
   )
 }
@@ -79,6 +89,7 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
   const mobile = useIsMobile()
   const navigate = useNavigate()
   const list = useCloudList()
+  const { byPeer } = usePeerSync()
   const providers = useCloudProviders()
   const actions = useCloudActions()
   const [adding, setAdding] = useState(!!initial?.adding)
@@ -134,6 +145,7 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
             <NodeRow
               key={n.name}
               node={n}
+              bootstrapping={!!n.peer_id && isPeerBootstrapping(byPeer.get(n.peer_id))}
               onRestart={() => actions.restart.mutate(n.name, { onSuccess: () => notify(`Restarting ${n.name}`) })}
               onUpdate={() => actions.update.mutate(n.name, { onSuccess: () => notify(`Updating ${n.name}`) })}
               onTerminal={() => openTerminal(n.name)}
@@ -213,6 +225,7 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
 
 export function NodeRow({
   node,
+  bootstrapping = false,
   onRestart,
   onUpdate,
   onTerminal,
@@ -221,6 +234,7 @@ export function NodeRow({
   onOpen,
 }: {
   node: CloudNode
+  bootstrapping?: boolean
   onRestart: () => void
   onUpdate: () => void
   onTerminal: () => void
@@ -233,7 +247,7 @@ export function NodeRow({
   const settled = live || node.state === 'failed' || node.state === 'volume_kept' || orphan
   const vault = vaultRow(node)
   return (
-    <li data-cloud-node={node.name} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border-subtle py-3 last:border-0 md:grid md:grid-cols-[1.5rem_minmax(0,1fr)_8.5rem_8rem_4.5rem_4.75rem] md:gap-x-3">
+    <li data-cloud-node={node.name} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border-subtle py-3 last:border-0 md:grid md:grid-cols-[1.5rem_minmax(0,1fr)_10.5rem_8rem_4.5rem_4.75rem] md:gap-x-3">
       <ProviderBadge kind={node.provider} className="size-6 text-[10px]" />
       <div className="flex min-w-0 flex-1 items-center gap-x-2">
         <span className="shrink-0 text-sm font-semibold">{node.name}</span>
@@ -242,7 +256,7 @@ export function NodeRow({
         </span>
         {node.provider === 'fly' && <Tag tone="info">beta</Tag>}
       </div>
-      <Status node={node} />
+      <Status node={node} bootstrapping={bootstrapping} />
       <span className="text-xs whitespace-nowrap text-fg-secondary max-md:hidden">{node.version ? `${node.version}${node.auto_update ? ' · auto-update' : ''}` : '—'}</span>
       <span className="text-right text-xs whitespace-nowrap text-fg-secondary">{node.monthly_usd != null ? `${usd(node.monthly_usd)}/mo` : ''}</span>
       {orphan ? (

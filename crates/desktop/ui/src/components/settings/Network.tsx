@@ -31,6 +31,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { BOOTSTRAPPING_HINT, bootstrappingLabel, isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LOCAL, useEngines } from '@/link/engines'
@@ -43,6 +44,7 @@ import type { NodeEvent } from "@/rpc/bindings/event.nodes_2eevents.output"
 import type { Peer } from "@/rpc/bindings/method.nodes.output"
 import type { RelayState } from "@/rpc/bindings/method.nodes.output"
 import type { RotationState } from "@/rpc/bindings/method.nodes.output"
+import type { PeerSync } from '@/rpc/bindings/method.sessionsync.receiver'
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
@@ -125,9 +127,18 @@ function OsGlyph({ os, dashed }: { os: string | undefined; dashed?: boolean }) {
   )
 }
 
-function Chip({ tone, children }: { tone: 'ok' | 'bad' | 'plain'; children: ReactNode }) {
-  const color = { ok: 'border-success-border/40 text-success', bad: 'border-danger-border/40 text-danger', plain: 'border-border text-fg-secondary' }[tone]
-  return <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs', color)}>{children}</span>
+function Chip({ tone, title, children }: { tone: 'ok' | 'bad' | 'warn' | 'plain'; title?: string; children: ReactNode }) {
+  const color = {
+    ok: 'border-success-border/40 text-success',
+    bad: 'border-danger-border/40 text-danger',
+    warn: 'border-warning/40 text-warning',
+    plain: 'border-border text-fg-secondary',
+  }[tone]
+  return (
+    <span title={title} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs', color)}>
+      {children}
+    </span>
+  )
 }
 
 /** 183 §6.7: `Relay · iroh.relay.theuth.io · 38 ms ✓`, or the relay's error. */
@@ -143,19 +154,29 @@ export function relayChip(r: RelayState | null | undefined): { text: string; ok:
   return { text: `Relay · ${host} · ${r.error ?? 'not connected'}`, ok: false }
 }
 
-/** 183 §6.7 path chip: `LAN 2 ms`, `Relay 41 ms`, `offline 3h`; `online` from an engine too old to name its path. */
-export function pathChip(p: Pick<Peer, 'reachable' | 'path' | 'rtt_ms' | 'last_seen_ms'>, now = Date.now()): { text: string; dot: 'lan' | 'relay' | 'off' } {
+/** 183 §6.7 path chip: `LAN 2 ms`, `Relay 41 ms`, `offline 3h`, or `Syncing mesh history…` while bootstrapping; `online` from an engine too old to name its path. */
+export function pathChip(
+  p: Pick<Peer, 'reachable' | 'path' | 'rtt_ms' | 'last_seen_ms'>,
+  now = Date.now(),
+  sync?: PeerSync,
+): { text: string; dot: 'lan' | 'relay' | 'sync' | 'off' } {
   if (!p.reachable) return { text: p.last_seen_ms > 0 ? `offline ${age(p.last_seen_ms, now)}` : 'offline', dot: 'off' }
+  if (isPeerBootstrapping(sync)) return { text: bootstrappingLabel(sync), dot: 'sync' }
   const rtt = p.rtt_ms !== null ? ` ${p.rtt_ms} ms` : ''
   if (p.path === 'relay') return { text: `Relay${rtt}`, dot: 'relay' }
   return { text: p.path === 'lan' ? `LAN${rtt}` : 'online', dot: 'lan' }
 }
 
-function PathChip({ peer }: { peer: Peer }) {
-  const c = pathChip(peer)
-  const dot = { lan: 'bg-success', relay: 'bg-warning', off: 'ring-1 ring-fg-tertiary ring-inset' }[c.dot]
+function PathChip({ peer, sync }: { peer: Peer; sync?: PeerSync }) {
+  const c = pathChip(peer, undefined, sync)
+  const dot = {
+    lan: 'bg-success',
+    relay: 'bg-warning',
+    sync: 'bg-warning animate-pulse',
+    off: 'ring-1 ring-fg-tertiary ring-inset',
+  }[c.dot]
   return (
-    <Chip tone="plain">
+    <Chip tone={c.dot === 'sync' ? 'warn' : 'plain'} title={c.dot === 'sync' ? BOOTSTRAPPING_HINT : undefined}>
       <span className={cn('size-1.5 rounded-full', dot)} aria-hidden="true" />
       {c.text}
     </Chip>
@@ -240,6 +261,7 @@ function NearbyList({ on, onPair }: { on: boolean; onPair: (n: NearbyEngine) => 
  */
 function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void }) {
   const api = useApi()
+  const { byPeer } = usePeerSync()
   const [renaming, setRenaming] = useState<string | null>(null)
   const rename = useAction((v: { id: string; name: string }) => api.mesh_rename(v.id, v.name), { keys: [keys.mesh] })
   const messaging = useAction((v: { id: string; on: boolean }) => api.mesh_set_messaging(v.id, v.on), { keys: [keys.mesh] })
@@ -281,7 +303,7 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
               )}
             </div>
             <div className="ml-auto flex items-center gap-2 max-lg:flex-wrap">
-              <PathChip peer={p} />
+              <PathChip peer={p} sync={byPeer.get(p.id)} />
               <span className="ml-1 text-[13px] text-fg-secondary">Agents can message</span>
               <Switch aria-label={`Agents can message ${p.name}`} checked={on} disabled={messaging.isPending} onCheckedChange={(v) => messaging.mutate({ id: p.id, on: v })} />
               <DropdownMenu>
