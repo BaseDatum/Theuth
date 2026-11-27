@@ -80,50 +80,64 @@ Mock: `mesh-settings-mock.html` (owner drafts, session 01a2181b).
 
 ## 2. Engine as built (`crates/agent/src/rpc_machines.rs`)
 
-Contract fill-ins (no change to §1's shapes):
+**Contract change (security review, 2026-11-27): no press is forwarded.** §1's `pressed` / `PressToken` and the
+`ForwardedPress` marker are gone. The review showed `_press` was forgeable: any local process holding
+`<data_dir>/token` (agents' `t mcp` / ACP children) passes `human_press` on the hub, and a paired engine (an agent
+with root on a cloud node) could write `_press` itself. A call forwarded over `theuth/rpc/1` runs on the target as
+the internal peer and is never a press, as before 227. Final signatures:
 
-- `PressToken = { at: number }` (ms epoch of the UI press). Advisory only: the engine the app is connected to
-  forwards a press only when `secrets::rpc::human_press` passes for the calling connection; an agent (internal
-  peer), a guest, an unauthenticated or closed connection never gets one, whatever it sends.
-- `ForwardedPress` lives in `rpc_core` (so `secrets::rpc::human_press` can see it) and is re-exported from
-  `agent::rpc_forward` beside `Forwarded`. Wire: `"_press": true` as a top-level field of the `theuth/rpc/1`
-  request line. Trust model: no MAC — trusted because `theuth/rpc/1` is accepted only from engines in the live paired
-  set (iroh endpoint key + mesh `Inbound` gate), and every paired engine is the owner's (contacts use `theuth/a2a/1`,
-  guests never reach the mesh). The receiver (`rpc_forward::serve`) inserts the marker only when the line's method is
-  on `SETTINGS_FORWARDABLE` and the opening peer is in `transport.peers()`; `_press` on any other method, inside
-  `params`, or from an engine no longer paired is ignored. Plugins' own `HumanPress` (install/approve code) still
-  refuses every forwarded call.
-- The hub forwards the method itself (not `engine_call`) to the target, so an engine without 227 still answers
-  settings calls (without the press).
-- A call `engine_call` runs on this engine dispatches into this engine's composed API as the caller's own connection
-  (`rpc_compose::methods` installs it per runtime); `pressed` matters only across the hop.
-- `params` by name (object) or position (array); `null` = no params.
-- `settings_values` with `engines: []` = this engine and every paired engine. Getters are called without params;
-  `null` where a getter failed or does not apply.
-- Error mapping (`classify`): `-32010` owner unreachable → `-32051`; `-32052` (feat/sealed-vault, final: message "the
-  vault is sealed on <name> — …", data `{engine, methods}`, passed through unchanged), any message starting "the vault
-  is sealed", or "vault is locked" → `-32052`; `-32601` method not found and `-32001` actor not running → `-32053`.
-  `engine_call_all` turns them into `status` per row.
-- The Vault tab does not use `engine_call`: the vault RPCs take `engine` as their first positional param and forward
-  themselves (`rpc_forward::to_peer`); no vault method is on the allowlist.
-- `-32054 "needs_press"` (orchestrator, 2026-11-27; extends §1): a setter that needs the owner's press, called
-  without one (a client-queued retry, an agent), is refused up front — `plugin_approve`, and `set_always_ask` with
-  `on: false` (it would park a human-only card on the target) — and a target's own press refusal ("needs a human
-  press", "needs the owner's press") maps to it. `engine_call_all` rows get `status: "needs_press"` (a sixth
-  status); the UI shows "press to finish". Here the caller's own connection is the press; across the hop, the
-  carried `_press`. Note `plugin_approve` still refuses every forwarded call (plugins' `HumanPress`), so a remote
-  approve answers `needs_press` even when pressed.
-- `SETTINGS_FORWARDABLE` already holds every getter `settings_values` reads (`info`, `subagent_model`,
-  `theuth_agent_model`, `title_*`/`vision_*`/`escalate_*`/`knowledge_harvester_*`, `endless_settings_get`,
-  `search_settings_get`, `list_prompt_sections`, `list_builtins`, `list_tool_categories`, …).
-- `restart_required`: the reply's own `restart_required: true` (`config_flag_set`, plugin flags), or
-  `config_flag_set` of a `subsystems.*` key.
-- `engine_caps`: `display`/`interactive_user` from the startup probe `theuth::subsystems::Env` (installed by
-  `start_plugins`; a host that installs none — iOS — reports a person's device); `display` also when
-  `<data_dir>/desktop.json` (the node's watchable desktop) exists; `mic` from `list_input_devices` (non-empty),
-  else the startup audio probe; `headless = !interactive_user`; `hub = mesh::is_hub()`.
-- Allowlist exclusions beyond §1: `mcp_server_get` (returns the token), `add_account`, `acp_login`,
-  `sync_providers` / `apply_providers` (may carry keys; own owner-press flow), and the pairing ceremonies
-  (`contact_window`, `contact_pair`, `contact_answer`, `contact_nearby`, `mesh_nearby`, `mesh_nearby_watch`,
-  `mesh_pair_nearby`, `mesh_pair_answer`): their tickets are credentials and they need a person at the machine.
+- `engine_call(engine, method, params) -> Value`
+- `engine_call_all(method, params, engines?) -> NodeResult[]`
+- `engine_caps() -> EngineCaps`
+- `settings_values(engines, keys) -> {engine: {key: Value | null}}`
+
+Behaviour:
+
+- **Callers.** The owner's app only: `rpc_core::owner` (no guest) and not the internal peer (MCP console, ACP agent
+  half), so an agent cannot push settings to every machine. `engine_caps` also admits a call another engine
+  forwarded (that engine's app asked for it).
+- **Engines.** `engine` / `engines` must be this engine (or empty) or a paired engine of the roster
+  (`mesh_status`), else `-32602 unknown engine <id>`; `engines` is deduplicated, at most 32 (also for the default:
+  this engine and every paired engine). `settings_values` with `engines: []` = the default; `keys` deduplicated,
+  allowlisted, at most 64; getters are called without params; `null` where a getter failed or does not apply;
+  offline engines omitted.
+- **Dispatch.** This engine: into its own composed API as the caller's own connection (`rpc_compose::methods`
+  installs it per runtime). Another engine: the method itself (not `engine_call`) over the existing forwarder, 30 s,
+  one hop (a forwarded call is never forwarded again). `params` by name (object) or position (array); `null` = none.
+- **`-32054 "needs_press"`** and row `status: "needs_press"` (a sixth status). A setter that needs the owner's press
+  answers it whenever no press is present — on any other machine always, here for an internal caller — refused up
+  front for `plugin_approve` and `set_always_ask` with `on: false` (it would park a human-only card on the target),
+  and mapped from a target's own refusal ("needs a human press", "needs the owner's press"). The UI shows "press to
+  finish on <machine>" (the owner connects to that machine to press there); a client-queued retry gets the same.
+- **Error mapping (`classify`).** `-32010` owner unreachable → `-32051`; `-32052` (feat/sealed-vault, final message
+  "the vault is sealed on <name> — …", data `{engine, methods}`) passed through unchanged; any message starting "the
+  vault is sealed" or containing "vault is locked" → `-32052`; `-32601` method not found and `-32001` actor not
+  running → `-32053`.
+- **`restart_required`** is the reply's own `restart_required: true` only — what `config_flag_set` reports for a
+  plugin's `<section>.enabled`. (There is no `subsystems.*` key in `ConfigFlagKey`; `plugin_set_enabled` starts and
+  stops live.)
+- **`engine_caps`.** `display` / `interactive_user` / audio from the startup probe `theuth::subsystems::Env`,
+  installed by `start_plugins` (`agent::rpc_machines::install_host_caps`). Without a probe nothing is assumed (no
+  person, display or mic): the iOS engine must install `HostCaps { interactive: true, display: true, audio: true }`
+  where it starts (feat/ios-engine; not on this branch). `display` also when `<data_dir>/desktop.json` (the node's
+  watchable desktop) exists; `mic` from `list_input_devices` (non-empty), else the probe's audio;
+  `headless = !interactive_user`; `hub = mesh::is_hub()`.
+- **The Vault tab** does not use `engine_call`: the vault RPCs take `engine` as their first positional param and
+  forward themselves; no vault method is on the allowlist.
+- **`SETTINGS_FORWARDABLE`** holds settings getters and setters only, including every getter `settings_values` reads
+  (`info`, `subagent_model`, `theuth_agent_model`, `title_*` / `vision_*` / `escalate_*` /
+  `knowledge_harvester_*`, `endless_settings_get`, `search_settings_get`, `list_prompt_sections`, `list_builtins`,
+  `list_tool_categories`, …). Left out: anything carrying or returning a secret, token or credential (`set_secret`,
+  `login` / `logout`, `list_logins`, `acp_login`, `add_provider` / `add_account`, `mcp_server_get` / `mcp_server_set`
+  / `mcp_server_rotate_token`, external-secrets settings, `list_secret_connections`, calendar sources and events,
+  `sync_providers` / `apply_providers`); chat and session actions or content (`send_input`, `steer`, `desk_open`,
+  `screen_context`, `list_sessions`, `meeting_get` / `meeting_list`, dictation history and audio, `sandbox_terminal` and the sandbox
+  lifecycle); mesh and vault control (`mesh_set_*`, `mesh_rename`, `vault_*`); contacts and pairing ceremonies;
+  plugin install/uninstall. A test asserts no name contains `send_input`, `steer`, `terminal`, `audio`,
+  `meeting_get`, `list_sessions`, `vault_`, `mesh_set_`, `contact_`, `logout`, `login`, `secret`, `token` or
+  `calendar_source`. Machine tabs that use those methods (Calendar sources, Network › Machine, Messaging contacts,
+  VMs, voice history, MCP server) stay usable on the connected engine only; on another machine they answer
+  `-32050`.
+- Out of scope, raised separately: the loopback WS token counts as a human press for any local process holding it
+  (`crates/rpc/src/lib.rs:102`, pre-existing).
 
