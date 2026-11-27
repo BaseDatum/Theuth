@@ -59,6 +59,21 @@ export const shownTabs = (category: SettingsCategory, discovery?: Discovery): Se
 /** The categories with at least one shown tab, in column order. */
 export const shownCategories = (discovery?: Discovery): SettingsCategory[] => CATEGORIES.filter(category => shownTabs(category, discovery).length > 0)
 
+/** Per-machine Settings: a `device` tab is this client's, so the nav lists it under "This <device>", not its category. */
+export const isDeviceTab = (tab: SettingsTab): boolean => tab.scope === 'device'
+
+/** The category's shown tabs the nav lists under it: the device tabs sit in their own group. */
+export const navTabs = (category: SettingsCategory, discovery?: Discovery): SettingsTab[] => shownTabs(category, discovery).filter(tab => !isDeviceTab(tab))
+
+/** The categories column without the device tabs, in column order; a category left with none leaves the column. */
+export const navCategories = (discovery?: Discovery): SettingsCategory[] => CATEGORIES.filter(category => navTabs(category, discovery).length > 0)
+
+/** The "This <device>" group: every shown device tab, in column order. */
+export const deviceTabs = (discovery?: Discovery): SettingsTab[] => CATEGORIES.flatMap(category => shownTabs(category, discovery).filter(isDeviceTab))
+
+/** The tabs of the band over `tab`: the device group for a device tab, else its category's nav tabs. */
+export const bandTabs = ({ category, tab }: Placed, discovery?: Discovery): SettingsTab[] => (isDeviceTab(tab) ? deviceTabs(discovery) : navTabs(category, discovery))
+
 /** Where `/settings/<id>` of a known tab lands: the tab itself when shown, else its category's first shown tab, else Appearance. */
 export function shownTab(id: string, discovery?: Discovery): string {
   const placed = placeOf(id)

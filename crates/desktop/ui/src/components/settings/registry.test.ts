@@ -3,7 +3,8 @@ import { afterEach, expect, test, vi } from 'vitest'
 vi.hoisted(() => {
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined })
 })
-import { CATEGORIES, MOVED_TABS, TAB_IDS, isTab, shownCategories, shownTab, shownTabs } from './registry'
+import { CATEGORIES, MOVED_TABS, TAB_IDS, bandTabs, deviceTabs, isTab, navCategories, navTabs, placeOf, shownCategories, shownTab, shownTabs } from './registry'
+import { type EngineCaps, engineCaps, notApplicable } from './scope'
 import type { Discovery } from '@/rpc/discovery'
 
 const tabs = CATEGORIES.flatMap((category) => [...category.tabs])
@@ -137,4 +138,47 @@ test('S4: a category with no shown tab leaves the column, and its tabs land on A
   expect(shownCategories().map((category) => category.id)).not.toContain('channels')
   expect(shownCategories()).toHaveLength(CATEGORIES.length - 1)
   expect(shownTab('slack')).toBe('appearance')
+})
+
+// Per-machine Settings piece 1: the picker and "Set on all machines" read these; a new tab must say where it lives.
+test('ratchet: every tab declares a scope, copyable, and only a machine tab copies; a machine tab that does not says why', () => {
+  for (const tab of tabs) {
+    expect(['machine', 'everywhere', 'hub', 'device'], tab.id).toContain(tab.scope)
+    expect(typeof tab.copyable, tab.id).toBe('boolean')
+    if (tab.copyable) expect(tab.scope, tab.id).toBe('machine')
+    if (tab.scope === 'machine' && !tab.copyable) expect(tab.copyNote, tab.id).toBeTruthy()
+    for (const need of tab.needs ?? []) expect(['display', 'user', 'mic'], tab.id).toContain(need)
+  }
+})
+
+test('the scope of every tab, as the settings recon placed it', () => {
+  const by = (scope: string, copyable?: boolean) => tabs.filter((t) => t.scope === scope && (copyable === undefined || t.copyable === copyable)).map((t) => t.id)
+  expect(by('device')).toEqual(['appearance', 'shortcuts'])
+  expect(by('everywhere')).toEqual(['suffixes', 'machines', 'devices', 'shared', 'contacts', 'shared-chats', 'shared-notes', 'sharing', 'domains', 'tools', 'browser'])
+  expect(by('hub')).toEqual(['dreaming', 'double', 'signal', 'slack', 'telegram'])
+  expect(by('machine', true)).toEqual(['models', 'helpers', 'providers', 'loop', 'memory', 'approvals', 'advisor', 'autoresearch', 'system', 'voice-dictionary', 'templates', 'briefs', 'categories', 'builtins', 'search', 'plugins'])
+  expect(by('machine', false)).toEqual(['app', 'external-secrets', 'harnesses', 'decision', 'voice', 'dictation', 'voice-key', 'voice-history', 'meetings', 'detection', 'live', 'speakers', 'calendar', 'upcoming', 'machine', 'messaging', 'vms', 'mcp', 'computer'])
+})
+
+test('notApplicable: a headless engine dims the mic, display and user tabs only; the desktop daemon dims none', () => {
+  const na = (caps: EngineCaps) => tabs.filter((t) => notApplicable(t, caps)).map((t) => t.id)
+  expect(na({ display: false, user: false, mic: false })).toEqual(['voice', 'dictation', 'meetings', 'detection', 'live', 'computer'])
+  expect(notApplicable(placeOf('voice')!.tab, { display: false, user: false, mic: false })).toEqual(['mic', 'user'])
+  // A remote engine whose mic list came back empty: only the mic is known missing.
+  expect(na(engineCaps({ local: false, inputDevices: [] }))).toEqual(['voice'])
+  expect(na(engineCaps({ local: false }))).toEqual([])
+  expect(na(engineCaps({ local: true, inputDevices: [] }))).toEqual([])
+})
+
+test('the nav: device tabs leave General for the "This <device>" group, whose band is the group; nothing else moves', () => {
+  hide()
+  expect(deviceTabs().map((t) => t.id)).toEqual(['appearance', 'shortcuts'])
+  expect(navTabs(CATEGORIES[0]!).map((t) => t.id)).toEqual(['app'])
+  expect(navCategories()).toEqual(CATEGORIES)
+  expect(bandTabs(placeOf('shortcuts')!).map((t) => t.id)).toEqual(['appearance', 'shortcuts'])
+  expect(bandTabs(placeOf('app')!).map((t) => t.id)).toEqual(['app'])
+  expect(navTabs(CATEGORIES[1]!).map((t) => t.id)).toEqual(['models', 'helpers', 'providers'])
+  hide('app')
+  expect(navCategories().map((c) => c.id)).not.toContain('general')
+  expect(deviceTabs().map((t) => t.id)).toEqual(['appearance', 'shortcuts'])
 })

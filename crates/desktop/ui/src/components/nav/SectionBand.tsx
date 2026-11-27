@@ -6,6 +6,7 @@
 
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { type LucideIcon, PanelLeft } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { useViewDrag } from '@/components/chat/Panes'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
@@ -21,8 +22,9 @@ import { cn } from '@/lib/utils'
 import { supports } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
 
-/** One tab of a band: `id` is what `onValueChange` receives. */
-export type BandTab = { id: string; label: string; icon: LucideIcon }
+/** One tab of a band: `id` is what `onValueChange` receives. `tag` trails the label where labels show; `dim` greys a
+ * tab that still opens (Settings: not on this machine), and `hint` replaces its tooltip. */
+export type BandTab = { id: string; label: string; icon: LucideIcon; tag?: ReactNode; dim?: boolean; hint?: string }
 
 /** The band of a sidebar group (Agents, Library), whose tabs are its routes. */
 export function SectionBand({ group }: { group: Group }) {
@@ -108,15 +110,18 @@ export function TabBand({
               <TabsTrigger
                 key={tab.id}
                 value={tab.id}
-                title={tab.label}
+                title={tab.hint ?? tab.label}
                 aria-label={tab.label}
+                data-dim={tab.dim || undefined}
                 className={cn(
                   'h-full flex-1 rounded-none text-fg-tertiary hover:text-foreground data-[state=active]:text-foreground dark:text-fg-tertiary dark:hover:text-foreground group-data-[orientation=horizontal]/tabs:after:bottom-0 max-lg:min-w-10 max-lg:flex-auto',
                   insideTile ? 'max-lg:h-10' : 'max-lg:h-[52px]',
+                  tab.dim && 'opacity-60',
                 )}
               >
                 <tab.icon />
                 <span className="hidden md:inline">{tab.label}</span>
+                {tab.tag && <span className="hidden md:inline-flex">{tab.tag}</span>}
               </TabsTrigger>
             ),
           )}

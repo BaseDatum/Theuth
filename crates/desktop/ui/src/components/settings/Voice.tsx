@@ -44,7 +44,8 @@ const ENGINES: [SttEngine, string][] = [
 /** §7.2 defaults. */
 const END_DEFAULTS: EndPhrases = { send: ['send it'], scratch: ['scratch that'], literal: 'literal' }
 const HISTORY = 50
-const keys = {
+/** Exported for the settings nav, which reads the mic list to tell a mic-less engine (`scope.ts`). */
+export const keys = {
   devices: ['voice', 'input-devices'] as const,
   status: ['voice', 'status'] as const,
   settings: ['voice', 'settings'] as const,
