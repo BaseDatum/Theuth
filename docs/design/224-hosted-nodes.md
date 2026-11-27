@@ -4,10 +4,21 @@ Owner request 2026-11-26: "one-click hosted theuth node". A user with an existin
 cluster) supplies credentials — or theuth finds the provider CLI's — and theuth starts a remote
 container running a headless engine that joins the owner's mesh, keeps its state on a persistent
 volume, updates itself on new releases and stays up. Built first as the plugin `cloud-nodes`
-(design 216) so it can be tried before it moves into the app (§13). Kubernetes added the same day
-at the same priority as DigitalOcean.
+(design 216) so it could be tried; the app feature is the crate `cloudnodes` (§16) and the plugin
+stays a prototype the app does not use. Kubernetes added the same day at the same priority as
+DigitalOcean.
 
-Branch `feat/cloud-node`. Nothing here has created a cloud resource yet; §14 lists what was run.
+Branch `feat/cloud-node`. The DigitalOcean path (`scripts/cloud-node-do-test.sh`) was run live on
+2026-11-26: Droplet + volume + firewall, native install, joined the mesh in 232 s. The app path
+(§16) has not created a cloud resource; §14 and §16.9 list what was run.
+
+**Owner decisions for the app (2026-11-26, final):** 2 GB RAM is the minimum and the default
+everywhere (DO `s-1vcpu-2gb`, Fly `shared-cpu-1x` 2048 MB, Kubernetes request 2Gi), 4 and 8 GB
+offered; the monthly cost (server + disk) is in the create button's label and that press is the
+approval; **no SSH and no inbound port** on any node (no SSH key uploaded or attached; the
+public IPv4 stays, so peers can connect directly instead of through the relay — iroh encrypts
+end to end either way); the `engine` user on a VM node has passwordless sudo (agents on a node
+are meant to have root); the escape hatch is a terminal over the mesh (§16.6).
 
 ## 1. Shape
 
@@ -32,12 +43,12 @@ DigitalOcean, Hetzner, EC2/Lightsail instances get `t` under systemd with no Doc
 daemon, no image registry in the path, the updater's file is just a file); Fly.io, Kubernetes and
 RunPod run `ghcr.io/basedatum/theuth/engine`. Both paths share `theuth-install.sh`.
 
-- **DigitalOcean: a Droplet with a native install.** `s-1vcpu-1gb` Ubuntu 24.04; cloud-init
-  (`vm-cloud-init.sh`) creates user `engine` (uid 1000), mounts the Block Storage Volume at
+- **DigitalOcean: a Droplet with a native install.** `s-1vcpu-2gb` (the 2 GB minimum) Ubuntu 24.04; cloud-init
+  (`vm-cloud-init.sh`) creates user `engine` (uid 1000, passwordless sudo), mounts the Block Storage Volume at
   `/data`, installs the libraries `t` links, writes the release key and `theuth-install.sh`, and
   starts `theuth-engine.service` (`User=engine`, `Restart=always`, `RestartSec=5`, `ExecStartPre=
   theuth-install.sh install`) and `theuth-join.service`; a Cloud Firewall with no inbound rule
-  (optional tcp/22 from one CIDR). **Not App Platform**: it has no persistent volumes (an App's
+  and no SSH key on the Droplet (the test script keeps an opt-in tcp/22 for debugging; the app never offers it). **Not App Platform**: it has no persistent volumes (an App's
   filesystem is ephemeral and lost on every deploy or restart), so the vault, sessions and
   `/data/bin/t` would be lost, and it expects an HTTP service with a health check, which an
   outbound-only engine is not.
@@ -136,12 +147,12 @@ both sides (§14). Only `t mesh pair --remote` and `t mesh add --k8s` need a `t`
 `scripts/cloud-node-ticket.sh` stands in for the former with any `t`. An owner older than 183
 still pairs, but sends no keyring, so the node's replicated secrets would not open.
 
-**The 5-minute window** is the main operational risk: a VM node has to boot, install packages
-and download a ~450 MB tarball before `t` dials [INFERENCE: ~2–3 min on a DO Droplet, not
-measured]. Mint in the same command line as the create, so the clock starts at the create; a late
-node is re-paired with a fresh ticket (above). A longer TTL needs a parameter on
-`mesh_pairing_string` (a wire change); not done here because the live test runs against the
-installed release, which would not have it.
+**The 5-minute window** was the main operational risk: a VM node has to boot, install packages
+and download a ~450 MB tarball before `t` dials. Measured on DigitalOcean (live test, 2026-11-26):
+**232 s** from create to joined — inside 5 minutes, but with ~70 s to spare, and a slow apt
+mirror or a busy region would miss it. For the CLI paths above the ticket stays the 5-minute
+one; the app's cloud nodes use a **separate 15-minute single-use ticket** (§16.3), because a node
+without SSH has no way to receive a second ticket after boot.
 
 ## 5. Install, image and updates
 
@@ -289,8 +300,10 @@ fill its placeholders.
 ## 9. DigitalOcean in detail, and the live test
 
 `vm-cloud-init.sh` (bash, no `set -x`, log `/var/log/theuth-node.log`): `PasswordAuthentication
-no`; 1 GiB swap when the host allows it (a 1 GiB Droplet and a 1.2 GB binary); user `engine`
-(uid 1000); wait for `/dev/disk/by-id/scsi-0DO_Volume_theuth-<name>-data`, `mkfs.ext4` only when
+no`; 1 GiB swap when the host allows it; user `engine` (uid 1000) with **passwordless sudo** —
+`engine ALL=(ALL) NOPASSWD:ALL` in `/etc/sudoers.d/90-theuth-engine`, mode 0440, written to a temp
+file, checked with `visudo -cf` and only then moved into place, and `visudo -c` over the whole
+configuration afterwards (a bad drop-in is removed, never left to break sudo); wait for `/dev/disk/by-id/scsi-0DO_Volume_theuth-<name>-data`, `mkfs.ext4` only when
 `blkid` finds no filesystem, mount at `/data` (fstab `nofail`), owned by `engine`; `apt-get install`
 `ca-certificates curl git python3 ripgrep tar zstd minisign` and the five libraries `t` links;
 `/usr/local/share/theuth/pubkey.txt` and `/usr/local/lib/theuth-install.sh` from the template;
@@ -351,14 +364,15 @@ exist; `create(dry_run: false)` refuses.
 
 | Provider | Default | Instance | 10 GiB volume | Total |
 |---|---|---|---|---|
-| DigitalOcean | `s-1vcpu-1gb` lon1 | $6.00 | $1.00 | **$7.00** |
-| Fly.io | `shared-cpu-1x` 1 GB lhr | $1.94 + 0.75 GB × $5 = $5.69 | $1.50 | **$7.19** (no dedicated IPv4) |
-| AWS Lightsail | `micro_3_0` eu-west-2 | $7.00 | $1.00 | **$8.00** |
-| Kubernetes | — | the cluster's | the class's | — |
+| DigitalOcean | `s-1vcpu-2gb` lon1 | $12.00 | $1.00 | **$13.00** |
+| Fly.io | `shared-cpu-1x` 2 GB lhr | $1.94 + 1.75 GB × $5 = $10.69 | $1.50 | **$12.19** (no dedicated IPv4) |
+| AWS Lightsail (coming soon) | `small_3_0` eu-west-2 | $12.00 | $1.00 | **$13.00** |
+| Kubernetes | 2Gi request | the cluster's | the class's | — |
 
-Egress is within the providers' included transfer for a mesh node. `create`'s dry run prints the
-figure; DigitalOcean's 2 GiB size (`s-1vcpu-2gb`, $12) is the step up if the engine's memory
-needs it (the 1 GiB default has 1 GiB swap).
+2 GB is the owner's minimum (§ top); 4 GB (DO `s-2vcpu-4gb` $24, Fly `shared-cpu-2x` 4096 MB
+$21.38) and 8 GB (DO `s-4vcpu-8gb` $48, Fly `shared-cpu-4x` 8192 MB $42.76) are the steps up.
+Egress is within the providers' included transfer for a mesh node. The numbers live in one place,
+`crates/cloudnodes/src/providers/catalog.rs`; the UI shows `cloud_quote`'s total in the create button.
 
 ## 12. Fly.io notes
 
@@ -371,21 +385,12 @@ needs a pullable image (no `build`).
 
 ## 13. From plugin into the app
 
-1. **Records and RPC.** A `sandbox::Target::Cloud { provider, region, size, volume_gb }` beside
-   Docker/SSH/VM, with a `Computer` record per node (the record store 79 already has), so
-   `sandboxes_list` and Settings › Network › Machines show hosted nodes with the others. RPC
-   `node_create(spec, dry_run) -> Plan | Created`, `node_destroy(name, keep_volume)`,
-   `node_status(name)`; progress as the existing bring-up `Progress` lines.
-2. **Providers in Rust** (`crates/sandbox/src/cloud/{digitalocean,fly}.rs`, reqwest, the same calls
-   as `cloud_nodes.py`); Kubernetes is already Rust. The cloud-init becomes one `include_str!`
-   template; the plugin and the script are deleted.
-3. **Credentials** become vault rows (`cloud/digitalocean`, `cloud/fly`; 221 for external
-   stores), set from the UI; discovery of CLI files stays as the "import" button.
-4. **The ticket is minted in-process** (no CLI round-trip) and `mesh_pairing_string` gains an
-   optional TTL so a slow provider is not racing 5 minutes (one wire-schema accept).
-5. **UI**: Machines › Add › "Hosted node": provider, region, size with the monthly cost, Create;
-   the row turns green when the peer appears.
-6. **Teardown** unpairs as part of destroy (`mesh_remove`) once the record knows the peer id.
+Done on this branch as the crate `cloudnodes` (§16) rather than a `sandbox::Target::Cloud`: a
+cloud node's lifecycle (provider API, OAuth, quotes, a join measured in minutes) shares nothing
+with the sandbox actor's exec/put bring-up, and the sandbox crate links Docker, SSH and VM stacks
+an iOS engine cannot carry. `cloudnodes` depends on `sandbox` only behind its `kubernetes`
+feature. The plugin and `scripts/cloud-node-do-test.sh` stay as the prototype and the live-test
+tool; nothing in the app calls them.
 
 ## 14. Verification (this branch)
 
@@ -436,8 +441,154 @@ needs a pullable image (no `build`).
 
 ## 15. Open points
 
-- The 5-minute ticket vs. a Droplet that builds its image (§4); the TTL parameter (§13.4).
+- A cloud node whose 15-minute ticket expired before it dialled (§16.3) is marked failed;
+  recovery is destroy (keep the disk) + create, which mints a fresh ticket. No in-place re-pair
+  without SSH.
 - The engine image is private on ghcr; publishing it (package visibility) makes `image:` refs
   work for Fly and Kubernetes without registry credentials.
 - A 1.2 GB `t` (2.31.2): every boot-time update downloads ~450 MB; `/data` holds two copies
   during an install (10 GiB default volume is ample).
+
+## 16. Cloud nodes in the app (crate `cloudnodes`)
+
+### 16.1 Shape
+
+| Piece | Where |
+|---|---|
+| Wire types, topic `cloudnodes.events` | `crates/cloudnodes/src/types.rs` |
+| Provider clients behind `providers::Provider` (DO, Fly, Kubernetes), catalog (sizes, regions, prices), discovery, VM user-data | `crates/cloudnodes/src/providers/` |
+| Actor, node records (`<data_dir>/cloudnodes/<name>.json`, no secrets), the create job, credentials, DO OAuth client, RPC | `crates/cloudnodes/src/` |
+| Single-use remote ticket with its own TTL | `crates/mesh` (`RemoteTicket`) |
+| Terminal and engine log on another engine | `crates/agent` (`engine_terminal`, `engine_logs`, PTY relay) |
+| DigitalOcean code exchange | `crates/relay` (`/oauth/digitalocean/*`) |
+| UI | `crates/desktop/ui/src/components/cloud/`, fixture `src/dev/cloud-fixture.html`, screenshots `docs/design/224-assets/` |
+
+Providers in this build: **DigitalOcean** (full), **Kubernetes** (desktop engines only: it needs
+kubectl and a kubeconfig; `cloudnodes` feature `kubernetes`), **Fly.io** (every call implemented and
+unit-tested against recorded shapes, never run against Fly: the UI marks it *beta*), **AWS
+Lightsail** (listed with its price, *coming soon*, not creatable).
+
+### 16.2 RPC (owner `cloudnodes`, owner audience)
+
+`cloud_providers`, `cloud_import_credential(provider, id)`, `cloud_set_token(provider, token)`,
+`cloud_forget_credential(provider)`, `cloud_oauth_start(provider)`, `cloud_oauth_cancel(provider)`,
+`cloud_quote(spec)`, `cloud_k8s_info(context?)`, `cloud_create(spec)` (returns at once, state
+`creating`), `cloud_list` (`{nodes, errors}`), `cloud_status(name)`, `cloud_restart(name)`,
+`cloud_resize(name, memory_gb)`, `cloud_update(name)`, `cloud_destroy(name, keep_volume?)`,
+`cloud_terminal(name)`, `cloud_logs(name, tail?)`. Events: `CloudNodeChanged{node}`,
+`CloudNodeProgress{name, stage, line, pct, eta_secs}`, `CloudNodeRemoved{name}`,
+`CloudCredentialChanged{provider, connected, error}` — none carries a credential.
+
+The wizard calls these on **whatever engine the app is connected to**: the iPhone's own engine
+on a phone-only install, or a desktop/hub engine. A fresh engine already has a mesh identity
+(`<data_dir>/mesh/identity` is created on first start), so minting the ticket and having the node
+join *is* forming the mesh: the phone becomes its first member with nothing to copy or paste.
+
+### 16.3 The ticket: 15 minutes, single use, separate slot
+
+The engine mints the ticket itself right before it creates the server (`mesh::RemoteTicket
+{ttl_ms: 15 min}`), key-less like `t mesh pair --remote`. It is **not** the Settings pairing
+string: that slot holds one 5-minute token shared by every `mesh_pairing_string` call, and the
+user pairing a laptop while a node boots would otherwise consume the node's ticket (or the other
+way round). Remote tickets live in their own list, are removed on first use and pruned on expiry,
+and minting one opens no nearby window.
+
+Why 15 minutes and not re-minting: re-delivery after boot needs a channel into the node, and the
+node has none — no SSH, no inbound port, and user-data/Fly `files`/the Kubernetes Secret are
+read once at creation. A longer single-use ticket is the only sound option. Exposure: whoever
+presents it first becomes a peer and gets the vault keyring, so its lifetime matters; it travels
+only through the provider's own metadata channel, which already holds the node (an attacker with
+the user's provider account owns the node and its disk anyway), and it dies at first use. The
+measured join is 232 s (§4); 15 minutes covers a slow mirror, a busy region and Fly/Kubernetes
+image pulls of ~450 MB. If it expires first, the job marks the node failed and says so; destroy
+(keeping the disk) and create again mints a new one.
+
+### 16.4 The create job
+
+A detached task in the `cloudnodes` actor, persisted in the node record before anything is made,
+so it survives the UI closing and an engine restart (a `creating` record resumes watching the mesh
+until its ticket's deadline). Stages (`types::Stage`), each a `CloudNodeProgress` event and a
+record update:
+
+1. **Server** — mint the ticket; the provider makes firewall (DO: zero inbound rules), volume and
+   server, tagged `theuth-managed` + `theuth-node:<name>`; waits until the server runs.
+2. **Storage** — the `/data` volume is attached.
+3. **Install** — the node downloads and verifies the newest signed release (minisign, §5); the
+   engine cannot observe this directly, so the stage ends when the node dials the mesh.
+4. **Join** — a new peer named `<name>` appeared in `mesh_status`; waits until it is reachable.
+5. **Ready**.
+
+The percentage and "about N minutes left" are estimates from the measured 232 s.
+
+### 16.5 Credentials
+
+Vault rows `cloud/digitalocean` and `cloud/fly` (a backend family like `oauth/`: never listed, not
+expandable into prompts), JSON `{access_token, refresh_token?, expires_at_ms?, source}`. Never
+logged, never in an event or URL. Sources, in the order the UI offers them:
+
+- **Sign in with DigitalOcean** (primary, phone and desktop) — §16.7.
+- **Discovered on this machine** (desktop): doctl's `config.yaml` (each auth context), flyctl's
+  `~/.fly/config.yml`, kubeconfig contexts. Discovery reads files and returns labels only; the token
+  is copied into the vault when the user presses *Use it* (`cloud_import_credential`).
+- **Paste a token** (secondary link): checked against the provider (`GET /v2/account`) before it is
+  stored.
+
+Vault rows replicate across the mesh, so a node holds the provider token too (it already holds
+the whole keyring, §4).
+
+### 16.6 Terminal and logs over the mesh (the escape hatch)
+
+No SSH: *Open terminal* in a node's ⋯ menu calls `cloud_terminal(name)`, which forwards
+`engine_terminal` to the node's peer id; the node opens a login-shell PTY job in an owner root
+session and answers `{session, job}`. The UI attaches the existing `Terminal` component; PTY
+input/resize/screen calls and the `subscribe_pty` stream are relayed to the engine that owns the
+job (details in §16.9 as built). *View logs* calls `cloud_logs`, which forwards `engine_logs`: the
+tail of the node's `logs/theuth.log.<date>`, redacted on the node.
+
+### 16.7 Sign in with DigitalOcean
+
+DigitalOcean's authorization-code flow needs the client secret, which must not ship in the app, so
+the code exchange runs on theuth-relay (`relay.theuth.io`):
+
+1. The engine makes `state` and `verifier` (32 random bytes each, base64url) and
+   `challenge = base64url(sha256(verifier))`; `cloud_oauth_start` returns
+   `https://relay.theuth.io/oauth/digitalocean/start?state=…&challenge=…`, which the app opens in
+   the system browser (desktop) / Safari (iOS) with `openExternal`, the same helper every other
+   external link uses.
+2. The relay remembers `state → challenge` (10 min) and redirects to DigitalOcean's authorize page
+   (`client_id` from its env, `scope=read write`, redirect
+   `https://relay.theuth.io/oauth/digitalocean/callback`).
+3. The callback exchanges the code with the client secret and keeps the token response under
+   `state`, one-time; the page says to return to theuth. No token ever goes into a URL.
+4. The engine polls `POST /oauth/digitalocean/redeem {state, verifier}` every 2 s (≤ 10 min):
+   `202` pending, `200` the tokens once (the relay checks `sha256(verifier)` against the
+   challenge, so a party that saw the state in the browser cannot redeem), then the row is gone.
+5. Refresh: `POST /oauth/digitalocean/refresh {refresh_token}` when the access token is expired.
+
+Relay env: `THEUTH_DO_OAUTH_CLIENT_ID`, `THEUTH_DO_OAUTH_CLIENT_SECRET` (the routes answer 503 when
+unset). DigitalOcean app registration: name *theuth*, homepage `https://theuth.io`, callback URL
+`https://relay.theuth.io/oauth/digitalocean/callback`.
+
+### 16.8 UI flows
+
+Mockup approved by the owner; screenshots of the fixture in `docs/design/224-assets/`.
+
+- **Phone, no mesh (first run):** ① *Where should theuth run?* — an always-on cloud node (why:
+  keeps working when the phone sleeps, runs long tasks and routines overnight, full tools, one
+  memory across devices; from $12/mo, your own account) vs. *Just this iPhone*. ② Provider: DO
+  (*Sign in with DigitalOcean*), Fly.io (paste a token, beta), AWS Lightsail (coming soon); prices
+  for 2 GB; "the bill is from your own provider". ③ Name, region (nearest preselected from the
+  time zone), size 2/4/8 GB, cost, *No open ports · updates itself*, **Create node · $13/mo** — the
+  press is the approval. ④ Real stages, "you can leave this screen". ⑤ *<name> is ready* →
+  *Connect a model* (the model-provider sign-in), *Add my laptop too* (the existing pairing flow).
+- **Desktop wizard dialog:** step rail Provider / Configure / Create with the "why" note; provider
+  cards show discovered credentials; Configure has name/region/size and a collapsed *Advanced*
+  (disk 10 GB kept on delete, SSH access *Off (no inbound ports)*, updates follow stable). The
+  Kubernetes variant picks context, namespace (+ create), storage class (flags a cluster with no
+  default class) and offers *Block cluster network*, with a warning when the CNI is flannel
+  (detected from kube-system), which does not enforce NetworkPolicies.
+- **Existing mesh:** Settings › Machines lists cloud nodes with provider chip, region,
+  direct/relay, version + auto-update, monthly cost and a ⋯ menu (Restart, Resize, Update now,
+  Open terminal, View logs, Destroy — the confirmation names the node and the monthly saving, and
+  offers to keep the disk); *＋ Add cloud node* opens the wizard without the "why" screen. Phone:
+  an *Add a cloud node — always on, joins this mesh* entry for the engine switcher.
