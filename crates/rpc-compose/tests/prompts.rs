@@ -109,7 +109,7 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
                     args: serde_json::json!({ "command": "rm x" }),
                     risk: tools::Risk::Destructive,
                     call_id: None,
-                    always_ask: false,
+                    always_ask: None,
                 })
                 .await
                 .unwrap()

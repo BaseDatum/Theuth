@@ -12,7 +12,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
-import { setAlwaysAsk, useInvalidateAlwaysAsk } from '@/lib/always-ask'
+import { alwaysAskWhyText, setAlwaysAsk, useInvalidateAlwaysAsk } from '@/lib/always-ask'
 import { chatName } from '@/lib/attach'
 import { describe } from '@/lib/describe'
 import { useEngineLabel } from '@/lib/owner'
@@ -123,6 +123,11 @@ export const ApprovalCard = memo(function ApprovalCard({
         )}
       </div>
       {relayed && <div className="mt-0.5 text-xs text-fg-secondary">{relayedLine(approval.risk, owner, deadline)}</div>}
+      {always && approval.always_ask_why && (
+        <div data-always-ask-why="" className="mt-0.5 text-xs text-fg-secondary">
+          {alwaysAskWhyText(approval.always_ask_why, approval.tool)}
+        </div>
+      )}
       <pre className="mt-1 max-w-full overflow-x-auto font-mono text-xs leading-5 text-fg-secondary whitespace-pre-wrap">
         {describe(approval.tool, approval.args).join('\n')}
       </pre>

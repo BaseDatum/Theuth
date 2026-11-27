@@ -260,7 +260,7 @@ pub async fn confirm_loosening(
         args,
         risk: ::tools::Risk::Destructive,
         call_id: None,
-        always_ask: false,
+        always_ask: None,
     };
     ::tools::approval::ask_human_only_on(approval, req)
         .await

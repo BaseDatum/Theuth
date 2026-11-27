@@ -69,7 +69,7 @@ pub use activity::{
     Settle, Tracked,
 };
 pub use approval::{
-    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Approved, Decision, Dismiss,
+    AlwaysAskWhy, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Approved, Decision, Dismiss,
     ForgetSession, PendingApprovals, PendingHumanOnly, RequestHumanOnly, Resolve, ResolveBy,
     approved, approved_scope, ask_human_only, ask_human_only_on, pending_human_only,
 };

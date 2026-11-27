@@ -114,7 +114,7 @@ impl Consent {
             args,
             risk: ::tools::Risk::Destructive,
             call_id: None,
-            always_ask: false,
+            always_ask: None,
         })
         .await?;
         Self::from_approved(a, Some(asked_ms))

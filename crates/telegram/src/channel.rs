@@ -3367,6 +3367,7 @@ pub(crate) mod tests {
             risk: Risk::Mutating,
             human_only: false,
             always_ask: false,
+            always_ask_why: None,
         }
     }
 

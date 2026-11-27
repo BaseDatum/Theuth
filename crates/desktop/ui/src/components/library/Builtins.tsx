@@ -24,6 +24,8 @@ import {
 import { useDrafts } from '@/lib/drafts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
+import { alwaysAskSummary } from '@/lib/always-ask'
+import { useConnection } from '@/store/connection'
 
 /** Settings › Tools › Builtins (206): the harness's own tools by category, the MCP tab's twin. `?session=` scopes the
  * "Off here" switches to that chat; in a chat, the Tools sheet shows the same list for it. */
@@ -64,9 +66,15 @@ export function Builtins({ session }: { session: string | null }) {
   const cats = session === '' ? withDraftHides(list.data ?? [], draft) : (list.data ?? [])
   const shown = search(cats, query)
   const searching = query.trim()
+  const approvalsOff = useConnection((s) => s.info?.approvals.global === false)
   return (
     <Section title="Built-in tools">
       {session === null && <p className="text-[13px] text-fg-tertiary">"Off here" needs a chat. {CHAT_HINT}</p>}
+      {session === null && approvalsOff && (
+        <p data-approvals-off="" className="text-[13px] text-fg-tertiary">
+          Approvals are off: built-ins run without asking, except what always asks (each row says so).
+        </p>
+      )}
       <div className="relative py-2">
         <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-fg-tertiary" />
         <Input
@@ -182,6 +190,11 @@ function ToolRow({
           )}
         </div>
         <div className="line-clamp-2 text-[13px] wrap-break-word text-fg-secondary">{t.description}</div>
+        {effectiveLine(t) && (
+          <div data-effective={t.action ?? ''} className="text-[12px] wrap-break-word text-fg-tertiary">
+            {effectiveLine(t)}
+          </div>
+        )}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-2">
         <AlwaysAskSelect name={t.name} session={session} />
@@ -196,6 +209,16 @@ function ToolRow({
       </div>
     </div>
   )
+}
+
+/** A builtin's effective state under its name: what a plain call does (the engine's answer for this chat, or harness-wide
+ * in Settings), then the marked secret connections that still make it ask when it uses them. Null on an engine that
+ * predates `action`. */
+export function effectiveLine(t: Pick<BuiltinTool, 'action' | 'secret_asks'>): string | null {
+  const base = t.action === 'allow' ? 'Runs without asking' : t.action === 'ask' ? 'Asks before running' : t.action === 'deny' ? 'Refused (policy or cap)' : null
+  if (base === null) return null
+  const secrets = t.secret_asks?.length ? `; asks when it uses ${alwaysAskSummary(t.secret_asks)} (always ask)` : ''
+  return base + secrets
 }
 
 /** On / Off here / Off always. `mixed`: no item pressed. "Off here" needs the chat it applies to. */
