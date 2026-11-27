@@ -2,7 +2,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Share2 } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { names, useContacts } from '@/lib/contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { A2AExportStatus as A2aExportStatus } from "@/rpc/bindings/method.a2a.output"
@@ -11,6 +11,56 @@ import { cn } from '@/lib/utils'
 import { useMessagingSheet } from './messaging-sheet'
 
 const NONE: A2aExportStatus[] = []
+
+/** Persisted per-device flag: the user dismissed the global "Agent communication off for every session" notice. */
+export const OFF_NOTICE_DISMISSED_KEY = 'theuth.comm-off-notice.dismissed'
+
+let dismissedInMemory = false
+const listeners = new Set<() => void>()
+const notify = () => {
+  for (const fn of listeners) fn()
+}
+
+function readOffNoticeDismissed(): boolean {
+  if (dismissedInMemory) return true
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(OFF_NOTICE_DISMISSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function subscribeOffNoticeDismissed(cb: () => void): () => void {
+  listeners.add(cb)
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === null || e.key === OFF_NOTICE_DISMISSED_KEY) cb()
+  }
+  if (typeof window !== 'undefined') window.addEventListener('storage', onStorage)
+  return () => {
+    listeners.delete(cb)
+    if (typeof window !== 'undefined') window.removeEventListener('storage', onStorage)
+  }
+}
+
+export function dismissOffNotice(): void {
+  dismissedInMemory = true
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(OFF_NOTICE_DISMISSED_KEY, '1')
+  } catch {
+    // storage unavailable (private mode / sandbox): still hide for this session
+  }
+  notify()
+}
+
+export function resetOffNoticeDismissed(): void {
+  dismissedInMemory = false
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(OFF_NOTICE_DISMISSED_KEY)
+  } catch {
+    // ignore
+  }
+  notify()
+}
 
 /**
  * Authoritative switch state for `session` (`null` = the global default) and the HTTP A2A exports publishing
@@ -70,6 +120,7 @@ export function CommunicationNotice({
 }) {
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(false)
+  const dismissed = useSyncExternalStore(subscribeOffNoticeDismissed, readOffNoticeDismissed, () => false)
   if (!state) return null
   const open = (
     <button
@@ -86,16 +137,30 @@ export function CommunicationNotice({
     </button>
   )
   if (!state.effective) {
+    const globalOff = !state.global && exports.length === 0
+    if (globalOff && dismissed) return null
     return (
       <p
         role="status"
-        className="mb-2 flex min-h-11 items-center gap-2 rounded-xl border bg-background px-3 py-1 text-sm text-fg-secondary"
+        data-comm-off-notice=""
+        className="mb-2 flex min-h-11 flex-wrap items-center gap-x-2 gap-y-0.5 rounded-xl border bg-background px-3 py-1 text-sm text-fg-secondary"
       >
         <span className="min-w-0 flex-1">
           Agent communication {offReason(state)}
           {exports.length > 0 && '; this session is exported and becomes reachable when turned on'}
         </span>
-        {open}
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          {open}
+          {globalOff && (
+            <button
+              type="button"
+              className="shrink-0 px-2 text-fg-tertiary hover:text-foreground pointer-coarse:min-h-11"
+              onClick={dismissOffNotice}
+            >
+              Don’t show again
+            </button>
+          )}
+        </span>
       </p>
     )
   }

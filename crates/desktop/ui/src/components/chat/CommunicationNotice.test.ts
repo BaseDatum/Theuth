@@ -4,13 +4,15 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { A2AExportStatus } from '@/rpc/bindings/method.a2a.output'
 import type { CommunicationState } from '@/rpc/bindings/method.agent.output'
-import { CommunicationNotice, sharedExports } from './CommunicationNotice'
+import { CommunicationNotice, OFF_NOTICE_DISMISSED_KEY, resetOffNoticeDismissed, sharedExports } from './CommunicationNotice'
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
 
 const exp = (o: Partial<A2AExportStatus> = {}): A2AExportStatus =>
   ({ name: 'logo-design-with-theuth-awaiting', session: 's1', url: 'http://x/agents/logo/rpc', peer: 'lab', ...o }) as A2AExportStatus
 const ON = { effective: true, global: true, opted_out: false, inherited_from: null, source: 'default' } as unknown as CommunicationState
+const GLOBAL_OFF = { effective: false, global: false, opted_out: false, inherited_from: null, source: 'default' } as unknown as CommunicationState
+const OPTED_OUT = { effective: false, global: true, opted_out: true, inherited_from: null, source: 'default' } as unknown as CommunicationState
 
 test('stopping a share leaves the export with no peer: reachable by nobody, so not shared and no banner', () => {
   // Shared with the contact bob: the header chip says it, not this banner.
@@ -28,6 +30,7 @@ afterEach(() => {
   act(() => root?.unmount())
   host?.remove()
   root = null
+  act(() => resetOffNoticeDismissed())
 })
 
 function mount(exports: A2AExportStatus[], state: CommunicationState = ON) {
@@ -65,4 +68,29 @@ test('compact: one line on a phone, two at most wider; a tap on the text shows t
   expect(text.className).not.toContain('line-clamp')
   act(() => text.click())
   expect(text.className).toContain('max-sm:line-clamp-1')
+})
+
+test('global-off notice offers "Don’t show again", persists dismissal across mounts, and never hides export warnings or per-session opt-outs', () => {
+  const el = mount([], GLOBAL_OFF)
+  expect(el.querySelector('[data-comm-off-notice]')).not.toBeNull()
+  const dismiss = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Don’t show again')
+  expect(dismiss).toBeDefined()
+
+  act(() => dismiss!.click())
+  expect(localStorage.getItem(OFF_NOTICE_DISMISSED_KEY)).toBe('1')
+  expect(el.querySelector('[data-comm-off-notice]')).toBeNull()
+
+  // New mount (e.g. another session or new chat) stays hidden.
+  act(() => root!.unmount())
+  expect(mount([], GLOBAL_OFF).querySelector('[data-comm-off-notice]')).toBeNull()
+
+  // Exported session still warns even when global-off notice is dismissed.
+  act(() => root!.unmount())
+  const exported = mount([exp()], GLOBAL_OFF)
+  expect(exported.querySelector('[data-comm-off-notice]')?.textContent).toContain('this session is exported')
+
+  // Per-session opt-out (global is on) still explains why this chat is off.
+  act(() => root!.unmount())
+  const optedOut = mount([], OPTED_OUT)
+  expect(optedOut.querySelector('[data-comm-off-notice]')?.textContent).toContain('off for this session')
 })
