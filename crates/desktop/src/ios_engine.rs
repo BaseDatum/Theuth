@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::fmt::{Display, Write as _};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -52,8 +52,8 @@ use runtime::{Plugin, Runtime, SessionId};
 use schemars::JsonSchema;
 use search::{Coverage, PageState, SearchCategory, SearchNotice, SearchPage, TextMatch};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
-use tokio::net::TcpListener;
+use tauri::{AppHandle, Emitter as _, Manager};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, oneshot, watch};
 use tokio::time::Instant;
 use tools::{
@@ -104,10 +104,187 @@ enum BootStatus {
     Failed(String),
 }
 
+/// Event emitted whenever the embedded iOS engine confirms or rebinds its loopback RPC listener
+/// (e.g., after returning from iOS background / device lock).
+const IOS_ENGINE_READY_EVENT: &str = "ios-engine-ready";
+/// Loopback liveness probe timeout when verifying an existing `TcpListener` on resume.
+const LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+/// Maximum wait for the previous `rpc::accept` task to release its socket on background/rebind.
+const LISTENER_STOP_TIMEOUT: Duration = Duration::from_millis(250);
+
 #[derive(Clone)]
 struct LifecycleHandle {
     handle: tokio::runtime::Handle,
     rt: Runtime,
+    listener: Arc<RpcListenerManager>,
+    suspended: Arc<AtomicBool>,
+}
+
+struct RpcListenerInner {
+    preferred_port: u16,
+    addr: Option<SocketAddr>,
+    stop_tx: Option<oneshot::Sender<()>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Apple TN2277-compliant loopback RPC listener supervisor for iOS.
+///
+/// XNU can reclaim listening TCP sockets while an iOS app is suspended in the background or while
+/// the phone is locked, leaving a previously bound `TcpListener` defunct (`SO_DEFUNCT`). This
+/// manager closes the listener cleanly after [`agent::suspend_engine`] finishes in the background,
+/// and probes/rebinds it immediately on `WillEnterForeground`, `DidBecomeActive`,
+/// `ProtectedDataDidBecomeAvailable`, and `connection()` calls — preferring the original port so
+/// existing WebSocket clients reconnect cleanly and emitting `ios-engine-ready` with the current
+/// [`Connection`] so the WebView can update its URL and dial immediately if the port changed.
+struct RpcListenerManager {
+    app: AppHandle,
+    methods: jsonrpsee::Methods,
+    token: Arc<str>,
+    data_dir: PathBuf,
+    rt: Runtime,
+    status_tx: watch::Sender<BootStatus>,
+    epoch: AtomicU64,
+    inner: tokio::sync::Mutex<RpcListenerInner>,
+}
+
+impl RpcListenerManager {
+    fn new(
+        app: AppHandle,
+        methods: jsonrpsee::Methods,
+        token: Arc<str>,
+        data_dir: PathBuf,
+        rt: Runtime,
+        status_tx: watch::Sender<BootStatus>,
+    ) -> Self {
+        Self {
+            app,
+            methods,
+            token,
+            data_dir,
+            rt,
+            status_tx,
+            epoch: AtomicU64::new(0),
+            inner: tokio::sync::Mutex::new(RpcListenerInner {
+                preferred_port: 0,
+                addr: None,
+                stop_tx: None,
+                task: None,
+            }),
+        }
+    }
+
+    fn bump_epoch(&self) -> u64 {
+        self.epoch.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn connection_for(&self, addr: SocketAddr) -> Connection {
+        Connection {
+            url: format!("ws://{addr}/?token={}", self.token),
+            token: self.token.to_string(),
+            data_dir: self.data_dir.clone(),
+            owned: true,
+        }
+    }
+
+    /// Ensure the loopback RPC listener is bound and accepting TCP connections.
+    ///
+    /// Probes any live listener with a short loopback TCP connect; if it was closed for background
+    /// or reclaimed by XNU, stops the old task and binds a fresh listener (trying the previous port
+    /// first, then `127.0.0.1:0`). Returns `(connection, rebound)`.
+    async fn ensure_alive(&self, emit_always: bool) -> anyhow::Result<(Connection, bool)> {
+        let mut inner = self.inner.lock().await;
+        if let (Some(addr), Some(task)) = (inner.addr, inner.task.as_ref())
+            && !task.is_finished()
+            && probe_loopback(addr).await
+        {
+            let conn = self.connection_for(addr);
+            if emit_always {
+                let _ = self.app.emit(IOS_ENGINE_READY_EVENT, &conn);
+            }
+            return Ok((conn, false));
+        }
+
+        // Tear down any dead/previous listener task before rebinding.
+        stop_listener_inner(&mut inner).await;
+
+        let listener = if inner.preferred_port != 0 {
+            match TcpListener::bind(("127.0.0.1", inner.preferred_port)).await {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::debug!(
+                        port = inner.preferred_port,
+                        "ios rpc rebind preferred port failed ({e}); binding ephemeral port"
+                    );
+                    TcpListener::bind("127.0.0.1:0").await?
+                }
+            }
+        } else {
+            TcpListener::bind("127.0.0.1:0").await?
+        };
+        let addr = listener.local_addr()?;
+        let rebound = inner.preferred_port != 0;
+        inner.preferred_port = addr.port();
+        inner.addr = Some(addr);
+
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let rt_shutdown = self.rt.shutdown.clone();
+        let methods = self.methods.clone();
+        let token = self.token.clone();
+        let task = tokio::spawn(rpc::accept(listener, methods, token, async move {
+            tokio::select! {
+                _ = stop_rx => {}
+                _ = rt_shutdown.cancelled() => {}
+            }
+        }));
+        inner.stop_tx = Some(stop_tx);
+        inner.task = Some(task);
+
+        rpc::engine::set_listen(addr.to_string());
+        let conn = self.connection_for(addr);
+        let _ = self.status_tx.send(BootStatus::Ready(conn.clone()));
+        tracing::info!(%addr, rebound, "ios rpc listening");
+        if rebound || emit_always {
+            let _ = self.app.emit(IOS_ENGINE_READY_EVENT, &conn);
+        }
+        Ok((conn, rebound))
+    }
+
+    /// Close the loopback listener cleanly before iOS suspends the process (TN2277), unless a
+    /// newer foreground transition has already superseded `expected_epoch`.
+    async fn suspend_for_background(&self, expected_epoch: u64) {
+        if self.epoch.load(Ordering::Acquire) != expected_epoch {
+            return;
+        }
+        let mut inner = self.inner.lock().await;
+        if self.epoch.load(Ordering::Acquire) != expected_epoch {
+            return;
+        }
+        if inner.addr.is_some() || inner.task.is_some() {
+            stop_listener_inner(&mut inner).await;
+            tracing::info!("ios rpc listener closed for background");
+        }
+    }
+}
+
+async fn stop_listener_inner(inner: &mut RpcListenerInner) {
+    inner.addr = None;
+    if let Some(tx) = inner.stop_tx.take() {
+        let _ = tx.send(());
+    }
+    if let Some(mut task) = inner.task.take()
+        && tokio::time::timeout(LISTENER_STOP_TIMEOUT, &mut task)
+            .await
+            .is_err()
+    {
+        task.abort();
+    }
+}
+
+async fn probe_loopback(addr: SocketAddr) -> bool {
+    matches!(
+        tokio::time::timeout(LISTENER_PROBE_TIMEOUT, TcpStream::connect(addr)).await,
+        Ok(Ok(_))
+    )
 }
 
 /// Extension carrying the declared plugin list for OpenRPC discovery.
@@ -152,10 +329,11 @@ impl IosEngine {
         let data_dir = resolve_data_dir(app);
         let device_name = detect_device_name();
         let inner = self.inner.clone();
+        let app_handle = app.clone();
         let spawn = std::thread::Builder::new()
             .name("ios-engine".into())
             .stack_size(ENGINE_STACK_SIZE)
-            .spawn(move || run_engine_thread(inner, data_dir, device_name));
+            .spawn(move || run_engine_thread(inner, app_handle, data_dir, device_name));
         if let Err(err) = spawn {
             let msg = format!("failed to spawn ios-engine thread: {err}");
             tracing::error!("{msg}");
@@ -163,14 +341,16 @@ impl IosEngine {
         }
     }
 
-    /// Ensure the embedded engine is starting and wait until its loopback RPC listener is ready.
+    /// Ensure the embedded engine is starting, verify its loopback RPC listener is alive
+    /// (rebinding it on the engine runtime if iOS reclaimed or closed it in the background),
+    /// and return the current [`Connection`].
     pub async fn connection(&self, app: &AppHandle) -> Result<Connection, String> {
         self.start(app);
         let mut rx = self.inner.status_rx.clone();
-        loop {
+        let initial = loop {
             let status = rx.borrow_and_update().clone();
             match status {
-                BootStatus::Ready(conn) => return Ok(conn),
+                BootStatus::Ready(conn) => break conn,
                 BootStatus::Failed(err) => return Err(err),
                 BootStatus::Starting => {
                     if rx.changed().await.is_err() {
@@ -178,7 +358,18 @@ impl IosEngine {
                     }
                 }
             }
+        };
+        if let Some(lc) = self.inner.lifecycle.lock().clone() {
+            let listener = lc.listener.clone();
+            if let Ok(Ok((conn, _))) = lc
+                .handle
+                .spawn(async move { listener.ensure_alive(false).await })
+                .await
+            {
+                return Ok(conn);
+            }
         }
+        Ok(initial)
     }
 }
 
@@ -223,7 +414,12 @@ fn detect_device_name() -> Arc<str> {
 
 /// Dedicated OS thread body: installs crypto/JS prerequisites, constructs the Tokio runtime,
 /// boots the slim iOS engine, signals readiness, and parks until shutdown.
-fn run_engine_thread(state: Arc<EngineState>, data_dir: PathBuf, device_name: Arc<str>) {
+fn run_engine_thread(
+    state: Arc<EngineState>,
+    app: AppHandle,
+    data_dir: PathBuf,
+    device_name: Arc<str>,
+) {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     js_runtime::init_platform();
 
@@ -243,7 +439,7 @@ fn run_engine_thread(state: Arc<EngineState>, data_dir: PathBuf, device_name: Ar
     };
 
     runtime.block_on(async move {
-        match boot_engine(&state, data_dir, device_name).await {
+        match boot_engine(&state, app, data_dir, device_name).await {
             Ok(rt) => {
                 rt.shutdown.cancelled().await;
             }
@@ -259,6 +455,7 @@ fn run_engine_thread(state: Arc<EngineState>, data_dir: PathBuf, device_name: Ar
 /// Boot the slim iOS runtime and all 13 iOS plugins, returning the running [`Runtime`].
 async fn boot_engine(
     state: &EngineState,
+    app: AppHandle,
     data_dir: PathBuf,
     device_name: Arc<str>,
 ) -> anyhow::Result<Runtime> {
@@ -282,8 +479,7 @@ async fn boot_engine(
     let _ = rt.extension(|| DeviceName(device_name));
     install_hooks(&rt);
 
-    let (bound_tx, bound_rx) = oneshot::channel();
-    let methods_slot = Arc::new(OnceLock::new());
+    let listener_slot: Arc<OnceLock<Arc<RpcListenerManager>>> = Arc::new(OnceLock::new());
 
     let mut plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(tools::ToolsPlugin),
@@ -302,9 +498,7 @@ async fn boot_engine(
         Box::new(cloudnodes::CloudPlugin),
         Box::new(IosSearchToolsPlugin),
         Box::new(IosRpcPlugin {
-            token: token.clone(),
-            methods: methods_slot.clone(),
-            bound_tx: Some(bound_tx),
+            listener: listener_slot.clone(),
         }),
     ];
 
@@ -318,7 +512,15 @@ async fn boot_engine(
         display: true,
         audio: true,
     });
-    let _ = methods_slot.set(methods);
+    let listener_mgr = Arc::new(RpcListenerManager::new(
+        app,
+        methods,
+        token.clone(),
+        data_dir.clone(),
+        rt.clone(),
+        state.status_tx.clone(),
+    ));
+    let _ = listener_slot.set(listener_mgr.clone());
 
     // Tell `ToolRegistry` only about the iOS-loaded lifecycle participants so private
     // sessions open immediately without waiting for desktop-only participants.
@@ -350,22 +552,16 @@ async fn boot_engine(
     // Every iOS plugin has registered its actors; stop `lookup_when` polling for omitted plugins.
     rt.mark_plugins_started();
 
-    let addr = bound_rx
-        .await
-        .map_err(|_| anyhow::anyhow!("ios rpc plugin exited without binding a port"))?;
-    let conn = Connection {
-        url: format!("ws://{addr}/?token={token}"),
-        token: token.to_string(),
-        data_dir,
-        owned: true,
-    };
+    let (conn, _) = listener_mgr.ensure_alive(false).await?;
 
     *state.lifecycle.lock() = Some(LifecycleHandle {
         handle: tokio::runtime::Handle::current(),
         rt: rt.clone(),
+        listener: listener_mgr,
+        suspended: Arc::new(AtomicBool::new(false)),
     });
-    let _ = state.status_tx.send(BootStatus::Ready(conn));
-    tracing::info!(%addr, "ios-engine ready");
+    let _ = state.status_tx.send(BootStatus::Ready(conn.clone()));
+    tracing::info!(url = %conn.url, "ios-engine ready");
     Ok(rt)
 }
 
@@ -465,9 +661,7 @@ fn ios_rpc_composition(
 
 /// Slim loopback RPC transport plugin for iOS.
 struct IosRpcPlugin {
-    token: Arc<str>,
-    methods: Arc<OnceLock<jsonrpsee::Methods>>,
-    bound_tx: Option<oneshot::Sender<SocketAddr>>,
+    listener: Arc<OnceLock<Arc<RpcListenerManager>>>,
 }
 
 #[async_trait::async_trait]
@@ -480,27 +674,13 @@ impl Plugin for IosRpcPlugin {
         rt.register_wire_event::<StreamControl>().await
     }
 
-    async fn start(mut self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
-        let cfg: rpc::RpcConfig = rt.section("rpc").unwrap_or_else(|_| rpc::RpcConfig {
-            listen: "127.0.0.1:0".into(),
-        });
-        let methods = self
-            .methods
+    async fn start(self: Box<Self>, _rt: &Runtime) -> anyhow::Result<()> {
+        let mgr = self
+            .listener
             .get()
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("ios rpc methods were not initialized"))?;
-        let listener = TcpListener::bind(cfg.listen.as_str()).await?;
-        let addr = listener.local_addr()?;
-        rpc::engine::set_listen(addr.to_string());
-        tracing::info!(%addr, "ios rpc listening");
-        let shutdown = rt.shutdown.clone();
-        let token = self.token.clone();
-        tokio::spawn(rpc::accept(listener, methods, token, async move {
-            shutdown.cancelled().await;
-        }));
-        if let Some(tx) = self.bound_tx.take() {
-            let _ = tx.send(addr);
-        }
+            .ok_or_else(|| anyhow::anyhow!("ios rpc listener manager was not initialized"))?;
+        mgr.ensure_alive(false).await?;
         Ok(())
     }
 }
@@ -2488,8 +2668,11 @@ mod lifecycle {
     use objc2_foundation::{
         NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol,
     };
+    use std::sync::atomic::Ordering;
+
     use objc2_ui_kit::{
-        UIApplication, UIApplicationDidEnterBackgroundNotification,
+        UIApplication, UIApplicationDidBecomeActiveNotification,
+        UIApplicationDidEnterBackgroundNotification, UIApplicationProtectedDataDidBecomeAvailable,
         UIApplicationWillEnterForegroundNotification,
     };
     use tauri::AppHandle;
@@ -2531,13 +2714,31 @@ mod lifecycle {
             move || on_did_enter_background(&bg_app, &bg_lifecycle),
         );
 
-        // WillEnterForeground -> thaw_engine.
-        let fg_lifecycle = lifecycle;
+        // WillEnterForeground -> ensure loopback RPC listener is alive (rebind if closed/reclaimed) + thaw_engine.
+        let fg_lifecycle = lifecycle.clone();
         observe(
             &center,
             // SAFETY: UIKit static notification name constant.
             unsafe { UIApplicationWillEnterForegroundNotification },
-            move || on_will_enter_foreground(&fg_lifecycle),
+            move || on_resume(&fg_lifecycle, true, "will_enter_foreground"),
+        );
+
+        // DidBecomeActive -> probe/rebind loopback RPC listener (catches lock/unlock & interrupted suspends).
+        let active_lifecycle = lifecycle.clone();
+        observe(
+            &center,
+            // SAFETY: UIKit static notification name constant.
+            unsafe { UIApplicationDidBecomeActiveNotification },
+            move || on_resume(&active_lifecycle, false, "did_become_active"),
+        );
+
+        // ProtectedDataDidBecomeAvailable -> fires when unlocking a Face ID / passcode-locked iPhone.
+        let pd_lifecycle = lifecycle;
+        observe(
+            &center,
+            // SAFETY: UIKit static notification name constant.
+            unsafe { UIApplicationProtectedDataDidBecomeAvailable },
+            move || on_resume(&pd_lifecycle, false, "protected_data_available"),
         );
     }
 
@@ -2601,9 +2802,12 @@ mod lifecycle {
             }
         }
 
+        let bg_epoch = lc.listener.bump_epoch();
+        lc.suspended.store(true, Ordering::Release);
         let app_done = app.clone();
         let slot_done = slot;
         let rt = lc.rt.clone();
+        let listener = lc.listener.clone();
         lc.handle.spawn(async move {
             match tokio::time::timeout(SUSPEND_TIMEOUT, agent::suspend_engine(&rt)).await {
                 Ok(report) => {
@@ -2616,18 +2820,48 @@ mod lifecycle {
                     );
                 }
             }
+            // TN2277: release the listening TCP socket before iOS suspends the process so XNU
+            // cannot reclaim it into a defunct descriptor. Guarded by `bg_epoch` so a rapid
+            // foreground return never loses its freshly rebound listener.
+            listener.suspend_for_background(bg_epoch).await;
             end_background_task(&app_done, &slot_done);
         });
     }
 
-    fn on_will_enter_foreground(lifecycle: &Arc<parking_lot::Mutex<Option<LifecycleHandle>>>) {
+    fn on_resume(
+        lifecycle: &Arc<parking_lot::Mutex<Option<LifecycleHandle>>>,
+        emit_always: bool,
+        reason: &'static str,
+    ) {
         let Some(lc) = lifecycle.lock().clone() else {
             return;
         };
+        // Bump epoch synchronously on the main thread so any in-flight background suspend task
+        // will not close the listener after we start resuming.
+        lc.listener.bump_epoch();
+        let should_thaw = lc.suspended.swap(false, Ordering::AcqRel);
         let rt = lc.rt.clone();
+        let listener = lc.listener.clone();
         lc.handle.spawn(async move {
-            let resumed = agent::thaw_engine(&rt).await;
-            tracing::info!(resumed, "ios_engine: thawed for foreground");
+            // Rebind/verify the loopback RPC listener BEFORE thawing turns so the WebView can
+            // reconnect immediately.
+            match listener.ensure_alive(emit_always || should_thaw).await {
+                Ok((conn, rebound)) => {
+                    tracing::info!(
+                        reason,
+                        rebound,
+                        url = %conn.url,
+                        "ios_engine: loopback listener ready on resume"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(reason, "ios_engine: failed to restore loopback listener: {e:#}");
+                }
+            }
+            if should_thaw {
+                let resumed = agent::thaw_engine(&rt).await;
+                tracing::info!(reason, resumed, "ios_engine: thawed for foreground");
+            }
         });
     }
 

@@ -40,6 +40,10 @@ const devConnection = (): Connection => {
 export const connection = (): Promise<Connection> =>
   isTauri() ? invoke<Connection>('connection') : Promise.resolve(devConnection())
 
+/** Emitted by the embedded iOS engine whenever its loopback RPC listener is verified or rebound after resume. */
+export const onIosEngineReady = (cb: (conn: Connection) => void) =>
+  isIos() ? on<Connection>('ios-engine-ready', cb) : Promise.resolve(() => {})
+
 /** The pty transcript so far; `onLaunchLog` carries the increments. Desktop-only. */
 export const launchLog = (): Promise<string> =>
   isDesktop() ? invoke<string>('launch_log') : Promise.resolve('')
