@@ -14,6 +14,7 @@ import { type CloudDialog, CloudNodesSettings } from '@/components/cloud/CloudNo
 import { localQuote } from '@/components/cloud/format'
 import { cloudKeys } from '@/components/cloud/queries'
 import { Card } from '@/components/cloud/steps'
+import { NodeDesktopPanel } from '@/components/cloud/NodeDesktop'
 import type { CloudApi, CloudList, CloudNode, K8sInfo, ProviderInfo, ProviderKind, Region, SizeOption } from '@/components/cloud/types'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { type Api, METHODS, SUBSCRIPTIONS } from '@/rpc/bindings/client'
@@ -42,8 +43,9 @@ const PROVIDERS: ProviderInfo[] = [
     available: true,
     beta: false,
     desktop_only: false,
-    connected: !phone && state !== 'desktop-provider',
-    source: phone ? null : 'imported',
+    // Signed in from the configure step on (the phone got there through Sign in with DigitalOcean).
+    connected: state !== 'desktop-provider' && state !== 'phone-provider' && state !== 'phone-choose',
+    source: phone ? 'oauth' : 'imported',
     discovered: phone ? [] : [{ id: 'doctl:default', label: 'doctl login', detail: 'context "default"', path: '~/Library/Application Support/doctl/config.yaml' }],
     oauth: true,
     sizes: sizes([[2, 1, 's-1vcpu-2gb', 12], [4, 2, 's-2vcpu-4gb', 24], [8, 4, 's-4vcpu-8gb', 48]]),
@@ -125,6 +127,7 @@ const node = (n: Partial<CloudNode> & Pick<CloudNode, 'name' | 'provider' | 'sta
   version: null,
   auto_update: true,
   created_ms: now - 86_400_000,
+  desktop: true,
   k8s: null,
   ...n,
 })
@@ -168,7 +171,16 @@ const cloud: CloudApi = {
   // The browser half has no fixture: the wait stays until Cancel.
   cloud_oauth_start: (k) => ok({ url: `https://relay.theuth.io/oauth/${k}/start?fixture` }),
   cloud_oauth_cancel: () => ok(null),
-  cloud_quote: (spec) => ok(localQuote(info(spec.provider), spec.memory_gb, spec.volume_gb ?? 10) ?? Promise.reject(new Error('no such size'))) as never,
+  cloud_quote: (spec) => ok(localQuote(spec.provider, info(spec.provider).sizes, info(spec.provider).volume_usd_per_gb, spec.memory_gb, spec.volume_gb ?? 10) as never),
+  // Live sizes: DigitalOcean priced (fake numbers, fixture only); Fly.io and Kubernetes give no prices; the
+  // `-price-unavailable` state has DigitalOcean fail, the `-loading` one never answers (the skeleton).
+  cloud_sizes: (k) => {
+    if (state === 'phone-configure-loading') return new Promise(() => undefined)
+    const unpriced = k !== 'digitalocean' || state === 'phone-configure-price-unavailable'
+    const sizes = info(k).sizes.map((s) => ({ ...s, monthly_usd: unpriced ? null : s.monthly_usd }))
+    return ok({ sizes, priced: !unpriced, error: state === 'phone-configure-price-unavailable' ? 'the pricing API did not answer' : null })
+  },
+  cloud_desktop: () => ok({ ws_url: 'ws://127.0.0.1:9/fixture', password: 'fixture', geometry: '1280×800', engine: 'e1f2' }),
   cloud_k8s_info: () => ok(K8S),
   cloud_create: (spec) => ok(node({ name: spec.name, provider: spec.provider, state: 'creating', region: spec.region, region_label: info(spec.provider).regions.find((r) => r.id === spec.region)?.label ?? null, stage: 'server' })),
   cloud_list: () => ok(LIST),
@@ -221,6 +233,10 @@ const WIZARD: Record<string, { entry: WizardEntry; initial: WizardInitial }> = {
   'phone-choose': { entry: 'first-run', initial: {} },
   'phone-provider': { entry: 'first-run', initial: { step: 'provider', spec: { provider: 'digitalocean' } } },
   'phone-configure': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
+  'phone-configure-desktop-off': { entry: 'first-run', initial: { step: 'configure', spec: { ...LONDON, desktop: false } } },
+  'phone-configure-2gb-desktop': { entry: 'first-run', initial: { step: 'configure', spec: { ...LONDON, memory_gb: 2 } } },
+  'phone-configure-price-unavailable': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
+  'phone-configure-loading': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
   'phone-progress': { entry: 'first-run', initial: { step: 'progress', spec: LONDON, node: 'sky-cloud' } },
   'phone-done': { entry: 'first-run', initial: { step: 'done', spec: LONDON, node: 'sky-cloud' } },
   'desktop-provider': { entry: 'desktop-dialog', initial: { step: 'provider', spec: { provider: 'digitalocean' } } },
@@ -233,6 +249,30 @@ const SETTINGS: Record<string, { dialog: CloudDialog; node: string } | null> = {
   'destroy-confirm': { dialog: 'destroy', node: 'sky-cloud' },
   resize: { dialog: 'resize', node: 'sky-cloud' },
   logs: { dialog: 'logs', node: 'sky-cloud' },
+  'desktop-view': null,
+}
+
+/** `desktop-view` has no VNC server: a drawn stand-in for the node's screen (a browser an agent is using). */
+function FakeScreen() {
+  return (
+    <div className="flex h-full w-full flex-col bg-layer-3 p-6">
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden rounded-lg border border-border bg-background shadow-lg">
+        <div className="flex h-8 items-center gap-2 border-b border-border bg-layer-2 px-3 text-xs text-fg-secondary">
+          <span className="size-2.5 rounded-full bg-fg-tertiary/40" />
+          <span className="size-2.5 rounded-full bg-fg-tertiary/40" />
+          <span className="size-2.5 rounded-full bg-fg-tertiary/40" />
+          <span className="ml-3 flex-1 truncate rounded bg-background px-2 py-0.5">https://example.com/quarterly-report</span>
+        </div>
+        <div className="flex flex-1 flex-col gap-3 p-6">
+          <div className="h-5 w-2/3 rounded bg-layer-3" />
+          <div className="h-3 w-full rounded bg-layer-2" />
+          <div className="h-3 w-5/6 rounded bg-layer-2" />
+          <div className="h-3 w-4/6 rounded bg-layer-2" />
+          <div className="mt-4 h-32 w-full rounded bg-layer-2" />
+        </div>
+      </div>
+    </div>
+  )
 }
 
 /** A stand-in for the phone's engine switcher (not mountable here), with the real entry card in it. */
@@ -280,6 +320,7 @@ function Scenario({ name }: { name: string }) {
         <div className="mx-auto flex max-w-[768px] flex-col px-6 py-6">
           <h2 className="mb-4 text-lg font-semibold">Settings › Machines</h2>
           <CloudNodesSettings initial={open ?? undefined} />
+          {name === 'desktop-view' && <NodeDesktopPanel name="sky-cloud" access={null} mobile={false} onClose={() => undefined} placeholder={<FakeScreen />} />}
         </div>
       </div>
     )
@@ -296,7 +337,11 @@ function DesktopDialog({ name }: { name: string }) {
 const STATES: { name: string; label: string; phone: boolean }[] = [
   ['phone-choose', '① Choose (first run)'],
   ['phone-provider', '② Pick a provider'],
-  ['phone-configure', '③ Your node'],
+  ['phone-configure', '③ Your node (desktop on: 4 GB recommended)'],
+  ['phone-configure-desktop-off', '③ Desktop off: 2 GB'],
+  ['phone-configure-2gb-desktop', '③ 2 GB with the desktop: the note'],
+  ['phone-configure-price-unavailable', '③ Price unavailable'],
+  ['phone-configure-loading', '③ Sizes loading'],
   ['phone-progress', '④ Starting'],
   ['phone-done', '⑤ Ready'],
   ['phone-engines-entry', 'Engine switcher entry'],
@@ -308,6 +353,7 @@ const STATES: { name: string; label: string; phone: boolean }[] = [
   ['destroy-confirm', 'Destroy confirmation'],
   ['resize', 'Resize'],
   ['logs', 'View logs'],
+  ['desktop-view', 'View desktop'],
 ].map(([name, label]) => ({ name: name as string, label: label as string, phone: (name as string).startsWith('phone-') }))
 
 function Gallery() {

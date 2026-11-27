@@ -44,6 +44,8 @@ export type NodeSpec = {
   memory_gb: number
   volume_gb: number | null
   k8s: K8sOptions | null
+  /** A watchable desktop (browser and apps the user can watch and take over); `false` = terminal-only. */
+  desktop: boolean
 }
 
 export type Quote = {
@@ -82,6 +84,8 @@ export type CloudNode = {
   auto_update: boolean
   created_ms: number | null
   k8s: K8sOptions | null
+  /** Has the watchable desktop. */
+  desktop: boolean
 }
 
 export type ProviderError = { provider: ProviderKind; message: string }
@@ -103,6 +107,12 @@ export type K8sInfo = {
 export type OauthStart = { url: string }
 
 export type TerminalOpen = { session: string; job: string; engine: string }
+
+/** `cloud_desktop`: the node's VNC endpoint over the mesh, for the noVNC viewer. */
+export type NodeDesktop = { ws_url: string; password: string; geometry: string | null; engine: string }
+
+/** `cloud_sizes`: the provider's sizes with live prices (`priced` false, or `error`, when it gave none). */
+export type SizeList = { sizes: SizeOption[]; priced: boolean; error: string | null }
 
 export type NodeLogs = { name: string; lines: string[] }
 
@@ -130,5 +140,7 @@ export type CloudApi = {
   cloud_update(name: string): Promise<unknown>
   cloud_destroy(name: string, keep_volume: boolean): Promise<string[]>
   cloud_terminal(name: string): Promise<TerminalOpen>
+  cloud_desktop(name: string): Promise<NodeDesktop>
+  cloud_sizes(provider: ProviderKind, region: string | null): Promise<SizeList>
   cloud_logs(name: string, tail: number | null): Promise<NodeLogs>
 }

@@ -7,13 +7,16 @@ import type * as Rpc from '@/lib/rpc'
 import { AlertDialog } from '@/components/ui/alert-dialog'
 import { CloudNodeWizard } from './CloudNodeWizard'
 import { DestroyBody } from './CloudNodesSettings'
-import { checkName, createLabel, defaultName, destroySaving, etaText, fromPrice, localQuote, stageRows, userOf } from './format'
+import { DESKTOP_NOTE, checkName, createLabel, defaultMemory, defaultName, desktopBlocked, destroySaving, etaText, fromPrice, localQuote, sizesOf, stageRows, userOf } from './format'
+import { NodeDesktopView } from './NodeDesktop'
 import { applyCloudEvent, cloudKeys } from './queries'
 import { nearestRegion } from './region'
-import { FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, ProviderCards } from './steps'
-import type { CloudList, CloudNode, K8sInfo, ProviderInfo, Region } from './types'
+import { DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PriceNote, ProviderCards } from './steps'
+import type { CloudList, CloudNode, K8sInfo, ProviderInfo, Region, SizeList } from './types'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
+// noVNC reads `window` at import; the viewer test never connects.
+vi.mock('@novnc/novnc', () => ({ default: class {} }))
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<typeof Router>()), useNavigate: () => () => undefined }))
 
 const regions = (rows: [string, string, string][]): Region[] => rows.map(([id, label, country]) => ({ id, label, country }))
@@ -60,51 +63,110 @@ const node = (n: Partial<CloudNode> = {}): CloudNode => ({
   auto_update: true,
   created_ms: null,
   k8s: null,
+  desktop: true,
   ...n,
 })
 
 const html = (el: ReactNode) => renderToStaticMarkup(el as never)
 
-function wizard(entry: 'first-run' | 'add-to-mesh', initial: Parameters<typeof CloudNodeWizard>[0]['initial']): string {
+const PRICED: SizeList = { sizes: DO.sizes, priced: true, error: null }
+
+function wizard(entry: 'first-run' | 'add-to-mesh', initial: Parameters<typeof CloudNodeWizard>[0]['initial'], sizes: SizeList | null = PRICED): string {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
   qc.setQueryData(cloudKeys.providers, PROVIDERS)
   qc.setQueryData<CloudList>(cloudKeys.list, { nodes: [], errors: [] })
+  if (sizes) qc.setQueryData(cloudKeys.sizes('digitalocean', 'lon1'), sizes)
   return html(createElement(QueryClientProvider, { client: qc }, createElement(CloudNodeWizard, { entry, initial, onClose: () => undefined })))
 }
 
-test('the create button names the monthly total of the quote; the phone cost card splits server and disk', () => {
-  const q = localQuote(DO, 2)
+const checked = (out: string, gb: number) => new RegExp(`aria-checked="true" data-size="${gb}"`).test(out)
+
+test('the create button names the monthly total from the live sizes; the phone cost card splits server and disk', () => {
+  const q = localQuote('digitalocean', DO.sizes, DO.volume_usd_per_gb, 2)
   expect(q).toEqual({ provider: 'digitalocean', size_slug: 's-1vcpu-2gb', server_usd: 12, disk_usd: 1, total_usd: 13 })
   expect(createLabel({ provider: 'digitalocean', k8s: null }, q)).toBe('Create node · $13/mo')
-  expect(createLabel({ provider: 'fly', k8s: null }, localQuote(FLY, 2))).toBe('Create node · $12.19/mo')
+  expect(createLabel({ provider: 'fly', k8s: null }, localQuote('fly', FLY.sizes, FLY.volume_usd_per_gb, 2))).toBe('Create node · $12.19/mo')
   expect(createLabel({ provider: 'kubernetes', k8s: { context: 'rwx-dev', namespace: null, storage_class: null } }, null)).toBe('Deploy to rwx-dev')
-  const spec = { provider: 'digitalocean' as const, name: 'sky-cloud', region: 'lon1', memory_gb: 4, volume_gb: 10, k8s: null }
-  const out = html(createElement(PhoneConfigureStep, { provider: DO, spec, quote: localQuote(DO, 4), nameError: null, busy: false, onName: () => {}, onRegion: () => {}, onMemory: () => {}, onCreate: () => {} }))
+  const spec = { provider: 'digitalocean' as const, name: 'sky-cloud', region: 'lon1', memory_gb: 4, volume_gb: 10, k8s: null, desktop: true }
+  const props = { provider: DO, spec, sizes: DO.sizes, quote: localQuote('digitalocean', DO.sizes, 0.1, 4), nameError: null, busy: false, onName: () => {}, onRegion: () => {}, onMemory: () => {}, onDesktop: () => {}, onCreate: () => {} }
+  const out = html(createElement(PhoneConfigureStep, props))
   expect(out).toContain('Create node · $25/mo')
   expect(out).toContain('$24/mo + $1 disk')
-  expect(out).toContain('No open ports · updates itself')
+  expect(out).toContain('No open ports · updates itself · watchable desktop')
+  expect(html(createElement(PhoneConfigureStep, { ...props, spec: { ...spec, desktop: false } }))).toContain('No open ports · updates itself</div>')
 })
 
-test('the wizard starts at 2 GB, the minimum, with the hint and the 2 GB price on the button', () => {
-  const out = wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1' } })
-  expect(out).toMatch(/aria-checked="true"[^>]*>2 GB</)
-  expect(out).not.toMatch(/aria-checked="true"[^>]*>4 GB</)
-  expect(out).toContain('2 GB is the minimum. 4 GB for heavy browsing or local models.')
-  expect(out).toContain('Create node · $13/mo')
-  expect(out).toContain('Step 2 of 3')
-  expect(Math.min(...DO.sizes.map((s) => s.memory_gb))).toBe(2)
+test('desktop on: 4 GB is the default and Recommended; off: the 2 GB minimum; the button follows the size', () => {
+  const on = wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1' } })
+  expect(checked(on, 4)).toBe(true)
+  expect(on).toContain('Recommended')
+  expect(on).toContain('Create node · $25/mo')
+  expect(on).toMatch(/role="switch"[^>]*aria-checked="true"/)
+  expect(on).toContain('Lets agents use a browser and apps you can watch and take over.')
+  expect(on).toContain('Heavy computer use and browsing.')
+  expect(on).not.toContain(DESKTOP_NOTE)
+  const off = wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1', desktop: false } })
+  expect(checked(off, 2)).toBe(true)
+  expect(off).not.toContain('Recommended')
+  expect(off).toContain('minimum')
+  expect(off).toContain('Create node · $13/mo')
+  // 2 GB picked with the desktop on: a note, not a blocker.
+  const small = wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1', memory_gb: 2 } })
+  expect(small).toContain(DESKTOP_NOTE)
+  expect(small).toMatch(/<button[^>]*>Create node · \$13\/mo/)
+  expect(small).not.toMatch(/<button[^>]*disabled=""[^>]*>Create node/)
+  expect(defaultMemory(true)).toBe(4)
+  expect(defaultMemory(false)).toBe(2)
 })
 
-test('first run: the choose screen prices the cheapest 2 GB server across available providers', () => {
-  expect(fromPrice(PROVIDERS, true)).toBe('from $12/mo')
-  expect(fromPrice([FLY, LIGHTSAIL], true)).toBe('from $11/mo')
-  const out = wizard('first-run', {})
+test('Fly.io and Kubernetes: the desktop switch is disabled with its reason', () => {
+  expect(desktopBlocked('fly')).toBe('Desktop: coming soon on Fly.io')
+  expect(desktopBlocked('kubernetes')).toBe('Desktop: coming soon on Kubernetes')
+  expect(desktopBlocked('digitalocean')).toBeNull()
+  const fly = html(createElement(DesktopToggle, { kind: 'fly', on: true, onChange: () => {} }))
+  expect(fly).toContain('Desktop: coming soon on Fly.io')
+  expect(fly).toMatch(/role="switch"[^>]*aria-checked="false"[^>]*disabled=""/)
+})
+
+test('no price without one from the provider: unpriced or failed sizes, loading skeleton, Fly links its pricing', () => {
+  const unpriced: SizeList = { sizes: DO.sizes, priced: false, error: null }
+  expect(sizesOf(unpriced)?.every((s) => s.monthly_usd === null)).toBe(true)
+  expect(sizesOf({ ...PRICED, error: 'rate limited' })?.every((s) => s.monthly_usd === null)).toBe(true)
+  const out = wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1' } }, unpriced)
+  expect(out).toMatch(/<button[^>]*>Create node<\/button>/)
+  expect(out).toContain('price unavailable')
+  expect(out).not.toMatch(/\$\d/)
+  const loading = wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1' } }, null)
+  expect(loading).toContain('aria-label="Loading sizes"')
+  expect(loading).not.toMatch(/\$\d/)
+  const fly = html(createElement(PriceNote, { kind: 'fly' }))
+  expect(fly).toContain('href="https://fly.io/docs/about/pricing/"')
+  expect(fly).toContain('price from Fly')
+})
+
+test('first run: no price before sign-in; the chip only from live prices of a connected non-beta provider', () => {
+  expect(fromPrice(PROVIDERS, true, {})).toBeNull()
+  expect(fromPrice(PROVIDERS, true, { digitalocean: PRICED })).toBe('from $12/mo')
+  expect(fromPrice(PROVIDERS, true, { digitalocean: { ...PRICED, priced: false } })).toBeNull()
+  expect(fromPrice([{ ...DO, connected: false }], true, { digitalocean: PRICED })).toBeNull()
+  expect(fromPrice([{ ...FLY, connected: true }], true, { fly: { sizes: FLY.sizes, priced: true, error: null } })).toBeNull()
+  const out = wizard('first-run', {}, null)
   expect(out).toContain('Where should theuth run?')
-  expect(out).toContain('from $12/mo')
+  expect(out).not.toMatch(/\$\d/)
+  expect(out).toContain('your own account')
   expect(out).toContain('Just this iPhone')
   expect(out).toContain('You can add a cloud node later')
-  // add-to-mesh skips ①.
-  expect(wizard('add-to-mesh', {})).toContain('Pick a provider')
+  // add-to-mesh skips ①; the provider cards name no price.
+  const providers = wizard('add-to-mesh', {}, null)
+  expect(providers).toContain('Pick a provider')
+  expect(providers).not.toMatch(/\$\d/)
+})
+
+test('the desktop viewer watches by default and offers Take over', () => {
+  const out = html(createElement(NodeDesktopView, { name: 'sky-cloud', access: null, placeholder: createElement('div', null, 'screen') }))
+  expect(out).toContain('watching')
+  expect(out).toContain('Take over')
+  expect(out).not.toContain('Hand back')
 })
 
 test('AWS Lightsail is listed but disabled as coming soon; Kubernetes only on desktop', () => {
@@ -124,7 +186,7 @@ test('AWS Lightsail is listed but disabled as coming soon; Kubernetes only on de
 
 test('the flannel warning shows only when the cluster is known not to enforce NetworkPolicies', () => {
   const info: K8sInfo = { contexts: ['rwx-dev'], current_context: 'rwx-dev', namespaces: ['default'], storage_classes: [{ name: 'nfs-csi', provisioner: 'nfs', default: false }], no_default_class: true, cni: 'flannel', enforces_network_policy: false }
-  const render = (i: K8sInfo) => html(createElement(K8sConfigure, { info: i, k8s: { context: 'rwx-dev', namespace: 'theuth-nodes', storage_class: 'nfs-csi' }, memory_gb: 2, busy: false, onChange: () => {}, onDeploy: () => {} }))
+  const render = (i: K8sInfo) => html(createElement(K8sConfigure, { info: i, sizes: K8S.sizes, k8s: { context: 'rwx-dev', namespace: 'theuth-nodes', storage_class: 'nfs-csi' }, memory_gb: 2, busy: false, onChange: () => {}, onMemory: () => {}, onDeploy: () => {} }))
   const off = render(info)
   // Rendered HTML escapes the apostrophe.
   const warning = FLANNEL_WARNING.replace("'", '&#x27;')

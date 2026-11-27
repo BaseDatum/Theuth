@@ -4,14 +4,33 @@
 
 import { Check, ChevronDown, Loader2 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { Seg, Tag } from '@/components/costs/ui'
+import { Tag } from '@/components/costs/ui'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
+import { openExternal } from '@/lib/platform'
 import { cn } from '@/lib/utils'
-import { BRAND, approxUsd, billedLine, costLine, createLabel, etaText, flag, k8sLine, minPrice, offered, type StageRow } from './format'
-import type { K8sInfo, K8sOptions, NodeSpec, ProviderInfo, ProviderKind, Quote, Region } from './types'
+import {
+  BRAND,
+  DESKTOP_NOTE,
+  SIZE_USE,
+  billedLine,
+  costLine,
+  createLabel,
+  desktopBlocked,
+  etaText,
+  flag,
+  k8sLine,
+  localQuote,
+  offered,
+  type StageRow,
+  summaryLine,
+  usd,
+} from './format'
+import { DEFAULT_VOLUME_GB, type K8sInfo, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type Quote, type Region, type SizeOption } from './types'
 
 export type WizardEntry = 'first-run' | 'add-to-mesh' | 'desktop-dialog'
 
@@ -107,7 +126,7 @@ export function providerDetail(p: ProviderInfo, phone: boolean, k8sContexts: num
   return p.oauth ? `Sign in with ${p.label}` : 'Paste an API token'
 }
 
-/** One provider card: badge, name (+ beta), the detail line, and on the right the price / `✓ connected` / Use it. */
+/** One provider card: badge, name (+ beta), the detail line, and on the right `✓ connected` / Use it (no price before sign-in). */
 export function ProviderCard({
   p,
   phone,
@@ -125,10 +144,9 @@ export function ProviderCard({
   onUse?: (p: ProviderInfo, id: string) => void
   using?: boolean
 }) {
-  const price = minPrice(p)
   const found = !phone && !p.connected ? p.discovered[0] : undefined
   let right: ReactNode
-  if (!phone && p.connected && p.provider !== 'kubernetes') right = <span className="text-success">✓ connected</span>
+  if (p.connected && p.provider !== 'kubernetes') right = <span className="text-success">✓ connected</span>
   else if (p.provider === 'kubernetes') right = 'uses your cluster'
   else if (found && onUse && p.available)
     right = (
@@ -144,13 +162,6 @@ export function ProviderCard({
         {using && <Loader2 className="animate-spin" />}
         Use it
       </Button>
-    )
-  else if (price !== null)
-    right = (
-      <>
-        {approxUsd(price)}/mo
-        <br />2 GB
-      </>
     )
   return (
     <div
@@ -284,14 +295,38 @@ export function PhoneProviderStep(props: {
 
 export type ConfigureProps = {
   provider: ProviderInfo
+  /** `spec.desktop` is the effective choice (always `false` where `desktopBlocked`). */
   spec: NodeSpec
+  /** `cloud_sizes`, unpriced when the provider gave no prices (`sizesOf`); `undefined` while it loads. */
+  sizes: SizeOption[] | undefined
   quote: Quote | null
   nameError: string | null
   busy: boolean
   onName: (n: string) => void
   onRegion: (id: string) => void
   onMemory: (gb: number) => void
+  onDesktop: (on: boolean) => void
   onCreate: () => void
+}
+
+export const FLY_PRICING = 'https://fly.io/docs/about/pricing/'
+
+/** In place of a price the provider did not give: Fly.io links its own pricing page, the others say so. */
+export function PriceNote({ kind, className }: { kind: ProviderKind; className?: string }) {
+  if (kind === 'fly')
+    return (
+      <a
+        href={FLY_PRICING}
+        className={cn('text-fg-accent hover:underline', className)}
+        onClick={(e) => {
+          e.preventDefault()
+          openExternal(FLY_PRICING)
+        }}
+      >
+        price from Fly
+      </a>
+    )
+  return <span className={className}>price unavailable</span>
 }
 
 function RegionSelect({ regions, value, onChange, big }: { regions: readonly Region[]; value: string; onChange: (id: string) => void; big?: boolean }) {
@@ -311,15 +346,99 @@ function RegionSelect({ regions, value, onChange, big }: { regions: readonly Reg
   )
 }
 
-function SizeSeg({ provider, value, onChange }: { provider: ProviderInfo; value: number; onChange: (gb: number) => void }) {
+export const DESKTOP_LABEL = 'Watchable desktop'
+export const DESKTOP_HINT = 'lets agents use a browser and apps you can watch and take over'
+
+/** The desktop choice: a switch, disabled with its reason where the provider has no desktop yet. */
+export function DesktopToggle({ kind, on, onChange, className }: { kind: ProviderKind; on: boolean; onChange: (on: boolean) => void; className?: string }) {
+  const blocked = desktopBlocked(kind)
   return (
-    <div className="[&>div]:flex [&>div]:w-full [&_button]:flex-1 [&_button]:py-1.5 [&_button]:text-xs">
-      <Seg label="Size" value={String(value)} onChange={(v) => onChange(Number(v))} items={provider.sizes.map((s) => ({ value: String(s.memory_gb), label: `${s.memory_gb} GB` }))} />
-    </div>
+    <Card className={cn('flex items-start gap-3', className)}>
+      <label htmlFor="cloud-desktop" className="min-w-0 flex-1 cursor-pointer">
+        <div className="text-sm font-semibold">{DESKTOP_LABEL}</div>
+        <Muted>{blocked ?? `${DESKTOP_HINT[0]?.toUpperCase()}${DESKTOP_HINT.slice(1)}.`}</Muted>
+      </label>
+      <Switch id="cloud-desktop" aria-label={DESKTOP_LABEL} className="mt-0.5" checked={on && !blocked} disabled={!!blocked} onCheckedChange={onChange} />
+    </Card>
   )
 }
 
-export const SIZE_HINT = '2 GB is the minimum. 4 GB for heavy browsing or local models.'
+/**
+ * The three sizes as cards: RAM / vCPU, the monthly price (server + disk; the request and limit on Kubernetes), what it
+ * is for; 4 GB is **Recommended** while the desktop is on, and 2 GB with the desktop gets an inline note.
+ */
+export function SizeCards({
+  kind,
+  sizes,
+  perGb,
+  value,
+  desktop,
+  volume_gb,
+  current,
+  onChange,
+  row,
+}: {
+  kind: ProviderKind
+  /** `undefined` while `cloud_sizes` loads: skeleton cards. */
+  sizes: readonly SizeOption[] | undefined
+  perGb: number | null
+  value: number
+  desktop: boolean
+  volume_gb?: number | null
+  current?: number | null
+  onChange: (gb: number) => void
+  row?: boolean
+}) {
+  const grid = cn('grid gap-2', row ? 'grid-cols-3' : 'grid-cols-1')
+  if (!sizes)
+    return (
+      <div role="status" aria-label="Loading sizes" className={grid}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="flex flex-col gap-1.5 rounded-xl border border-border bg-card px-3 py-2.5">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-3 w-full" />
+          </div>
+        ))}
+      </div>
+    )
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div role="radiogroup" aria-label="Size" className={grid}>
+        {sizes.map((s) => {
+          const on = s.memory_gb === value
+          const total = localQuote(kind, sizes, perGb, s.memory_gb, volume_gb ?? DEFAULT_VOLUME_GB)?.total_usd ?? null
+          // Beside the size in a column; on its own line in the three-across row, where the card is narrow.
+          const priceText = `${kind === 'kubernetes' ? 'request & limit' : total !== null ? `${usd(total)}/mo` : ''}${current === s.memory_gb ? ' · now' : ''}`
+          const price = priceText && <span className={cn('text-xs whitespace-nowrap text-fg-secondary', row ? 'block' : 'ml-auto')}>{priceText}</span>
+          return (
+            <button
+              key={s.memory_gb}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              data-size={s.memory_gb}
+              onClick={() => onChange(s.memory_gb)}
+              className={cn('rounded-xl border border-border bg-card px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50', on && 'border-primary ring-1 ring-primary')}
+            >
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                <span className="text-sm font-semibold">{s.memory_gb} GB</span>
+                <span className="text-xs text-fg-secondary">
+                  · {s.vcpus} vCPU{s.vcpus === 1 ? '' : 's'}
+                </span>
+                {s.memory_gb === 2 && <Tag>minimum</Tag>}
+                {s.memory_gb === 4 && desktop && <Tag tone="ok">Recommended</Tag>}
+                {!row && price}
+              </div>
+              {row && price}
+              <div className="mt-0.5 text-xs leading-snug text-fg-secondary">{SIZE_USE[s.memory_gb]}</div>
+            </button>
+          )
+        })}
+      </div>
+      {desktop && value === 2 && <p className="text-xs text-warning">{DESKTOP_NOTE}</p>}
+    </div>
+  )
+}
 
 export function PhoneConfigureStep(c: ConfigureProps) {
   return (
@@ -335,14 +454,11 @@ export function PhoneConfigureStep(c: ConfigureProps) {
         <Muted>Region · nearest picked for you</Muted>
         <RegionSelect big regions={c.provider.regions} value={c.spec.region} onChange={c.onRegion} />
       </Card>
+      <DesktopToggle kind={c.provider.provider} on={c.spec.desktop} onChange={c.onDesktop} />
+      <SizeCards kind={c.provider.provider} sizes={c.sizes} perGb={c.provider.volume_usd_per_gb} value={c.spec.memory_gb} desktop={c.spec.desktop} volume_gb={c.spec.volume_gb} onChange={c.onMemory} />
       <Card>
-        <Muted className="mb-1.5">Size</Muted>
-        <SizeSeg provider={c.provider} value={c.spec.memory_gb} onChange={c.onMemory} />
-        <Muted className="mt-1.5">{SIZE_HINT}</Muted>
-      </Card>
-      <Card>
-        <div className="text-[13px] font-semibold">{costLine(c.quote) ?? '—'}</div>
-        <Muted>No open ports · updates itself</Muted>
+        <div className="text-[13px] font-semibold">{costLine(c.quote) ?? (c.sizes ? <PriceNote kind={c.provider.provider} className="text-xs font-normal" /> : <Skeleton className="h-4 w-32" />)}</div>
+        <Muted>{summaryLine(c.spec.desktop)}</Muted>
       </Card>
       <div className="mt-auto pt-2">
         <Primary disabled={!!c.nameError} busy={c.busy} onClick={c.onCreate}>
@@ -386,12 +502,9 @@ export function DesktopConfigureFields(c: ConfigureProps & { advancedOpen?: bool
           <Muted className="mb-1">Region</Muted>
           <RegionSelect regions={c.provider.regions} value={c.spec.region} onChange={c.onRegion} />
         </Card>
-        <Card>
-          <Muted className="mb-1.5">Size</Muted>
-          <SizeSeg provider={c.provider} value={c.spec.memory_gb} onChange={c.onMemory} />
-          <Muted className="mt-1.5 text-[11px]">{SIZE_HINT}</Muted>
-        </Card>
+        <DesktopToggle kind={c.provider.provider} on={c.spec.desktop} onChange={c.onDesktop} />
       </div>
+      <SizeCards row kind={c.provider.provider} sizes={c.sizes} perGb={c.provider.volume_usd_per_gb} value={c.spec.memory_gb} desktop={c.spec.desktop} volume_gb={c.spec.volume_gb} onChange={c.onMemory} />
       <Collapsible defaultOpen={c.advancedOpen}>
         <Card>
           <CollapsibleTrigger className="group flex w-full items-center gap-1.5 text-sm font-semibold">
@@ -416,7 +529,20 @@ export function DesktopConfigureFields(c: ConfigureProps & { advancedOpen?: bool
           </CollapsibleContent>
         </Card>
       </Collapsible>
-      <DesktopFooter left={billedLine(c.quote, c.provider.label)} onBack={c.onBack} action={createLabel(c.spec, c.quote)} disabled={!!c.nameError} busy={c.busy} onAction={c.onCreate} />
+      <DesktopFooter
+        left={
+          <>
+            {billedLine(c.quote, c.provider.label) ?? (c.sizes ? <PriceNote kind={c.provider.provider} /> : null)}
+            <br />
+            {summaryLine(c.spec.desktop)}
+          </>
+        }
+        onBack={c.onBack}
+        action={createLabel(c.spec, c.quote)}
+        disabled={!!c.nameError}
+        busy={c.busy}
+        onAction={c.onCreate}
+      />
     </>
   )
 }
@@ -425,7 +551,30 @@ export function DesktopConfigureFields(c: ConfigureProps & { advancedOpen?: bool
 
 export const FLANNEL_WARNING = "doesn't enforce NetworkPolicies. This would have no effect here."
 
-export function K8sConfigure({ info, k8s, memory_gb, busy, onChange, onDeploy, onBack, loading }: { info: K8sInfo | null; k8s: K8sOptions; memory_gb: number; busy: boolean; onChange: (k: K8sOptions) => void; onDeploy: () => void; onBack?: () => void; loading?: boolean }) {
+export function K8sConfigure({
+  info,
+  sizes,
+  k8s,
+  memory_gb,
+  busy,
+  onChange,
+  onMemory,
+  onDeploy,
+  onBack,
+  loading,
+}: {
+  info: K8sInfo | null
+  /** `cloud_sizes` for Kubernetes (memory request = limit; no price); `undefined` while it loads. */
+  sizes: SizeOption[] | undefined
+  k8s: K8sOptions
+  memory_gb: number
+  busy: boolean
+  onChange: (k: K8sOptions) => void
+  onMemory: (gb: number) => void
+  onDeploy: () => void
+  onBack?: () => void
+  loading?: boolean
+}) {
   const namespaces = [...new Set([...(info?.namespaces ?? []), ...(k8s.namespace ? [k8s.namespace] : [])])]
   const creating = !!k8s.namespace && !(info?.namespaces ?? []).includes(k8s.namespace)
   const set = (patch: Partial<K8sOptions>) => onChange({ ...k8s, ...patch })
@@ -481,19 +630,23 @@ export function K8sConfigure({ info, k8s, memory_gb, busy, onChange, onDeploy, o
           {info?.no_default_class && <Muted className="mt-1 text-[11px] text-warning">No default class in this cluster</Muted>}
         </Card>
       </div>
-      <Card>
-        <label className="flex items-start gap-2 text-[13px]">
-          <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={!!k8s.deny_cluster_network} onChange={(e) => set({ deny_cluster_network: e.currentTarget.checked })} />
-          <span>
-            <b>Block cluster network</b> — the node can reach the internet and your mesh, not other pods.
-          </span>
-        </label>
-        {info?.enforces_network_policy === false && (
-          <Muted className="mt-1 pl-6 text-warning">
-            ⚠ This cluster runs {info.cni ?? 'a CNI that'}, which {FLANNEL_WARNING}
-          </Muted>
-        )}
-      </Card>
+      <SizeCards row kind="kubernetes" sizes={sizes} perGb={null} value={memory_gb} desktop={false} onChange={onMemory} />
+      <div className="grid grid-cols-2 gap-2.5">
+        <Card>
+          <label className="flex items-start gap-2 text-[13px]">
+            <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={!!k8s.deny_cluster_network} onChange={(e) => set({ deny_cluster_network: e.currentTarget.checked })} />
+            <span>
+              <b>Block cluster network</b> — the node can reach the internet and your mesh, not other pods.
+            </span>
+          </label>
+          {info?.enforces_network_policy === false && (
+            <Muted className="mt-1 pl-6 text-warning">
+              ⚠ This cluster runs {info.cni ?? 'a CNI that'}, which {FLANNEL_WARNING}
+            </Muted>
+          )}
+        </Card>
+        <DesktopToggle kind="kubernetes" on={false} onChange={() => undefined} />
+      </div>
       <DesktopFooter left={k8sLine(memory_gb)} onBack={onBack} action={`Deploy to ${k8s.context ?? 'cluster'}`} disabled={!k8s.context} busy={busy} onAction={onDeploy} />
     </>
   )

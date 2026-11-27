@@ -13,8 +13,8 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { useApi } from '@/lib/rpc'
 import { openExternal } from '@/lib/platform'
 import { useConnection } from '@/store/connection'
-import { checkName, defaultName, fromPrice, localQuote, offered, progressPct, stageRows, userOf } from './format'
-import { cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudNode, useCloudProgress, useCloudProviders, useCloudQuote, useCredentialChanged, useK8sInfo } from './queries'
+import { checkName, defaultMemory, defaultName, desktopBlocked, fromPrice, localQuote, offered, progressPct, sizesOf, stageRows, userOf } from './format'
+import { cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudNode, useCloudProgress, useCloudProviders, useCloudSizes, useCredentialChanged, useK8sInfo } from './queries'
 import { nearestRegion } from './region'
 import {
   ChooseStep,
@@ -34,7 +34,7 @@ import {
   type WizardEntry,
   providerAction,
 } from './steps'
-import { DEFAULT_VOLUME_GB, type CloudNode, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind } from './types'
+import { DEFAULT_VOLUME_GB, type CloudNode, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type SizeList } from './types'
 
 export type { WizardEntry } from './steps'
 export type WizardStep = 'choose' | 'provider' | 'configure' | 'progress' | 'done'
@@ -70,7 +70,9 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const [connect, setConnect] = useState<Connect>({ mode: 'oauth', waiting: false, error: null, token: '', ...initial?.connect })
   const [name, setName] = useState<string | null>(initial?.spec?.name ?? null)
   const [regions, setRegions] = useState<Partial<Record<ProviderKind, string>>>(initial?.spec?.provider && initial.spec.region ? { [initial.spec.provider]: initial.spec.region } : {})
-  const [memory, setMemory] = useState(initial?.spec?.memory_gb ?? 2)
+  // The size the user picked; until then it follows the desktop choice (4 GB with it, 2 GB without).
+  const [memoryPick, setMemory] = useState<number | null>(initial?.spec?.memory_gb ?? null)
+  const [desktopPick, setDesktop] = useState(initial?.spec?.desktop ?? true)
   const [k8s, setK8s] = useState<K8sOptions | null>(initial?.spec?.k8s ?? null)
   const [created, setCreated] = useState<string | null>(initial?.node ?? null)
 
@@ -93,9 +95,13 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     deny_cluster_network: k8s?.deny_cluster_network ?? false,
   }
 
-  const spec: NodeSpec | null = kind ? { provider: kind, name: nodeName, region: isK8s ? '' : region, memory_gb: memory, volume_gb: DEFAULT_VOLUME_GB, k8s: isK8s ? k8sOpts : null } : null
-  const served = useCloudQuote(step === 'configure' ? spec : null).data
-  const quote = (served && served.provider === kind ? served : null) ?? (provider ? localQuote(provider, memory) : null)
+  const desktopOn = !!kind && desktopPick && !desktopBlocked(kind)
+  const memory = memoryPick ?? defaultMemory(desktopOn)
+  const spec: NodeSpec | null = kind ? { provider: kind, name: nodeName, region: isK8s ? '' : region, memory_gb: memory, volume_gb: DEFAULT_VOLUME_GB, k8s: isK8s ? k8sOpts : null, desktop: desktopOn } : null
+  // Live sizes and prices for the chosen provider and region (needs its credential; Kubernetes needs none).
+  const sizesQ = useCloudSizes(kind, isK8s ? null : region || null, !!provider && (provider.connected || isK8s))
+  const sizes = sizesOf(sizesQ.data) ?? (sizesQ.isError ? provider?.sizes.map((s) => ({ ...s, monthly_usd: null })) : undefined)
+  const quote = kind && sizes ? localQuote(kind, sizes, provider?.volume_usd_per_gb ?? null, memory) : null
   const nameError = checkName(nodeName) ?? (taken.includes(nodeName) && nodeName !== created ? `${nodeName} is taken` : null)
 
   const node = useCloudNode(created)
@@ -196,13 +202,26 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const configure = provider && spec && (
     <>
       {isK8s ? (
-        <K8sConfigure info={k8sInfo.data ?? null} loading={k8sInfo.isPending} k8s={k8sOpts} memory_gb={memory} busy={actions.create.isPending} onChange={setK8s} onDeploy={create} onBack={back} />
+        <K8sConfigure info={k8sInfo.data ?? null} sizes={sizes} loading={k8sInfo.isPending} k8s={k8sOpts} memory_gb={memory} busy={actions.create.isPending} onChange={setK8s} onMemory={setMemory} onDeploy={create} onBack={back} />
       ) : phone ? (
-        <PhoneConfigureStep provider={provider} spec={spec} quote={quote} nameError={nameError} busy={actions.create.isPending} onName={setName} onRegion={(id) => setRegions((r) => ({ ...r, [provider.provider]: id }))} onMemory={setMemory} onCreate={create} />
+        <PhoneConfigureStep
+          provider={provider}
+          spec={spec}
+          sizes={sizes}
+          quote={quote}
+          nameError={nameError}
+          busy={actions.create.isPending}
+          onName={setName}
+          onRegion={(id) => setRegions((r) => ({ ...r, [provider.provider]: id }))}
+          onMemory={setMemory}
+          onDesktop={setDesktop}
+          onCreate={create}
+        />
       ) : (
         <DesktopConfigureFields
           provider={provider}
           spec={spec}
+          sizes={sizes}
           quote={quote}
           nameError={nameError}
           busy={actions.create.isPending}
@@ -211,6 +230,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           onName={setName}
           onRegion={(id) => setRegions((r) => ({ ...r, [provider.provider]: id }))}
           onMemory={setMemory}
+          onDesktop={setDesktop}
           onCreate={create}
         />
       )}
@@ -227,7 +247,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     if (step === 'choose')
       body = (
         <ChooseStep
-          fromPrice={fromPrice(providersQ.data ?? [], true)}
+          fromPrice={fromPrice(providersQ.data ?? [], true, Object.fromEntries(qc.getQueriesData<SizeList>({ queryKey: ['cloud', 'sizes'] }).flatMap(([key, data]) => (data ? [[key[2], data]] : []))))}
           choice={choice}
           onChoice={setChoice}
           onContinue={() => (choice === 'cloud' ? setStep('provider') : onDone ? onDone(null) : onClose())}

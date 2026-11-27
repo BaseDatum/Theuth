@@ -1,5 +1,5 @@
 // 224: Settings › Machines › Cloud nodes — the hosted nodes on the user's own provider accounts, with their status,
-// version and monthly price, and the ⋯ menu (Restart · Resize · Update now · Open terminal · View logs · Destroy…).
+// version and monthly price, and the ⋯ menu (Restart · Resize · Update now · Open terminal · View desktop · View logs · Destroy…).
 // Provider errors from `cloud_list` show inline here; every other status goes to the status bar (`notify`).
 
 import { useNavigate } from '@tanstack/react-router'
@@ -27,14 +27,15 @@ import { notify } from '@/lib/notify'
 import { cn } from '@/lib/utils'
 import { Capability } from '@/rpc/capabilities'
 import { CloudNodeWizard } from './CloudNodeWizard'
-import { type Tone, destroySaving, diskUsd, resizePrice, statusOf, usd } from './format'
-import { CLOUD_REQUIRED, useCloudActions, useCloudEvents, useCloudList, useCloudLogs, useCloudProviders } from './queries'
-import { ProviderBadge } from './steps'
-import { type CloudNode, DEFAULT_VOLUME_GB, type ProviderInfo, type ProviderKind, SIZES_GB, type TerminalOpen } from './types'
+import { NodeDesktopPanel } from './NodeDesktop'
+import { type Tone, destroySaving, diskUsd, localQuote, sizesOf, statusOf, usd } from './format'
+import { CLOUD_REQUIRED, useCloudActions, useCloudEvents, useCloudList, useCloudLogs, useCloudProviders, useCloudSizes } from './queries'
+import { PriceNote, ProviderBadge, SizeCards } from './steps'
+import { type CloudNode, DEFAULT_VOLUME_GB, type NodeDesktop, type ProviderInfo, type ProviderKind, type TerminalOpen } from './types'
 
 export const PROVIDER_LABEL: Record<ProviderKind, string> = { digitalocean: 'DigitalOcean', fly: 'Fly.io', kubernetes: 'Kubernetes', lightsail: 'AWS Lightsail' }
 
-export type CloudDialog = 'destroy' | 'resize' | 'logs' | 'terminal'
+export type CloudDialog = 'destroy' | 'resize' | 'logs' | 'terminal' | 'desktop'
 
 /** The section, shown only on an engine with `cloudnodes` (the rest of the Machines tab never depends on it). */
 export function CloudNodesSettings({ initial }: { initial?: { dialog: CloudDialog; node: string; adding?: boolean } | { adding: true } }) {
@@ -79,6 +80,7 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
   const [adding, setAdding] = useState(!!initial?.adding)
   const [open, setOpen] = useState<{ dialog: CloudDialog; node: string } | null>(initial?.dialog && initial.node ? { dialog: initial.dialog, node: initial.node } : null)
   const [terminal, setTerminal] = useState<(TerminalOpen & { name: string }) | null>(null)
+  const [desktop, setDesktop] = useState<(NodeDesktop & { name: string }) | null>(null)
 
   const nodes = list.data?.nodes ?? []
   const target = open ? nodes.find((n) => n.name === open.node) : undefined
@@ -91,6 +93,13 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
       onSuccess: (t) => {
         setTerminal({ ...t, name })
         setOpen({ dialog: 'terminal', node: name })
+      },
+    })
+  const openDesktop = (name: string) =>
+    actions.desktop.mutate(name, {
+      onSuccess: (d) => {
+        setDesktop({ ...d, name })
+        setOpen({ dialog: 'desktop', node: name })
       },
     })
 
@@ -124,7 +133,8 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
               onRestart={() => actions.restart.mutate(n.name, { onSuccess: () => notify(`Restarting ${n.name}`) })}
               onUpdate={() => actions.update.mutate(n.name, { onSuccess: () => notify(`Updating ${n.name}`) })}
               onTerminal={() => openTerminal(n.name)}
-              opening={actions.terminal.isPending && actions.terminal.variables === n.name}
+              onDesktop={() => openDesktop(n.name)}
+              opening={(actions.terminal.isPending && actions.terminal.variables === n.name) || (actions.desktop.isPending && actions.desktop.variables === n.name)}
               onOpen={(dialog) => setOpen({ dialog, node: n.name })}
             />
           ))}
@@ -180,12 +190,39 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
           }}
         />
       )}
+      {open?.dialog === 'desktop' && desktop && (
+        <NodeDesktopPanel
+          name={desktop.name}
+          access={desktop}
+          mobile={mobile}
+          onClose={() => {
+            setOpen(null)
+            setDesktop(null)
+          }}
+        />
+      )}
       {adding && <CloudNodeWizard entry="desktop-dialog" onClose={() => setAdding(false)} onDone={() => setAdding(false)} />}
     </Section>
   )
 }
 
-export function NodeRow({ node, onRestart, onUpdate, onTerminal, opening, onOpen }: { node: CloudNode; onRestart: () => void; onUpdate: () => void; onTerminal: () => void; opening: boolean; onOpen: (d: CloudDialog) => void }) {
+export function NodeRow({
+  node,
+  onRestart,
+  onUpdate,
+  onTerminal,
+  onDesktop,
+  opening,
+  onOpen,
+}: {
+  node: CloudNode
+  onRestart: () => void
+  onUpdate: () => void
+  onTerminal: () => void
+  onDesktop: () => void
+  opening: boolean
+  onOpen: (d: CloudDialog) => void
+}) {
   const orphan = node.state === 'orphan'
   const live = node.state === 'ready'
   const settled = live || node.state === 'failed' || node.state === 'volume_kept' || orphan
@@ -227,6 +264,11 @@ export function NodeRow({ node, onRestart, onUpdate, onTerminal, opening, onOpen
             <DropdownMenuItem disabled={!live} onSelect={onTerminal}>
               Open terminal
             </DropdownMenuItem>
+            {node.desktop && (
+              <DropdownMenuItem disabled={!live} onSelect={onDesktop}>
+                View desktop
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem disabled={!live} onSelect={() => onOpen('logs')}>
               View logs
             </DropdownMenuItem>
@@ -298,7 +340,11 @@ export function DestroyDialog({ node, perGb, busy, onCancel, onConfirm }: { node
 
 export function ResizeDialog({ node, provider, busy, onCancel, onConfirm }: { node: CloudNode; provider: ProviderInfo | undefined; busy: boolean; onCancel: () => void; onConfirm: (gb: number) => void }) {
   const [gb, setGb] = useState(node.memory_gb ?? 2)
-  const price = resizePrice(provider, node, gb)
+  // Live sizes for the node's provider and region; unpriced (and still choosable) when the provider gives no prices.
+  const live = useCloudSizes(node.provider, node.region)
+  const sizes = sizesOf(live.data) ?? (live.isError ? provider?.sizes.map((s) => ({ ...s, monthly_usd: null })) : undefined)
+  const perGb = provider?.volume_usd_per_gb ?? null
+  const price = localQuote(node.provider, sizes, perGb, gb, node.volume_gb ?? DEFAULT_VOLUME_GB)?.total_usd ?? null
   return (
     <Dialog open onOpenChange={(o) => !o && onCancel()}>
       <DialogContent className="sm:max-w-md">
@@ -306,21 +352,8 @@ export function ResizeDialog({ node, provider, busy, onCancel, onConfirm }: { no
           <DialogTitle>Resize {node.name}</DialogTitle>
           <DialogDescription>It restarts on the new size, about a minute. The disk and everything on it stay.</DialogDescription>
         </DialogHeader>
-        <div role="radiogroup" aria-label="Size" className="grid grid-cols-3 gap-2">
-          {SIZES_GB.map((s) => {
-            const p = resizePrice(provider, node, s)
-            const on = s === gb
-            return (
-              <button key={s} type="button" role="radio" aria-checked={on} onClick={() => setGb(s)} className={cn('rounded-xl border border-border bg-card px-3 py-2.5 text-left', on && 'border-primary ring-1 ring-primary')}>
-                <div className="text-sm font-semibold">{s} GB</div>
-                <div className="text-xs text-fg-secondary">
-                  {p !== null ? `${usd(p)}/mo` : '—'}
-                  {s === node.memory_gb ? ' · now' : ''}
-                </div>
-              </button>
-            )
-          })}
-        </div>
+        <SizeCards kind={node.provider} sizes={sizes} perGb={perGb} value={gb} desktop={node.desktop} volume_gb={node.volume_gb} current={node.memory_gb} onChange={setGb} />
+        {sizes && price === null && node.provider !== 'kubernetes' && <PriceNote kind={node.provider} className="text-xs text-fg-secondary" />}
         <DialogFooter>
           <Button variant="outline" onClick={onCancel} disabled={busy}>
             Cancel

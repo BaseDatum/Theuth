@@ -1,7 +1,8 @@
 // 224: the cloud-node UI's pure helpers — prices, names, statuses, the create job's stage rows, the destroy saving.
-// No React, no RPC: the wizard, Settings › Machines and the tests share them.
+// No React, no RPC: the wizard, Settings › Machines and the tests share them. No price lives here: every number comes
+// from the provider at runtime (`cloud_sizes`, `cloud_list`'s `monthly_usd`, `ProviderInfo.volume_usd_per_gb`).
 
-import { type CloudNode, DEFAULT_VOLUME_GB, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type Quote, STAGES, type Stage } from './types'
+import { type CloudNode, DEFAULT_VOLUME_GB, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type Quote, type SizeList, type SizeOption, STAGES, type Stage } from './types'
 
 /** The provider badges of the mockup: the brands' own colours (the only hard-coded colours of the cloud UI). */
 export const BRAND: Record<ProviderKind, { bg: string; mark: string }> = {
@@ -19,44 +20,38 @@ export function usd(n: number): string {
   return Number.isInteger(c) ? `$${c}` : `$${c.toFixed(2)}`
 }
 
-/** A list price for a card: `$12`, or `≈$11` for Fly's computed `$10.69`. */
-export function approxUsd(n: number): string {
-  const c = cents(n)
-  return Number.isInteger(c) ? `$${c}` : `≈$${Math.round(c)}`
-}
-
-/** The server price of the 2 GB minimum; `null` when the provider names none (Kubernetes). */
-export function minPrice(p: ProviderInfo): number | null {
-  const sizes = p.sizes.filter((s) => s.monthly_usd !== null).sort((a, b) => a.memory_gb - b.memory_gb)
-  return sizes[0]?.monthly_usd ?? null
-}
-
 /** The providers a screen offers: Kubernetes (`desktop_only`) never on a phone. */
 export function offered(providers: readonly ProviderInfo[], phone: boolean): ProviderInfo[] {
   return providers.filter((p) => !(phone && p.desktop_only))
 }
 
+/** A size list carries prices: `priced` and every server price present. */
+export function pricedSizes(list: SizeList | undefined): boolean {
+  return !!list && list.priced && !list.error && list.sizes.every((s) => s.monthly_usd !== null)
+}
+
 /**
- * The first-run chip: the cheapest 2 GB server across the providers that can create nodes here, beta ones (Fly.io)
- * aside so the headline price is one we stand behind (`from $12/mo`); beta prices only when nothing else is offered.
+ * The first-run chip: the cheapest smallest server across connected, non-beta providers whose live prices are already
+ * fetched (`from $12/mo`); `null` before any sign-in or price — no number is ever shown that the provider did not give.
  */
-export function fromPrice(providers: readonly ProviderInfo[], phone: boolean): string | null {
-  const available = offered(providers, phone).filter((p) => p.available)
-  const stable = available.filter((p) => !p.beta)
-  const prices = (stable.length ? stable : available)
-    .map(minPrice)
-    .filter((n): n is number => n !== null)
+export function fromPrice(providers: readonly ProviderInfo[], phone: boolean, lists: Partial<Record<ProviderKind, SizeList>>): string | null {
+  const prices = offered(providers, phone)
+    .filter((p) => p.available && p.connected && !p.beta && pricedSizes(lists[p.provider]))
+    .flatMap((p) => {
+      const smallest = [...(lists[p.provider]?.sizes ?? [])].sort((a, b) => a.memory_gb - b.memory_gb)[0]
+      return smallest?.monthly_usd != null ? [smallest.monthly_usd] : []
+    })
   if (!prices.length) return null
   return `from $${Math.round(Math.min(...prices))}/mo`
 }
 
-/** The quote the wizard shows before `cloud_quote` answers (same arithmetic as `catalog::quote`). */
-export function localQuote(p: ProviderInfo, memory_gb: number, volume_gb = DEFAULT_VOLUME_GB): Quote | null {
-  const size = p.sizes.find((s) => s.memory_gb === memory_gb)
+/** The monthly cost of `memory_gb` from the live sizes plus the disk (`catalog::quote`'s arithmetic); prices `null` when unpriced. */
+export function localQuote(kind: ProviderKind, sizes: readonly SizeOption[] | undefined, perGb: number | null, memory_gb: number, volume_gb = DEFAULT_VOLUME_GB): Quote | null {
+  const size = sizes?.find((s) => s.memory_gb === memory_gb)
   if (!size) return null
-  const disk = p.volume_usd_per_gb === null ? null : cents(p.volume_usd_per_gb * volume_gb)
+  const disk = perGb === null ? null : cents(perGb * volume_gb)
   const total = size.monthly_usd !== null && disk !== null ? cents(size.monthly_usd + disk) : null
-  return { provider: p.provider, size_slug: size.slug, server_usd: size.monthly_usd, disk_usd: disk, total_usd: total }
+  return { provider: kind, size_slug: size.slug, server_usd: size.monthly_usd, disk_usd: disk, total_usd: total }
 }
 
 /** The create button: the press is the approval, so it names the monthly total (`Create node · $13/mo`). */
@@ -64,6 +59,30 @@ export function createLabel(spec: Pick<NodeSpec, 'provider' | 'k8s'>, quote: Quo
   if (spec.provider === 'kubernetes') return `Deploy to ${spec.k8s?.context ?? 'cluster'}`
   return quote?.total_usd != null ? `Create node · ${usd(quote.total_usd)}/mo` : 'Create node'
 }
+
+// ---- desktop and size ----
+
+/** Why a provider cannot have the watchable desktop yet (its container image has none); `null` = it can. */
+export function desktopBlocked(kind: ProviderKind): string | null {
+  if (kind === 'fly') return 'Desktop: coming soon on Fly.io'
+  if (kind === 'kubernetes') return 'Desktop: coming soon on Kubernetes'
+  return null
+}
+
+/** The size the wizard starts at until the user picks one: 4 GB with the desktop, the 2 GB minimum without. */
+export const defaultMemory = (desktop: boolean): number => (desktop ? 4 : 2)
+
+/** What each size is for (the size cards). */
+export const SIZE_USE: Record<number, string> = {
+  2: 'Chat, coding, schedules and routines. Light browsing.',
+  4: 'Heavy computer use and browsing.',
+  8: 'Several agents at once, big repos, local tools.',
+}
+
+export const DESKTOP_NOTE = 'We recommend 4 GB for computer use and browsing.'
+
+/** The line under the cost: `No open ports · updates itself · watchable desktop`. */
+export const summaryLine = (desktop: boolean): string => `No open ports · updates itself${desktop ? ' · watchable desktop' : ''}`
 
 /** Phone cost card: `$12/mo + $1 disk`. */
 export function costLine(q: Quote | null): string | null {
@@ -229,8 +248,8 @@ export function destroySaving(n: Pick<CloudNode, 'monthly_usd' | 'volume_gb'>, k
   return cents(keepDisk ? n.monthly_usd - disk : n.monthly_usd)
 }
 
-/** Resize choice: the server at that size plus the node's disk (`4 GB · $25/mo`). */
-export function resizePrice(p: ProviderInfo | undefined, n: Pick<CloudNode, 'volume_gb'>, memory_gb: number): number | null {
-  if (!p) return null
-  return localQuote(p, memory_gb, n.volume_gb ?? DEFAULT_VOLUME_GB)?.total_usd ?? null
+/** The live sizes with their prices only when the provider gave them (`priced`), else the same sizes unpriced. */
+export function sizesOf(list: SizeList | undefined): SizeOption[] | undefined {
+  if (!list) return undefined
+  return pricedSizes(list) ? list.sizes : list.sizes.map((s) => ({ ...s, monthly_usd: null }))
 }

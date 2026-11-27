@@ -24,6 +24,10 @@ const STATES = [
   'phone-choose',
   'phone-provider',
   'phone-configure',
+  'phone-configure-desktop-off',
+  'phone-configure-2gb-desktop',
+  'phone-configure-price-unavailable',
+  'phone-configure-loading',
   'phone-progress',
   'phone-done',
   'phone-engines-entry',
@@ -35,6 +39,7 @@ const STATES = [
   'destroy-confirm',
   'resize',
   'logs',
+  'desktop-view',
 ]
 
 async function up(url: string): Promise<boolean> {

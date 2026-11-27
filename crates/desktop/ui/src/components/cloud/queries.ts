@@ -10,13 +10,13 @@ import { useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { on } from '@/store/sessions'
 import { type CloudProgress, foldProgress } from './format'
-import type { CloudEvent, CloudList, CloudNode, K8sInfo, NodeLogs, NodeSpec, ProviderInfo, ProviderKind, Quote, TerminalOpen } from './types'
+import type { CloudEvent, CloudList, CloudNode, K8sInfo, NodeDesktop, NodeLogs, NodeSpec, ProviderInfo, ProviderKind, SizeList, TerminalOpen } from './types'
 
 export const cloudKeys = {
   all: ['cloud'] as const,
   list: ['cloud', 'list'] as const,
   providers: ['cloud', 'providers'] as const,
-  quote: (spec: Pick<NodeSpec, 'provider' | 'memory_gb' | 'volume_gb'>) => ['cloud', 'quote', spec.provider, spec.memory_gb, spec.volume_gb] as const,
+  sizes: (provider: ProviderKind | null, region: string | null) => ['cloud', 'sizes', provider, region] as const,
   k8s: (context: string | null) => ['cloud', 'k8s', context] as const,
   logs: (name: string) => ['cloud', 'logs', name] as const,
   progress: (name: string) => ['cloud', 'progress', name] as const,
@@ -24,7 +24,7 @@ export const cloudKeys = {
 
 /** What the cloud section needs of the engine; an engine without `cloudnodes` hides it (the Machines tab stays). */
 export const CLOUD_REQUIRED = {
-  methods: ['cloud_providers', 'cloud_list', 'cloud_create', 'cloud_quote', 'cloud_destroy'],
+  methods: ['cloud_providers', 'cloud_list', 'cloud_create', 'cloud_sizes', 'cloud_destroy'],
   topics: ['cloudnodes.events@1'],
 } as const
 
@@ -122,14 +122,19 @@ export function useCloudNode(name: string | null): CloudNode | null {
   return (name && list.data?.nodes.find((n) => n.name === name)) || null
 }
 
-export function useCloudQuote(spec: NodeSpec | null) {
-  const can = useQuerySupport(['cloud_quote'])
+/**
+ * `cloud_sizes(provider, region)`: the live sizes and prices. Fetched whenever the wizard opens or the provider or
+ * region changes (the engine caches the provider's prices for an hour, so `staleTime: 0` costs nothing).
+ */
+export function useCloudSizes(provider: ProviderKind | null, region: string | null, enabled = true) {
+  const can = useQuerySupport(['cloud_sizes'])
   const api = useApi()
-  return useQuery<Quote>({
-    enabled: can && !!spec && spec.provider !== 'kubernetes',
-    queryKey: spec ? cloudKeys.quote(spec) : ['cloud', 'quote', null],
-    queryFn: () => api.cloud_quote(spec as NodeSpec),
-    staleTime: 5 * 60_000,
+  return useQuery<SizeList>({
+    enabled: can && enabled && !!provider,
+    queryKey: cloudKeys.sizes(provider, region),
+    queryFn: () => api.cloud_sizes(provider as ProviderKind, region),
+    staleTime: 0,
+    retry: false,
   })
 }
 
@@ -169,5 +174,6 @@ export function useCloudActions() {
     importCredential: useAction(({ provider, id }: { provider: ProviderKind; id: string }): Promise<ProviderInfo> => api.cloud_import_credential(provider, id), { keys: providers }),
     setToken: useAction(({ provider, token }: { provider: ProviderKind; token: string }): Promise<ProviderInfo> => api.cloud_set_token(provider, token), { keys: providers }),
     terminal: useAction((name: string): Promise<TerminalOpen> => api.cloud_terminal(name)),
+    desktop: useAction((name: string): Promise<NodeDesktop> => api.cloud_desktop(name)),
   }
 }
