@@ -24,12 +24,19 @@ test('tab ids are unique across categories, and TAB_IDS lists them in column ord
   expect(ids).toEqual([...TAB_IDS])
 })
 
-test('188: thirteen categories in column order (#3 Prompt after Agent, 210 Sharing after Network, 216 Plugins last), each with 1 to 6 tabs', () => {
-  expect(CATEGORIES.map((category) => category.id)).toEqual(['general', 'models', 'agent', 'prompt', 'learning', 'voice', 'meetings', 'calendar', 'network', 'sharing', 'channels', 'tools', 'plugins'])
+test('188: fourteen categories in column order (#3 Prompt after Agent, 210 Sharing after Network, 225 Security after Sharing, 216 Plugins last), each with 1 to 7 tabs', () => {
+  expect(CATEGORIES.map((category) => category.id)).toEqual(['general', 'models', 'agent', 'prompt', 'learning', 'voice', 'meetings', 'calendar', 'network', 'sharing', 'security', 'channels', 'tools', 'plugins'])
   for (const category of CATEGORIES) {
     expect(category.tabs.length).toBeGreaterThanOrEqual(1)
     expect(category.tabs.length).toBeLessThanOrEqual(7)
   }
+})
+
+test('225: Security holds Vault, at `vault`, needing the twelve vault methods', () => {
+  const security = CATEGORIES.find((category) => category.id === 'security')!
+  expect(security.tabs.map((tab) => [tab.id, tab.label])).toEqual([['vault', 'Vault']])
+  expect(security.tabs[0].required?.methods).toHaveLength(12)
+  expect(security.tabs[0].required?.methods).toContain('vault_unseal_requests')
 })
 
 test('every old id redirects to a tab and is no tab itself', () => {
