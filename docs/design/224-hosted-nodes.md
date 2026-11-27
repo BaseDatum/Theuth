@@ -607,6 +607,37 @@ Mockup approved by the owner; screenshots of the fixture in `docs/design/224-ass
   saving, and offers to keep the disk); *＋ Add cloud node* opens the wizard without the "why"
   screen. Phone: an *Add a cloud node — always on, joins this mesh* entry for the engine switcher.
 
+  The Configure step reserves *Vault protection: Unlock from my devices + master password* (desktop:
+  Advanced; phone: below the desktop toggle) and the list a *sealed* status, both shown only when
+  the engine advertises `vault_status` (feat/sealed-vault); the password is not sent yet — wired at
+  that merge.
+
+### 16.9 As built (this branch)
+
+- **Peer calls go through one forwarder**, `agent::rpc_forward` (`engine_target`, `engine_peer`,
+  `call_peer`, `to_engine`, `to_peer_within` over `theuth/rpc/1`). `cloudnodes::mesh_view` uses
+  `to_peer_within` for the node's version (`info`, 3 s), `engine_terminal`, `engine_logs`. The two
+  streams that cannot be one request/response have their own ALPNs: `theuth/pty/1` (a PTY job's
+  `subscribe_pty` items, `agent::rpc_engine`) and `theuth/desktop/1` (§16.10).
+- **PTY on a peer:** `pty_input`, `pty_resize`, `pty_screen`, `list_terminals` and `subscribe_pty`
+  take a trailing optional `engine`; set to a peer (owner only) they go to it, `subscribe_pty` over
+  `theuth/pty/1`. Routing by session owner was rejected: the node's owner root session may not have
+  replicated to the viewer when the terminal opens. `Terminal` (TerminalViewer) takes `engine?`.
+- **Update now:** no "install the update now" RPC exists, so `cloud_update` restarts the server;
+  `ExecStartPre` (VM) / the entrypoint (image) installs the newest signed release on start.
+- **Destroy keeping the disk does not unpair**: the node re-created on that disk comes back as the
+  same engine and would be stranded if unpaired; deleting the disk unpairs (`mesh_remove`).
+  `keep_volume` defaults to true.
+- **Relay address** for OAuth: `cloudnodes.relay`, else `link.relay` (`wss://` → `https://`), else
+  `https://relay.theuth.io` (mesh `relay` is the iroh relay, which does not serve the routes).
+- **Remote tickets are in memory**: an engine restart during a create loses the unused ticket; the
+  resumed job then fails at the deadline (destroy keeping the disk + create recovers).
+- **Kubernetes orphans** are found only in contexts this engine's records use.
+- **Not run:** any cloud API, the relay against DigitalOcean, two real engines over the mesh
+  (terminal, logs, desktop tunnel), noVNC against a node, cloud-init with the desktop units on a
+  real Droplet. Unit tests replay recorded provider responses and pipe the PTY/desktop streams
+  in-process.
+
 ### 16.10 The watchable desktop
 
 Owner addition: every node gets a desktop agents can use (headed browser, `computer_*` tools) and
