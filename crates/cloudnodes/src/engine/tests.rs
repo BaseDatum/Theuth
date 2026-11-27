@@ -990,3 +990,124 @@ fn classify_names_what_the_vault_has() {
         VaultProtection::NeedsPassword
     );
 }
+
+#[tokio::test]
+async fn fly_end_to_end_with_flyv1_token_and_no_org_slug() {
+    let http = FakeTransport::new();
+    let mesh = Arc::new(FakeMesh::default());
+    let dir = tempfile::tempdir().unwrap();
+    let creds = Creds {
+        store: Arc::new(MemStore::default()),
+        http: http.clone(),
+        relay: "https://relay.test".into(),
+    };
+    let cloud = Arc::new(Cloud::new(
+        Records::new(dir.path().join("cloudnodes")),
+        mesh.clone(),
+        creds,
+        Arc::new(LiveConnect { http: http.clone() }),
+        Arc::new(|_: CloudEvent| {}),
+        fast(),
+        None,
+    ));
+
+    let fly_info = cloud
+        .providers()
+        .into_iter()
+        .find(|p| p.provider == ProviderKind::Fly)
+        .unwrap();
+    assert!(fly_info.available && !fly_info.beta);
+
+    // Connect check omits org_slug when org is None and sends FlyV1 without Bearer.
+    http.once("GET", "/v1/apps", 200, json!({"apps": []}));
+    cloud
+        .set_token(ProviderKind::Fly, "FlyV1 fm2_e2e_token".into())
+        .await
+        .unwrap();
+    assert_eq!(http.lines(), ["GET https://api.machines.dev/v1/apps"]);
+    assert_eq!(
+        http.auth_headers(),
+        [Some("FlyV1 fm2_e2e_token".to_owned())]
+    );
+
+    // Create flow through LiveConnect -> Fly -> FakeTransport + FakeMesh.
+    http.on("POST", "/volumes", 200, json!({"id": "vol_e2e"}))
+        .on("POST", "/machines", 200, json!({"id": "m_e2e"}))
+        .on("POST", "/v1/apps", 201, json!({}))
+        .on("GET", "/machines/m_e2e", 200, json!({"state": "started"}));
+    *mesh.join_after.lock() = Some((1, peer("fly-peer-1", "lab", true)));
+    let fly_spec = NodeSpec {
+        provider: ProviderKind::Fly,
+        name: "lab".into(),
+        region: "lhr".into(),
+        memory_gb: 2,
+        volume_gb: None,
+        k8s: None,
+        desktop: None,
+    };
+    cloud.create(fly_spec, None).await.unwrap();
+    let rec = settle(&cloud, "lab").await;
+    assert_eq!(rec.state, NodeState::Ready, "{:?}", rec.error);
+    assert_eq!(rec.peer_id.as_deref(), Some("fly-peer-1"));
+    assert!(
+        http.auth_headers()
+            .iter()
+            .all(|h| h.as_deref() == Some("FlyV1 fm2_e2e_token")),
+        "every Fly request uses FlyV1 auth"
+    );
+    let machine_req = http
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "POST" && r.url.ends_with("/machines"))
+        .and_then(|r| r.json)
+        .unwrap();
+    let cfg = &machine_req["config"];
+    assert_eq!(
+        cfg["processes"],
+        json!([{"entrypoint": ["theuth-entrypoint"], "user": "root"}])
+    );
+    assert!(cfg.get("services").is_none());
+    assert_eq!(
+        cfg["mounts"],
+        json!([{"volume": "vol_e2e", "path": "/data"}])
+    );
+    assert_eq!(cfg["files"][0]["guest_path"], "/run/theuth/pair/ticket");
+
+    // Destroy keeping volume: keeps volume, keeps app, does not unpair.
+    http.on(
+        "GET",
+        "/machines",
+        200,
+        json!([{"id": "m_e2e", "state": "started"}]),
+    )
+    .on(
+        "GET",
+        "/volumes",
+        200,
+        json!([{"id": "vol_e2e", "state": "created"}]),
+    )
+    .on("DELETE", "/", 200, Value::Null);
+    cloud.destroy("lab", true).await.unwrap();
+    assert_eq!(
+        cloud.records.get("lab").unwrap().unwrap().state,
+        NodeState::VolumeKept
+    );
+    assert!(mesh.removed.lock().is_empty());
+    assert!(
+        !http
+            .lines()
+            .iter()
+            .any(|l| l.starts_with("DELETE ") && l.contains("/volumes/"))
+    );
+
+    // Full destroy: deletes volume and app, and engine unpairs the node.
+    cloud.destroy("lab", false).await.unwrap();
+    assert!(cloud.records.get("lab").unwrap().is_none());
+    assert_eq!(*mesh.removed.lock(), ["fly-peer-1"]);
+    assert!(
+        http.lines()
+            .iter()
+            .any(|l| l.starts_with("DELETE ") && l.ends_with("/volumes/vol_e2e"))
+    );
+}
+
