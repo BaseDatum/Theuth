@@ -1199,10 +1199,11 @@ agent:
 #   backoff_min_secs: 120    # no-progress back-off start, doubling …
 #   backoff_max_secs: 1800   # … to this ceiling; a human comment resets it
 
-# update:                    # self-update (design doc 39): check the release bucket, verify the signature, replace this
+# update:                    # self-update (design doc 39): check the release manifest, verify the signature, replace this
 #                            # binary on disk; takes effect at the next start. Nothing is ever asked. `t --update` forces a check.
 #   enabled: true
-#   url: https://s3.rwx.dev/theuth/releases/latest.json
+#   url: ~                   # single manifest URL override; unset tries GitHub Releases -> Wasabi S3 -> self-hosted S3
+#   interval_secs: ~         # seconds between manifest checks (default 1800 = 30 min; minimum 60)
 
 # artifact:                  # `show` tool: files the agent makes for the user, as cards in the chat (design doc 35); `/artifacts` lists them
 #   enabled: true            # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept

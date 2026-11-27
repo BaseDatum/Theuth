@@ -26,8 +26,8 @@ Mapped 2026-09-17 against `../jarvis` (file:line in the table).
 | Endpoint | hardcoded in Rust and in the script, "keep in sync by hand" (`updater.rs:24-25`) | one const in `crates/update`, one env default in the script, the same string; `update.url` overrides for a scratch bucket (§7) |
 | Release gate | K16 (refuse to publish `latest.json` unless notarized) designed, **not implemented**; ad-hoc builds can publish production manifests | `release-s3.sh` refuses `latest.json` unless `spctl --assess` passes on the `.app` and `codesign -dv` shows a Developer ID (§5.2) |
 | Post-upload check | none | script downloads what it uploaded and verifies each signature against the committed pubkey before writing `latest.json` (§5.2) |
-| Config | none in `jarvis.toml`; policy in `localStorage` | `update.enabled`, `update.url` in `config.yaml` (§7); constants in code |
-| Cadence | 12 h + 0–120 s jitter, from the SPA (`store.ts:140-159`) | 60 s after start, then every 6 h + 0–5 min jitter, from the process that owns the binary (§9) |
+| Config | none in `jarvis.toml`; policy in `localStorage` | `update.enabled`, `update.url`, `update.interval_secs` in `config.yaml` (§7); defaults in code |
+| Cadence | 12 h + 0–120 s jitter, from the SPA (`store.ts:140-159`) | 60 s after start, then every 30 min + 0–2 min jitter (or `update.interval_secs`, min 60 s), from the process that owns the binary (§9) |
 
 Kept from jarvis: the bucket (`s3.rwx.dev`, path-style, public `GetObject`
 on `releases/*`, authenticated `PUT`), the `latest.json` shape, minisign via
@@ -353,13 +353,18 @@ fires once, jarvis's `ditto` backup (`updater.rs:286-303`) is the upgrade.
 of §3.2 succeeds, and only when (a) `std::os::unix::process::parent_id() == 1` (launchd) or
 `INVOCATION_ID` is set (systemd), and (b) `rpc.events` `receiver_count()
 == 0` (nobody attached; the desktop reuses such a daemon only on the same
-box and would otherwise be counted), and (c) no turn has started in the
-last `IDLE_BEFORE_EXIT`: `std::process::exit(75)`. `EX_TEMPFAIL` is
+box and would otherwise be counted), and (c) no turn is currently in flight
+(tracked across `TurnStarted`/`TurnResumed` and every terminal turn/session
+event) and at least `IDLE_BEFORE_EXIT` has elapsed since the last turn
+started or ended: `std::process::exit(75)`. `EX_TEMPFAIL` is
 non-zero, so `KeepAlive.SuccessfulExit=false` / `Restart=on-failure`
 restart the daemon on the new binary; the exit reason is one `info!`
-line in `logs/service.log`. Conditions re-checked each tick; a daemon
-that is always attached updates at the next reboot, which is the
-documented ceiling.
+line in `logs/service.log`. Once an applied update is pending on a managed
+daemon, readiness is re-checked on a short `IDLE_POLL` (30 s) cadence
+without re-fetching the network manifest (which still runs on the normal
+`EVERY + jitter` schedule), logging once per version/state transition while
+waiting. A daemon that is always attached updates at the next reboot, which
+is the documented ceiling.
 
 A desktop-spawned daemon never meets (a) (its parent is `theuth-desktop`),
 so 18 §3 holds: it is never restarted from inside.
@@ -737,15 +742,16 @@ the Linux platforms out of detection).
 ```yaml
 update:
   enabled: true            # check, verify, replace; false = the harness never touches the network for this
-  url: https://s3.rwx.dev/theuth/releases/latest.json   # scratch bucket for the checks in §12
+  url: ~                   # single manifest URL override; unset tries GitHub Releases -> Wasabi S3 -> self-hosted S3
+  interval_secs: ~         # seconds between manifest checks (default 1800 = 30 min; clamped to minimum 60 s)
 ```
 
-Two keys, both with defaults; `THEUTH_UPDATE__ENABLED`, `THEUTH_UPDATE__URL`
-via figment (00 §9). The desktop reads neither (it is not a plugin, 25
-§0.1); `THEUTH_UPDATE_URL` in its environment overrides the const for §12.
-No channel, no interval, no "ask me" mode: constants live in code
-(36 §1). Channel comes back as `update.channel: prerelease` → `latest-
-prerelease.json` the day someone wants it; the script already writes it.
+Three keys, all with defaults; `THEUTH_UPDATE__ENABLED`, `THEUTH_UPDATE__URL`,
+`THEUTH_UPDATE__INTERVAL_SECS` via figment (00 §9). The desktop reads none of
+them (it is not a plugin, 25 §0.1); `THEUTH_UPDATE_URL` in its environment
+overrides the const for §12. No channel, no "ask me" mode. Channel comes back
+as `update.channel: prerelease` → `latest-prerelease.json` the day someone
+wants it; the script already writes it.
 
 ## 8. Data on disk
 
@@ -762,11 +768,14 @@ No state file, no phase file, no `localStorage`.
 
 ## 9. Numbers
 
-`FIRST_CHECK = 60 s` (never on the startup path), `EVERY = 6 h`, jitter
-`0..5 min` (a fleet of daemons does not hit the bucket on the hour),
-`HTTP_TIMEOUT = 30 s`, `IDLE_BEFORE_EXIT = 10 min` (§3.4). In code, not
-config (36 §1). Jarvis's 12 h was chosen for a check that ended in a toast;
-6 h for one that ends in nothing is cheap: a 400-byte GET.
+`FIRST_CHECK = 60 s` (never on the startup path), `EVERY = 30 min` (overridable
+via `update.interval_secs`, clamped to `MIN_INTERVAL_SECS = 60 s`), jitter
+`0..2 min` (`JITTER_SECS = 120`, so a fleet of daemons does not hit the
+endpoints simultaneously), `IDLE_POLL = 30 s` (local readiness re-check once an
+update is applied on disk on a managed daemon; does not re-fetch the manifest),
+`HTTP_TIMEOUT = 30 s`, `IDLE_BEFORE_EXIT = 10 min` (§3.4). A 400-byte manifest
+GET every 30 min is cheap and lets headless / cloud-node daemons pick up and
+apply new releases promptly instead of waiting 6+ hours.
 
 ## 10. Rejected
 

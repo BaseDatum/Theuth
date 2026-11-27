@@ -2,7 +2,7 @@
 # A native theuth node on a VM (design doc 224 §9): no Docker. Rendered into the provider's
 # user-data by scripts/cloud-node-do-test.sh and the cloud-nodes plugin, which fill in the
 # double-underscore placeholders below: the node NAME (mesh.name), DATA_DEV (the block device for
-# /data), TICKET (the one-time pairing ticket, or empty), MANIFEST (the release manifest URL),
+# /data), TICKET (the one-time pairing ticket, or empty),
 # PUBKEY (crates/update/pubkey.txt: Tauri's base64 of the minisign public key file) and
 # INSTALL_SH (base64 of deploy/computer/theuth-install.sh, shared with the engine image) and
 # DESKTOP (1: the watchable desktop, 0: none).
@@ -92,7 +92,6 @@ StartLimitIntervalSec=0
 User=engine
 Group=engine
 Environment=THEUTH_DATA_DIR=/data
-Environment=THEUTH_MANIFEST=__MANIFEST__
 # The newest signed release into /data/bin (download + minisign on first start).
 ExecStartPre=/usr/local/lib/theuth-install.sh install
 ExecStart=/data/bin/t --headless --data-dir /data
