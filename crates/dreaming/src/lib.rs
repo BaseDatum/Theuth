@@ -329,6 +329,14 @@ impl runtime::Plugin for DreamingPlugin {
         if let Err(e) = signals::start(rt, &engine).await {
             tracing::warn!("dreaming signals not started: {e:#}");
         }
+        // Hub-only gating (design doc 224): a stopped scope takes the tools back out.
+        rt.on_scope_stop(async {
+            if let Ok(Some(reg)) = kameo::actor::ActorRef::<::tools::ToolRegistry>::lookup(
+                ::tools::REGISTRY_ACTOR,
+            ) {
+                crate::tools::unregister(&reg).await;
+            }
+        });
         let rt_tools = rt.clone();
         tokio::spawn(async move {
             let knowledge = match rt_tools

@@ -113,9 +113,22 @@ pub(crate) fn docs_homes_on(
 /// hub duty (schedule ticks).
 static HUB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// The lease as the mesh actor last saw it: `None` before its first [`MeshEvent::Lease`]
+/// (no mesh plugin, or not started yet), then `Some(this engine holds it)`. Subsystems whose
+/// work is a hub duty (dreaming, channel listeners) start and stop on its changes.
+static HUB_WATCH: std::sync::LazyLock<tokio::sync::watch::Sender<Option<bool>>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::Sender::new(None));
+
 /// The mesh actor calls this on every lease change.
 pub fn set_hub(hub: bool) {
     HUB.store(hub, std::sync::atomic::Ordering::Relaxed);
+    HUB_WATCH.send_replace(Some(hub));
+}
+
+/// Follow the lease: `None` until the mesh actor emitted one, then whether this engine is
+/// the hub ([`set_hub`]).
+pub fn hub_watch() -> tokio::sync::watch::Receiver<Option<bool>> {
+    HUB_WATCH.subscribe()
 }
 
 /// Is this engine the hub? `true` when no mesh is running.

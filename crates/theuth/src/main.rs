@@ -9,6 +9,7 @@ mod mcp;
 mod plugin_cli;
 mod secret_cli;
 mod service;
+mod subsystems;
 mod worker;
 #[cfg(test)]
 mod wire_discovery_tests;
@@ -1050,6 +1051,20 @@ agent:
 #   enabled: true            # false: no watcher, no actor, no tool, no prompt block
 #   run_timeout_secs: 1800   # a run still going after this is cancelled and reported as `timeout`
 
+# subsystems:                # which subsystems this engine starts for its role (design doc 226); auto | on | off each.
+#                            # auto follows the rule: dreaming/signal/slack/telegram run only on the mesh hub (channels stay
+#                            # control-only elsewhere and move with the lease); meeting/voice/talk need an interactive host
+#                            # (desktop app, TUI — never `t --headless`) and an audio device; computer needs a display (Xvfb counts).
+#                            # on: start regardless; off: never. `<name>.enabled: false` still switches a subsystem off.
+#   meeting: auto
+#   voice: auto              # on: voice notes in/out on a headless hub's Signal/Slack (design doc 45)
+#   talk: auto
+#   computer: auto
+#   dreaming: auto
+#   signal: auto
+#   slack: auto
+#   telegram: auto
+
 # mesh:                      # engines form a leaderless mesh over iroh; hub duties are a lease won by stability (design doc 67 §4). `t mesh status|pair|add|remove|hub`
 #   relay: https://iroh.relay.theuth.io   # iroh relay when hole punching fails; self-host: your `iroh-relay` URL; `none` → bind locally, never dial a relay
 #   discovery: true          # DNS/pkarr + mDNS peer lookup; false → dial remembered addresses only (one laptop, no network)
@@ -1906,7 +1921,10 @@ async fn run() -> anyhow::Result<()> {
             // Takeover (63 §2.3): the engine this process would have run —
             // serving RPC, so the desktop app finds it again (§4.2).
             let start_engine: tui::StartEngine = Box::new(|rt| {
-                Box::pin(async move { start_plugins(&rt, engine_plugins(false, false)).await })
+                Box::pin(async move {
+                    let env = subsystems::Env::probe(Host::Tui, false);
+                    start_plugins(&rt, engine_plugins(false, false), env).await
+                })
             });
             vec![Box::new(tui::TuiPlugin {
                 module: rpc_module,
@@ -1999,7 +2017,7 @@ async fn run() -> anyhow::Result<()> {
             tracing::info!(plugin = name, "started");
         }
     } else {
-        start_plugins(&rt, plugins).await?;
+        start_plugins(&rt, plugins, subsystems::Env::probe(host, cli.headless)).await?;
         // 158 §12.2: theuth as an MCP server, iff `mcp_server.enabled`; the catalogue calls the API in-process.
         mcp_server::boot(
             &rt,
@@ -2281,21 +2299,36 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
     plugins
 }
 
-/// Start `plugins` on `rt` in order. First, 51 §8.2: the owners the registry
-/// must hear from before a private root may open — every lifecycle
-/// participant whose plugin runs here (each plugin honours its own
-/// `<section>.enabled`, default on). Jobs is registry-internal.
-async fn start_plugins(rt: &Runtime, mut plugins: Vec<Box<dyn Plugin>>) -> anyhow::Result<()> {
+/// Start `plugins` on `rt` in order, gated for `env` (design doc 226): every plugin declared
+/// its wire already; a skipped one does not start, a hub-only one starts under
+/// [`subsystems::follow_hub`] once the lease is known. First, 51 §8.2: the owners the registry
+/// must hear from before a private root may open — every lifecycle participant whose plugin
+/// starts here (each plugin honours its own `<section>.enabled`, default on). Jobs is
+/// registry-internal.
+async fn start_plugins(
+    rt: &Runtime,
+    mut plugins: Vec<Box<dyn Plugin>>,
+    env: subsystems::Env,
+) -> anyhow::Result<()> {
     declare_plugins(rt, &mut plugins).await?;
+    let names: Vec<&'static str> = plugins.iter().map(|p| p.name()).collect();
+    let plan = subsystems::plan(&names, &subsystems::overrides(&rt.config), &env);
+    let enabled = |name: &str| {
+        rt.config
+            .extract_inner::<bool>(&format!("{name}.enabled"))
+            .unwrap_or(true)
+    };
+    let disabled: Vec<&str> = names.iter().copied().filter(|n| !enabled(n)).collect();
+    tracing::info!("{}", subsystems::summary(&plan, &disabled, &env));
+    let starts = |name: &str| {
+        plan.iter()
+            .any(|(n, d)| *n == name && *d == subsystems::Decision::Start)
+    };
     let owners: Vec<&'static str> = [
         "artifact", "app", "browser", "computer", "voice", "talk", "routes",
     ]
     .into_iter()
-    .filter(|name| {
-        rt.config
-            .extract_inner::<bool>(&format!("{name}.enabled"))
-            .unwrap_or(true)
-    })
+    .filter(|name| enabled(name) && starts(name))
     .collect();
     let registry_rt = rt.clone();
     tokio::spawn(async move {
@@ -2335,6 +2368,22 @@ async fn start_plugins(rt: &Runtime, mut plugins: Vec<Box<dyn Plugin>>) -> anyho
                 .map_err(|e| e.to_string())
         })
     }));
+    let mut hub_only = Vec::new();
+    let plugins: Vec<_> = plugins
+        .into_iter()
+        .zip(plan)
+        .filter_map(|(plugin, (name, decision))| match decision {
+            // A disabled subsystem still starts: its own disabled path runs (dreaming
+            // switches its routine off).
+            _ if !enabled(name) => Some(plugin),
+            subsystems::Decision::Start => Some(plugin),
+            subsystems::Decision::Skip(_) => None,
+            subsystems::Decision::FollowHub => {
+                hub_only.extend(hub_subsystem(name, env.daemon));
+                None
+            }
+        })
+        .collect();
     let count = plugins.len() as u64;
     for (i, plugin) in plugins.into_iter().enumerate() {
         let name = plugin.name();
@@ -2352,7 +2401,45 @@ async fn start_plugins(rt: &Runtime, mut plugins: Vec<Box<dyn Plugin>>) -> anyho
     // 182: a table still unattached now has no plugin here — its parked changes no
     // longer hold the first sync. Here, so the TUI takeover's `start_engine` gets it too.
     replica::plugins_started();
+    tokio::spawn(subsystems::follow_hub(
+        rt.clone(),
+        hub_only,
+        mesh::hub_watch(),
+        // No lease by then: a running mesh that elected nobody (a lone `hub: never` engine
+        // emits none) is no hub here; without a mesh, `is_hub()` (true) as before.
+        || mesh::has_peers().is_none() && mesh::is_hub(),
+        subsystems::HubTiming::default(),
+    ));
     Ok(())
+}
+
+/// The plugin a hub-only subsystem runs per lease phase (226 §3): dreaming only on the hub;
+/// a channel listens on the hub (in daemon mode) and is control-only elsewhere.
+fn hub_subsystem(name: &'static str, daemon: bool) -> Option<subsystems::HubSubsystem> {
+    let make: subsystems::MakePlugin = match name {
+        "dreaming" => Box::new(|hub| hub.then(|| Box::new(dreaming::DreamingPlugin) as Box<dyn Plugin>)),
+        "signal" => Box::new(move |hub| {
+            Some(Box::new(signal::SignalPlugin {
+                channel: daemon && hub,
+                link: None,
+            }) as Box<dyn Plugin>)
+        }),
+        "slack" => Box::new(move |hub| {
+            Some(Box::new(slack::SlackPlugin {
+                channel: daemon && hub,
+            }) as Box<dyn Plugin>)
+        }),
+        "telegram" => Box::new(move |hub| {
+            Some(Box::new(telegram::TelegramPlugin {
+                channel: daemon && hub,
+            }) as Box<dyn Plugin>)
+        }),
+        other => {
+            tracing::warn!("subsystems: {other} is hub-only but has no hub factory; not started");
+            return None;
+        }
+    };
+    Some(subsystems::HubSubsystem { name, make })
 }
 
 /// `t --update` (39 §3.2): one foreground check, one line on stdout.

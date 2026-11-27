@@ -85,6 +85,27 @@ impl Message<RegisterUserSink> for UserChannels {
     }
 }
 
+/// `ask` → `()`. Drop the sink named `0` (a channel stopped while the engine runs on).
+pub struct UnregisterUserSink(pub &'static str);
+
+impl Message<UnregisterUserSink> for UserChannels {
+    type Reply = ();
+
+    async fn handle(&mut self, m: UnregisterUserSink, _: &mut Context<Self, Self::Reply>) {
+        self.sinks.retain(|s| s.name() != m.0);
+    }
+}
+
+/// On a scoped runtime ([`runtime::Runtime::scoped`]): drop the sink `name` once the scope
+/// stops, so `message_user` no longer routes to a channel that stopped listening.
+pub fn unregister_sink_on_scope_stop(rt: &runtime::Runtime, name: &'static str) {
+    rt.on_scope_stop(async move {
+        if let Ok(Some(users)) = kameo::actor::ActorRef::<UserChannels>::lookup(USER_ACTOR) {
+            let _ = users.ask(UnregisterUserSink(name)).await;
+        }
+    });
+}
+
 /// `ask` → `Result<Vec<String>, String>`: run the two passes of 24 §2 and
 /// return one `where` per sink that delivered (a failed sink is appended as
 /// `<name> failed: <why>`). `Err` when nothing delivered.
