@@ -191,16 +191,18 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
 }
 
 type HorizonPhase = 'closed' | 'entering' | 'open' | 'exiting'
-const HORIZON_OPEN_MS = 440
-const HORIZON_CLOSE_MS = 320
-
-
+const HORIZON_MS = 320
+const HORIZON_CLOSE_EASE = 'cubic-bezier(0.55, 0.05, 0.85, 0.3)'
+// Exact time-reversal of `HORIZON_CLOSE_EASE`: (1 - x2, 1 - y2, 1 - x1, 1 - y1).
+const HORIZON_OPEN_EASE = 'cubic-bezier(0.15, 0.7, 0.45, 0.95)'
 
 /**
  * 3 · Folded Horizon (1x) lifecycle for the session details drawer above the grabber:
- * - Opening measures the natural height and glides the shell `0 → H` while the inner stage hinges up (`horizon-in`).
  * - Closing locks the current height, glides `H → 0` while folding flat (`horizon-out`), pulses the grabber pill on
- *   absorption, then unmounts. Under reduced motion or zero-height headless layouts (jsdom), open/close settle instantly.
+ *   absorption, then unmounts.
+ * - Opening plays the exact opposite motion: measures the untransformed layout height and glides `0 → H` with the
+ *   time-reversed curve while the inner stage runs `bg-horizon-down` in reverse (`horizon-in`).
+ * Under reduced motion or zero-height headless layouts (jsdom), open/close settle instantly.
  */
 function useHorizonWarp(session: string, shown: boolean) {
   const [phase, setPhase] = useState<HorizonPhase>(shown ? 'open' : 'closed')
@@ -264,19 +266,19 @@ function useHorizonWarp(session: string, shown: boolean) {
     shell.style.transition = 'none'
     shell.style.height = `${startH}px`
     void shell.offsetHeight
-    shell.style.transition = `height ${HORIZON_CLOSE_MS}ms cubic-bezier(0.55, 0.05, 0.85, 0.3)`
+    shell.style.transition = `height ${HORIZON_MS}ms ${HORIZON_CLOSE_EASE}`
     shell.style.height = '0px'
     setPhase('exiting')
 
     timers.current.push(
-      window.setTimeout(() => pulsePill('tray-pill-absorb'), HORIZON_CLOSE_MS - 90),
+      window.setTimeout(() => pulsePill('tray-pill-absorb'), HORIZON_MS - 90),
       window.setTimeout(() => {
         if (shellRef.current) {
           shellRef.current.style.transition = ''
           shellRef.current.style.height = ''
         }
         setPhase('closed')
-      }, HORIZON_CLOSE_MS + 25),
+      }, HORIZON_MS + 25),
     )
   }, [session, shown])
 
@@ -288,7 +290,9 @@ function useHorizonWarp(session: string, shown: boolean) {
 
     shell.style.transition = 'none'
     shell.style.height = 'auto'
-    const targetH = stage.getBoundingClientRect().height
+    // `offsetHeight` is layout height, unaffected by `.horizon-in`'s 3D transform; fall back to
+    // `getBoundingClientRect` for headless layouts (jsdom) where layout height is 0.
+    const targetH = stage.offsetHeight || stage.getBoundingClientRect().height
     if (targetH <= 0) {
       shell.style.transition = ''
       shell.style.height = ''
@@ -300,7 +304,7 @@ function useHorizonWarp(session: string, shown: boolean) {
     const clampedH = Math.min(targetH, maxH)
     shell.style.height = '0px'
     void shell.offsetHeight
-    shell.style.transition = `height ${HORIZON_OPEN_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`
+    shell.style.transition = `height ${HORIZON_MS}ms ${HORIZON_OPEN_EASE}`
     shell.style.height = `${clampedH}px`
 
     const done = window.setTimeout(() => {
@@ -309,7 +313,7 @@ function useHorizonWarp(session: string, shown: boolean) {
         shellRef.current.style.height = ''
       }
       setPhase('open')
-    }, HORIZON_OPEN_MS + 25)
+    }, HORIZON_MS + 25)
     timers.current.push(done)
   }, [phase])
 

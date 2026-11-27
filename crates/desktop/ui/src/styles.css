@@ -1388,8 +1388,8 @@ html .tg-canvas .tg-edge {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Session details bar above the composer (3 · Folded Horizon, 1x): 3D perspective hinge lifting off the grabber
-   plane on open and folding back flat on close, with bottom-up layer stagger and tactile grabber pill response. */
+/* Session details bar above the composer (3 · Folded Horizon, 1x): 3D perspective hinge folding flat into the
+   grabber on close and playing the exact reverse motion on open, with tactile grabber pill response. */
 .horizon-stage {
   transform-origin: 50% 100%;
 }
@@ -1433,7 +1433,7 @@ html .tg-canvas .tg-edge {
 }
 @media (prefers-reduced-motion: no-preference) {
   .horizon-in {
-    animation: bg-horizon-up 440ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    animation: bg-horizon-down 320ms cubic-bezier(0.55, 0.05, 0.85, 0.3) reverse forwards;
   }
   .horizon-out {
     animation: bg-horizon-down 320ms cubic-bezier(0.55, 0.05, 0.85, 0.3) forwards;
@@ -1454,27 +1454,11 @@ html .tg-canvas .tg-edge {
     transition: none;
   }
 }
-@keyframes bg-horizon-up {
-  0% {
-    opacity: 0;
-    transform: perspective(780px) translateY(24px) rotateX(-58deg) scaleX(0.84) scaleY(0.5);
-    filter: brightness(0.92);
-  }
-  62% {
-    opacity: 1;
-    transform: perspective(780px) translateY(-1px) rotateX(3.5deg) scaleX(1.005) scaleY(1.01);
-    filter: brightness(1);
-  }
-  100% {
-    opacity: 1;
-    transform: perspective(780px) translateY(0) rotateX(0deg) scaleX(1) scaleY(1);
-    filter: brightness(1);
-  }
-}
 @keyframes bg-horizon-down {
   0% {
     opacity: 1;
     transform: perspective(780px) translateY(0) rotateX(0deg) scaleX(1) scaleY(1);
+    filter: brightness(1);
   }
   100% {
     opacity: 0;

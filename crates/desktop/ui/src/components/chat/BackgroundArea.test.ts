@@ -403,7 +403,7 @@ test('kernels left the chat for the bar: K1 dashes after terminals, pulsing whil
   expect(panel.querySelector('[role="region"][aria-label="Kernels"]')).toBeNull()
 })
 
-test('Folded Horizon warp: animates in on open, stays mounted through warp-down exit, then unmounts', async () => {
+test('Folded Horizon warp: animates in as the exact reverse of close, stays mounted through warp-down exit, then unmounts', async () => {
   const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
     x: 0, y: 0, width: 640, height: 220, top: 0, left: 0, right: 640, bottom: 220, toJSON: () => ({}),
   })
@@ -419,8 +419,9 @@ test('Folded Horizon warp: animates in on open, stays mounted through warp-down 
     const panel = document.getElementById('background-s1')!
     expect(panel.querySelector('.horizon-stage')?.className).toContain('horizon-in')
     expect(panel.style.height).toBe('220px')
+    expect(panel.style.transition).toBe('height 320ms cubic-bezier(0.15, 0.7, 0.45, 0.95)')
 
-    await act(async () => { vi.advanceTimersByTime(470) })
+    await act(async () => { vi.advanceTimersByTime(350) })
     expect(panel.style.height).toBe('')
     expect(panel.querySelector('.horizon-stage')?.className).not.toContain('horizon-in')
 
@@ -429,11 +430,35 @@ test('Folded Horizon warp: animates in on open, stays mounted through warp-down 
     expect(panel.getAttribute('aria-hidden')).toBe('true')
     expect(panel.querySelector('.horizon-stage')?.className).toContain('horizon-out')
     expect(panel.style.height).toBe('0px')
+    expect(panel.style.transition).toBe('height 320ms cubic-bezier(0.55, 0.05, 0.85, 0.3)')
 
     await act(async () => { vi.advanceTimersByTime(350) })
     expect(document.getElementById('background-s1')).toBeNull()
   } finally {
     vi.useRealTimers()
+    rect.mockRestore()
+  }
+})
+
+test('Folded Horizon open measures untransformed offsetHeight rather than transformed getBoundingClientRect', async () => {
+  const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+    x: 0, y: 0, width: 640, height: 63, top: 0, left: 0, right: 640, bottom: 63, toJSON: () => ({}),
+  })
+  const offsetH = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(220)
+  try {
+    populate()
+    await mount()
+    vi.useFakeTimers()
+
+    await act(async () => { button('Show background activity').click() })
+    const panel = document.getElementById('background-s1')!
+    expect(panel.style.height).toBe('220px')
+
+    await act(async () => { vi.advanceTimersByTime(350) })
+    expect(panel.style.height).toBe('')
+  } finally {
+    vi.useRealTimers()
+    offsetH.mockRestore()
     rect.mockRestore()
   }
 })
