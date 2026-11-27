@@ -578,17 +578,62 @@ Mockup approved by the owner; screenshots of the fixture in `docs/design/224-ass
   memory across devices; from $12/mo, your own account) vs. *Just this iPhone*. ② Provider: DO
   (*Sign in with DigitalOcean*), Fly.io (paste a token, beta), AWS Lightsail (coming soon); prices
   for 2 GB; "the bill is from your own provider". ③ Name, region (nearest preselected from the
-  time zone), size 2/4/8 GB, cost, *No open ports · updates itself*, **Create node · $13/mo** — the
-  press is the approval. ④ Real stages, "you can leave this screen". ⑤ *<name> is ready* →
-  *Connect a model* (the model-provider sign-in), *Add my laptop too* (the existing pairing flow).
+  time zone), the **watchable desktop** toggle, size cards, cost, *No open ports · updates itself ·
+  watchable desktop*, **Create node · $25/mo** (4 GB + disk) — the press is the approval. ④ Real
+  stages, "you can leave this screen". ⑤ *<name> is ready* → *Connect a model* (the
+  model-provider sign-in), *Add my laptop too* (the existing pairing flow).
+- **Size cards** (owner, supersedes the earlier 2-GB default): each card shows RAM/CPU, the monthly
+  price (server + disk) and what it is for — 2 GB *minimum*: "Chat, coding, schedules and routines.
+  Light browsing."; 4 GB, *Recommended* whenever the desktop is on: "Heavy computer use and
+  browsing."; 8 GB: "Several agents at once, big repos, local tools." Default 4 GB with the desktop
+  on, 2 GB with it off; 2 GB with the desktop on shows an inline note (not a blocker): "We recommend
+  4 GB for computer use and browsing." Kubernetes offers the same three as memory request = limit;
+  Fly the matching machine presets. Size and desktop changes update the create button's price live.
 - **Desktop wizard dialog:** step rail Provider / Configure / Create with the "why" note; provider
-  cards show discovered credentials; Configure has name/region/size and a collapsed *Advanced*
-  (disk 10 GB kept on delete, SSH access *Off (no inbound ports)*, updates follow stable). The
-  Kubernetes variant picks context, namespace (+ create), storage class (flags a cluster with no
-  default class) and offers *Block cluster network*, with a warning when the CNI is flannel
-  (detected from kube-system), which does not enforce NetworkPolicies.
+  cards show discovered credentials; Configure has name/region, the desktop toggle, the size cards
+  and a collapsed *Advanced* (disk 10 GB kept on delete, SSH access *Off (no inbound ports)*,
+  updates follow stable). The Kubernetes variant picks context, namespace (+ create), storage class
+  (flags a cluster with no default class) and offers *Block cluster network*, with a warning when
+  the CNI is flannel (detected from kube-system), which does not enforce NetworkPolicies.
 - **Existing mesh:** Settings › Machines lists cloud nodes with provider chip, region,
   direct/relay, version + auto-update, monthly cost and a ⋯ menu (Restart, Resize, Update now,
-  Open terminal, View logs, Destroy — the confirmation names the node and the monthly saving, and
-  offers to keep the disk); *＋ Add cloud node* opens the wizard without the "why" screen. Phone:
-  an *Add a cloud node — always on, joins this mesh* entry for the engine switcher.
+  View desktop, Open terminal, View logs, Destroy — the confirmation names the node and the monthly
+  saving, and offers to keep the disk); *＋ Add cloud node* opens the wizard without the "why"
+  screen. Phone: an *Add a cloud node — always on, joins this mesh* entry for the engine switcher.
+
+### 16.10 The watchable desktop
+
+Owner addition: every node gets a desktop agents can use (headed browser, `computer_*` tools) and
+the owner can watch and take over, on by default and chosen at creation ("Watchable desktop — lets
+agents use a browser and apps you can watch and take over"; off = a terminal-only node).
+
+- **VM path** (`vm-cloud-init.sh`, placeholder `__DESKTOP__`): `Xtigervnc :0` at 1440x900x24 — a
+  virtual X display that is also the VNC server, the same server the sandbox VM image uses
+  (`deploy/vm`), so no separate Xvfb + x11vnc — listening for RFB on `localhost:5900` only;
+  `openbox` (lighter than the sandbox image's XFCE; no panel, no session manager); `websockify
+  127.0.0.1:6080 localhost:5900`. Three units (`theuth-xvnc`, `theuth-wm`, `theuth-websockify`),
+  and a drop-in gives `theuth-engine.service` `DISPLAY=:0` and orders it after the window manager.
+  The engine only sets `DISPLAY`; which subsystems use a display is decided by the presence of one
+  (feat/node-slim), not by `--headless`. The VNC password is 8 random characters (VncAuth's
+  limit), in `/data/desktop.json` (0600, `engine`) for the engine to hand to the owner, and in
+  `vncpasswd` form for the server; it survives re-creation on a kept disk.
+- **Streaming: the sandbox VM desktop's protocol, carried over the mesh.** The app's viewer is the
+  same noVNC client the sandbox VM pop-out uses (WebSocket to websockify, VncAuth). Nothing listens
+  on a public address and the firewall has no inbound rule, so `engine_desktop(peer)` on the
+  owner's engine asks the node for `desktop.json` (forwarded RPC), opens a loopback listener on
+  the owner's engine and pipes every connection over a mesh stream (`theuth/desktop/1`) to the
+  node, which connects only to `127.0.0.1:<its websockify port>`. `cloud_desktop(name)` returns
+  `{ws_url: ws://127.0.0.1:<local>/websockify, password, geometry, engine}`. Like the sandbox VM
+  view, the URL is local to the engine the app is connected to: the desktop app and an iPhone
+  with its own engine view it; a phone remoting into a desktop engine does not (same limit as
+  sandbox VMs).
+- **Take over**: input off while watching; *Take over* turns it on (red frame), *Hand back* off.
+  Unlike sandbox VMs it does not steer the node's sessions (no takeover protocol on a peer yet).
+- **Container path (Fly, Kubernetes): follow-up.** The engine image has no X stack; adding
+  Xtigervnc + openbox + websockify to `deploy/computer/Dockerfile` and starting them from the
+  entrypoint is straightforward, but grows the image and was not built or run here, so the toggle
+  is shown disabled for those providers.
+- **Enabling/disabling after creation: follow-up.** Disabling is three `systemctl disable --now`
+  on the node; enabling needs the packages installed (apt on the node). Both need a small
+  node-side RPC (the engine has passwordless sudo); not built. Today: destroy keeping the disk and
+  create again with the other choice (the node comes back as the same engine).
