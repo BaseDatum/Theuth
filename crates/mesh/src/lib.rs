@@ -1362,13 +1362,18 @@ impl runtime::Plugin for MeshPlugin {
         // 79 §6.6: secrets stamps its replicated rows with the engine id; it starts
         // before us and cannot ask the mesh (mesh depends on secrets), so we tell it.
         tokio::spawn(tell_secrets_engine(rt.clone(), net.id.clone()));
+        // 225: the seal gate names this engine in its prompts and sealed errors.
+        if let Some(g) = secrets::seal::installed() {
+            g.set_identity(&net.id.0, &net.name());
+        }
         // 183 §6.9: the vault the key frames and the rotation move keys in, and the key tick
         // (member rule, missing-key requests, the rotation's peer list) until shutdown.
         // P2-F1: the tick (and its paired-set refresh: unpair enforcement) runs from the start,
         // vault or not; the vault joins when it opens, `keys::start` before any tick uses it.
         let (n, rt2) = (net.clone(), rt.clone());
         tokio::spawn(async move {
-            let vault = secrets::handle(&rt2);
+            // 225: a sealed vault joins when it is unsealed, not never.
+            let vault = secrets::handle_when_open(&rt2);
             tokio::pin!(vault);
             let mut waiting = true;
             let mut every = tokio::time::interval(keys::TICK);

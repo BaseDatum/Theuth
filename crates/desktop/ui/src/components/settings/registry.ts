@@ -8,14 +8,15 @@ import { models } from '@/components/settings/categories/models'
 import { network } from '@/components/settings/categories/network'
 import { plugins } from '@/components/settings/categories/plugins'
 import { prompt } from '@/components/settings/categories/prompt'
+import { security } from '@/components/settings/categories/security'
 import { sharing } from '@/components/settings/categories/sharing'
 import { tools } from '@/components/settings/categories/tools'
 import { voice } from '@/components/settings/categories/voice'
 import type { SettingsCategory, SettingsTab } from '@/components/settings/types'
 import { supports, type Discovery } from '@/rpc/discovery'
 
-/** 188: the categories column, top to bottom. 210: Sharing after Network (public web sharing, §7.4 item 4); 213: its hub. 216: Plugins last. */
-export const CATEGORIES: readonly SettingsCategory[] = [general, models, agent, prompt, learning, voice, meetings, calendar, network, sharing, channels, tools, plugins]
+/** 188: the categories column, top to bottom. 210: Sharing after Network (public web sharing, §7.4 item 4); 213: its hub. 225: Security (the vault) after Sharing. 216: Plugins last. */
+export const CATEGORIES: readonly SettingsCategory[] = [general, models, agent, prompt, learning, voice, meetings, calendar, network, sharing, security, channels, tools, plugins]
 
 /** A tab id and the category it belongs to. */
 export type Placed = { category: SettingsCategory; tab: SettingsTab }
@@ -43,6 +44,7 @@ export const TAB_IDS = [
   'calendar', 'briefs', 'upcoming',
   'machine', 'machines', 'devices', 'messaging', 'vms',
   'shared', 'contacts', 'shared-chats', 'shared-notes', 'sharing', 'domains',
+  'vault',
   'signal', 'slack', 'telegram',
   'categories', 'tools', 'builtins', 'search', 'mcp', 'computer', 'browser',
   'plugins',

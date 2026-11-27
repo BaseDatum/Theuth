@@ -28,10 +28,12 @@ pub mod rpc;
 pub mod rpc_support;
 pub use rpc::{CredentialsApiClient, rpc_module};
 pub mod connections;
+pub mod envelope;
 pub mod expiry;
 pub mod external;
 mod key;
 pub mod requests;
+pub mod seal;
 pub mod settings;
 pub mod store;
 pub mod tools;
@@ -1126,8 +1128,12 @@ pub const HANDLE_WAIT: Duration = Duration::from_secs(10);
 
 /// The vault for in-process readers (37 §3.7): waits for the actor up to
 /// [`HANDLE_WAIT`] (plugins start in order, so it is registered or never will
-/// be), `None` when the vault failed to open. Callers proceed without keys.
+/// be), `None` when the vault failed to open or (225) is sealed — at once, no wait.
+/// Callers proceed without keys; [`sealed`] says why.
 pub async fn handle(rt: &Runtime) -> Option<Arc<Vault>> {
+    if seal::installed().is_some_and(|g| g.is_sealed()) {
+        return None;
+    }
     let actor = tokio::time::timeout(HANDLE_WAIT, rt.lookup_when::<SecretsActor>(SECRETS_ACTOR))
         .await
         .ok()
@@ -1138,6 +1144,23 @@ pub async fn handle(rt: &Runtime) -> Option<Arc<Vault>> {
             tracing::warn!("secrets vault handle: {e}");
             None
         }
+    }
+}
+
+/// 225: `Some(text)` while this engine's vault is sealed — what a reader that got `None` from
+/// [`handle`] tells its user ("the vault is sealed on sky-cloud — unlock it from your phone …").
+pub fn sealed() -> Option<seal::SealError> {
+    seal::installed()
+        .filter(|g| g.is_sealed())
+        .map(|g| seal::SealError::Sealed(g.sealed_text()))
+}
+
+/// 225: [`handle`] for a long-lived reader (the mesh's key frames): a sealed vault is waited
+/// for until it opens instead of answering `None`.
+pub async fn handle_when_open(rt: &Runtime) -> Option<Arc<Vault>> {
+    match seal::installed() {
+        Some(g) if g.is_sealed() => Some(g.wait_open().await),
+        _ => handle(rt).await,
     }
 }
 
@@ -1224,48 +1247,78 @@ impl runtime::Plugin for SecretsPlugin {
         } else {
             SecretsConfig::default()
         };
-        let vault = match Vault::open(&rt.data_dir, cfg.key_store).await {
-            Ok(v) => Arc::new(v),
+        // 225: unwrap the DEK with a method that needs no human, else start sealed and finish
+        // the start once a device or the master password opens it.
+        let gate = match seal::Gate::boot(&rt.data_dir, cfg.key_store).await {
+            Ok(g) => g,
             Err(e) => {
                 tracing::error!("secrets vault unavailable: {e:#}");
                 return Ok(());
             }
         };
-        let sa = SecretsActor::new(
-            vault.clone(),
-            rt.clone(),
-            Duration::from_secs(cfg.request_timeout_secs),
-        )
-        .with_config(&cfg, Some(rt.data_dir.join("config.yaml")));
-        let externals = sa.externals();
-        let actor = SecretsActor::spawn(sa);
-        actor.register(SECRETS_ACTOR)?;
-        tokio::spawn(replicate(rt.clone(), vault.clone()));
-        tokio::spawn(sweeper(rt.clone(), vault.clone()));
-        if !cfg.tools {
-            // Nothing reads placeholders: the connections serve the owner's UI only.
-            let _ = actor.tell(connections::SeedConnections).await;
-            return Ok(());
+        seal::install(gate.clone());
+        let hook = Arc::new(seal::GatedHook::new(gate.clone()));
+        if cfg.tools {
+            ::tools::secrets::install(hook.clone());
         }
-        ::tools::secrets::install(Arc::new(external::Hook::new(
-            vault.clone(),
-            externals,
-            Duration::from_secs(cfg.external.timeout_secs),
-        )));
-        let rt = rt.clone();
-        let timeout = Duration::from_secs(cfg.request_timeout_secs);
-        tokio::spawn(async move {
-            if let Some(reg) = rt
-                .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
-                .await
-            {
-                // 221 §6.3: the always-ask entries exist before any connection is registered.
-                let _ = actor.ask(connections::SeedConnections).await;
-                tools::register(&reg, vault, actor, timeout).await;
+        match gate.vault() {
+            Some(vault) => finish_start(rt.clone(), cfg, vault, hook).await,
+            None => {
+                tracing::warn!("secrets: {}", gate.sealed_text());
+                tokio::spawn(gate.clone().ask_until_open());
+                let rt = rt.clone();
+                tokio::spawn(async move {
+                    let vault = gate.wait_open().await;
+                    if let Err(e) = finish_start(rt, cfg, vault, hook).await {
+                        tracing::error!("secrets: after unsealing: {e:#}");
+                    }
+                });
+                Ok(())
             }
-        });
-        Ok(())
+        }
     }
+}
+
+/// The rest of [`SecretsPlugin::start`] once the vault is open (at boot, or after the unseal).
+async fn finish_start(
+    rt: Runtime,
+    cfg: SecretsConfig,
+    vault: Arc<Vault>,
+    hook: Arc<seal::GatedHook>,
+) -> anyhow::Result<()> {
+    let sa = SecretsActor::new(
+        vault.clone(),
+        rt.clone(),
+        Duration::from_secs(cfg.request_timeout_secs),
+    )
+    .with_config(&cfg, Some(rt.data_dir.join("config.yaml")));
+    let externals = sa.externals();
+    let actor = SecretsActor::spawn(sa);
+    actor.register(SECRETS_ACTOR)?;
+    tokio::spawn(replicate(rt.clone(), vault.clone()));
+    tokio::spawn(sweeper(rt.clone(), vault.clone()));
+    if !cfg.tools {
+        // Nothing reads placeholders: the connections serve the owner's UI only.
+        let _ = actor.tell(connections::SeedConnections).await;
+        return Ok(());
+    }
+    hook.set(Arc::new(external::Hook::new(
+        vault.clone(),
+        externals,
+        Duration::from_secs(cfg.external.timeout_secs),
+    )));
+    let timeout = Duration::from_secs(cfg.request_timeout_secs);
+    tokio::spawn(async move {
+        if let Some(reg) = rt
+            .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
+            .await
+        {
+            // 221 §6.3: the always-ask entries exist before any connection is registered.
+            let _ = actor.ask(connections::SeedConnections).await;
+            tools::register(&reg, vault, actor, timeout).await;
+        }
+    });
+    Ok(())
 }
 
 /// Attach the vault tables once the replica plugin is up (`Err` = local

@@ -209,6 +209,11 @@ pub trait Secrets: Send + Sync {
     fn max_literal_len(&self) -> usize {
         0
     }
+    /// 225: `Some(text)` while the vault is sealed ("sky-cloud is sealed — unlock it …").
+    /// Schedules defer their fires on it; the expansion itself fails with the same text.
+    fn sealed(&self) -> Option<String> {
+        None
+    }
 }
 
 static INSTALLED: OnceLock<Arc<dyn Secrets>> = OnceLock::new();
@@ -229,6 +234,11 @@ pub fn mentions(args: &serde_json::Value) -> bool {
         serde_json::Value::Object(o) => o.values().any(mentions),
         _ => false,
     }
+}
+
+/// 225: `Some(text)` while this engine's vault is sealed; `None` unsealed or without a vault.
+pub fn sealed() -> Option<String> {
+    INSTALLED.get().and_then(|s| s.sealed())
 }
 
 /// Expand placeholders in `args`; `Ok(0)` when nothing is installed.

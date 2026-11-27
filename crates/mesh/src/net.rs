@@ -1331,6 +1331,7 @@ impl Net {
                 crate::keys::after_pairing(self, theirs.as_ref(), &their_keyring);
             }
         }
+        vault_paired(&entry.id.0);
         let net = self.clone();
         tokio::spawn(async move { net.drive(conn).await });
         Ok(self.peer_of(&entry))
@@ -1914,6 +1915,7 @@ impl Net {
             crate::keys::after_pairing(self, rank.as_ref(), &keyring);
         }
         write_msg(&mut send, &reply).await.map_err(user_err)?;
+        vault_paired(&peer.to_string());
         let _ = send.finish();
         tracing::info!("mesh: paired with {}", peer.fmt_short());
         self.drive(conn).await;
@@ -2302,6 +2304,14 @@ fn path_of(conn: &Connection) -> (crate::PeerPath, Option<u32>) {
 /// An application error as the router reports it.
 fn user_err(e: anyhow::Error) -> AcceptError {
     AcceptError::from_boxed(e.into())
+}
+
+/// 225: tell the seal gate a pairing with `id` just completed: an `enroll` from it is
+/// pre-approved for a while, and an engine without a keychain asks it to become an unlock device.
+fn vault_paired(id: &str) {
+    if let Some(g) = secrets::seal::installed() {
+        g.after_pairing(id);
+    }
 }
 
 pub(crate) async fn write_msg(send: &mut SendStream, msg: &Msg) -> anyhow::Result<()> {
