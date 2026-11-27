@@ -76,4 +76,22 @@ for s in 16 20 24 32; do r "$ROOT/crates/desktop/companion-assets/harness/theuth
 echo "== website"
 r "$BRAND/ios-icon-dark.svg" "$TMP/ati.png" 256
 magick "$TMP/ati.png" -alpha off "PNG24:$ROOT/site/public/apple-touch-icon.png"
+
+echo "== github: repository social preview (1280x640, upload to Settings > Social preview)"
+# Dark plate on soot, bone lockup, tagline; GitHub wants a 1280x640 PNG under 1 MB and has no API for it, so this
+# file is uploaded by hand (repo Settings > Social preview) and kept here so the upload is reproducible from the
+# masters. The organisation avatar on GitHub is this same dark plate: app-icon-dark rendered at 1024.
+r "$BRAND/app-icon-dark.svg" "$TMP/gh-plate.png" 288
+sed 's/fill="currentColor"/fill="#e8dcc8"/' "$BRAND/wordmark.svg" > "$TMP/gh-word.svg"
+inkscape "$TMP/gh-word.svg" -w 520 -o "$TMP/gh-word.png" >/dev/null 2>&1
+magick -size 1280x640 xc:'#1a1612' \
+  "$TMP/gh-plate.png" -geometry +104+176 -composite \
+  "$TMP/gh-word.png" -geometry +468+236 -composite \
+  -font /System/Library/Fonts/Supplemental/Copperplate.ttc -fill '#b9ab95' -pointsize 27 -kerning 1.2 \
+  -annotate +470+352 'Your agents, your machines, your keys.' \
+  -fill '#8f2f1f' -draw 'rectangle 470,392 610,395' \
+  -fill '#6b6357' -font /System/Library/Fonts/Helvetica.ttc -pointsize 22 -kerning 2 \
+  -annotate +470+436 'THEUTH.IO' \
+  -alpha off -colorspace sRGB "PNG24:$BRAND/github-social.png"
+
 echo "done"
