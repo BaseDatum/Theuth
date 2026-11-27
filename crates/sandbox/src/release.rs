@@ -39,6 +39,19 @@ pub fn platform_key(os: &str, arch: &str) -> String {
     format!("cli-{os}-{arch}")
 }
 
+/// Reject unsupported `(os, arch)` combinations with an actionable error.
+pub fn validate_target(os: &str, arch: &str) -> anyhow::Result<()> {
+    match (os, arch) {
+        ("linux", "x86_64" | "aarch64")
+        | ("macos", "aarch64")
+        | ("windows", "x86_64" | "aarch64") => Ok(()),
+        ("macos", "x86_64") => anyhow::bail!(
+            "macOS Intel (x86_64) is not published — Apple silicon (arm64), Linux, and Windows are supported"
+        ),
+        _ => anyhow::bail!("unsupported target: {os} {arch}"),
+    }
+}
+
 async fn fetch_manifest(client: &reqwest::Client, url: &str) -> anyhow::Result<Manifest> {
     client
         .get(url)
@@ -52,10 +65,11 @@ async fn fetch_manifest(client: &reqwest::Client, url: &str) -> anyhow::Result<M
         .with_context(|| format!("GET {url}"))
 }
 
-/// The latest release's CLI files for `(os, arch)` — `t` and the helpers
-/// shipped beside it — verified. `(file name, bytes)`, `t` first. Whole
-/// tarball in memory: a one-shot installer, not a service.
+/// The latest release's CLI files for `(os, arch)` — `t` (or `t.exe` on Windows)
+/// and the helpers shipped beside it — verified. `(file name, bytes)`, `t` first.
+/// Whole archive in memory: a one-shot installer, not a service.
 pub async fn fetch(os: &str, arch: &str, out: &Progress) -> anyhow::Result<Vec<(String, Bytes)>> {
+    validate_target(os, arch)?;
     fetch_from(update::DEFAULT_URLS, update::PUBKEY, os, arch, out).await
 }
 
@@ -66,6 +80,7 @@ async fn fetch_from(
     arch: &str,
     out: &Progress,
 ) -> anyhow::Result<Vec<(String, Bytes)>> {
+    validate_target(os, arch)?;
     if urls.is_empty() {
         anyhow::bail!("no release endpoints configured");
     }
@@ -139,13 +154,13 @@ async fn fetch_from(
                 continue;
             }
         };
-        let mut tgz = Vec::new();
+        let mut payload = Vec::new();
         let mut stream_err = None;
         loop {
             match resp.chunk().await {
                 Ok(Some(chunk)) => {
                     verifier.update(&chunk);
-                    tgz.extend_from_slice(&chunk);
+                    payload.extend_from_slice(&chunk);
                 }
                 Ok(None) => break,
                 Err(e) => {
@@ -172,7 +187,19 @@ async fn fetch_from(
         verifier
             .finalize()
             .map_err(|_| anyhow::anyhow!("{}: signature does not verify", p.url))?;
-        let files = tokio::task::spawn_blocking(move || extract(&tgz)).await??;
+        let is_zip = os == "windows"
+            || p.url
+                .split('?')
+                .next()
+                .is_some_and(|u| u.ends_with(".zip"));
+        let files = tokio::task::spawn_blocking(move || {
+            if is_zip {
+                extract_zip(&payload)
+            } else {
+                extract(&payload)
+            }
+        })
+        .await??;
         return Ok(files);
     }
 
@@ -196,6 +223,34 @@ pub fn extract(tgz: &[u8]) -> anyhow::Result<Vec<(String, Bytes)>> {
     files.sort_by_key(|(n, _)| n != "t");
     if files.first().is_none_or(|(n, _)| n != "t") {
         anyhow::bail!("release tarball has no `t` entry");
+    }
+    Ok(files)
+}
+
+/// The regular entries of a Windows release zip (bare files at the root), `t.exe` first.
+pub fn extract_zip(zip_bytes: &[u8]) -> anyhow::Result<Vec<(String, Bytes)>> {
+    let cursor = std::io::Cursor::new(zip_bytes);
+    let mut ar = zip::ZipArchive::new(cursor)?;
+    let mut files = Vec::new();
+    for i in 0..ar.len() {
+        let mut entry = ar.by_index(i)?;
+        if entry.is_dir() {
+            continue;
+        }
+        let Some(enclosed) = entry.enclosed_name() else {
+            anyhow::bail!("release zip contains unsafe path");
+        };
+        if enclosed.components().count() != 1 {
+            continue;
+        }
+        let name = enclosed.to_string_lossy().into_owned();
+        let mut buf = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut buf)?;
+        files.push((name, Bytes::from(buf)));
+    }
+    files.sort_by_key(|(n, _)| n != "t.exe");
+    if files.first().is_none_or(|(n, _)| n != "t.exe") {
+        anyhow::bail!("release zip has no `t.exe` entry");
     }
     Ok(files)
 }
@@ -408,5 +463,43 @@ mod tests {
         );
         assert_eq!(primary_bad_payload.hits(), 2);
         assert_eq!(secondary.hits(), 4);
+    }
+
+    #[test]
+    fn validate_target_rejects_darwin_x86_64_and_accepts_published() {
+        for (os, arch) in [
+            ("linux", "x86_64"),
+            ("linux", "aarch64"),
+            ("macos", "aarch64"),
+            ("windows", "x86_64"),
+            ("windows", "aarch64"),
+        ] {
+            assert!(validate_target(os, arch).is_ok(), "{os}/{arch}");
+        }
+        let err = validate_target("macos", "x86_64").unwrap_err();
+        assert!(
+            err.to_string().contains("macOS Intel"),
+            "unexpected error: {err}"
+        );
+        assert!(validate_target("freebsd", "x86_64").is_err());
+    }
+
+    #[test]
+    fn extracts_zip_t_exe_first_then_helpers() {
+        use std::io::Write;
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut cursor);
+            let opts = zip::write::SimpleFileOptions::default();
+            w.start_file("helper.exe", opts).unwrap();
+            w.write_all(b"H").unwrap();
+            w.start_file("t.exe", opts).unwrap();
+            w.write_all(b"MZ").unwrap();
+            w.finish().unwrap();
+        }
+        let files = extract_zip(cursor.get_ref()).unwrap();
+        assert_eq!(files[0], ("t.exe".to_owned(), Bytes::from_static(b"MZ")));
+        assert_eq!(files[1].0, "helper.exe");
+        assert!(extract_zip(&[]).is_err());
     }
 }

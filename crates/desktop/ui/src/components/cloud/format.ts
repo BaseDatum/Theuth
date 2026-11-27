@@ -12,6 +12,7 @@ export const BRAND: Record<ProviderKind, { bg: string; mark: string }> = {
   fly: { bg: '#7b3fe4', mark: 'F' },
   lightsail: { bg: '#ff9900', mark: 'A' },
   kubernetes: { bg: '#326ce5', mark: 'K' },
+  ssh: { bg: '#0f766e', mark: 'SSH' },
 }
 
 const cents = (n: number) => Math.round(n * 100) / 100
@@ -22,7 +23,7 @@ export function usd(n: number): string {
   return Number.isInteger(c) ? `$${c}` : `$${c.toFixed(2)}`
 }
 
-/** The providers a screen offers: Kubernetes (`desktop_only`) never on a phone. */
+/** The providers a screen offers: desktop-only providers (Kubernetes, SSH) never on a phone. */
 export function offered(providers: readonly ProviderInfo[], phone: boolean): ProviderInfo[] {
   return providers.filter((p) => !(phone && p.desktop_only))
 }
@@ -59,7 +60,21 @@ export function localQuote(kind: ProviderKind, sizes: readonly SizeOption[] | un
 /** The create button: the press is the approval, so it names the monthly total (`Create node · $13/mo`). */
 export function createLabel(spec: Pick<NodeSpec, 'provider' | 'k8s'>, quote: Quote | null): string {
   if (spec.provider === 'kubernetes') return `Deploy to ${spec.k8s?.context ?? 'cluster'}`
+  if (spec.provider === 'ssh') return 'Install and join'
   return quote?.total_usd != null ? `Create node · ${usd(quote.total_usd)}/mo` : 'Create node'
+}
+
+/** Display string for `cloud_ssh_probe` OS/arch (`Linux · x86_64`, `macOS · aarch64`, `Windows · x86_64`). */
+export function formatSshOsArch(os: string | null | undefined, arch: string | null | undefined): string {
+  const osLabel =
+    os === 'linux'
+      ? 'Linux'
+      : os === 'macos' || os === 'darwin'
+        ? 'macOS'
+        : os === 'windows'
+          ? 'Windows'
+          : (os ?? 'Unknown OS')
+  return arch ? `${osLabel} · ${arch}` : osLabel
 }
 
 // ---- desktop and size ----
@@ -68,11 +83,12 @@ export function createLabel(spec: Pick<NodeSpec, 'provider' | 'k8s'>, quote: Quo
 export function desktopBlocked(kind: ProviderKind): string | null {
   if (kind === 'fly') return 'Desktop: coming soon on Fly.io'
   if (kind === 'kubernetes') return 'Desktop: coming soon on Kubernetes'
+  if (kind === 'ssh') return 'Desktop: not available via SSH'
   return null
 }
 
-/** The size the wizard starts at until the user picks one: 4 GB with the desktop, the 2 GB minimum without. */
-export const defaultMemory = (desktop: boolean): number => (desktop ? 4 : 2)
+/** The size the wizard starts at until the user picks one: 4 GB with the desktop or on Fly.io, the 2 GB minimum otherwise. */
+export const defaultMemory = (desktop: boolean, kind?: ProviderKind | null): number => (desktop || kind === 'fly' ? 4 : 2)
 
 /** What each size is for (the size cards). */
 export const SIZE_USE: Record<number, string> = {
@@ -160,9 +176,9 @@ export type StageRow = { stage: Stage; label: string; status: StageStatus }
 
 const later = (a: Stage | null, b: Stage | null): Stage | null => (a === null ? b : b === null ? a : STAGES.indexOf(a) >= STAGES.indexOf(b) ? a : b)
 
-/** The progress step's six rows: done before the current stage, active (or failed) at it, waiting after. */
+/** The progress step's rows: done before the current stage, active (or failed) at it, waiting after. */
 export function stageRows(o: {
-  node: (Pick<CloudNode, 'state' | 'stage' | 'region_label' | 'region' | 'volume_gb' | 'version' | 'provider' | 'k8s'> & { vault?: CloudNode['vault'] }) | null
+  node: (Pick<CloudNode, 'state' | 'stage' | 'region_label' | 'region' | 'volume_gb' | 'version' | 'provider' | 'k8s'> & { vault?: CloudNode['vault']; ssh?: CloudNode['ssh'] }) | null
   progress: CloudProgress | undefined
   version: string | null
 }): StageRow[] {
@@ -172,20 +188,34 @@ export function stageRows(o: {
   const failed = node?.state === 'failed'
   const at = STAGES.indexOf(current)
   const k8s: K8sOptions | null = node?.k8s ?? null
+  const isSsh = node?.provider === 'ssh'
+  const sshHost = node?.ssh?.host ?? 'your server'
+  const detectedLine = isSsh ? [...(progress?.lines ?? [])].reverse().find((l) => l.startsWith('Detected ')) : undefined
+  const uploaded = isSsh && (progress?.lines ?? []).some((l) => l.startsWith('Uploading'))
   const where = node?.provider === 'kubernetes' ? (k8s?.namespace ?? k8s?.context ?? 'your cluster') : (node?.region_label ?? node?.region ?? 'your region')
   const label: Record<Stage, string> = {
-    server: node?.provider === 'kubernetes' ? `Deployment created in ${where}` : `Server created in ${where}`,
+    server: isSsh
+      ? detectedLine
+        ? `${detectedLine} on ${sshHost}`
+        : `Checking ${sshHost}`
+      : node?.provider === 'kubernetes'
+        ? `Deployment created in ${where}`
+        : `Server created in ${where}`,
     storage: `Storage attached (${node?.volume_gb ?? DEFAULT_VOLUME_GB} GB)`,
-    install: `Installing theuth${version ? ` ${version}` : ''} (signed)`,
+    install: isSsh && uploaded ? `Uploading and installing theuth${version ? ` ${version}` : ''} (signed)` : `Installing theuth${version ? ` ${version}` : ''} (signed)`,
     join: 'Joining your mesh',
     vault: node?.vault === 'unsupported' ? 'Vault protection arrives with the next theuth release on this node' : 'Protecting the vault',
     ready: 'Ready',
   }
-  return STAGES.map((stage, i) => ({
-    stage,
-    label: label[stage],
-    status: ready ? 'done' : i < at ? 'done' : i > at ? 'waiting' : failed ? 'failed' : stage === 'ready' ? 'done' : 'active',
-  }))
+  const stages = isSsh ? STAGES.filter((s) => s !== 'storage') : STAGES
+  return stages.map((stage) => {
+    const i = STAGES.indexOf(stage)
+    return {
+      stage,
+      label: label[stage],
+      status: ready ? 'done' : i < at ? 'done' : i > at ? 'waiting' : failed ? 'failed' : stage === 'ready' ? 'done' : 'active',
+    }
+  })
 }
 
 /** The bar: the job's own estimate, else the share of stages done. */

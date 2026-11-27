@@ -127,6 +127,8 @@
   "cloud_restart",
   "cloud_set_token",
   "cloud_sizes",
+  "cloud_ssh_hosts",
+  "cloud_ssh_probe",
   "cloud_status",
   "cloud_terminal",
   "cloud_update",

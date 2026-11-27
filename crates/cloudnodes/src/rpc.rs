@@ -10,7 +10,7 @@ use rpc_core::Server;
 use crate::rpc_support::{cloud, err};
 use crate::types::{
     CloudList, CloudNode, DesktopOpen, K8sInfo, NodeLogs, NodeSpec, OauthStart, ProviderInfo,
-    ProviderKind, Quote, SizeList, TerminalOpen,
+    ProviderKind, Quote, SizeList, SshHosts, SshOptions, SshProbe, TerminalOpen,
 };
 
 #[rpc_core_macros::rpc_descriptors(owner = "cloudnodes", descriptors = rpc_descriptors, audience = "owner")]
@@ -61,6 +61,12 @@ pub trait CloudNodesApi {
         &self,
         #[argument(rename = "context")] kube_context: Option<String>,
     ) -> RpcResult<K8sInfo>;
+    /// SSH: whether the system `ssh` binary is available and concrete hosts from `~/.ssh/config`.
+    #[method(name = "cloud_ssh_hosts")]
+    async fn cloud_ssh_hosts(&self) -> RpcResult<SshHosts>;
+    /// SSH: connect to a host and detect OS/arch without installing anything.
+    #[method(name = "cloud_ssh_probe")]
+    async fn cloud_ssh_probe(&self, opts: SshOptions) -> RpcResult<SshProbe>;
     /// Create a node; returns at once in `creating`, the job streams `CloudNodeProgress`.
     /// `vault_password`: the master password for the node's sealed vault (design doc 225; at
     /// least 12 characters). Held in memory by the create job only, sent once to the node over
@@ -164,6 +170,14 @@ impl CloudNodesApiServer for Server {
 
     async fn cloud_k8s_info(&self, kube_context: Option<String>) -> RpcResult<K8sInfo> {
         cloud().await?.k8s_info(kube_context).await.map_err(err)
+    }
+
+    async fn cloud_ssh_hosts(&self) -> RpcResult<SshHosts> {
+        cloud().await?.ssh_hosts().map_err(err)
+    }
+
+    async fn cloud_ssh_probe(&self, opts: SshOptions) -> RpcResult<SshProbe> {
+        cloud().await?.ssh_probe(opts).await.map_err(err)
     }
 
     async fn cloud_create(

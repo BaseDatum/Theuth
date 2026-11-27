@@ -18,6 +18,8 @@ pub mod fly;
 pub mod http;
 #[cfg(feature = "kubernetes")]
 pub mod kubernetes;
+#[cfg(feature = "ssh")]
+pub mod ssh;
 pub mod userdata;
 
 pub use http::{HttpRequest, HttpResponse, ReqwestTransport, Transport};

@@ -38,7 +38,7 @@ import { CLOUD_REQUIRED, cloudKeys, useCloudActions, useCloudEvents, useCloudLis
 import { PriceNote, ProviderBadge, SizeCards, VAULT_HINT } from './steps'
 import { type CloudNode, DEFAULT_VOLUME_GB, type NodeDesktop, type ProviderInfo, type ProviderKind, type TerminalOpen } from './types'
 
-export const PROVIDER_LABEL: Record<ProviderKind, string> = { digitalocean: 'DigitalOcean', fly: 'Fly.io', kubernetes: 'Kubernetes', lightsail: 'AWS Lightsail' }
+export const PROVIDER_LABEL: Record<ProviderKind, string> = { digitalocean: 'DigitalOcean', fly: 'Fly.io', kubernetes: 'Kubernetes', ssh: 'SSH', lightsail: 'AWS Lightsail' }
 
 export type CloudDialog = 'destroy' | 'resize' | 'logs' | 'terminal' | 'desktop' | 'vault' | 'progress'
 
@@ -80,9 +80,9 @@ function Status({ node, bootstrapping = false }: { node: CloudNode; bootstrappin
   )
 }
 
-/** `☁︎ DigitalOcean · London`, `☁︎ Kubernetes · rwx-dev`. */
+/** `☁︎ DigitalOcean · London`, `☁︎ Kubernetes · rwx-dev`, `☁︎ SSH · prod-box`. */
 export function placeChip(n: CloudNode): string {
-  const where = n.provider === 'kubernetes' ? n.k8s?.context : (n.region_label ?? n.region)
+  const where = n.provider === 'kubernetes' ? n.k8s?.context : n.provider === 'ssh' ? n.ssh?.host : (n.region_label ?? n.region)
   return `☁︎ ${PROVIDER_LABEL[n.provider]}${where ? ` · ${where}` : ''}`
 }
 
@@ -312,9 +312,11 @@ export function NodeRow({
         <DropdownMenuItem disabled={!live} onSelect={onRestart}>
           Restart
         </DropdownMenuItem>
-        <DropdownMenuItem disabled={!live || node.provider === 'kubernetes'} onSelect={() => onOpen('resize')}>
-          Resize…
-        </DropdownMenuItem>
+        {node.provider !== 'ssh' && (
+          <DropdownMenuItem disabled={!live || node.provider === 'kubernetes'} onSelect={() => onOpen('resize')}>
+            Resize…
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem disabled={!live} onSelect={onUpdate}>
           Update now
         </DropdownMenuItem>
@@ -345,7 +347,6 @@ export function NodeRow({
         <span title={placeChip(node)} className="min-w-0 truncate rounded-full bg-layer-2 px-2 py-0.5 text-[11px] whitespace-nowrap">
           {placeChip(node)}
         </span>
-        {node.provider === 'fly' && <Tag tone="info">beta</Tag>}
       </div>
       <Status node={node} bootstrapping={bootstrapping} />
       <span className="text-xs whitespace-nowrap text-fg-secondary max-md:hidden">{node.version ? `${node.version}${node.auto_update ? ' · auto-update' : ''}` : '—'}</span>
@@ -404,6 +405,25 @@ export function VaultPasswordDialog({ name, engine, onClose }: { name: string; e
 
 /** The destroy confirmation's words: the node, the monthly saving, and the disk choice (kept by default). */
 export function DestroyBody({ node, perGb, keep, onKeep }: { node: CloudNode; perGb: number | null | undefined; keep: boolean; onKeep: (keep: boolean) => void }) {
+  if (node.provider === 'ssh') {
+    const host = node.ssh?.host ?? 'the server'
+    return (
+      <>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Destroy {node.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {keep
+              ? `This stops and uninstalls the theuth service on ${host} and unpairs it from your mesh. Your data in ~/.theuth is kept.`
+              : `This stops and uninstalls the theuth service on ${host}, removes ~/.theuth, and unpairs it from your mesh.`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={keep} onChange={(e) => onKeep(e.currentTarget.checked)} />
+          <span>Keep ~/.theuth data on {host}</span>
+        </label>
+      </>
+    )
+  }
   const saving = destroySaving(node, keep, perGb)
   const disk = diskUsd(node, perGb)
   const gb = node.volume_gb ?? DEFAULT_VOLUME_GB

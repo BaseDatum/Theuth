@@ -194,6 +194,7 @@ fn spec(name: &str) -> NodeSpec {
         memory_gb: 2,
         volume_gb: None,
         k8s: None,
+        ssh: None,
         desktop: None,
     }
 }

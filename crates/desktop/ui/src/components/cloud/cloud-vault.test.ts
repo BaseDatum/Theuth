@@ -100,6 +100,7 @@ const node = (n: Partial<CloudNode> = {}): CloudNode => ({
   auto_update: true,
   created_ms: null,
   k8s: null,
+  ssh: null,
   desktop: true,
   vault: 'needs_password',
   link: null,

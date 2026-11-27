@@ -4306,6 +4306,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.23.1",
+ "bytes",
  "dirs 7.0.0",
  "futures",
  "jsonrpsee",
@@ -20292,6 +20293,7 @@ dependencies = [
  "update",
  "wire",
  "zeroize",
+ "zip 9.2.2",
 ]
 
 [[package]]

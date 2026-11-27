@@ -202,6 +202,9 @@ impl Connect for FakeConnect {
         assert!(cred.is_some());
         Ok(self.0.clone())
     }
+    fn open_ssh(&self, _: Option<&SshOptions>) -> Result<Arc<dyn Provider>> {
+        Ok(self.0.clone())
+    }
     async fn check(&self, _: ProviderKind, cred: &StoredCred) -> Result<()> {
         if cred.access_token == "bad" {
             return Err(CloudError("401 Unauthorized".into()));
@@ -300,6 +303,7 @@ fn spec(name: &str) -> NodeSpec {
         memory_gb: 2,
         volume_gb: None,
         k8s: None,
+        ssh: None,
         desktop: None,
     }
 }
@@ -624,13 +628,21 @@ async fn a_bad_pasted_token_is_not_stored() {
     assert!(!r.cloud.connected(ProviderKind::Fly));
     assert!(r.cloud.connected(ProviderKind::Digitalocean));
     let info = r.cloud.providers();
-    assert_eq!(info.len(), 4);
+    assert_eq!(info.len(), 5);
     assert!(info[0].connected && info[0].oauth);
     assert_eq!(info[0].source, Some(CredentialSource::Pasted));
-    assert!(!info[3].available, "Lightsail is coming soon");
+    assert_eq!(info[3].provider, ProviderKind::Ssh);
+    assert!(info[3].desktop_only);
+    assert!(!info[4].available, "Lightsail is coming soon");
     assert!(
         r.cloud
             .set_token(ProviderKind::Kubernetes, "x".into())
+            .await
+            .is_err()
+    );
+    assert!(
+        r.cloud
+            .set_token(ProviderKind::Ssh, "x".into())
             .await
             .is_err()
     );
@@ -1030,6 +1042,7 @@ fn classify_names_what_the_vault_has() {
     );
 }
 
+
 #[tokio::test]
 async fn fly_end_to_end_with_flyv1_token_and_no_org_slug() {
     let http = FakeTransport::new();
@@ -1082,6 +1095,7 @@ async fn fly_end_to_end_with_flyv1_token_and_no_org_slug() {
         memory_gb: 2,
         volume_gb: None,
         k8s: None,
+        ssh: None,
         desktop: None,
     };
     cloud.create(fly_spec, None).await.unwrap();
@@ -1150,3 +1164,137 @@ async fn fly_end_to_end_with_flyv1_token_and_no_org_slug() {
     );
 }
 
+
+#[tokio::test]
+async fn ssh_create_does_not_require_size_or_region_and_unpairs_on_destroy() {
+    struct FakeSshProv;
+    #[async_trait]
+    impl Provider for FakeSshProv {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Ssh
+        }
+        async fn create(&self, req: &CreateReq, say: Say<'_>) -> Result<Created> {
+            assert!(req.ticket.starts_with("1."));
+            assert!(!req.desktop);
+            say(Stage::Server, "Detected Linux x86_64");
+            say(Stage::Install, "Uploading engine");
+            say(Stage::Join, "Joining mesh");
+            Ok(Created {
+                server_id: Some("alice@box".into()),
+                volume_id: None,
+                extra: Some("ssh-peer-id".into()),
+                ip: None,
+                size_slug: "linux-x86_64".into(),
+            })
+        }
+        async fn status(&self, _: &str) -> Result<Option<ProviderStatus>> {
+            Ok(Some(ProviderStatus {
+                server_state: Some("running".into()),
+                ..Default::default()
+            }))
+        }
+        async fn list(&self) -> Result<Vec<Listed>> {
+            Ok(Vec::new())
+        }
+        async fn restart(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn resize(&self, _: &str, _: u8) -> Result<String> {
+            Err(CloudError("Resize is not supported for SSH machines".into()))
+        }
+        async fn destroy(&self, _: &str, keep_volume: bool) -> Result<Vec<String>> {
+            Ok(vec![format!("uninstalled keep={keep_volume}")])
+        }
+    }
+
+    struct SshConn;
+    #[async_trait]
+    impl Connect for SshConn {
+        fn open(
+            &self,
+            _: ProviderKind,
+            _: Option<&StoredCred>,
+            _: Option<&K8sOptions>,
+        ) -> Result<Arc<dyn Provider>> {
+            Ok(Arc::new(FakeSshProv))
+        }
+        async fn check(&self, _: ProviderKind, _: &StoredCred) -> Result<()> {
+            Ok(())
+        }
+        async fn sizes(
+            &self,
+            kind: ProviderKind,
+            _: &StoredCred,
+            _: Option<&str>,
+        ) -> Result<Vec<SizeOption>> {
+            Ok(providers::sizes(kind))
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mesh = Arc::new(FakeMesh::default());
+    // Remote host has a different mesh name ("remote-hostname"), matched via Created.extra self_id.
+    *mesh.join_after.lock() = Some((1, peer("ssh-peer-id", "remote-hostname", true)));
+    *mesh.vault.lock() = FakeVault::sealed();
+    let creds = Creds {
+        store: Arc::new(MemStore::default()),
+        http: FakeTransport::new(),
+        relay: "https://relay.test".into(),
+    };
+    let cloud = Arc::new(Cloud::new(
+        Records::new(dir.path().join("cloudnodes")),
+        mesh.clone(),
+        creds,
+        Arc::new(SshConn),
+        Arc::new(|_| {}),
+        fast(),
+        None,
+    ));
+
+    // Missing SSH host is rejected.
+    let bad = NodeSpec {
+        provider: ProviderKind::Ssh,
+        name: "mybox".into(),
+        region: String::new(),
+        memory_gb: 0,
+        volume_gb: None,
+        k8s: None,
+        ssh: Some(SshOptions::default()),
+        desktop: None,
+    };
+    assert!(cloud.create(bad, None).await.is_err());
+
+    // Valid SSH spec needs no memory_gb, no region, and no stored vault credential.
+    let ok_spec = NodeSpec {
+        provider: ProviderKind::Ssh,
+        name: "mybox".into(),
+        region: String::new(),
+        memory_gb: 0,
+        volume_gb: None,
+        k8s: None,
+        ssh: Some(SshOptions {
+            host: "box".into(),
+            user: Some("alice".into()),
+            port: None,
+            identity: None,
+            name: None,
+        }),
+        desktop: None,
+    };
+    let created = cloud.create(ok_spec, None).await.unwrap();
+    assert_eq!(created.provider, ProviderKind::Ssh);
+    assert_eq!(created.region, None);
+    assert_eq!(created.memory_gb, None);
+    assert_eq!(created.ssh.as_ref().map(|s| s.host.as_str()), Some("box"));
+
+    let rec = settle(&cloud, "mybox").await;
+    assert_eq!(rec.state, NodeState::Ready);
+    assert_eq!(rec.peer_id.as_deref(), Some("ssh-peer-id"));
+    assert_eq!(mesh.tickets.lock().len(), 1, "mints exactly one ticket");
+
+    // Destroy with keep_volume = true still unpairs and removes the SSH record.
+    let lines = cloud.destroy("mybox", true).await.unwrap();
+    assert!(lines.iter().any(|l| l.contains("uninstalled keep=true")));
+    assert_eq!(*mesh.removed.lock(), vec!["ssh-peer-id"]);
+    assert!(cloud.records.get("mybox").unwrap().is_none());
+}

@@ -16748,6 +16748,18 @@
               "null"
             ]
           },
+          "ssh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.SshOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SSH: the target machine it was installed on."
+          },
           "stage": {
             "anyOf": [
               {
@@ -16817,6 +16829,7 @@
           "desktop",
           "created_ms",
           "k8s",
+          "ssh",
           "vault",
           "link"
         ],
@@ -16987,11 +17000,68 @@
             "type": "string"
           },
           {
+            "const": "ssh",
+            "description": "An existing machine reached over system SSH; installs `t` natively. Desktop only.",
+            "type": "string"
+          },
+          {
             "const": "lightsail",
             "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
             "type": "string"
           }
         ]
+      },
+      "event.cloudnodes_2eevents.output.SshOptions": {
+        "description": "SSH target options (wizard step 2, SSH variant).",
+        "properties": {
+          "host": {
+            "description": "`~/.ssh/config` alias or manual hostname/IP.",
+            "type": "string"
+          },
+          "identity": {
+            "default": null,
+            "description": "Optional path to an identity file passed to `ssh -i` (path string only; never opened).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "description": "Optional name override.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "default": null,
+            "description": "Optional SSH port (when omitted, system `ssh` uses `~/.ssh/config` or 22).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "description": "Optional login user (when omitted, system `ssh` uses `~/.ssh/config` or the local user).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "host",
+          "user",
+          "port",
+          "identity",
+          "name"
+        ],
+        "type": "object"
       },
       "event.cloudnodes_2eevents.output.Stage": {
         "description": "The create job's stages, in order (wizard step ④).",
@@ -17335,6 +17405,18 @@
               "null"
             ]
           },
+          "ssh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.SshOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SSH: the target machine it was installed on."
+          },
           "stage": {
             "anyOf": [
               {
@@ -17546,11 +17628,64 @@
             "type": "string"
           },
           {
+            "const": "ssh",
+            "description": "An existing machine reached over system SSH; installs `t` natively. Desktop only.",
+            "type": "string"
+          },
+          {
             "const": "lightsail",
             "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
             "type": "string"
           }
         ]
+      },
+      "event.cloudnodes_2eevents.receiver.SshOptions": {
+        "description": "SSH target options (wizard step 2, SSH variant).",
+        "properties": {
+          "host": {
+            "description": "`~/.ssh/config` alias or manual hostname/IP.",
+            "type": "string"
+          },
+          "identity": {
+            "default": null,
+            "description": "Optional path to an identity file passed to `ssh -i` (path string only; never opened).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "description": "Optional name override.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "default": null,
+            "description": "Optional SSH port (when omitted, system `ssh` uses `~/.ssh/config` or 22).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "description": "Optional login user (when omitted, system `ssh` uses `~/.ssh/config` or the local user).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "host"
+        ],
+        "type": "object"
       },
       "event.cloudnodes_2eevents.receiver.Stage": {
         "description": "The create job's stages, in order (wizard step ④).",
@@ -85743,7 +85878,7 @@
             "description": "Kubernetes only."
           },
           "memory_gb": {
-            "description": "2, 4 or 8.",
+            "description": "2, 4 or 8 (ignored for SSH).",
             "format": "uint8",
             "maximum": 255,
             "minimum": 0,
@@ -85762,11 +85897,23 @@
             "description": "Where it runs."
           },
           "region": {
-            "description": "Provider region slug; ignored for Kubernetes.",
+            "description": "Provider region slug; ignored for Kubernetes and SSH.",
             "type": "string"
           },
+          "ssh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.input.SshOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SSH only."
+          },
           "volume_gb": {
-            "description": "Default [`DEFAULT_VOLUME_GB`].",
+            "description": "Default [`DEFAULT_VOLUME_GB`] (ignored for SSH).",
             "format": "uint32",
             "minimum": 0,
             "type": [
@@ -85802,11 +85949,64 @@
             "type": "string"
           },
           {
+            "const": "ssh",
+            "description": "An existing machine reached over system SSH; installs `t` natively. Desktop only.",
+            "type": "string"
+          },
+          {
             "const": "lightsail",
             "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
             "type": "string"
           }
         ]
+      },
+      "method.cloudnodes.input.SshOptions": {
+        "description": "SSH target options (wizard step 2, SSH variant).",
+        "properties": {
+          "host": {
+            "description": "`~/.ssh/config` alias or manual hostname/IP.",
+            "type": "string"
+          },
+          "identity": {
+            "default": null,
+            "description": "Optional path to an identity file passed to `ssh -i` (path string only; never opened).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "description": "Optional name override.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "default": null,
+            "description": "Optional SSH port (when omitted, system `ssh` uses `~/.ssh/config` or 22).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "description": "Optional login user (when omitted, system `ssh` uses `~/.ssh/config` or the local user).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "host"
+        ],
+        "type": "object"
       },
       "method.cloudnodes.output.CloudList": {
         "description": "`cloud_list`: every node from local records and every connected provider's tagged\nresources; a provider that fails is reported in `errors`, not fatal.",
@@ -85972,6 +86172,18 @@
               "null"
             ]
           },
+          "ssh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.SshOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SSH: the target machine it was installed on."
+          },
           "stage": {
             "anyOf": [
               {
@@ -86041,6 +86253,7 @@
           "desktop",
           "created_ms",
           "k8s",
+          "ssh",
           "vault",
           "link"
         ],
@@ -86507,6 +86720,11 @@
             "type": "string"
           },
           {
+            "const": "ssh",
+            "description": "An existing machine reached over system SSH; installs `t` natively. Desktop only.",
+            "type": "string"
+          },
+          {
             "const": "lightsail",
             "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
             "type": "string"
@@ -86649,6 +86867,172 @@
           "vcpus",
           "slug",
           "monthly_usd"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.SshHostEntry": {
+        "description": "One concrete host entry parsed from `~/.ssh/config` (no secrets).",
+        "properties": {
+          "alias": {
+            "description": "`Host` alias from `~/.ssh/config`.",
+            "type": "string"
+          },
+          "hostname": {
+            "description": "`HostName`, when configured.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identity": {
+            "description": "`IdentityFile` path string, when configured (never opened or read).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "description": "`Port`, when configured.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "proxy_jump": {
+            "description": "`ProxyJump`, when configured.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "description": "`User`, when configured.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "alias",
+          "hostname",
+          "user",
+          "port",
+          "identity",
+          "proxy_jump"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.SshHosts": {
+        "description": "`cloud_ssh_hosts`: system `ssh` availability and concrete hosts from `~/.ssh/config`.",
+        "properties": {
+          "hosts": {
+            "description": "Non-wildcard host entries parsed from `~/.ssh/config`.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.output.SshHostEntry"
+            },
+            "type": "array"
+          },
+          "ssh_available": {
+            "description": "True when the system `ssh` binary is available on `PATH`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ssh_available",
+          "hosts"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.SshOptions": {
+        "description": "SSH target options (wizard step 2, SSH variant).",
+        "properties": {
+          "host": {
+            "description": "`~/.ssh/config` alias or manual hostname/IP.",
+            "type": "string"
+          },
+          "identity": {
+            "default": null,
+            "description": "Optional path to an identity file passed to `ssh -i` (path string only; never opened).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "description": "Optional name override.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "default": null,
+            "description": "Optional SSH port (when omitted, system `ssh` uses `~/.ssh/config` or 22).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "description": "Optional login user (when omitted, system `ssh` uses `~/.ssh/config` or the local user).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "host",
+          "user",
+          "port",
+          "identity",
+          "name"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.SshProbe": {
+        "description": "`cloud_ssh_probe`: reachability and detected OS/arch of an SSH host without installing.",
+        "properties": {
+          "arch": {
+            "description": "Detected architecture (`x86_64`, `aarch64`), when reachable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Actionable reason when `!ok`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "description": "True when the host is reachable and supported for native installation.",
+            "type": "boolean"
+          },
+          "os": {
+            "description": "Detected OS (`linux`, `macos`, `windows`), when reachable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "os",
+          "arch",
+          "ok",
+          "error"
         ],
         "type": "object"
       },
@@ -86931,6 +87315,18 @@
               "string",
               "null"
             ]
+          },
+          "ssh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.SshOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SSH: the target machine it was installed on."
           },
           "stage": {
             "anyOf": [
@@ -87432,6 +87828,11 @@
             "type": "string"
           },
           {
+            "const": "ssh",
+            "description": "An existing machine reached over system SSH; installs `t` natively. Desktop only.",
+            "type": "string"
+          },
+          {
             "const": "lightsail",
             "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
             "type": "string"
@@ -87569,6 +87970,160 @@
           "memory_gb",
           "vcpus",
           "slug"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.SshHostEntry": {
+        "description": "One concrete host entry parsed from `~/.ssh/config` (no secrets).",
+        "properties": {
+          "alias": {
+            "description": "`Host` alias from `~/.ssh/config`.",
+            "type": "string"
+          },
+          "hostname": {
+            "description": "`HostName`, when configured.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identity": {
+            "description": "`IdentityFile` path string, when configured (never opened or read).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "description": "`Port`, when configured.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "proxy_jump": {
+            "description": "`ProxyJump`, when configured.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "description": "`User`, when configured.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "alias"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.SshHosts": {
+        "description": "`cloud_ssh_hosts`: system `ssh` availability and concrete hosts from `~/.ssh/config`.",
+        "properties": {
+          "hosts": {
+            "description": "Non-wildcard host entries parsed from `~/.ssh/config`.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.receiver.SshHostEntry"
+            },
+            "type": "array"
+          },
+          "ssh_available": {
+            "description": "True when the system `ssh` binary is available on `PATH`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ssh_available",
+          "hosts"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.SshOptions": {
+        "description": "SSH target options (wizard step 2, SSH variant).",
+        "properties": {
+          "host": {
+            "description": "`~/.ssh/config` alias or manual hostname/IP.",
+            "type": "string"
+          },
+          "identity": {
+            "default": null,
+            "description": "Optional path to an identity file passed to `ssh -i` (path string only; never opened).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "description": "Optional name override.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "default": null,
+            "description": "Optional SSH port (when omitted, system `ssh` uses `~/.ssh/config` or 22).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "description": "Optional login user (when omitted, system `ssh` uses `~/.ssh/config` or the local user).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "host"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.SshProbe": {
+        "description": "`cloud_ssh_probe`: reachability and detected OS/arch of an SSH host without installing.",
+        "properties": {
+          "arch": {
+            "description": "Detected architecture (`x86_64`, `aarch64`), when reachable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Actionable reason when `!ok`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "description": "True when the host is reachable and supported for native installation.",
+            "type": "boolean"
+          },
+          "os": {
+            "description": "Detected OS (`linux`, `macos`, `windows`), when reachable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ok"
         ],
         "type": "object"
       },
@@ -148821,6 +149376,49 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.cloudnodes.receiver.SizeList"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_ssh_hosts",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.SshHosts"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.SshHosts"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_ssh_probe",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "opts",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.cloudnodes.input.SshOptions"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.SshProbe"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.SshProbe"
         }
       },
       "x-theuth-audience": "owner",

@@ -26,7 +26,7 @@ pub fn row(kind: ProviderKind) -> Option<String> {
     match kind {
         ProviderKind::Digitalocean => Some(format!("{}digitalocean", secrets::CLOUD_PREFIX)),
         ProviderKind::Fly => Some(format!("{}fly", secrets::CLOUD_PREFIX)),
-        ProviderKind::Kubernetes | ProviderKind::Lightsail => None,
+        ProviderKind::Kubernetes | ProviderKind::Ssh | ProviderKind::Lightsail => None,
     }
 }
 
