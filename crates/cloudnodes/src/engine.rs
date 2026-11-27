@@ -27,7 +27,8 @@ use crate::records::{Record, Records};
 use crate::types::{
     CloudEvent, CloudList, CloudNode, CredentialSource, DEFAULT_VOLUME_GB, DesktopOpen, Discovered,
     K8sInfo, K8sOptions, NodeLogs, NodeSpec, NodeState, OauthStart, ProviderError, ProviderInfo,
-    ProviderKind, Quote, SIZES_GB, SizeList, SizeOption, Stage, TerminalOpen, VaultProtection,
+    ProviderKind, Quote, SIZES_GB, SizeList, SizeOption, SshHosts, SshOptions, SshProbe, Stage,
+    TerminalOpen, VaultProtection,
 };
 
 /// A cloud node's pairing ticket lives 15 minutes (a Droplet boots, installs packages and
@@ -50,6 +51,10 @@ pub trait Connect: Send + Sync {
         cred: Option<&StoredCred>,
         k8s: Option<&K8sOptions>,
     ) -> Result<Arc<dyn Provider>>;
+    /// A client for SSH targets (default delegates to [`Self::open`] so mock impls need not override).
+    fn open_ssh(&self, _ssh: Option<&SshOptions>) -> Result<Arc<dyn Provider>> {
+        self.open(ProviderKind::Ssh, None, None)
+    }
     /// Is the token good (DigitalOcean: the account answers; Fly: listing works)?
     async fn check(&self, kind: ProviderKind, cred: &StoredCred) -> Result<()>;
     /// The provider's 2/4/8 GB sizes with live prices (DigitalOcean `GET /v2/sizes`).
@@ -98,7 +103,23 @@ impl Connect for LiveConnect {
                 let _ = k8s;
                 Err(CloudError("Kubernetes needs the desktop app".into()))
             }
+            ProviderKind::Ssh => self.open_ssh(None),
             ProviderKind::Lightsail => Err(CloudError("AWS Lightsail is coming soon".into())),
+        }
+    }
+
+    fn open_ssh(&self, ssh: Option<&SshOptions>) -> Result<Arc<dyn Provider>> {
+        #[cfg(feature = "ssh")]
+        {
+            let opts = ssh
+                .cloned()
+                .ok_or_else(|| CloudError("SSH target options are required".into()))?;
+            Ok(Arc::new(providers::ssh::SshProvider::new(opts)))
+        }
+        #[cfg(not(feature = "ssh"))]
+        {
+            let _ = ssh;
+            Err(CloudError("Install via SSH needs the desktop app".into()))
         }
     }
 
@@ -177,6 +198,7 @@ fn estimate_secs(kind: ProviderKind) -> (u32, u32) {
     match kind {
         ProviderKind::Digitalocean => (60, 230),
         ProviderKind::Fly => (40, 120),
+        ProviderKind::Ssh => (15, 45),
         ProviderKind::Kubernetes | ProviderKind::Lightsail => (20, 90),
     }
 }
@@ -199,14 +221,16 @@ pub fn label(kind: ProviderKind) -> &'static str {
         ProviderKind::Digitalocean => "DigitalOcean",
         ProviderKind::Fly => "Fly.io",
         ProviderKind::Kubernetes => "Kubernetes",
+        ProviderKind::Ssh => "Install via SSH",
         ProviderKind::Lightsail => "AWS Lightsail",
     }
 }
 
-const ALL: [ProviderKind; 4] = [
+const ALL: [ProviderKind; 5] = [
     ProviderKind::Digitalocean,
     ProviderKind::Fly,
     ProviderKind::Kubernetes,
+    ProviderKind::Ssh,
     ProviderKind::Lightsail,
 ];
 
@@ -331,6 +355,18 @@ impl Cloud {
         kind: ProviderKind,
         k8s: Option<&K8sOptions>,
     ) -> Result<Arc<dyn Provider>> {
+        self.provider_for(kind, k8s, None).await
+    }
+
+    async fn provider_for(
+        &self,
+        kind: ProviderKind,
+        k8s: Option<&K8sOptions>,
+        ssh: Option<&SshOptions>,
+    ) -> Result<Arc<dyn Provider>> {
+        if kind == ProviderKind::Ssh {
+            return self.connect.open_ssh(ssh);
+        }
         let cred = match creds::row(kind) {
             Some(_) => Some(
                 self.creds
@@ -369,17 +405,22 @@ impl Cloud {
             .flatten()
             .map(|(_, c)| c.source.clone());
         let kube = kind == ProviderKind::Kubernetes && !discovered.is_empty();
+        #[cfg(feature = "ssh")]
+        let ssh_ready = kind == ProviderKind::Ssh && providers::ssh::ssh_available();
+        #[cfg(not(feature = "ssh"))]
+        let ssh_ready = false;
         ProviderInfo {
             provider: kind,
             label: label(kind).into(),
             available: match kind {
                 ProviderKind::Lightsail => false,
                 ProviderKind::Kubernetes => cfg!(feature = "kubernetes"),
+                ProviderKind::Ssh => cfg!(feature = "ssh"),
                 _ => true,
             },
             beta: kind == ProviderKind::Fly,
-            desktop_only: kind == ProviderKind::Kubernetes,
-            connected: stored.is_some() || kube,
+            desktop_only: matches!(kind, ProviderKind::Kubernetes | ProviderKind::Ssh),
+            connected: stored.is_some() || kube || ssh_ready,
             source: stored.or(kube.then_some(CredentialSource::Kubeconfig)),
             discovered,
             oauth: kind == ProviderKind::Digitalocean,
@@ -435,8 +476,8 @@ impl Cloud {
 
     /// Copy a discovered CLI login into the vault (the user pressed "Use it").
     pub async fn import(&self, kind: ProviderKind, id: String) -> Result<ProviderInfo> {
-        if kind == ProviderKind::Kubernetes {
-            // kubectl reads the kubeconfig itself; nothing is copied.
+        if matches!(kind, ProviderKind::Kubernetes | ProviderKind::Ssh) {
+            // kubectl and system ssh read their own configs in place; nothing is copied.
             return Ok(self.provider_info(kind));
         }
         let home = self
@@ -522,7 +563,7 @@ impl Cloud {
         }
     }
 
-    // --- quote / k8s ---------------------------------------------------------------------
+    // --- quote / k8s / ssh ---------------------------------------------------------------
 
     /// The provider's sizes with live prices: fetched from its API (DigitalOcean `GET
     /// /v2/sizes`), reused for [`Pacing::sizes_ttl`]. Errors when there is no credential or the
@@ -611,6 +652,31 @@ impl Cloud {
         }
     }
 
+    /// System `ssh` availability and concrete hosts from `~/.ssh/config` (no secrets).
+    pub fn ssh_hosts(&self) -> Result<SshHosts> {
+        #[cfg(feature = "ssh")]
+        {
+            Ok(providers::ssh::hosts(self.home.as_deref()))
+        }
+        #[cfg(not(feature = "ssh"))]
+        {
+            Err(CloudError("Install via SSH needs the desktop app".into()))
+        }
+    }
+
+    /// Connect to an SSH target and detect OS/arch without installing anything.
+    pub async fn ssh_probe(&self, opts: SshOptions) -> Result<SshProbe> {
+        #[cfg(feature = "ssh")]
+        {
+            Ok(providers::ssh::probe(&opts).await)
+        }
+        #[cfg(not(feature = "ssh"))]
+        {
+            let _ = opts;
+            Err(CloudError("Install via SSH needs the desktop app".into()))
+        }
+    }
+
     // --- create --------------------------------------------------------------------------
 
     /// Start the create job; returns at once with the record in `creating`. `password`: the
@@ -632,19 +698,29 @@ impl Cloud {
                 "the master password needs at least {MIN_PASSWORD} characters"
             )));
         }
-        if !SIZES_GB.contains(&spec.memory_gb) {
-            return Err(CloudError(format!(
-                "size {} GB: one of {SIZES_GB:?} GB",
-                spec.memory_gb
-            )));
+        if spec.provider == ProviderKind::Ssh {
+            let host_ok = spec
+                .ssh
+                .as_ref()
+                .is_some_and(|s| !s.host.trim().is_empty());
+            if !host_ok {
+                return Err(CloudError("SSH host is required".into()));
+            }
+        } else {
+            if !SIZES_GB.contains(&spec.memory_gb) {
+                return Err(CloudError(format!(
+                    "size {} GB: one of {SIZES_GB:?} GB",
+                    spec.memory_gb
+                )));
+            }
+            // Validates size and disk; the price is the wizard's business (`cloud_quote`).
+            providers::quote(
+                spec.provider,
+                &providers::sizes(spec.provider),
+                spec.memory_gb,
+                spec.volume_gb.unwrap_or(DEFAULT_VOLUME_GB),
+            )?;
         }
-        // Validates size and disk; the price is the wizard's business (`cloud_quote`).
-        providers::quote(
-            spec.provider,
-            &providers::sizes(spec.provider),
-            spec.memory_gb,
-            spec.volume_gb.unwrap_or(DEFAULT_VOLUME_GB),
-        )?;
         let prior = self.records.get(&spec.name)?;
         if let Some(r) = &prior
             && !matches!(r.state, NodeState::Failed | NodeState::VolumeKept)
@@ -663,7 +739,9 @@ impl Cloud {
                 label(r.spec.provider)
             )));
         }
-        let provider = self.provider(spec.provider, spec.k8s.as_ref()).await?;
+        let provider = self
+            .provider_for(spec.provider, spec.k8s.as_ref(), spec.ssh.as_ref())
+            .await?;
         // An engine that is not a mesh member (iOS) has no peers to check against.
         let peers = if self.own_mesh() {
             Vec::new()
@@ -761,7 +839,11 @@ impl Cloud {
             manifest: catalog::MANIFEST.into(),
             image: catalog::ENGINE_IMAGE.into(),
             k8s: rec.spec.k8s.clone(),
-            desktop: rec.spec.desktop.unwrap_or(true),
+            desktop: if kind == ProviderKind::Ssh {
+                false
+            } else {
+                rec.spec.desktop.unwrap_or(true)
+            },
         };
         let stage = Mutex::new(Stage::Server);
         let say = |s: Stage, line: &str| {
@@ -778,23 +860,37 @@ impl Cloud {
             }
             let (pct, eta) = match s {
                 Stage::Server => (10, server_secs + install_secs),
+                Stage::Storage => (25, server_secs / 3 + install_secs),
+                Stage::Install => (50, install_secs),
+                Stage::Join => (80, 15),
                 _ => (25, server_secs / 3 + install_secs),
             };
             self.progress(name, Some(s), line, Some(pct), Some(eta));
         };
         let created = provider.create(&req, &say).await?;
         drop(req);
-        self.update(name, |r| {
-            r.created = Some(created);
-            r.stage = Some(Stage::Install);
-        })?;
-        self.progress(
-            name,
-            Some(Stage::Install),
-            "Installing the newest signed theuth release",
-            Some(30),
-            Some(install_secs),
-        );
+        if kind == ProviderKind::Ssh {
+            let remote_peer_id = created.extra.clone();
+            self.update(name, |r| {
+                r.created = Some(created);
+                if r.peer_id.is_none() {
+                    r.peer_id = remote_peer_id;
+                }
+                r.stage = Some(Stage::Join);
+            })?;
+        } else {
+            self.update(name, |r| {
+                r.created = Some(created);
+                r.stage = Some(Stage::Install);
+            })?;
+            self.progress(
+                name,
+                Some(Stage::Install),
+                "Installing the newest signed theuth release",
+                Some(30),
+                Some(install_secs),
+            );
+        }
         self.wait_join(name, password).await
     }
 
@@ -805,6 +901,7 @@ impl Cloud {
             .records
             .get(name)?
             .ok_or_else(|| CloudError(format!("no cloud node named {name}")))?;
+        let is_ssh = rec.spec.provider == ProviderKind::Ssh;
         let (_, install_secs) = estimate_secs(rec.spec.provider);
         let started = Instant::now();
         let joined = loop {
@@ -833,12 +930,20 @@ impl Cloud {
             }
             let elapsed = u32::try_from(started.elapsed().as_secs()).unwrap_or(u32::MAX);
             let frac = (f64::from(elapsed) / f64::from(install_secs.max(1))).min(0.95);
-            let pct = 30 + (frac * 55.0) as u8;
+            let pct = if is_ssh {
+                80 + (frac * 10.0) as u8
+            } else {
+                30 + (frac * 55.0) as u8
+            };
             let eta = install_secs.saturating_sub(elapsed).max(10);
             self.progress(
                 name,
-                Some(Stage::Install),
-                "Waiting for the node to install theuth and dial the mesh",
+                Some(if is_ssh { Stage::Join } else { Stage::Install }),
+                if is_ssh {
+                    "Waiting for the node to join the mesh"
+                } else {
+                    "Waiting for the node to install theuth and dial the mesh"
+                },
                 Some(pct),
                 Some(eta),
             );
@@ -1171,7 +1276,7 @@ impl Cloud {
                 .ok_or_else(|| CloudError(format!("no cloud node named {name}")));
         };
         let status = match self
-            .provider(rec.spec.provider, rec.spec.k8s.as_ref())
+            .provider_for(rec.spec.provider, rec.spec.k8s.as_ref(), rec.spec.ssh.as_ref())
             .await
         {
             Ok(p) => p.status(name).await.ok().flatten(),
@@ -1243,7 +1348,7 @@ impl Cloud {
             return Err(CloudError(format!("{name} is busy")));
         }
         let provider = self
-            .provider(rec.spec.provider, rec.spec.k8s.as_ref())
+            .provider_for(rec.spec.provider, rec.spec.k8s.as_ref(), rec.spec.ssh.as_ref())
             .await?;
         let before = rec.state.clone();
         let rec = self.update(name, |r| r.state = NodeState::Busy)?;
@@ -1377,8 +1482,8 @@ impl Cloud {
             h.abort();
         }
         let rec = self.records.get(name)?;
-        let (kind, k8s) = match &rec {
-            Some(r) => (r.spec.provider, r.spec.k8s.clone()),
+        let (kind, k8s, ssh) = match &rec {
+            Some(r) => (r.spec.provider, r.spec.k8s.clone(), r.spec.ssh.clone()),
             None => {
                 let orphan = self
                     .list()
@@ -1387,10 +1492,12 @@ impl Cloud {
                     .into_iter()
                     .find(|n| n.name == name)
                     .ok_or_else(|| CloudError(format!("no cloud node named {name}")))?;
-                (orphan.provider, orphan.k8s)
+                (orphan.provider, orphan.k8s, orphan.ssh)
             }
         };
-        let provider = self.provider(kind, k8s.as_ref()).await?;
+        let provider = self
+            .provider_for(kind, k8s.as_ref(), ssh.as_ref())
+            .await?;
         if rec.is_some() {
             self.update(name, |r| r.state = NodeState::Destroying)?;
         }
@@ -1404,7 +1511,8 @@ impl Cloud {
                 return Err(e);
             }
         };
-        if !keep_volume {
+        let unpair = !keep_volume || kind == ProviderKind::Ssh;
+        if unpair {
             let peer = match rec.as_ref().and_then(|r| r.peer_id.clone()) {
                 Some(id) => Some(id),
                 None => self.peer_id(name).await.ok(),
@@ -1416,7 +1524,7 @@ impl Cloud {
                 }
             }
         }
-        if keep_volume && rec.is_some() {
+        if keep_volume && kind != ProviderKind::Ssh && rec.is_some() {
             self.update(name, |r| {
                 r.state = NodeState::VolumeKept;
                 r.stage = None;
@@ -1444,13 +1552,15 @@ impl Cloud {
 }
 
 /// The peer the create job waits for: a new engine with the node's name, or (re-created on a
-/// kept volume) its old identity back and reachable.
+/// kept volume / SSH install reporting its `self_id`) its identity back and reachable (or newly
+/// added).
 fn joined_peer(peers: &[MeshPeer], rec: &Record) -> Option<MeshPeer> {
     peers
         .iter()
         .find(|p| {
             (p.name == rec.spec.name && !rec.peers_before.contains(&p.id))
-                || (rec.peer_id.as_deref() == Some(p.id.as_str()) && p.reachable)
+                || (rec.peer_id.as_deref() == Some(p.id.as_str())
+                    && (p.reachable || !rec.peers_before.contains(&p.id)))
         })
         .cloned()
 }
@@ -1489,16 +1599,17 @@ pub fn view(rec: &Record, peer: Option<&MeshPeer>, status: Option<&ProviderStatu
     CloudNode {
         name: rec.spec.name.clone(),
         provider: kind,
-        region: (kind != ProviderKind::Kubernetes).then(|| rec.spec.region.clone()),
+        region: (!matches!(kind, ProviderKind::Kubernetes | ProviderKind::Ssh))
+            .then(|| rec.spec.region.clone()),
         region_label: region_label(kind, &rec.spec.region),
-        memory_gb: Some(rec.spec.memory_gb),
+        memory_gb: (kind != ProviderKind::Ssh).then_some(rec.spec.memory_gb),
         size_slug: rec
             .created
             .as_ref()
             .map(|c| c.size_slug.clone())
             .filter(|s| !s.is_empty())
             .or_else(|| catalog::slug(kind, rec.spec.memory_gb).ok()),
-        volume_gb: Some(volume_gb),
+        volume_gb: (kind != ProviderKind::Ssh).then_some(volume_gb),
         monthly_usd: None,
         state: rec.state.clone(),
         stage: rec.stage,
@@ -1514,9 +1625,14 @@ pub fn view(rec: &Record, peer: Option<&MeshPeer>, status: Option<&ProviderStatu
         path: peer.map(|p| p.path),
         version: None,
         auto_update: true,
-        desktop: rec.spec.desktop.unwrap_or(true),
+        desktop: if kind == ProviderKind::Ssh {
+            false
+        } else {
+            rec.spec.desktop.unwrap_or(true)
+        },
         created_ms: Some(rec.created_ms),
         k8s: rec.spec.k8s.clone(),
+        ssh: rec.spec.ssh.clone(),
         vault: rec.vault,
         link: rec.link.clone(),
     }
@@ -1647,6 +1763,7 @@ pub fn merge(
             desktop: false,
             created_ms: None,
             k8s: None,
+            ssh: None,
             vault: None,
             link: None,
         });

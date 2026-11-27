@@ -35,11 +35,12 @@ const LIGHTSAIL_SIZES: [Row; 3] = [
     (8, 2, "large_3_0", 8192),
 ];
 
-fn rows(kind: ProviderKind) -> &'static [Row; 3] {
+fn rows(kind: ProviderKind) -> &'static [Row] {
     match kind {
         ProviderKind::Digitalocean => &DO_SIZES,
         ProviderKind::Fly => &FLY_SIZES,
         ProviderKind::Kubernetes => &K8S_SIZES,
+        ProviderKind::Ssh => &[],
         ProviderKind::Lightsail => &LIGHTSAIL_SIZES,
     }
 }
@@ -92,6 +93,15 @@ pub fn volume_usd_per_gb(kind: ProviderKind) -> Option<f64> {
 /// The cost of `memory_gb` + a `volume_gb` disk, priced from `sizes` (the provider's live list;
 /// a size without a price gives no server/total).
 pub fn quote(kind: ProviderKind, sizes: &[SizeOption], memory_gb: u8, volume_gb: u32) -> Result<Quote> {
+    if kind == ProviderKind::Ssh {
+        return Ok(Quote {
+            provider: kind,
+            size_slug: String::new(),
+            server_usd: None,
+            disk_usd: None,
+            total_usd: None,
+        });
+    }
     if !(1..=16_384).contains(&volume_gb) {
         return Err(CloudError(format!("disk {volume_gb} GB: 1-16384 GB")));
     }
@@ -114,7 +124,7 @@ pub fn quote(kind: ProviderKind, sizes: &[SizeOption], memory_gb: u8, volume_gb:
     })
 }
 
-/// The regions a node can be created in (none for Kubernetes).
+/// The regions a node can be created in (none for Kubernetes or SSH).
 pub fn regions(kind: ProviderKind) -> Vec<Region> {
     let list: &[(&str, &str, &str)] = match kind {
         ProviderKind::Digitalocean => &[
@@ -154,7 +164,7 @@ pub fn regions(kind: ProviderKind) -> Vec<Region> {
             ("ap-southeast-2", "Sydney", "AU"),
             ("ap-northeast-1", "Tokyo", "JP"),
         ],
-        ProviderKind::Kubernetes => &[],
+        ProviderKind::Kubernetes | ProviderKind::Ssh => &[],
     };
     list.iter()
         .map(|&(id, label, country)| Region {
@@ -183,6 +193,8 @@ mod tests {
         assert_eq!((f.size_slug.as_str(), f.server_usd, f.disk_usd, f.total_usd), ("shared-cpu-1x", None, None, None));
         let k = quote(ProviderKind::Kubernetes, &[], 2, 10).unwrap();
         assert_eq!((k.size_slug.as_str(), k.total_usd), ("2Gi", None));
+        let s = quote(ProviderKind::Ssh, &[], 0, 0).unwrap();
+        assert_eq!((s.size_slug.as_str(), s.server_usd, s.disk_usd, s.total_usd), ("", None, None, None));
         assert!(quote(ProviderKind::Digitalocean, &live, 1, 10).is_err());
         assert!(quote(ProviderKind::Digitalocean, &live, 2, 0).is_err());
         assert!(sizes(ProviderKind::Lightsail).iter().all(|s| s.monthly_usd.is_none()));
@@ -201,6 +213,8 @@ mod tests {
             }
             assert_eq!(sizes(kind)[0].memory_gb, 2);
         }
+        assert!(sizes(ProviderKind::Ssh).is_empty());
+        assert!(regions(ProviderKind::Ssh).is_empty());
         assert_eq!(guest(ProviderKind::Fly, 2).unwrap(), (1, 2048));
         assert!(regions(ProviderKind::Digitalocean).iter().any(|r| r.id == "lon1" && r.country == "GB"));
         assert_eq!(regions(ProviderKind::Fly).len(), 11);

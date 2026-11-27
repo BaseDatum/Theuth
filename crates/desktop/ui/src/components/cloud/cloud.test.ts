@@ -6,12 +6,12 @@ import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { AlertDialog } from '@/components/ui/alert-dialog'
 import { CloudNodeWizard } from './CloudNodeWizard'
-import { CloudNodesSection, DestroyBody } from './CloudNodesSettings'
+import { CloudNodesSection, DestroyBody, NodeRow } from './CloudNodesSettings'
 import { DESKTOP_NOTE, checkName, createLabel, defaultMemory, defaultName, desktopBlocked, destroySaving, etaText, fromPrice, localQuote, sizesOf, stageRows, statusOf, userOf } from './format'
 import { NodeDesktopView } from './NodeDesktop'
 import { applyCloudEvent, cloudKeys } from './queries'
 import { nearestRegion } from './region'
-import { DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PriceNote, ProviderCards, VAULT_LABEL } from './steps'
+import { ConnectPanel, DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PhoneProviderStep, PriceNote, ProviderCards, VAULT_LABEL } from './steps'
 import type { CloudList, CloudNode, K8sInfo, ProviderInfo, Region, SizeList } from './types'
 import { peerSyncQueryKey } from '@/lib/peer-sync'
 import type { PeerSync } from '@/rpc/bindings/method.sessionsync.receiver'
@@ -39,8 +39,9 @@ const provider = (p: Partial<ProviderInfo> & Pick<ProviderInfo, 'provider' | 'la
 const DO = provider({ provider: 'digitalocean', label: 'DigitalOcean', oauth: true, connected: true, regions: DO_REGIONS, sizes: [{ memory_gb: 2, vcpus: 1, slug: 's-1vcpu-2gb', monthly_usd: 12 }, { memory_gb: 4, vcpus: 2, slug: 's-2vcpu-4gb', monthly_usd: 24 }, { memory_gb: 8, vcpus: 4, slug: 's-4vcpu-8gb', monthly_usd: 48 }] })
 const FLY = provider({ provider: 'fly', label: 'Fly.io', beta: true, regions: FLY_REGIONS, volume_usd_per_gb: 0.15, sizes: [{ memory_gb: 2, vcpus: 1, slug: 'shared-cpu-1x', monthly_usd: 10.69 }, { memory_gb: 4, vcpus: 2, slug: 'shared-cpu-2x', monthly_usd: 21.38 }] })
 const K8S = provider({ provider: 'kubernetes', label: 'Kubernetes', desktop_only: true, connected: true, volume_usd_per_gb: null, sizes: [{ memory_gb: 2, vcpus: 1, slug: '2Gi', monthly_usd: null }] })
+const SSH = provider({ provider: 'ssh', label: 'Install via SSH', desktop_only: true, connected: true, volume_usd_per_gb: null, discovered: [{ id: 'ssh:config', label: 'SSH config', detail: '3 hosts', path: '~/.ssh/config' }] })
 const LIGHTSAIL = provider({ provider: 'lightsail', label: 'AWS Lightsail', available: false, sizes: [{ memory_gb: 2, vcpus: 2, slug: 'small_3_0', monthly_usd: 12 }] })
-const PROVIDERS = [DO, FLY, K8S, LIGHTSAIL]
+const PROVIDERS = [DO, FLY, K8S, SSH, LIGHTSAIL]
 
 const node = (n: Partial<CloudNode> = {}): CloudNode => ({
   name: 'sky-cloud',
@@ -63,6 +64,7 @@ const node = (n: Partial<CloudNode> = {}): CloudNode => ({
   auto_update: true,
   created_ms: null,
   k8s: null,
+  ssh: null,
   desktop: true,
   vault: null,
   link: null,
@@ -78,6 +80,7 @@ function wizard(entry: 'first-run' | 'add-to-mesh', initial: Parameters<typeof C
   qc.setQueryData(cloudKeys.providers, PROVIDERS)
   qc.setQueryData<CloudList>(cloudKeys.list, { nodes: [], errors: [] })
   if (sizes) qc.setQueryData(cloudKeys.sizes('digitalocean', 'lon1'), sizes)
+  if (sizes) qc.setQueryData(cloudKeys.sizes('fly', 'lhr'), { sizes: FLY.sizes, priced: true, error: null })
   return html(createElement(QueryClientProvider, { client: qc }, createElement(CloudNodeWizard, { entry, initial, onClose: () => undefined })))
 }
 
@@ -89,7 +92,8 @@ test('the create button names the monthly total from the live sizes; the phone c
   expect(createLabel({ provider: 'digitalocean', k8s: null }, q)).toBe('Create node · $13/mo')
   expect(createLabel({ provider: 'fly', k8s: null }, localQuote('fly', FLY.sizes, FLY.volume_usd_per_gb, 2))).toBe('Create node · $12.19/mo')
   expect(createLabel({ provider: 'kubernetes', k8s: { context: 'rwx-dev', namespace: null, storage_class: null } }, null)).toBe('Deploy to rwx-dev')
-  const spec = { provider: 'digitalocean' as const, name: 'sky-cloud', region: 'lon1', memory_gb: 4, volume_gb: 10, k8s: null, desktop: true }
+  expect(createLabel({ provider: 'ssh', k8s: null }, null)).toBe('Install and join')
+  const spec = { provider: 'digitalocean' as const, name: 'sky-cloud', region: 'lon1', memory_gb: 4, volume_gb: 10, k8s: null, ssh: null, desktop: true }
   const props = { provider: DO, spec, sizes: DO.sizes, quote: localQuote('digitalocean', DO.sizes, 0.1, 4), nameError: null, busy: false, onName: () => {}, onRegion: () => {}, onMemory: () => {}, onDesktop: () => {}, onCreate: () => {} }
   const out = html(createElement(PhoneConfigureStep, props))
   expect(out).toContain('Create node · $25/mo')
@@ -98,7 +102,7 @@ test('the create button names the monthly total from the live sizes; the phone c
   expect(html(createElement(PhoneConfigureStep, { ...props, spec: { ...spec, desktop: false } }))).toContain('No open ports · updates itself</div>')
 })
 
-test('desktop on: 4 GB is the default and Recommended; off: the 2 GB minimum; the button follows the size', () => {
+test('desktop on: 4 GB is the default and Recommended; off: the 2 GB minimum; Fly defaults to 4 GB Recommended', () => {
   const on = wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1' } })
   expect(checked(on, 4)).toBe(true)
   expect(on).toContain('Recommended')
@@ -119,15 +123,75 @@ test('desktop on: 4 GB is the default and Recommended; off: the 2 GB minimum; th
   expect(small).not.toMatch(/<button[^>]*disabled=""[^>]*>Create node/)
   expect(defaultMemory(true)).toBe(4)
   expect(defaultMemory(false)).toBe(2)
+  expect(defaultMemory(false, 'digitalocean')).toBe(2)
+  expect(defaultMemory(false, 'fly')).toBe(4)
+  // Fly has no desktop yet, but defaults to 4 GB Recommended (2 GB stays minimum).
+  const flyCfg = wizard('add-to-mesh', { step: 'configure', spec: { provider: 'fly', region: 'lhr' } })
+  expect(checked(flyCfg, 4)).toBe(true)
+  expect(flyCfg).toContain('Recommended')
+  expect(flyCfg).toContain('minimum')
 })
 
 test('Fly.io and Kubernetes: the desktop switch is disabled with its reason', () => {
   expect(desktopBlocked('fly')).toBe('Desktop: coming soon on Fly.io')
   expect(desktopBlocked('kubernetes')).toBe('Desktop: coming soon on Kubernetes')
+  expect(desktopBlocked('ssh')).toBe('Desktop: not available via SSH')
   expect(desktopBlocked('digitalocean')).toBeNull()
   const fly = html(createElement(DesktopToggle, { kind: 'fly', on: true, onChange: () => {} }))
   expect(fly).toContain('Desktop: coming soon on Fly.io')
   expect(fly).toMatch(/role="switch"[^>]*aria-checked="false"[^>]*disabled=""/)
+})
+
+test('non-OAuth provider (Fly.io): token input is visible immediately and Continue is disabled until non-empty', () => {
+  const oauthConnect = { mode: 'oauth' as const, waiting: false, error: null, token: '' }
+  const panel = html(createElement(ConnectPanel, { p: FLY, connect: oauthConnect, onToken: () => {}, onPasteInstead: () => {}, onCancel: () => {} }))
+  expect(panel).toContain('aria-label="Fly.io API token"')
+  expect(panel).not.toContain('Paste a token instead')
+
+  const phoneEmpty = html(
+    createElement(PhoneProviderStep, {
+      providers: PROVIDERS,
+      selected: 'fly',
+      connect: oauthConnect,
+      busy: false,
+      onSelect: () => {},
+      onToken: () => {},
+      onPasteInstead: () => {},
+      onCancel: () => {},
+      onNext: () => {},
+    }),
+  )
+  expect(phoneEmpty).toContain('aria-label="Fly.io API token"')
+  expect(phoneEmpty).toMatch(/<button[^>]*disabled=""[^>]*>Continue<\/button>/)
+
+  const phoneFilled = html(
+    createElement(PhoneProviderStep, {
+      providers: PROVIDERS,
+      selected: 'fly',
+      connect: { ...oauthConnect, token: 'fo1_secret' },
+      busy: false,
+      onSelect: () => {},
+      onToken: () => {},
+      onPasteInstead: () => {},
+      onCancel: () => {},
+      onNext: () => {},
+    }),
+  )
+  expect(phoneFilled).not.toMatch(/<button[^>]*disabled=""[^>]*>Continue<\/button>/)
+
+  // Settings row does not hardcode a beta tag for Fly nodes.
+  const flyRow = html(
+    createElement(NodeRow, {
+      node: node({ name: 'lab-fly', provider: 'fly', region: 'lhr', region_label: 'London' }),
+      onRestart: () => {},
+      onUpdate: () => {},
+      onTerminal: () => {},
+      onDesktop: () => {},
+      opening: false,
+      onOpen: () => {},
+    }),
+  )
+  expect(flyRow).not.toContain('>beta<')
 })
 
 test('no price without one from the provider: unpriced or failed sizes, loading skeleton, Fly links its pricing', () => {
@@ -151,7 +215,9 @@ test('first run: no price before sign-in; the chip only from live prices of a co
   expect(fromPrice(PROVIDERS, true, { digitalocean: PRICED })).toBe('from $12/mo')
   expect(fromPrice(PROVIDERS, true, { digitalocean: { ...PRICED, priced: false } })).toBeNull()
   expect(fromPrice([{ ...DO, connected: false }], true, { digitalocean: PRICED })).toBeNull()
-  expect(fromPrice([{ ...FLY, connected: true }], true, { fly: { sizes: FLY.sizes, priced: true, error: null } })).toBeNull()
+  // beta: true is filtered out of fromPrice; beta: false is included.
+  expect(fromPrice([{ ...FLY, connected: true, beta: true }], true, { fly: { sizes: FLY.sizes, priced: true, error: null } })).toBeNull()
+  expect(fromPrice([{ ...FLY, connected: true, beta: false }], true, { fly: { sizes: FLY.sizes, priced: true, error: null } })).toBe('from $11/mo')
   const out = wizard('first-run', {}, null)
   expect(out).toContain('Where should theuth run?')
   expect(out).not.toMatch(/\$\d/)
@@ -167,7 +233,7 @@ test('first run: no price before sign-in; the chip only from live prices of a co
 test('vault protection and the sealed status appear only where the engine has the sealed vault', () => {
   // No `vault_status` / `vault_password` in this test's discovery: Configure has no vault field.
   expect(wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1' } })).not.toContain(VAULT_LABEL)
-  const spec = { provider: 'digitalocean' as const, name: 'sky-cloud', region: 'lon1', memory_gb: 4, volume_gb: 10, k8s: null, desktop: true }
+  const spec = { provider: 'digitalocean' as const, name: 'sky-cloud', region: 'lon1', memory_gb: 4, volume_gb: 10, k8s: null, ssh: null, desktop: true }
   const props = { provider: DO, spec, sizes: DO.sizes, quote: null, nameError: null, busy: false, onName: () => {}, onRegion: () => {}, onMemory: () => {}, onDesktop: () => {}, onCreate: () => {} }
   const on = html(createElement(PhoneConfigureStep, { ...props, vault: { password: '', confirm: '', onPassword: () => {}, onConfirm: () => {} } }))
   expect(on).toContain('Vault protection')
@@ -186,19 +252,26 @@ test('the desktop viewer watches by default and offers Take over', () => {
   expect(out).not.toContain('Hand back')
 })
 
-test('AWS Lightsail is listed but disabled as coming soon; Kubernetes only on desktop', () => {
-  const props = { providers: PROVIDERS, selected: 'digitalocean' as const, k8sContexts: 3, onSelect: () => {} }
+test('AWS Lightsail is listed but disabled as coming soon; Kubernetes and SSH only on desktop', () => {
+  const props = { providers: PROVIDERS, selected: 'digitalocean' as const, k8sContexts: 3, sshHosts: 3, onSelect: () => {} }
   const phone = html(createElement(ProviderCards, { ...props, phone: true }))
   expect(phone).toMatch(/aria-disabled="true"[^>]*data-provider="lightsail"/)
   expect(phone).toContain('coming soon')
   expect(phone).not.toContain('data-provider="kubernetes"')
+  expect(phone).not.toContain('data-provider="ssh"')
   expect(phone).not.toMatch(/aria-disabled="true"[^>]*data-provider="digitalocean"/)
   const desktop = html(createElement(ProviderCards, { ...props, phone: false }))
   expect(desktop).toContain('data-provider="kubernetes"')
   expect(desktop).toContain('3 contexts in ~/.kube/config')
   expect(desktop).toContain('uses your cluster')
-  // The phone wizard's provider step never offers Kubernetes either.
-  expect(wizard('add-to-mesh', { step: 'provider' })).not.toContain('data-provider="kubernetes"')
+  expect(desktop).toContain('data-provider="ssh"')
+  expect(desktop).toContain('Install via SSH')
+  expect(desktop).toContain('3 hosts in ~/.ssh/config')
+  expect(desktop).toContain('uses your server')
+  // The phone wizard's provider step never offers Kubernetes or SSH either.
+  const phoneWizard = wizard('add-to-mesh', { step: 'provider' })
+  expect(phoneWizard).not.toContain('data-provider="kubernetes"')
+  expect(phoneWizard).not.toContain('data-provider="ssh"')
 })
 
 test('the flannel warning shows only when the cluster is known not to enforce NetworkPolicies', () => {

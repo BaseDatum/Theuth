@@ -117,6 +117,26 @@ fn discover_with(home: &Path, kubeconfig_env: Option<&OsStr>) -> Vec<(ProviderKi
             ));
         }
     }
+    #[cfg(feature = "ssh")]
+    {
+        let info = super::ssh::hosts(Some(home));
+        let n = info.hosts.len();
+        if info.ssh_available && n > 0 {
+            let path = shown(home, &home.join(".ssh/config"));
+            out.push((
+                ProviderKind::Ssh,
+                Discovered {
+                    id: "ssh_config".into(),
+                    label: "SSH config".into(),
+                    detail: Some(format!(
+                        "{n} host{} in {path}",
+                        if n == 1 { "" } else { "s" }
+                    )),
+                    path,
+                },
+            ));
+        }
+    }
     out
 }
 
@@ -196,5 +216,24 @@ mod tests {
         let env = h.0.join("k/one");
         let d = discover_with(&h.0, Some(env.as_os_str()));
         assert_eq!(d[0].1.detail.as_deref(), Some("1 context in ~/k/one"));
+    }
+
+    #[cfg(feature = "ssh")]
+    #[test]
+    fn ssh_config_discovery_reports_host_count_without_secrets() {
+        let h = home();
+        put(
+            &h.0,
+            ".ssh/config",
+            "Host prod\n  HostName 10.0.0.10\n  IdentityFile ~/.ssh/id_secret\nHost dev\n  HostName 10.0.0.11\nHost *\n  ServerAliveInterval 30\n",
+        );
+        let d = discover_with(&h.0, None);
+        if super::super::ssh::ssh_available() {
+            assert_eq!(d.len(), 1);
+            assert_eq!(d[0].0, ProviderKind::Ssh);
+            assert_eq!(d[0].1.id, "ssh_config");
+            assert_eq!(d[0].1.detail.as_deref(), Some("2 hosts in ~/.ssh/config"));
+            assert!(read_secret(&h.0, "ssh_config").is_none());
+        }
     }
 }

@@ -14,6 +14,8 @@ pub enum ProviderKind {
     Fly,
     /// A one-replica Deployment via kubectl (`sandbox::k8s`). Desktop only.
     Kubernetes,
+    /// An existing machine reached over system SSH; installs `t` natively. Desktop only.
+    Ssh,
     /// Lightsail instance + disk. Coming soon: listed, not creatable.
     Lightsail,
 }
@@ -133,6 +135,25 @@ pub struct K8sOptions {
     pub deny_cluster_network: bool,
 }
 
+/// SSH target options (wizard step 2, SSH variant).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SshOptions {
+    /// `~/.ssh/config` alias or manual hostname/IP.
+    pub host: String,
+    /// Optional login user (when omitted, system `ssh` uses `~/.ssh/config` or the local user).
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Optional SSH port (when omitted, system `ssh` uses `~/.ssh/config` or 22).
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Optional path to an identity file passed to `ssh -i` (path string only; never opened).
+    #[serde(default)]
+    pub identity: Option<String>,
+    /// Optional name override.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// What the user asked for (wizard step 2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NodeSpec {
@@ -140,14 +161,17 @@ pub struct NodeSpec {
     pub provider: ProviderKind,
     /// 1-40 of `[a-z0-9-]`, starting with a letter, not ending in `-` (also the mesh name).
     pub name: String,
-    /// Provider region slug; ignored for Kubernetes.
+    /// Provider region slug; ignored for Kubernetes and SSH.
     pub region: String,
-    /// 2, 4 or 8.
+    /// 2, 4 or 8 (ignored for SSH).
     pub memory_gb: u8,
-    /// Default [`DEFAULT_VOLUME_GB`].
+    /// Default [`DEFAULT_VOLUME_GB`] (ignored for SSH).
     pub volume_gb: Option<u32>,
     /// Kubernetes only.
     pub k8s: Option<K8sOptions>,
+    /// SSH only.
+    #[serde(default)]
+    pub ssh: Option<SshOptions>,
     /// A watchable desktop on the node (Xvfb + noVNC behind loopback; watched over the mesh).
     /// `None` = on (the default).
     #[serde(default)]
@@ -290,6 +314,9 @@ pub struct CloudNode {
     pub created_ms: Option<u64>,
     /// Kubernetes: where it runs.
     pub k8s: Option<K8sOptions>,
+    /// SSH: the target machine it was installed on.
+    #[serde(default)]
+    pub ssh: Option<SshOptions>,
     /// How its vault is protected; `None` when unknown (older records, orphans).
     pub vault: Option<VaultProtection>,
     /// Phone-only nodes (224 §16.12): the node forms its own mesh and the app pairs with it over
@@ -362,6 +389,45 @@ pub struct StorageClass {
     pub provisioner: String,
     /// Marked as the cluster's default.
     pub default: bool,
+}
+
+/// One concrete host entry parsed from `~/.ssh/config` (no secrets).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SshHostEntry {
+    /// `Host` alias from `~/.ssh/config`.
+    pub alias: String,
+    /// `HostName`, when configured.
+    pub hostname: Option<String>,
+    /// `User`, when configured.
+    pub user: Option<String>,
+    /// `Port`, when configured.
+    pub port: Option<u16>,
+    /// `IdentityFile` path string, when configured (never opened or read).
+    pub identity: Option<String>,
+    /// `ProxyJump`, when configured.
+    pub proxy_jump: Option<String>,
+}
+
+/// `cloud_ssh_hosts`: system `ssh` availability and concrete hosts from `~/.ssh/config`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SshHosts {
+    /// True when the system `ssh` binary is available on `PATH`.
+    pub ssh_available: bool,
+    /// Non-wildcard host entries parsed from `~/.ssh/config`.
+    pub hosts: Vec<SshHostEntry>,
+}
+
+/// `cloud_ssh_probe`: reachability and detected OS/arch of an SSH host without installing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SshProbe {
+    /// Detected OS (`linux`, `macos`, `windows`), when reachable.
+    pub os: Option<String>,
+    /// Detected architecture (`x86_64`, `aarch64`), when reachable.
+    pub arch: Option<String>,
+    /// True when the host is reachable and supported for native installation.
+    pub ok: bool,
+    /// Actionable reason when `!ok`.
+    pub error: Option<String>,
 }
 
 /// `cloud_oauth_start`: open `url` in the system browser; completion arrives as

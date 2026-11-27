@@ -116,11 +116,17 @@ export function ChooseStep({ fromPrice, choice, onChoice, onContinue }: { fromPr
 // ---- ② provider ----
 
 /** The line under a provider's name. */
-export function providerDetail(p: ProviderInfo, phone: boolean, k8sContexts: number | null): string {
+export function providerDetail(p: ProviderInfo, phone: boolean, k8sContexts: number | null, sshHosts?: number | null): string {
   if (!p.available) return 'coming soon'
   if (p.provider === 'kubernetes') {
     const n = k8sContexts ?? p.discovered.length
     return `${n} context${n === 1 ? '' : 's'} in ~/.kube/config`
+  }
+  if (p.provider === 'ssh') {
+    if (sshHosts != null && sshHosts > 0) return `${sshHosts} host${sshHosts === 1 ? '' : 's'} in ~/.ssh/config`
+    const detail = p.discovered[0]?.detail
+    if (detail) return /^\d+\s+hosts?$/i.test(detail) ? `${detail} in ~/.ssh/config` : detail
+    return 'A machine you already SSH to'
   }
   const found = !phone ? p.discovered[0] : undefined
   if (found) return `Found ${found.label}${found.detail ? ` · ${found.detail}` : ''}`
@@ -134,6 +140,7 @@ export function ProviderCard({
   phone,
   selected,
   k8sContexts,
+  sshHosts,
   onSelect,
   onUse,
   using,
@@ -142,14 +149,16 @@ export function ProviderCard({
   phone: boolean
   selected: boolean
   k8sContexts: number | null
+  sshHosts?: number | null
   onSelect: (k: ProviderKind) => void
   onUse?: (p: ProviderInfo, id: string) => void
   using?: boolean
 }) {
-  const found = !phone && !p.connected ? p.discovered[0] : undefined
+  const found = !phone && !p.connected && p.provider !== 'ssh' ? p.discovered[0] : undefined
   let right: ReactNode
-  if (p.connected && p.provider !== 'kubernetes') right = <span className="text-success">✓ connected</span>
+  if (p.connected && p.provider !== 'kubernetes' && p.provider !== 'ssh') right = <span className="text-success">✓ connected</span>
   else if (p.provider === 'kubernetes') right = 'uses your cluster'
+  else if (p.provider === 'ssh') right = 'uses your server'
   else if (found && onUse && p.available)
     right = (
       <Button
@@ -188,7 +197,7 @@ export function ProviderCard({
             {p.provider === 'kubernetes' && !phone ? 'My Kubernetes' : p.label}
             {p.beta && <Tag tone="info">beta</Tag>}
           </div>
-          <Muted className="truncate">{providerDetail(p, phone, k8sContexts)}</Muted>
+          <Muted className="truncate">{providerDetail(p, phone, k8sContexts, sshHosts)}</Muted>
         </div>
         <div className="ml-auto shrink-0 text-right text-[11px] leading-tight text-fg-secondary">{right}</div>
       </Card>
@@ -201,6 +210,7 @@ export function ProviderCards({
   phone,
   selected,
   k8sContexts,
+  sshHosts,
   onSelect,
   onUse,
   using,
@@ -210,6 +220,7 @@ export function ProviderCards({
   phone: boolean
   selected: ProviderKind | null
   k8sContexts: number | null
+  sshHosts?: number | null
   onSelect: (k: ProviderKind) => void
   onUse?: (p: ProviderInfo, id: string) => void
   using?: string | null
@@ -218,7 +229,7 @@ export function ProviderCards({
   return (
     <div role="radiogroup" aria-label="Provider" className={cn(grid ? 'grid grid-cols-2 gap-3' : 'flex flex-col gap-2.5')}>
       {offered(providers, phone).map((p) => (
-        <ProviderCard key={p.provider} p={p} phone={phone} selected={selected === p.provider} k8sContexts={k8sContexts} onSelect={onSelect} onUse={onUse} using={using === p.provider} />
+        <ProviderCard key={p.provider} p={p} phone={phone} selected={selected === p.provider} k8sContexts={k8sContexts} sshHosts={sshHosts} onSelect={onSelect} onUse={onUse} using={using === p.provider} />
       ))}
     </div>
   )
@@ -228,7 +239,7 @@ export function ProviderCards({
 export type Connect = { mode: 'oauth' | 'token'; waiting: boolean; error: string | null; token: string }
 
 export function ConnectPanel({ p, connect, onToken, onPasteInstead, onCancel }: { p: ProviderInfo; connect: Connect; onToken: (t: string) => void; onPasteInstead: () => void; onCancel: () => void }) {
-  if (p.connected || !p.available || p.provider === 'kubernetes') return null
+  if (p.connected || !p.available || p.provider === 'kubernetes' || p.provider === 'ssh') return null
   if (connect.waiting)
     return (
       <Card className="flex items-center gap-2.5">
@@ -239,9 +250,10 @@ export function ConnectPanel({ p, connect, onToken, onPasteInstead, onCancel }: 
         </Button>
       </Card>
     )
+  const tokenMode = !p.oauth || connect.mode === 'token'
   return (
     <div className="flex flex-col gap-1.5">
-      {connect.mode === 'token' ? (
+      {tokenMode ? (
         <>
           <Input type="password" autoComplete="off" placeholder={`${p.label} API token`} aria-label={`${p.label} API token`} value={connect.token} onChange={(e) => onToken(e.currentTarget.value)} />
           <Muted>Stored encrypted on this engine; used only to create and manage your nodes.</Muted>
@@ -258,7 +270,7 @@ export function ConnectPanel({ p, connect, onToken, onPasteInstead, onCancel }: 
 
 /** The provider step's primary label: follows the selection and its connection. */
 export function providerAction(p: ProviderInfo | undefined, connect: Connect): string {
-  if (!p || p.connected || !p.available || p.provider === 'kubernetes') return 'Continue'
+  if (!p || p.connected || !p.available || p.provider === 'kubernetes' || p.provider === 'ssh') return 'Continue'
   return p.oauth && connect.mode === 'oauth' ? `Sign in with ${p.label}` : 'Continue'
 }
 
@@ -274,7 +286,8 @@ export function PhoneProviderStep(props: {
   onNext: () => void
 }) {
   const p = props.providers.find((x) => x.provider === props.selected)
-  const blocked = !p?.available || (!p.connected && props.connect.mode === 'token' && !props.connect.token.trim())
+  const needsToken = !!p && !p.connected && p.provider !== 'kubernetes' && p.provider !== 'ssh' && (!p.oauth || props.connect.mode === 'token')
+  const blocked = !p?.available || (needsToken && !props.connect.token.trim())
   return (
     <>
       <Muted>Step 1 of 3</Muted>
@@ -465,7 +478,7 @@ export function SizeCards({
                   · {s.vcpus} vCPU{s.vcpus === 1 ? '' : 's'}
                 </span>
                 {s.memory_gb === 2 && <Tag>minimum</Tag>}
-                {s.memory_gb === 4 && desktop && <Tag tone="ok">Recommended</Tag>}
+                {s.memory_gb === 4 && (desktop || kind === 'fly') && <Tag tone="ok">Recommended</Tag>}
                 {!row && price}
               </div>
               {row && price}

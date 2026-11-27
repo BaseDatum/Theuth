@@ -67,12 +67,32 @@ pub struct Done {
     pub peer: mesh::Peer,
 }
 
-/// Where the installer puts `t` on an ssh host (in the unit's login-shell PATH on most distros).
+/// Where the installer puts `t` on a POSIX ssh host (in the unit's login-shell PATH on most distros).
 pub const BIN_DIR: &str = "$HOME/.local/bin";
+
+/// Where the installer puts `t.exe` on a Windows ssh host.
+pub const WIN_BIN_DIR: &str = r"%USERPROFILE%\.local\bin";
 
 /// `t <args>` with the install dir on PATH (the docker image has `t` on PATH already).
 fn t(args: &str, timeout: Duration) -> Cmd {
     Cmd::new(format!("PATH=\"{BIN_DIR}:$PATH\" t {args}")).timeout(timeout)
+}
+
+/// Run `t.exe` on Windows via PowerShell `-EncodedCommand` with explicit argument quoting.
+pub fn windows_t_cmd(args: &[&str], timeout: Duration) -> Cmd {
+    let ps_args: Vec<String> = args
+        .iter()
+        .map(|a| crate::ssh::ps_single_quote(a))
+        .collect();
+    let script = format!(
+        "$ErrorActionPreference='Stop'; \
+         $bin=[Environment]::ExpandEnvironmentVariables({}); \
+         & $bin {}; \
+         exit $LASTEXITCODE",
+        crate::ssh::ps_single_quote(&format!(r"{WIN_BIN_DIR}\t.exe")),
+        ps_args.join(" ")
+    );
+    Cmd::new(crate::ssh::encode_powershell_command(&script)).timeout(timeout)
 }
 
 fn fail(step: &str, out: &ExecOutput) -> anyhow::Error {
@@ -93,24 +113,45 @@ pub async fn run(
 
     let caps = sb.capabilities(&h).await?;
     out.say("detect", format!("{} {}", caps.os, caps.arch));
-    if caps.os == "windows" {
-        anyhow::bail!(
-            "detect: windows targets are not brought up by this version — install t there and run `t mesh pair`"
-        );
-    }
+    release::validate_target(&caps.os, &caps.arch)?;
+    let is_windows = caps.os == "windows";
+
+    let run_t = |args: &[&str]| -> Cmd {
+        if is_windows {
+            windows_t_cmd(args, spec.step_timeout)
+        } else {
+            let joined: Vec<String> = args
+                .iter()
+                .map(|a| {
+                    if a.starts_with('-')
+                        || a.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+                    {
+                        (*a).to_owned()
+                    } else {
+                        quote(a)
+                    }
+                })
+                .collect();
+            t(&joined.join(" "), spec.step_timeout)
+        }
+    };
 
     match caps.daemon {
         DaemonKind::Entrypoint => out.say("binary", "in the image"),
         DaemonKind::Service => {
+            let bin_name = if is_windows { "t.exe" } else { "t" };
+            let bin_dir = if is_windows { WIN_BIN_DIR } else { BIN_DIR };
+            let sep = if is_windows { "\\" } else { "/" };
             let files: Vec<(String, Bytes)> = match &spec.local_t {
                 Some(p) => {
                     out.say("binary", format!("local {}", p.display()));
                     let b =
                         std::fs::read(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
-                    vec![("t".into(), Bytes::from(b))]
+                    vec![(bin_name.into(), Bytes::from(b))]
                 }
                 None => {
-                    let have = sb.exec(&h, t("--version", spec.step_timeout)).await?;
+                    let have = sb.exec(&h, run_t(&["--version"])).await?;
                     if have.ok() {
                         out.say("binary", format!("present: {}", have.stdout_str()));
                         Vec::new()
@@ -120,12 +161,12 @@ pub async fn run(
                 }
             };
             for (name, bytes) in files {
-                sb.put(&h, &format!("{BIN_DIR}/{name}"), bytes, 0o755)
-                    .await?;
-                out.say("binary", format!("installed {BIN_DIR}/{name}"));
+                let dest = format!("{bin_dir}{sep}{name}");
+                sb.put(&h, &dest, bytes, 0o755).await?;
+                out.say("binary", format!("installed {dest}"));
             }
             // Any one-shot runs `first_run` (main's prologue) and proves the binary loads here.
-            let fr = sb.exec(&h, t("--secret-list", spec.step_timeout)).await?;
+            let fr = sb.exec(&h, run_t(&["--secret-list"])).await?;
             if !fr.ok() {
                 return Err(fail("first_run", &fr));
             }
@@ -136,15 +177,18 @@ pub async fn run(
     match caps.daemon {
         DaemonKind::Entrypoint => out.say("daemon", "container entrypoint"),
         DaemonKind::Service => {
-            let inst = sb
-                .exec(
-                    &h,
-                    t(
-                        &format!("--install-service --no-pair --name {}", quote(&spec.name)),
-                        spec.step_timeout,
-                    ),
+            let inst_cmd = if is_windows {
+                windows_t_cmd(
+                    &["--install-service", "--no-pair", "--name", &spec.name],
+                    spec.step_timeout,
                 )
-                .await?;
+            } else {
+                t(
+                    &format!("--install-service --no-pair --name {}", quote(&spec.name)),
+                    spec.step_timeout,
+                )
+            };
+            let inst = sb.exec(&h, inst_cmd).await?;
             if !inst.ok() {
                 return Err(fail("daemon", &inst));
             }
@@ -154,7 +198,7 @@ pub async fn run(
 
     let mut pairing = None;
     for i in 0..spec.pair_tries {
-        let p = sb.exec(&h, t("mesh pair", spec.step_timeout)).await?;
+        let p = sb.exec(&h, run_t(&["mesh", "pair"])).await?;
         if p.ok() {
             pairing = Some(parse_pairing(&p.stdout_str())?);
             break;
@@ -740,19 +784,31 @@ mod tests {
                 log.iter().filter(|l| l.ends_with("t mesh pair")).count()
             };
             let l = cmd.line.as_str();
+            let decoded = crate::ssh::decode_powershell_command(l);
+            let check = decoded.as_deref().unwrap_or(l);
             Ok(if l == "uname -sm" {
-                reply(0, self.os)
-            } else if l.ends_with("t --version") {
+                if self.os.starts_with("Windows") {
+                    reply(1, "")
+                } else {
+                    reply(0, self.os)
+                }
+            } else if l.starts_with("powershell ") && l.contains("OSArchitecture") {
+                if let Some(arch) = self.os.strip_prefix("Windows ") {
+                    reply(0, arch)
+                } else {
+                    reply(1, "")
+                }
+            } else if check.contains("--version") {
                 if self.have_t {
                     reply(0, "t 1.16.0")
                 } else {
                     reply(127, "")
                 }
-            } else if l.ends_with("t --secret-list") {
+            } else if check.contains("--secret-list") {
                 reply(0, "key: file\n")
-            } else if l.contains("--install-service") {
+            } else if check.contains("--install-service") {
                 reply(0, "service installed: user")
-            } else if l.ends_with("t mesh pair") {
+            } else if check.contains("mesh pair") || (check.contains("'mesh'") && check.contains("'pair'")) {
                 if self.pair_fail_first && n == 1 {
                     reply(1, "no harness on 127.0.0.1:7777")
                 } else {
@@ -945,6 +1001,28 @@ mod tests {
         assert_eq!(parse_pairing("\"abc\"\n").unwrap(), "abc");
         assert_eq!(parse_pairing("abc").unwrap(), "abc");
         assert!(parse_pairing("\"\"").is_err());
+    }
+
+    #[tokio::test]
+    async fn windows_service_host_with_local_binary_runs_every_step() {
+        let mut sb = Mock::new(DaemonKind::Service);
+        sb.os = "Windows X64";
+        let bin = std::env::temp_dir().join(format!("sandbox-win-t-{}.exe", std::process::id()));
+        std::fs::write(&bin, b"MZ").unwrap();
+        let spec = Spec {
+            local_t: Some(bin.clone()),
+            ..spec()
+        };
+        let j = join(1);
+        let done = run(&sb, &spec, &j, &Progress::silent()).await.unwrap();
+        std::fs::remove_file(bin).ok();
+
+        assert_eq!(done.peer.id.0, "e1");
+        assert_eq!(
+            *sb.puts.lock(),
+            vec![(format!(r"{WIN_BIN_DIR}\t.exe"), 0o755, 2)]
+        );
+        assert_eq!(*j.added.lock(), vec!["pair-me"]);
     }
 }
 

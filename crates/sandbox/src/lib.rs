@@ -124,6 +124,8 @@ pub struct Cmd {
     pub stdin: Option<Bytes>,
     /// Ceiling; the command is abandoned and the step fails when it passes.
     pub timeout: Duration,
+    /// Safe label for logs and timeout errors when `line` contains a secret (e.g. a pairing ticket).
+    pub redacted: Option<String>,
 }
 
 impl Cmd {
@@ -136,6 +138,7 @@ impl Cmd {
             line: line.into(),
             stdin: None,
             timeout: Self::DEFAULT_TIMEOUT,
+            redacted: None,
         }
     }
 
@@ -149,6 +152,17 @@ impl Cmd {
     pub fn stdin(mut self, bytes: Bytes) -> Self {
         self.stdin = Some(bytes);
         self
+    }
+
+    /// Set a redacted label to display in logs and timeout errors instead of `line`.
+    pub fn redact(mut self, label: impl Into<String>) -> Self {
+        self.redacted = Some(label.into());
+        self
+    }
+
+    /// Safe representation for logs and error messages.
+    pub fn display(&self) -> &str {
+        self.redacted.as_deref().unwrap_or(&self.line)
     }
 }
 
@@ -243,23 +257,50 @@ pub trait Sandbox: Send + Sync {
     async fn destroy(&self, h: &Handle, preserve_data: bool) -> anyhow::Result<()>;
 }
 
-/// `(os, arch)` in release-asset spelling: `uname -sm` first, PowerShell when
-/// there is no `uname` (Windows OpenSSH).
+/// `(os, arch)` in release-asset spelling: `uname -sm` first, then PowerShell
+/// `RuntimeInformation::OSArchitecture`, then `cmd /c echo %PROCESSOR_ARCHITECTURE%`.
 pub async fn detect(sb: &(impl Sandbox + ?Sized), h: &Handle) -> anyhow::Result<(String, String)> {
-    let out = sb.exec(h, Cmd::new("uname -sm")).await?;
+    detect_with_timeout(sb, h, Cmd::DEFAULT_TIMEOUT).await
+}
+
+/// Like [`detect`], with a per-command timeout ceiling.
+pub async fn detect_with_timeout(
+    sb: &(impl Sandbox + ?Sized),
+    h: &Handle,
+    timeout: Duration,
+) -> anyhow::Result<(String, String)> {
+    let out = sb.exec(h, Cmd::new("uname -sm").timeout(timeout)).await?;
     if out.ok()
         && let Some(p) = parse_uname(&out.stdout_str())
     {
         return Ok(p);
     }
     let ps = "powershell -NoProfile -Command \"[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture\"";
-    let out = sb.exec(h, Cmd::new(ps)).await?;
-    if out.ok()
-        && let Some(arch) = parse_arch(&out.stdout_str())
+    let ps_out = sb.exec(h, Cmd::new(ps).timeout(timeout)).await?;
+    if ps_out.ok()
+        && let Some(arch) = parse_arch(&ps_out.stdout_str())
     {
         return Ok(("windows".into(), arch));
     }
-    anyhow::bail!("cannot detect os/arch: {}", out.reason())
+    let cmd_out = sb
+        .exec(
+            h,
+            Cmd::new("cmd /c echo %PROCESSOR_ARCHITECTURE%").timeout(timeout),
+        )
+        .await?;
+    if cmd_out.ok()
+        && let Some(arch) = parse_arch(&cmd_out.stdout_str())
+    {
+        return Ok(("windows".into(), arch));
+    }
+    let reason = if !out.reason().starts_with("exit status") {
+        out.reason()
+    } else if !ps_out.reason().starts_with("exit status") {
+        ps_out.reason()
+    } else {
+        cmd_out.reason()
+    };
+    anyhow::bail!("cannot detect os/arch: {reason}")
 }
 
 /// `"Linux x86_64"` → `("linux", "x86_64")`, `"Darwin arm64"` → `("macos", "aarch64")`.
@@ -506,5 +547,92 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(out.reason(), "exit status 3");
+    }
+
+    struct DetectMock {
+        uname: ExecOutput,
+        ps: ExecOutput,
+        cmd: ExecOutput,
+    }
+
+    #[async_trait::async_trait]
+    impl Sandbox for DetectMock {
+        fn kind(&self) -> &'static str {
+            "mock"
+        }
+        async fn create(&self, _: &Progress) -> anyhow::Result<Handle> {
+            Ok(Handle { id: "m".into() })
+        }
+        async fn exec(&self, _: &Handle, cmd: Cmd) -> anyhow::Result<ExecOutput> {
+            if cmd.line == "uname -sm" {
+                Ok(self.uname.clone())
+            } else if cmd.line.starts_with("powershell ") {
+                Ok(self.ps.clone())
+            } else if cmd.line.starts_with("cmd ") {
+                Ok(self.cmd.clone())
+            } else {
+                Ok(ExecOutput {
+                    status: 1,
+                    ..Default::default()
+                })
+            }
+        }
+        async fn put(&self, _: &Handle, _: &str, _: Bytes, _: u32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn durable_roots(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn daemon(&self) -> DaemonKind {
+            DaemonKind::Service
+        }
+        async fn destroy(&self, _: &Handle, _: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn detect_tries_uname_then_powershell_then_cmd() {
+        let h = Handle { id: "m".into() };
+        let fail = ExecOutput {
+            status: 1,
+            stderr: b"not found".to_vec(),
+            ..Default::default()
+        };
+
+        let ps_ok = DetectMock {
+            uname: fail.clone(),
+            ps: ExecOutput {
+                status: 0,
+                stdout: b"Arm64\r\n".to_vec(),
+                ..Default::default()
+            },
+            cmd: fail.clone(),
+        };
+        assert_eq!(
+            detect(&ps_ok, &h).await.unwrap(),
+            ("windows".into(), "aarch64".into())
+        );
+
+        let cmd_ok = DetectMock {
+            uname: fail.clone(),
+            ps: fail.clone(),
+            cmd: ExecOutput {
+                status: 0,
+                stdout: b"AMD64\r\n".to_vec(),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            detect(&cmd_ok, &h).await.unwrap(),
+            ("windows".into(), "x86_64".into())
+        );
+
+        let all_fail = DetectMock {
+            uname: fail.clone(),
+            ps: fail.clone(),
+            cmd: fail,
+        };
+        assert!(detect(&all_fail, &h).await.is_err());
     }
 }

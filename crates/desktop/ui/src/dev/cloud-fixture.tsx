@@ -131,6 +131,7 @@ const node = (n: Partial<CloudNode> & Pick<CloudNode, 'name' | 'provider' | 'sta
   created_ms: now - 86_400_000,
   desktop: true,
   k8s: null,
+  ssh: null,
   vault: null,
   link: null,
   ...n,
@@ -189,8 +190,21 @@ const cloud: CloudApi = {
   },
   cloud_desktop: () => ok({ ws_url: 'ws://127.0.0.1:9/fixture', password: 'fixture', geometry: '1280×800', engine: 'e1f2' }),
   cloud_k8s_info: () => ok(K8S),
+  cloud_ssh_hosts: () => ok({ ssh_available: true, hosts: [{ alias: 'prod-box', hostname: '10.0.0.10', user: 'ubuntu', port: 22, identity: null, proxy_jump: null }] }),
+  cloud_ssh_probe: () => ok({ os: 'linux', arch: 'x86_64', ok: true, error: null }),
   // The fixture ignores the vault password: nothing is created.
-  cloud_create: (spec) => ok(node({ name: spec.name, provider: spec.provider, state: 'creating', region: spec.region, region_label: info(spec.provider).regions.find((r) => r.id === spec.region)?.label ?? null, stage: 'server' })),
+  cloud_create: (spec) =>
+    ok(
+      node({
+        name: spec.name,
+        provider: spec.provider,
+        state: 'creating',
+        region: spec.region,
+        region_label: info(spec.provider).regions.find((r) => r.id === spec.region)?.label ?? null,
+        stage: 'server',
+        ssh: spec.ssh ? { host: spec.ssh.host, user: spec.ssh.user ?? null, port: spec.ssh.port ?? null, identity: spec.ssh.identity ?? null, name: spec.ssh.name ?? null } : null,
+      }),
+    ),
   cloud_list: () => ok(LIST),
   cloud_status: (name) => ok(NODES.find((n) => n.name === name) as CloudNode),
   cloud_restart: (name) => ok(NODES.find((n) => n.name === name) ?? SKY),

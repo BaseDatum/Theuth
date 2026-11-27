@@ -37,6 +37,7 @@ rand = { workspace = true }
 url = { workspace = true }
 zeroize = { workspace = true }
 parking_lot = { workspace = true }
+bytes = { workspace = true }
 # Kubernetes reuses `sandbox::k8s` (kubectl + the embedded kustomize base). Desktop only: an iOS
 # engine builds without it (sandbox links docker/ssh/VM stacks).
 sandbox = { workspace = true, optional = true }
@@ -46,8 +47,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"
 tempfile = "3"
 
 [features]
-default = ["kubernetes"]
+default = ["kubernetes", "ssh"]
 kubernetes = ["dep:sandbox"]
+ssh = ["dep:sandbox"]
 # `providers::http::testing::FakeTransport` for other crates' tests.
 testing = []
 

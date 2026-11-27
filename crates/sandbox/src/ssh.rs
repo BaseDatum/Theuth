@@ -101,6 +101,8 @@ enum Transport {
 pub struct SshSandbox {
     target: Target,
     transport: Transport,
+    identity_file: Option<String>,
+    connect_timeout: Option<u64>,
 }
 
 impl SshSandbox {
@@ -115,6 +117,8 @@ impl SshSandbox {
                 key: Arc::new(key),
                 session: tokio::sync::Mutex::new(None),
             },
+            identity_file: None,
+            connect_timeout: None,
         })
     }
 
@@ -123,7 +127,24 @@ impl SshSandbox {
         Self {
             target,
             transport: Transport::System,
+            identity_file: None,
+            connect_timeout: None,
         }
+    }
+
+    /// Pass `-i <path>` to system `ssh`. Path string only — never opened or read here.
+    pub fn with_identity_file(mut self, path: impl Into<String>) -> Self {
+        let p = path.into();
+        if !p.trim().is_empty() {
+            self.identity_file = Some(p);
+        }
+        self
+    }
+
+    /// Pass `-o ConnectTimeout=<secs>` to system `ssh`.
+    pub fn with_connect_timeout(mut self, secs: u64) -> Self {
+        self.connect_timeout = Some(secs);
+        self
     }
 
     /// The target.
@@ -203,21 +224,14 @@ impl SshSandbox {
     }
 
     async fn exec_system(&self, cmd: Cmd) -> anyhow::Result<ExecOutput> {
+        let argv = system_ssh_argv(
+            &self.target,
+            self.identity_file.as_deref(),
+            self.connect_timeout,
+            &cmd.line,
+        );
         let mut c = Command::new("ssh");
-        c.arg("-o")
-            .arg("BatchMode=yes")
-            .args(
-                self.target
-                    .port
-                    .iter()
-                    .flat_map(|p| ["-p".to_owned(), p.to_string()]),
-            )
-            .arg(match &self.target.user {
-                Some(u) => format!("{u}@{}", self.target.host),
-                None => self.target.host.clone(),
-            })
-            .arg("--")
-            .arg(&cmd.line)
+        c.args(&argv)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -237,6 +251,121 @@ impl SshSandbox {
             stderr: out.stderr,
         })
     }
+}
+
+/// Build the argv passed to the system `ssh` binary. Pure so tests can assert
+/// `BatchMode=yes`, optional `-p` / `-i` / `ConnectTimeout`, and `[user@]host`.
+pub fn system_ssh_argv(
+    target: &Target,
+    identity_file: Option<&str>,
+    connect_timeout: Option<u64>,
+    cmd_line: &str,
+) -> Vec<String> {
+    let mut args = vec!["-o".to_owned(), "BatchMode=yes".to_owned()];
+    if let Some(secs) = connect_timeout {
+        args.push("-o".to_owned());
+        args.push(format!("ConnectTimeout={secs}"));
+    }
+    if let Some(p) = target.port {
+        args.push("-p".to_owned());
+        args.push(p.to_string());
+    }
+    if let Some(id) = identity_file.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("-i".to_owned());
+        args.push(id.to_owned());
+    }
+    args.push(match &target.user {
+        Some(u) => format!("{u}@{}", target.host),
+        None => target.host.clone(),
+    });
+    args.push("--".to_owned());
+    args.push(cmd_line.to_owned());
+    args
+}
+
+/// Single-quote a string for PowerShell (`'` doubled).
+pub fn ps_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Encode a PowerShell script as UTF-16LE base64 for `powershell -NoProfile -EncodedCommand`.
+/// Works identically regardless of whether Windows OpenSSH uses `cmd.exe`, `powershell.exe`, or `pwsh.exe`.
+pub fn encode_powershell_command(script: &str) -> String {
+    use base64::Engine;
+    let utf16: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let encoded = base64::prelude::BASE64_STANDARD.encode(&utf16);
+    format!("powershell -NoProfile -NonInteractive -EncodedCommand {encoded}")
+}
+
+/// Decode a `powershell ... -EncodedCommand <b64>` command line back into its script (useful in tests).
+pub fn decode_powershell_command(cmd_line: &str) -> Option<String> {
+    use base64::Engine;
+    let (_, b64) = cmd_line.rsplit_once("-EncodedCommand ")?;
+    let bytes = base64::prelude::BASE64_STANDARD.decode(b64.trim()).ok()?;
+    let (pairs, rem) = bytes.as_chunks::<2>();
+    if !rem.is_empty() {
+        return None;
+    }
+    let units: Vec<u16> = pairs.iter().map(|&c| u16::from_le_bytes(c)).collect();
+    String::from_utf16(&units).ok()
+}
+
+/// True when `path` uses Windows path syntax (`\`, `%ENV%`, or a drive letter like `C:`).
+pub fn is_windows_path(path: &str) -> bool {
+    path.contains('\\')
+        || path.contains('%')
+        || (path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':')
+}
+
+/// Build the POSIX atomic `put` command (writes `<path>.new`, `chmod`, `mv -f` to avoid `ETXTBSY`).
+pub fn posix_put_cmd(path: &str, bytes: Bytes, mode: u32) -> Cmd {
+    let dir = path.rsplit_once('/').map_or(".", |(d, _)| d);
+    let q = |p: &str| {
+        if p.starts_with('$') {
+            p.to_owned()
+        } else {
+            quote(p)
+        }
+    };
+    let tmp = format!("{path}.new");
+    let line = format!(
+        "mkdir -p {} && cat > {} && chmod {mode:o} {} && mv -f {} {}",
+        q(dir),
+        q(&tmp),
+        q(&tmp),
+        q(&tmp),
+        q(path)
+    );
+    Cmd::new(line).stdin(bytes)
+}
+
+/// Build a Windows `put` command that decodes base64 from stdin via PowerShell
+/// `[IO.File]::WriteAllBytes` and moves it into place (moving a running `.exe` aside to `.old` if needed).
+pub fn windows_put_cmd(path: &str, bytes: Bytes) -> Cmd {
+    use base64::Engine;
+    let b64 = base64::prelude::BASE64_STANDARD.encode(&bytes);
+    let script = format!(
+        "$ErrorActionPreference='Stop'; \
+         $p=[Environment]::ExpandEnvironmentVariables({}); \
+         $d=[IO.Path]::GetDirectoryName($p); \
+         if($d){{[IO.Directory]::CreateDirectory($d)|Out-Null}}; \
+         $b64=([Console]::In.ReadToEnd()).Trim(); \
+         $tmp=$p+'.new'; \
+         [IO.File]::WriteAllBytes($tmp,[Convert]::FromBase64String($b64)); \
+         try {{ Move-Item -Force $tmp $p }} catch {{ \
+           $old=$p+'.old'; \
+           Remove-Item -Force -ErrorAction SilentlyContinue $old; \
+           Move-Item -Force $p $old; \
+           Move-Item -Force $tmp $p \
+         }}",
+        ps_single_quote(path)
+    );
+    Cmd::new(encode_powershell_command(&script))
+        .stdin(Bytes::from(b64))
+        .redact(format!("put {path}"))
 }
 
 /// Host-key policy for the built-in transport: the user's `known_hosts`,
@@ -298,7 +427,7 @@ impl Sandbox for SshSandbox {
 
     async fn exec(&self, _: &Handle, cmd: Cmd) -> anyhow::Result<ExecOutput> {
         let timeout = cmd.timeout;
-        let line = cmd.line.clone();
+        let label = cmd.display().to_owned();
         let fut = async {
             match &self.transport {
                 Transport::Builtin { key, session } => self.exec_builtin(key, session, cmd).await,
@@ -307,26 +436,16 @@ impl Sandbox for SshSandbox {
         };
         tokio::time::timeout(timeout, fut)
             .await
-            .map_err(|_| anyhow::anyhow!("timed out after {}s: {line}", timeout.as_secs()))?
+            .map_err(|_| anyhow::anyhow!("timed out after {}s: {label}", timeout.as_secs()))?
     }
 
     async fn put(&self, h: &Handle, path: &str, bytes: Bytes, mode: u32) -> anyhow::Result<()> {
-        let dir = path.rsplit_once('/').map_or(".", |(d, _)| d);
-        // Paths are used unquoted where they start with `$HOME` so the shell expands them.
-        let q = |p: &str| {
-            if p.starts_with('$') {
-                p.to_owned()
-            } else {
-                quote(p)
-            }
+        let cmd = if is_windows_path(path) {
+            windows_put_cmd(path, bytes)
+        } else {
+            posix_put_cmd(path, bytes, mode)
         };
-        let line = format!(
-            "mkdir -p {} && cat > {} && chmod {mode:o} {}",
-            q(dir),
-            q(path),
-            q(path)
-        );
-        let out = self.exec(h, Cmd::new(line).stdin(bytes)).await?;
+        let out = self.exec(h, cmd).await?;
         if !out.ok() {
             anyhow::bail!("put {path}: {}", out.reason());
         }
@@ -383,5 +502,55 @@ mod tests {
         assert_eq!((t.user.as_deref(), t.port()), (None, 22));
         assert!(Target::parse("me@").is_err());
         assert!(Target::parse("me@box:x").is_err());
+    }
+
+    #[test]
+    fn system_ssh_argv_includes_batch_mode_port_identity_and_timeout() {
+        let t = Target {
+            user: Some("alice".into()),
+            host: "box.example".into(),
+            port: Some(2222),
+        };
+        let argv = system_ssh_argv(&t, Some("/home/a/.ssh/id_ed25519"), Some(8), "uname -sm");
+        assert_eq!(
+            argv,
+            vec![
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=8",
+                "-p",
+                "2222",
+                "-i",
+                "/home/a/.ssh/id_ed25519",
+                "alice@box.example",
+                "--",
+                "uname -sm",
+            ]
+        );
+
+        let alias = Target {
+            user: None,
+            host: "prod".into(),
+            port: None,
+        };
+        let argv = system_ssh_argv(&alias, None, None, "echo ok");
+        assert_eq!(argv, vec!["-o", "BatchMode=yes", "prod", "--", "echo ok"]);
+    }
+
+    #[test]
+    fn put_commands_handle_posix_and_windows() {
+        let p = posix_put_cmd("$HOME/.local/bin/t", Bytes::from_static(b"ELF"), 0o755);
+        assert!(p.line.contains("mkdir -p $HOME/.local/bin"));
+        assert!(p.line.contains(".new"));
+        assert!(p.line.contains("mv -f"));
+        assert!(!p.line.contains("sudo"));
+
+        let w = windows_put_cmd(r"%USERPROFILE%\.local\bin\t.exe", Bytes::from_static(b"MZ"));
+        assert!(w.line.starts_with("powershell -NoProfile -NonInteractive -EncodedCommand "));
+        let decoded = decode_powershell_command(&w.line).unwrap();
+        assert!(decoded.contains("WriteAllBytes"));
+        assert!(decoded.contains(r"%USERPROFILE%\.local\bin\t.exe"));
+        assert_eq!(w.stdin.as_deref(), Some(b"TVo=".as_slice()));
     }
 }

@@ -20,6 +20,8 @@ import { usePhoneLink } from './phoneLink'
 import { checkName, defaultMemory, defaultName, desktopBlocked, fromPrice, localQuote, offered, progressPct, sizesOf, stageRows, userOf } from './format'
 import { cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudNode, useCloudProgress, useCloudProviders, useCloudSizes, useCredentialChanged, useK8sInfo, useVaultSupport } from './queries'
 import { nearestRegion } from './region'
+import { SshConfigure, type SshInputMode, parseSshPort, suggestSshNodeName } from './SshConfigure'
+import { useSshHosts, useSshProbe } from './sshApi'
 import {
   ChooseStep,
   type Choice,
@@ -38,7 +40,7 @@ import {
   type WizardEntry,
   providerAction,
 } from './steps'
-import { DEFAULT_VOLUME_GB, type CloudNode, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type SizeList } from './types'
+import { DEFAULT_VOLUME_GB, type CloudNode, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type SizeList, type SshHostEntry, type SshOptions, type SshProbe } from './types'
 
 export type { WizardEntry } from './steps'
 export type WizardStep = 'choose' | 'provider' | 'configure' | 'progress' | 'done'
@@ -46,7 +48,7 @@ export type WizardStep = 'choose' | 'provider' | 'configure' | 'progress' | 'don
 /** Where the wizard opens (the fixture opens any screen; a real entry passes nothing). */
 export type WizardInitial = {
   step?: WizardStep
-  spec?: Partial<Omit<NodeSpec, 'k8s'>> & { k8s?: K8sOptions | null }
+  spec?: Partial<Omit<NodeSpec, 'k8s' | 'ssh'>> & { k8s?: K8sOptions | null; ssh?: SshOptions | null }
   /** The node a `progress` / `done` screen follows. */
   node?: string
   connect?: Partial<Connect>
@@ -80,8 +82,9 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const [picked, setPicked] = useState<ProviderKind | null>(initial?.spec?.provider ?? null)
   const [connect, setConnect] = useState<Connect>({ mode: 'oauth', waiting: false, error: null, token: '', ...initial?.connect })
   const [name, setName] = useState<string | null>(initial?.spec?.name ?? null)
+  const [nameTouched, setNameTouched] = useState(initial?.spec?.name != null)
   const [regions, setRegions] = useState<Partial<Record<ProviderKind, string>>>(initial?.spec?.provider && initial.spec.region ? { [initial.spec.provider]: initial.spec.region } : {})
-  // The size the user picked; until then it follows the desktop choice (4 GB with it, 2 GB without).
+  // The size the user picked; until then it follows the desktop choice (4 GB with it or on Fly.io, 2 GB otherwise).
   const [memoryPick, setMemory] = useState<number | null>(initial?.spec?.memory_gb ?? null)
   const [desktopPick, setDesktop] = useState(initial?.spec?.desktop ?? true)
   // The node's master password (design 225), only where the engine has the sealed vault and takes it in
@@ -91,18 +94,26 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const [vaultConfirm, setVaultConfirm] = useState(initial?.vault?.confirm ?? '')
   const vault = vaultOn ? { password: vaultPassword, confirm: vaultConfirm, onPassword: setVaultPassword, onConfirm: setVaultConfirm } : null
   const [k8s, setK8s] = useState<K8sOptions | null>(initial?.spec?.k8s ?? null)
+  const [sshMode, setSshMode] = useState<SshInputMode>(initial?.spec?.ssh ? 'manual' : 'config')
+  const [ssh, setSsh] = useState<SshOptions>(initial?.spec?.ssh ?? { host: '', user: null, port: null, identity: null, name: null })
+  const [sshPortText, setSshPortText] = useState<string>(initial?.spec?.ssh?.port != null ? String(initial.spec.ssh.port) : '')
+  const [sshProbeResult, setSshProbeResult] = useState<SshProbe | null>(null)
+  const [sshProbeError, setSshProbeError] = useState<string | null>(null)
   const [created, setCreated] = useState<string | null>(initial?.node ?? null)
 
   // The default pick: a connected provider that can create, else the first that can.
-  const provider: ProviderInfo | undefined = providers.find((p) => p.provider === picked) ?? providers.find((p) => p.available && p.connected && p.provider !== 'kubernetes') ?? providers.find((p) => p.available)
+  const provider: ProviderInfo | undefined = providers.find((p) => p.provider === picked) ?? providers.find((p) => p.available && p.connected && p.provider !== 'kubernetes' && p.provider !== 'ssh') ?? providers.find((p) => p.available)
   const kind = provider?.provider ?? null
   const isK8s = kind === 'kubernetes'
+  const isSsh = kind === 'ssh'
 
   const taken = useMemo(() => (list.data?.nodes ?? []).map((n) => n.name), [list.data])
   const nodeName = name ?? defaultName(userOf(info?.data_dir), taken)
   const region = (kind && regions[kind]) ?? (provider ? (nearestRegion(provider.regions)?.id ?? '') : '')
 
   const k8sInfo = useK8sInfo(k8s?.context ?? null, desktop && providers.some((p) => p.provider === 'kubernetes'))
+  const sshHostsQ = useSshHosts(desktop && providers.some((p) => p.provider === 'ssh'))
+  const sshProbeM = useSshProbe()
   // Kubernetes defaults from the cluster: current context, `theuth-nodes`, the default storage class.
   const k8sOpts: K8sOptions = {
     context: k8s?.context ?? k8sInfo.data?.current_context ?? k8sInfo.data?.contexts[0] ?? null,
@@ -112,13 +123,35 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     deny_cluster_network: k8s?.deny_cluster_network ?? false,
   }
 
+  const effectiveSshMode: SshInputMode = (sshHostsQ.data?.hosts.length ?? 0) > 0 ? sshMode : 'manual'
+  const parsedSshPort = parseSshPort(sshPortText)
+  const sshPortError = effectiveSshMode === 'manual' ? parsedSshPort.error : null
+  const sshOpts: SshOptions = {
+    host: ssh.host.trim(),
+    user: ssh.user?.trim() || null,
+    port: effectiveSshMode === 'manual' ? parsedSshPort.port : (ssh.port ?? null),
+    identity: ssh.identity?.trim() || null,
+    name: null,
+  }
+
   const desktopOn = !!kind && desktopPick && !desktopBlocked(kind)
-  const memory = memoryPick ?? defaultMemory(desktopOn)
-  const spec: NodeSpec | null = kind ? { provider: kind, name: nodeName, region: isK8s ? '' : region, memory_gb: memory, volume_gb: DEFAULT_VOLUME_GB, k8s: isK8s ? k8sOpts : null, desktop: desktopOn } : null
-  // Live sizes and prices for the chosen provider and region (needs its credential; Kubernetes needs none).
-  const sizesQ = useCloudSizes(kind, isK8s ? null : region || null, !!provider && (provider.connected || isK8s))
+  const memory = memoryPick ?? defaultMemory(desktopOn, kind)
+  const spec: NodeSpec | null = kind
+    ? {
+        provider: kind,
+        name: nodeName,
+        region: isK8s || isSsh ? '' : region,
+        memory_gb: isSsh ? 0 : memory,
+        volume_gb: isSsh ? null : DEFAULT_VOLUME_GB,
+        k8s: isK8s ? k8sOpts : null,
+        ssh: isSsh ? { ...sshOpts, name: nodeName } : null,
+        desktop: desktopOn,
+      }
+    : null
+  // Live sizes and prices for the chosen provider and region (needs its credential; Kubernetes needs none; SSH has no sizes).
+  const sizesQ = useCloudSizes(kind, isK8s ? null : region || null, !!provider && !isSsh && (provider.connected || isK8s))
   const sizes = sizesOf(sizesQ.data) ?? (sizesQ.isError ? provider?.sizes.map((s) => ({ ...s, monthly_usd: null })) : undefined)
-  const quote = kind && sizes ? localQuote(kind, sizes, provider?.volume_usd_per_gb ?? null, memory) : null
+  const quote = kind && !isSsh && sizes ? localQuote(kind, sizes, provider?.volume_usd_per_gb ?? null, memory) : null
   const nameError = checkName(nodeName) ?? (taken.includes(nodeName) && nodeName !== created ? `${nodeName} is taken` : null)
 
   const node = useCloudNode(created)
@@ -154,10 +187,50 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   )
   useCredentialChanged(connect.waiting ? kind : null, onCredential)
 
+  const handleName = (v: string) => {
+    setNameTouched(true)
+    setName(v)
+  }
+
+  const resetSshProbe = () => {
+    setSshProbeResult(null)
+    setSshProbeError(null)
+  }
+
+  const updateSsh = (next: SshOptions) => {
+    setSsh(next)
+    resetSshProbe()
+  }
+
+  const pickSshHost = (entry: SshHostEntry) => {
+    setSsh({ host: entry.alias, user: null, port: null, identity: null, name: null })
+    setSshPortText('')
+    if (!nameTouched) setName(suggestSshNodeName(entry.alias, taken))
+    resetSshProbe()
+  }
+
+  const updateSshPort = (text: string) => {
+    setSshPortText(text)
+    const parsed = parseSshPort(text)
+    setSsh((prev) => ({ ...prev, port: parsed.port }))
+    resetSshProbe()
+  }
+
+  const checkSshServer = () => {
+    if (!sshOpts.host || sshPortError) return
+    setSshProbeResult(null)
+    setSshProbeError(null)
+    sshProbeM.mutate(sshOpts, {
+      onSuccess: (res) => setSshProbeResult(res),
+      onError: (e) => setSshProbeError(errorText(e)),
+    })
+  }
+
   const select = (k: ProviderKind) => {
     if (connect.waiting && kind) void api.cloud_oauth_cancel(kind).catch(() => undefined)
+    const nextProvider = providers.find((p) => p.provider === k)
     setPicked(k)
-    setConnect({ mode: 'oauth', waiting: false, error: null, token: '' })
+    setConnect({ mode: nextProvider?.oauth ? 'oauth' : 'token', waiting: false, error: null, token: '' })
   }
 
   const signIn = async () => {
@@ -188,8 +261,9 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   /** The provider step's primary: continue when connected, else sign in or save the pasted token. */
   const next = () => {
     if (!provider) return
-    if (provider.connected || provider.provider === 'kubernetes') return setStep('configure')
+    if (provider.connected || provider.provider === 'kubernetes' || provider.provider === 'ssh') return setStep('configure')
     if (provider.oauth && connect.mode === 'oauth') return void signIn()
+    if (!connect.token.trim()) return
     actions.setToken.mutate(
       { provider: provider.provider, token: connect.token.trim() },
       {
@@ -204,6 +278,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
 
   const create = () => {
     if (!spec || (nameError && !isK8s)) return
+    if (isSsh && (!sshOpts.host || sshPortError)) return
     actions.create.mutate(
       { spec, vaultPassword: vault && !isK8s && vaultPassword && !onPhoneEngine ? vaultPassword : null },
       {
@@ -252,6 +327,30 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     <>
       {isK8s ? (
         <K8sConfigure info={k8sInfo.data ?? null} sizes={sizes} loading={k8sInfo.isPending} k8s={k8sOpts} memory_gb={memory} busy={actions.create.isPending} onChange={setK8s} onMemory={setMemory} onDeploy={create} onBack={back} />
+      ) : isSsh ? (
+        <SshConfigure
+          hosts={sshHostsQ.data ?? null}
+          loading={sshHostsQ.isPending}
+          mode={sshMode}
+          onMode={(nextMode) => {
+            setSshMode(nextMode)
+            resetSshProbe()
+          }}
+          ssh={ssh}
+          onChange={updateSsh}
+          onPickHost={pickSshHost}
+          portText={sshPortText}
+          onPortText={updateSshPort}
+          portError={sshPortError}
+          name={nodeName}
+          nameError={nameError}
+          onName={handleName}
+          probe={{ result: sshProbeResult, error: sshProbeError, pending: sshProbeM.isPending, onCheck: checkSshServer }}
+          vault={vault}
+          busy={actions.create.isPending}
+          onCreate={create}
+          onBack={back}
+        />
       ) : phone ? (
         <PhoneConfigureStep
           provider={provider}
@@ -260,7 +359,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           quote={quote}
           nameError={nameError}
           busy={actions.create.isPending}
-          onName={setName}
+          onName={handleName}
           onRegion={(id) => setRegions((r) => ({ ...r, [provider.provider]: id }))}
           onMemory={setMemory}
           onDesktop={setDesktop}
@@ -277,7 +376,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           busy={actions.create.isPending}
           advancedOpen={initial?.advancedOpen}
           onBack={back}
-          onName={setName}
+          onName={handleName}
           onRegion={(id) => setRegions((r) => ({ ...r, [provider.provider]: id }))}
           onMemory={setMemory}
           onDesktop={setDesktop}
@@ -373,11 +472,12 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
 
   // Desktop: the rail, then one pane per step.
   const rail: RailStep = step === 'progress' || step === 'done' ? 'create' : step === 'configure' ? 'configure' : 'provider'
+  const needsToken = !!provider && !provider.connected && !isK8s && !isSsh && (!provider.oauth || connect.mode === 'token')
   let pane
   if (step === 'provider' || step === 'choose')
     pane = loading ?? (
       <>
-        <ProviderCards providers={providers} phone={false} grid selected={kind} k8sContexts={k8sInfo.data?.contexts.length ?? null} onSelect={select} onUse={(p, id) => actions.importCredential.mutate({ provider: p.provider, id })} using={actions.importCredential.isPending ? (actions.importCredential.variables?.provider ?? null) : null} />
+        <ProviderCards providers={providers} phone={false} grid selected={kind} k8sContexts={k8sInfo.data?.contexts.length ?? null} sshHosts={sshHostsQ.data?.hosts.length ?? null} onSelect={select} onUse={(p, id) => actions.importCredential.mutate({ provider: p.provider, id })} using={actions.importCredential.isPending ? (actions.importCredential.variables?.provider ?? null) : null} />
         {provider && (
           <ConnectPanel
             p={provider}
@@ -390,10 +490,10 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
         <p className="text-xs text-fg-secondary">The bill is from your own provider. theuth never holds your card.</p>
         {!connect.waiting && (
           <DesktopFooter
-            left={provider?.discovered.length && !provider.connected ? `Found in ${provider.discovered[0]?.path}` : null}
+            left={provider?.discovered.length && !provider.connected && !isSsh ? `Found in ${provider.discovered[0]?.path}` : null}
             onBack={onClose}
             action={providerAction(provider, connect)}
-            disabled={!provider?.available || (!provider.connected && !isK8s && connect.mode === 'token' && !connect.token.trim())}
+            disabled={!provider?.available || (needsToken && !connect.token.trim())}
             busy={actions.setToken.isPending}
             onAction={next}
           />
@@ -403,7 +503,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   else if (step === 'configure')
     pane = loading ?? (
       <>
-        <ProviderCards providers={providers.filter((p) => p.available && (p.connected || p.provider === kind))} phone={false} grid selected={kind} k8sContexts={k8sInfo.data?.contexts.length ?? null} onSelect={select} />
+        <ProviderCards providers={providers.filter((p) => p.available && (p.connected || p.provider === kind))} phone={false} grid selected={kind} k8sContexts={k8sInfo.data?.contexts.length ?? null} sshHosts={sshHostsQ.data?.hosts.length ?? null} onSelect={select} />
         {configure}
       </>
     )
