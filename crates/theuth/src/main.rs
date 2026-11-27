@@ -2312,7 +2312,7 @@ async fn start_plugins(
 ) -> anyhow::Result<()> {
     declare_plugins(rt, &mut plugins).await?;
     let names: Vec<&'static str> = plugins.iter().map(|p| p.name()).collect();
-    let plan = subsystems::plan(&names, &subsystems::overrides(rt), &env);
+    let plan = subsystems::plan(&names, &subsystems::overrides(&rt.config), &env);
     let enabled = |name: &str| {
         rt.config
             .extract_inner::<bool>(&format!("{name}.enabled"))

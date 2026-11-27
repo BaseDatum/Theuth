@@ -147,9 +147,9 @@ pub fn decide(rule: &Rule, ov: Override, env: &Env) -> Decision {
 }
 
 /// The `subsystems:` section; absent or malformed = every override `auto`.
-pub fn overrides(rt: &Runtime) -> BTreeMap<String, Override> {
-    rt.section("subsystems").unwrap_or_else(|e| {
-        if rt.config.find_value("subsystems").is_ok() {
+pub fn overrides(config: &figment::Figment) -> BTreeMap<String, Override> {
+    config.extract_inner("subsystems").unwrap_or_else(|e| {
+        if config.find_value("subsystems").is_ok() {
             tracing::warn!("subsystems: ignored, every subsystem on auto: {e}");
         }
         BTreeMap::new()
@@ -441,8 +441,7 @@ mod tests {
         let fig = figment::Figment::new().merge(Yaml::string(
             "subsystems:\n  meeting: on\n  voice: off\n  talk: auto\n  computer: true\n  dreaming: false\n",
         ));
-        let rt = Runtime::new(fig, std::env::temp_dir());
-        let ov = overrides(&rt);
+        let ov = overrides(&fig);
         assert_eq!(ov["meeting"], Override::On);
         assert_eq!(ov["voice"], Override::Off);
         assert_eq!(ov["talk"], Override::Auto);
