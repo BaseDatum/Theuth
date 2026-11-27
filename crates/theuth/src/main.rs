@@ -2405,7 +2405,9 @@ async fn start_plugins(
         rt.clone(),
         hub_only,
         mesh::hub_watch(),
-        mesh::is_hub,
+        // No lease by then: a running mesh that elected nobody (a lone `hub: never` engine
+        // emits none) is no hub here; without a mesh, `is_hub()` (true) as before.
+        || mesh::has_peers().is_none() && mesh::is_hub(),
         subsystems::HubTiming::default(),
     ));
     Ok(())

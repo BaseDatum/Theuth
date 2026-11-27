@@ -252,7 +252,7 @@ pub async fn follow_hub(
             Ok(Ok(v)) => v.unwrap_or(true),
             _ => {
                 let hub = fallback();
-                tracing::info!(hub, "subsystems: no lease from the mesh; hub-only subsystems follow is_hub()");
+                tracing::info!(hub, "subsystems: no lease from the mesh within {:?}", timing.first_lease);
                 hub
             }
         },

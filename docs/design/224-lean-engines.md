@@ -52,8 +52,9 @@ subsystems: started [...]; skipped [meeting (headless: no user or microphone), .
 
 ## 3. Hub transitions
 `mesh::hub_watch()` (new) is a `watch<Option<bool>>`: `None` until the mesh actor's first `MeshEvent::Lease`, then
-`Some(holder == self)`, set beside the existing `set_hub`. `follow_hub` waits for the first value (15 s, then falls back to
-`mesh::is_hub()` — no mesh, or it failed), starts each hub-only subsystem's phase plugin, and on every change that holds
+`Some(holder == self)`, set beside the existing `set_hub`. `follow_hub` waits for the first value; after 15 s without
+one it decides "not the hub" when the mesh is running (a lone `hub: never` engine elects nobody and emits no lease) and
+`mesh::is_hub()` (true) without a mesh. It starts each hub-only subsystem's phase plugin, and on every change that holds
 for 5 s stops the old phase and starts the new one. A lease of `None` (warming, no holder) is "not the hub".
 
 Each phase runs on `Runtime::scoped()` (new): a clone whose `shutdown` is a child token. `Scope::stop` cancels it — the
@@ -66,7 +67,29 @@ Before: `HUB` defaulted to `true`, so anything reading `is_hub()` at boot saw a 
 The gate waits for the lease instead.
 
 ## 4. Measurements
-See §6.
+macOS 26 arm64, debug build of `-p theuth` (one binary; "before" = every gated subsystem forced on through
+`subsystems.<name>: on`, which is exactly the old start set). Two `t --headless` engines on temp data dirs paired over
+loopback: A `mesh.hub: prefer`, B `mesh.hub: never`; empty histories. Physical footprint (`vmmap -summary`: dirty +
+compressed, the analogue of Linux anon RSS) and threads (`ps -M`). RSS (460–570 MB here) is dominated by the mapped
+1.9 GB debug binary and moves by tens of MB between samples; it is not used to compare.
+
+| | before footprint / threads | after footprint / threads |
+|---|---|---|
+| B, non-hub, idle (≥ 90 s after joining) | 90.0 MB / 96 | 81.7 MB / 82 |
+| A, hub, idle | 89.4 MB / 94 | 84.3 MB / 87 |
+| B during join + first sync (0–30 s, empty history) | 83.4–83.9 MB / 96 | 76.4–81.1 MB / 82–84 |
+
+Single engine, no mesh, 45 s idle: default 76.4 MB / 87; `browser.enabled: false` 71.0 MB / 85 (the obscura warmup
+isolate); all gated subsystems on 78.8 MB / 91.
+
+Reading: the gate removes 7–14 threads and 5–8 MB of dirty memory at idle on an empty engine. It does not explain the
+node's 318 MB anon: with empty data the whole engine is ~80 MB dirty. Inference, not measured: the rest grows with the
+replicated data (sessions.sqlite 2 GB) — sqlite page caches per connection, sync buffers, the document reindex over
+synced documents — which this change leaves as is (full-history sync stays). Sync-time memory with a large history was
+not reproducible here (no copy of real data); the empty-history join added ≤ 5 MB.
+
+Not gated, on purpose: codeindex starts an actor and a database handle only; it indexes a repository on the first
+tool call and runs no watcher or boot walk, so a node without a repository pays nothing for it.
 
 ## 5. Binary size and eager loads (report; no packaging change)
 No model weights are linked into `t`; ONNX Runtime is `load-dynamic` (`ort`, `parakeet-rs`), MLX is
@@ -86,3 +109,5 @@ on a first run or model change.
   noted in `browser::warmup`).
 - `[profile.release] strip = "symbols"`, feature-gating microsandbox `embed-binaries` and obscura `render` for a node
   build — packaging changes, left to the release owner.
+- Signal linking on a non-hub engine: its control-only actor answers `signal_link` with the daemon hint; linking runs
+  on the hub (or with `subsystems.signal: on`). Routing a link request to the hub is not built.
