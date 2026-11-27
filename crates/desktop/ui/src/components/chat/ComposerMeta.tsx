@@ -16,7 +16,7 @@ import type { CompactStyle, CostBucket } from '@/rpc/bindings/method.agent.outpu
 import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
 import { type ApprovalLevel, type ApprovalsChoice, approvalsChoice, setApprovalsLevel } from './approvals-level'
-import { alwaysAskCount, useAlwaysAsk } from '@/lib/always-ask'
+import { type AlwaysAskScope, alwaysAskEntries, alwaysAskSummary, alwaysAskWhere, useAlwaysAsk } from '@/lib/always-ask'
 import { useToolsSheet } from './tools-sheet'
 import { type ContextReading, useContextReading } from './ContextMeter'
 import { compactWith, contextCommand } from './slash'
@@ -114,7 +114,7 @@ export function ApprovalShieldView({
   state,
   choice,
   waiting,
-  alwaysAsk = 0,
+  alwaysAsk = [],
   onPick,
   onJump,
   onAlwaysAsk,
@@ -124,7 +124,8 @@ export function ApprovalShieldView({
   state: ShieldState
   choice: ApprovalsChoice
   waiting: number
-  alwaysAsk?: number
+  /** 219 §6.1: the entries that ask even with approvals off, with where each is set. */
+  alwaysAsk?: { entry: string; scope: AlwaysAskScope }[]
   onPick(level: ApprovalLevel): void
   onJump(): void
   onAlwaysAsk?(): void
@@ -132,7 +133,8 @@ export function ApprovalShieldView({
   onOpenChange?(open: boolean): void
 }) {
   const { icon: Icon, tone, label: plain } = SHIELD[state]
-  const label = state === 'off' && alwaysAsk > 0 ? `Approvals off · ${tools(alwaysAsk)} always ask` : plain
+  const summary = alwaysAskSummary(alwaysAsk.map((a) => a.entry))
+  const label = state === 'off' && alwaysAsk.length > 0 ? `Approvals off · always ask: ${summary}` : plain
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
@@ -170,17 +172,16 @@ export function ApprovalShieldView({
             </button>
           ))}
         </div>
-        {alwaysAsk > 0 && (
-          <button type="button" data-level="always-ask" className="flex w-full items-center rounded-md px-2 py-1.5 text-left hover:bg-foreground/6" onClick={onAlwaysAsk}>
-            Always ask: {tools(alwaysAsk)}
+        {alwaysAsk.length > 0 && (
+          <button type="button" data-level="always-ask" className="flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left hover:bg-foreground/6" onClick={onAlwaysAsk}>
+            <span className="break-words">Always ask: {summary}</span>
+            <span data-always-ask-where="" className="text-[11px] text-fg-tertiary">{alwaysAskWhere(alwaysAsk)}</span>
           </button>
         )}
       </PopoverContent>
     </Popover>
   )
 }
-
-const tools = (n: number) => `${n} ${n === 1 ? 'tool' : 'tools'}`
 
 /** Scroll the transcript to the approval card `id` (`data-prompt-card`, set by `ApprovalCard`). */
 export function jumpToPrompt(id: string): boolean {
@@ -228,7 +229,7 @@ export function ApprovalShield({ session }: { session: string }) {
     setOpen(false)
     if (waiting[0] && !jumpToPrompt(waiting[0])) toast.message('The approval card is not in this view')
   }
-  const alwaysAsk = alwaysAskCount(useAlwaysAsk(session))
+  const alwaysAsk = alwaysAskEntries(useAlwaysAsk(session))
   const openTools = () => {
     setOpen(false)
     useToolsSheet.getState().show(session)

@@ -94,6 +94,59 @@ pub struct ApprovalRequested {
     /// skips the card. Unlike `human_only`, any human surface may answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub always_ask: bool,
+    /// Why the call is always ask (set exactly when `always_ask` is): the marked entries that
+    /// matched, or the mandatory gate. Cards name it so an always-ask prompt with approvals
+    /// off is never unexplained (a `shell` reading a Bitwarden secret asks because of
+    /// `secret:bw/<conn>:read`, not because `shell` is marked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_ask_why: Option<AlwaysAskWhy>,
+}
+
+/// Why a call is always ask (219 §2.2, 221 D10): it raises a card even with approvals off,
+/// and only a human may answer it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AlwaysAskWhy {
+    /// Always-ask entries (`tools.always_ask` or a chat's list) that name the tool, its MCP
+    /// server (`mcp:<server>`), or an external secret connection the call reads or writes
+    /// (`secret:<backend>/<conn>:<direction>`). Sorted. Removing them stops the prompt.
+    Entries {
+        /// The matching entries.
+        entries: Vec<String>,
+    },
+    /// The call writes theuth's own `config.yaml` or `mcp/config.yaml` (219 §2.4). Mandatory.
+    ConfigWrite,
+    /// An MCP-admin tool while any always-ask entry applies, so re-registering a server cannot
+    /// shed its marks (219 §2.4). Mandatory while entries exist.
+    McpAdmin,
+    /// The chat's stored always-ask list could not be read, so every `Mutating` or riskier
+    /// call asks until it is (219 §3.2). Mandatory.
+    Unreadable,
+}
+
+/// One line for a card or a chat-channel message: what makes the call always ask.
+impl std::fmt::Display for AlwaysAskWhy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Entries { entries } => write!(f, "marked {}", entries.join(", ")),
+            Self::ConfigWrite => f.write_str("writes theuth's own config"),
+            Self::McpAdmin => f.write_str("changes MCP servers while always-ask entries exist"),
+            Self::Unreadable => f.write_str("this chat's always-ask list could not be read"),
+        }
+    }
+}
+
+impl ApprovalRequested {
+    /// A chat channel's suffix on the tool line: empty, or ` · always ask (<why>)`.
+    #[must_use]
+    pub fn always_ask_note(&self) -> String {
+        match (&self.always_ask_why, self.always_ask) {
+            (Some(why), _) => format!(" · always ask ({why})"),
+            (None, true) => " · always ask".to_owned(),
+            (None, false) => String::new(),
+        }
+    }
 }
 
 impl wire::WireEvent for ApprovalRequested {
@@ -169,8 +222,9 @@ pub struct RequestApproval {
     /// The gated tool call (109 §6.1: the `questions.tool_call_id`); `None`
     /// for an external approval that belongs to no call.
     pub call_id: Option<String>,
-    /// 219 §2.3: the call is always ask; the card carries `always_ask: true`.
-    pub always_ask: bool,
+    /// 219 §2.3: the call is always ask, and why; the card carries `always_ask: true` and
+    /// `always_ask_why`.
+    pub always_ask: Option<AlwaysAskWhy>,
 }
 
 /// 210 §7.2: [`RequestApproval`] for a [`crate::Tool::HUMAN_ONLY`] tool. Same reply; the
@@ -336,7 +390,7 @@ impl Approval {
             .call_id
             .as_ref()
             .and_then(|c| self.honoured.remove(&(m.session, c.clone())))
-            .filter(|(_, _, by)| !m.always_ask || *by == Some(Answerer::Human))
+            .filter(|(_, _, by)| m.always_ask.is_none() || *by == Some(Answerer::Human))
         {
             // 109 §6.2: the user already answered this call; no second card.
             if let Some(tx) = tx {
@@ -357,7 +411,8 @@ impl Approval {
             args: m.args,
             risk: m.risk,
             human_only,
-            always_ask: m.always_ask,
+            always_ask: m.always_ask.is_some(),
+            always_ask_why: m.always_ask,
         };
         let asked_at = Utc::now();
         let deadline = asked_at + self.timeout;
@@ -764,7 +819,7 @@ pub(crate) mod tests {
             args: serde_json::json!({ "command": "rm x" }),
             risk: Risk::Destructive,
             call_id: call_id.map(Into::into),
-            always_ask: false,
+            always_ask: None,
         }
     }
 
@@ -964,7 +1019,9 @@ pub(crate) mod tests {
         let (_rt, actor, journal) = actor(Duration::from_millis(20)).await;
         let session = SessionId::new();
         let always = |call: &str| RequestApproval {
-            always_ask: true,
+            always_ask: Some(AlwaysAskWhy::Entries {
+                entries: vec!["shell".into()],
+            }),
             ..request(session, Some(call))
         };
         for (call, by) in [("c1", Some(Answerer::Double)), ("c2", None)] {

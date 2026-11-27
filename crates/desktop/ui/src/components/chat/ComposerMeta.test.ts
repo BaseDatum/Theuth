@@ -252,17 +252,21 @@ test('no button is ever hidden or shrunk for room: only the label shortens', () 
   expect(menu).toContain("const QUIET = 'h-8 max-w-full min-w-0'")
 })
 
-test('219 §6.1: always-ask tools add a line that opens the Tools sheet; with approvals off the tooltip counts them', () => {
+test('219 §6.1: always-ask entries are named, with where they are set, on a line that opens the Tools sheet', () => {
   const onAlwaysAsk = vi.fn()
-  mount({ state: 'off', alwaysAsk: 2, onAlwaysAsk })
-  expect(shield().getAttribute('title')).toBe('Approvals off · 2 tools always ask')
+  const alwaysAsk = [
+    ...['read', 'write', 'send', 'delete'].map((d) => ({ entry: `secret:bw/vw:${d}`, scope: 'every chat' as const })),
+    { entry: 'secret_delete', scope: 'every chat' as const },
+  ]
+  mount({ state: 'off', alwaysAsk, onAlwaysAsk })
+  expect(shield().getAttribute('title')).toBe('Approvals off · always ask: vw (Bitwarden): read, write, send, delete; secret_delete')
   click(shield())
   const line = document.querySelector<HTMLElement>('[data-level="always-ask"]')!
-  expect(line.textContent).toBe('Always ask: 2 tools')
+  expect(line.textContent).toBe('Always ask: vw (Bitwarden): read, write, send, delete; secret_deleteSet for every chat (Settings › Approvals)')
   click(line)
   expect(onAlwaysAsk).toHaveBeenCalled()
   act(() => root!.unmount())
-  mount({ state: 'on', alwaysAsk: 0 })
+  mount({ state: 'on', alwaysAsk: [] })
   expect(shield().getAttribute('title')).toBe('Approvals on: asks before risky tools')
   click(shield())
   expect(document.querySelector('[data-level="always-ask"]')).toBeNull()

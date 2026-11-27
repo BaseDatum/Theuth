@@ -142,8 +142,8 @@ pub fn body(req: &ApprovalRequested) -> String {
     } else {
         ""
     };
-    // 219 §6.3: an always-ask call says so on the tool line.
-    let always = if req.always_ask { " · always ask" } else { "" };
+    // 219 §6.3: an always-ask call says so on the tool line, and why.
+    let always = req.always_ask_note();
     format!(
         "⚠️ **{}** wants to run{always}\n```{lang}\n{args}\n```{owner_only}",
         req.tool
@@ -229,6 +229,7 @@ mod tests {
             risk: tools::Risk::Destructive,
             human_only: false,
             always_ask: false,
+            always_ask_why: None,
         }
     }
 

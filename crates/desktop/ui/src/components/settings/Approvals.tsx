@@ -6,10 +6,10 @@ import { Empty, Row, Section, refreshInfo, useAction } from '@/components/settin
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { serverKey, setAlwaysAsk, useAlwaysAsk } from '@/lib/always-ask'
+import { alwaysAskSummary, serverKey, setAlwaysAsk, useAlwaysAsk } from '@/lib/always-ask'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
-import { askKeysOf } from '@/components/library/secrets/labels'
+import { askKeysOf, parseAskKey } from '@/components/library/secrets/labels'
 import { useConnection } from '@/store/connection'
 
 /** 188 A10: Settings › Agent › Approvals — the global default only; a chat's override and the waiting queue live with the chat. */
@@ -18,10 +18,18 @@ export function Approvals() {
   const info = useConnection((s) => s.info)
   const setGlobal = useAction((on: boolean) => api.set_approvals(null, on).then(() => refreshInfo(api)))
   const always = useQuerySupport(['get_always_ask', 'set_always_ask'])
+  const off = info?.approvals.global === false
   return (
     <>
       <Section title="Approvals">
-        <Row label="Ask before risky tools" description="The default for every chat. Each chat can override it from its menu.">
+        <Row
+          label="Ask before risky tools"
+          description={
+            off
+              ? 'Off: tools run without asking, except the always-ask entries below and the mandatory gates. Each chat can override this from its menu.'
+              : 'The default for every chat. Each chat can override it from its menu.'
+          }
+        >
           <Switch checked={info?.approvals.global ?? false} disabled={!info || setGlobal.isPending} onCheckedChange={(v) => setGlobal.mutate(v)} />
         </Row>
       </Section>
@@ -30,8 +38,24 @@ export function Approvals() {
   )
 }
 
-/** 219 §6.1: the harness-wide always-ask list (`tools.always_ask`): one row per entry with its remove control, and an add
- * field that suggests built-in tools, MCP tools and `mcp:<server>` for a whole server. */
+const SECRET_DOING: Record<string, string> = {
+  read: 'reads a secret through this connection',
+  write: 'creates or updates an item in this connection',
+  delete: 'deletes an item in this connection',
+  send: 'creates a Send from this connection',
+}
+
+/** What one entry makes ask: a `secret:` key covers every tool that uses the connection (`shell` with a `{{secret:…}}`
+ * reference included), `mcp:<server>` every tool of the server, anything else the one tool. */
+export function entryScope(entry: string): string {
+  const k = parseAskKey(entry)
+  if (k) return `Any tool that ${SECRET_DOING[k.dir] ?? k.dir}, shell commands with a {{secret:…}} reference included.`
+  if (entry.startsWith('mcp:')) return `Every tool of the MCP server ${entry.slice(4)}.`
+  return `The ${entry} tool.`
+}
+
+/** 219 §6.1: the harness-wide always-ask list (`tools.always_ask`): one row per entry with what it covers and its remove
+ * control, and an add field that suggests built-in tools, MCP tools and `mcp:<server>` for a whole server. */
 function AlwaysAsk() {
   const api = useApi()
   const state = useAlwaysAsk(null)
@@ -57,14 +81,21 @@ function AlwaysAsk() {
     const tool = name.trim()
     if (tool) set.mutate({ tool, on: true }, { onSuccess: () => setName('') })
   }
+  const global = state?.global ?? []
   return (
     <Section title="Always ask, even when approvals are off">
       <p className="py-2 text-[13px] text-fg-secondary">
-        These tools always need your approval, in every chat, routine and subagent. The double never answers them.
+        These entries always need your approval, in every chat, routine and subagent. The double never answers them. They are
+        stored in config.yaml under <span className="font-mono">tools.always_ask</span>; a chat's own entries live in its Tools sheet.
       </p>
-      {state?.global.length === 0 && <Empty>No tool always asks.</Empty>}
-      {state?.global.map((tool) => (
-        <Row key={tool} label={<span className="font-mono text-[13px]"><Name name={tool} /></span>}>
+      {global.length === 0 && <Empty>No tool always asks.</Empty>}
+      {global.length > 0 && (
+        <p data-always-ask-summary="" className="pb-2 text-[13px]">
+          Always ask is on for {global.length === 1 ? '1 entry' : `${global.length} entries`}: {alwaysAskSummary(global)}.
+        </p>
+      )}
+      {global.map((tool) => (
+        <Row key={tool} label={<span className="font-mono text-[13px]"><Name name={tool} /></span>} description={entryScope(tool)}>
           <Button variant="ghost" size="icon-sm" aria-label={`Stop always asking for ${tool}`} disabled={set.isPending} onClick={() => set.mutate({ tool, on: false })}>
             <X />
           </Button>
@@ -90,6 +121,10 @@ function AlwaysAsk() {
           Add
         </Button>
       </div>
+      <p className="pb-2 text-[12px] text-fg-tertiary">
+        Mandatory gates ask whatever the switches say: owner-only tools, writes to theuth's own config files, and adding or
+        removing MCP servers while any entry above exists. Their cards say so.
+      </p>
     </Section>
   )
 }

@@ -1325,6 +1325,7 @@ mod tests {
                 risk: tools::Risk::Mutating,
                 human_only: false,
                 always_ask: false,
+                always_ask_why: None,
             })
             .await;
         let got = tokio::time::timeout(Duration::from_secs(5), tapped.recv())
@@ -1374,6 +1375,7 @@ mod tests {
                 risk: tools::Risk::Mutating,
                 human_only: false,
                 always_ask: false,
+                always_ask_why: None,
             })
             .await;
         tokio::time::timeout(Duration::from_secs(5), tapped.recv())
@@ -1779,6 +1781,7 @@ mod tests {
                 risk: tools::Risk::Mutating,
                 human_only: false,
                 always_ask: false,
+                always_ask_why: None,
             })
             .await;
         let card = tokio::time::timeout(Duration::from_secs(5), rtapped.recv())
@@ -1812,7 +1815,7 @@ mod tests {
                     args: serde_json::json!({}),
                     risk: tools::Risk::Mutating,
                     call_id: None,
-                    always_ask: false,
+                    always_ask: None,
                 })
                 .await
         });
@@ -1846,6 +1849,7 @@ mod tests {
                 risk: tools::Risk::Mutating,
                 human_only: false,
                 always_ask: false,
+                always_ask_why: None,
             })
             .await;
         let live = tokio::time::timeout(Duration::from_secs(5), tapped.recv())

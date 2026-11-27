@@ -8,6 +8,8 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
 import type { Api } from '@/rpc/bindings/client'
 import type { AlwaysAskState } from '@/rpc/bindings/method.agent.output'
+import type { AlwaysAskWhy } from '@/rpc/bindings/event.rpc_2estream.output'
+import { backendLabel, parseAskKey } from '@/components/library/secrets/labels'
 
 /** A tool row's control: not marked, marked for this chat, marked harness-wide. */
 export type AlwaysAskLevel = 'off' | 'session' | 'always'
@@ -23,9 +25,76 @@ export function alwaysAskOf(state: AlwaysAskState | undefined, name: string): { 
   return { level: 'off', inherited: false }
 }
 
-/** How many distinct entries apply to the chat (a name in two scopes counts once). */
-export function alwaysAskCount(state: AlwaysAskState | undefined): number {
-  return state ? new Set([...state.global, ...state.session, ...state.inherited]).size : 0
+/** Where an entry is set: `tools.always_ask` (every chat), this chat's list, or an ancestor chat's. */
+export type AlwaysAskScope = 'every chat' | 'this chat' | 'a parent chat'
+
+/** Every entry that applies, once, with where it is set (harness-wide wins over the chat's own). */
+export function alwaysAskEntries(state: AlwaysAskState | undefined): { entry: string; scope: AlwaysAskScope }[] {
+  if (!state) return []
+  const out = new Map<string, AlwaysAskScope>()
+  for (const [list, scope] of [[state.global, 'every chat'], [state.session, 'this chat'], [state.inherited, 'a parent chat']] as const) {
+    for (const entry of list) if (!out.has(entry)) out.set(entry, scope)
+  }
+  return [...out].map(([entry, scope]) => ({ entry, scope }))
+}
+
+/** Where the entries are set, for a line under their summary: `Set for every chat (Settings › Approvals)`, … */
+export function alwaysAskWhere(entries: readonly { scope: AlwaysAskScope }[]): string {
+  const where: Record<AlwaysAskScope, string> = {
+    'every chat': 'every chat (Settings › Approvals)',
+    'this chat': 'this chat (its Tools)',
+    'a parent chat': 'a parent chat',
+  }
+  return `Set for ${[...new Set(entries.map((e) => e.scope))].map((s) => where[s]).join(', ')}`
+}
+
+const DIRECTION_ORDER = ['read', 'write', 'send', 'delete']
+
+/**
+ * The entries as one line a person can read, a connection's `secret:` keys folded into one item and an `mcp:<server>`
+ * key spelled out: `vw (Bitwarden): read, write, send, delete; secret_delete`. Order: first appearance.
+ */
+export function alwaysAskSummary(entries: readonly string[]): string {
+  const dirs = new Map<string, string[]>()
+  const items: string[] = []
+  for (const e of entries) {
+    const k = parseAskKey(e)
+    if (!k) {
+      items.push(e.startsWith('mcp:') ? `MCP server ${e.slice(4)}` : e)
+      continue
+    }
+    const conn = `${k.conn} (${backendLabel(k.backend)})`
+    if (!dirs.has(conn)) {
+      dirs.set(conn, [])
+      items.push(conn)
+    }
+    dirs.get(conn)?.push(k.dir)
+  }
+  return items
+    .map((i) => {
+      const d = dirs.get(i)
+      return d ? `${i}: ${[...d].sort((a, b) => DIRECTION_ORDER.indexOf(a) - DIRECTION_ORDER.indexOf(b)).join(', ')}` : i
+    })
+    .join('; ')
+}
+
+/**
+ * Why an always-ask card asks, for the card itself: the matching entries (and that `tool` is not one of them, when only
+ * a secret connection or its server is), or the mandatory gate, which no switch turns off.
+ */
+export function alwaysAskWhyText(why: AlwaysAskWhy, tool: string): string {
+  switch (why.kind) {
+    case 'entries': {
+      const itself = why.entries.includes(tool) ? '' : `, not for ${tool} itself`
+      return `Always ask is on for ${alwaysAskSummary(why.entries)}${itself}. Change it in Settings › Approvals or this chat's Tools.`
+    }
+    case 'config_write':
+      return "Always asks: it writes theuth's own config. This gate cannot be turned off."
+    case 'mcp_admin':
+      return 'Always asks: it changes MCP servers, and always-ask entries exist (re-adding a server must not shed them).'
+    case 'unreadable':
+      return "Always asks: this chat's always-ask list could not be read, so every change asks until it can."
+  }
 }
 
 /** `MCP server` rows mark the whole server with this key (the registry's `mcp_server_key`). */

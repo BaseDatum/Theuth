@@ -3,7 +3,7 @@
 //! `tools.builtins.disabled` set. A builtin is a registered tool whose
 //! [`crate::ToolSource`] is `Native`; MCP tools never are.
 
-use crate::Risk;
+use crate::{PolicyAction, Risk};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +81,17 @@ pub struct BuiltinTool {
     pub disabled: bool,
     /// Off for `session`: the tool's name or its category key is in the hidden set of the session or an ancestor. Always false when no session is given.
     pub hidden: bool,
+    /// What a call with no secret in its args does for `session` (harness-wide when none):
+    /// `allow` runs without asking (approvals off, or the policy allows the risk), `ask`
+    /// raises a card (approvals on, or the tool is marked always ask), `deny` refuses (the
+    /// policy or a subagent cap). Absent from an engine that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<PolicyAction>,
+    /// 221 D10: the `secret:<backend>/<conn>:<dir>` always-ask entries that still make this
+    /// tool's calls ask when they go through that connection (`shell` with a `{{secret:bw/…}}`
+    /// placeholder reads it), whatever `action` says. Sorted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_asks: Vec<String>,
 }
 
 /// One row of [`CATEGORIES`].

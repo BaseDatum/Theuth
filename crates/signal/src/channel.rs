@@ -3211,6 +3211,7 @@ mod tests {
                 risk: Risk::Destructive,
                 human_only: false,
                 always_ask: false,
+                always_ask_why: None,
             }))
             .await;
         let Some(SentItem::Text { timestamp, .. }) = f.transport.sent().last().cloned() else {
@@ -3267,6 +3268,7 @@ mod tests {
                 risk: Risk::Destructive,
                 human_only: true,
                 always_ask: false,
+                always_ask_why: None,
             }))
             .await;
         let Some(SentItem::Text {

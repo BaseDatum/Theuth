@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId};
-use crate::approval::{Approval, Decision, RequestApproval, RequestHumanOnly};
+use crate::approval::{AlwaysAskWhy, Approval, Decision, RequestApproval, RequestHumanOnly};
 use crate::ask::{AskUser, AskUserTool};
 use crate::builtins::{self, BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, CATEGORIES};
 use crate::categories::{
@@ -1549,17 +1549,14 @@ impl ToolRegistry {
             .map_err(|e| format!("{} could not be written: {e}", self.config_path.display()))
     }
 
-    /// 219 §2.2: `name` (or its MCP server's [`mcp_server_key`]) is in the harness-wide
-    /// always-ask set, or in the set of `session` or an ancestor (the walk of
+    /// 219 §2.2: the entries that name `name` (or its MCP server's [`mcp_server_key`]) in the
+    /// harness-wide always-ask set or the set of `session` or an ancestor (the walk of
     /// [`Self::hidden_chain`]). While any entry applies, the [`MCP_ADMIN_TOOLS`] are always
     /// ask too (§2.4), so re-registering a server cannot shed its marks.
-    fn always_ask_applies(&self, session: Option<SessionId>, name: &str) -> bool {
+    fn always_ask_match(&self, session: Option<SessionId>, name: &str) -> Option<AlwaysAskWhy> {
         let sets = self.always_ask_sets(session);
         if sets.iter().all(|s| s.is_empty()) {
-            return false;
-        }
-        if MCP_ADMIN_TOOLS.contains(&name) || sets.iter().any(|s| s.contains(name)) {
-            return true;
+            return None;
         }
         let server = self.tools.get(name).and_then(|t| match t.source() {
             ToolSource::Mcp { server, .. } => Some(mcp_server_key(&server)),
@@ -1567,7 +1564,8 @@ impl ToolRegistry {
             ToolSource::Plugin { name, .. } => Some(mcp_server_key(&crate::mcp::plugin_server_key(&name))),
             ToolSource::Native { .. } => None,
         });
-        server.is_some_and(|k| sets.iter().any(|s| s.contains(&k)))
+        entries_why(&sets, std::iter::once(name.to_owned()).chain(server))
+            .or_else(|| MCP_ADMIN_TOOLS.contains(&name).then_some(AlwaysAskWhy::McpAdmin))
     }
 
     /// The harness-wide always-ask set, then `session`'s and each ancestor's.
@@ -1581,29 +1579,45 @@ impl ToolRegistry {
         sets
     }
 
-    /// 221 D10: the call touches an external connection whose `secret:<backend>/<conn>:<dir>`
-    /// entry is in the harness-wide, session or ancestor set. Only a tool that consumes its
+    /// 221 D10: the `secret:<backend>/<conn>:<dir>` entries (harness-wide, session or ancestor
+    /// set) of the external connections the call touches. Only a tool that consumes its
     /// placeholders reads through them; the `secret_*` tools name connections in their own
-    /// args, which the hook reads by tool name. Folded into `protected` at the three gate sites.
+    /// args, which the hook reads by tool name. Folded in by [`Self::forced`].
     fn external_always(
         &self,
         session: Option<SessionId>,
         tool: &DynTool,
         name: &str,
         args: &serde_json::Value,
-    ) -> bool {
+    ) -> Option<AlwaysAskWhy> {
         if !tool.consumes_secrets() && !name.starts_with("secret_") {
-            return false;
+            return None;
         }
         let access = crate::secrets::external_access(name, args);
         if access.is_empty() {
-            return false;
+            return None;
         }
-        let sets = self.always_ask_sets(session);
-        access.iter().any(|a| {
-            let key = a.always_ask_key();
-            sets.iter().any(|s| s.contains(&key))
-        })
+        entries_why(
+            &self.always_ask_sets(session),
+            access.iter().map(crate::secrets::ExternalAccess::always_ask_key),
+        )
+    }
+
+    /// What the call's args alone make always ask, for [`Self::always`] at the gate sites: a
+    /// write to a protected config file ([`Self::protected_write`]), else the marked external
+    /// connections it touches ([`Self::external_always`]).
+    fn forced(
+        &self,
+        session: SessionId,
+        tool: &DynTool,
+        name: &str,
+        risk: Risk,
+        args: &serde_json::Value,
+    ) -> Option<AlwaysAskWhy> {
+        if self.protected_write(session, name, risk, args) {
+            return Some(AlwaysAskWhy::ConfigWrite);
+        }
+        self.external_always(Some(session), tool, name, args)
     }
 
     /// [`GetAlwaysAsk`]'s answer.
@@ -1875,15 +1889,16 @@ impl ToolRegistry {
     /// `Deny` is never rewritten. A [`crate::Tool::HUMAN_ONLY`] tool (210 §7.2) is `Deny` in a
     /// contact turn or a session bound to a non-owner chat thread, else at least `Ask`, and
     /// neither the session pin nor `tools.approvals: false` rewrites that `Ask`. 219 §2.2: so
-    /// is an always-ask call ([`Self::always`]; `protected` is [`Self::protected_write`] of
-    /// the call's args).
+    /// is an always-ask call ([`Self::always`]; `forced` is [`Self::forced`] of the call's
+    /// args). Nothing else asks with approvals off: a session with no pin inherits
+    /// `tools.approvals`.
     fn effective(
         &self,
         session: Option<SessionId>,
         name: &str,
         risk: Risk,
         mentions: bool,
-        protected: bool,
+        forced: Option<&AlwaysAskWhy>,
         args: Option<&serde_json::Value>,
     ) -> PolicyAction {
         if session.is_some_and(|s| self.capped(s, name, risk).is_some()) {
@@ -1891,7 +1906,7 @@ impl ToolRegistry {
         }
         let tool = self.tools.get(name);
         let human_only = self.human_only(name, args);
-        let always = self.always(session, name, risk, protected);
+        let always = self.always(session, name, risk, forced).is_some();
         if (human_only || always) && session.is_some_and(|s| self.owner_absent(s)) {
             return PolicyAction::Deny;
         }
@@ -1915,14 +1930,24 @@ impl ToolRegistry {
         action
     }
 
-    /// 219 §2.2: the call is always ask: the tool is marked ([`Self::always_ask_applies`]),
-    /// the call writes a protected config file (`protected`), or it is `Mutating` or above in
-    /// a session whose (or whose ancestor's) stored entries could not be read
+    /// 219 §2.2: why the call is always ask, if it is: the args force it (`forced`, from
+    /// [`Self::forced`]), the tool is marked ([`Self::always_ask_match`]), or it is `Mutating`
+    /// or above in a session whose (or whose ancestor's) stored entries could not be read
     /// ([`AlwaysAskUnreadable`]).
-    fn always(&self, session: Option<SessionId>, name: &str, risk: Risk, protected: bool) -> bool {
-        protected
-            || self.always_ask_applies(session, name)
-            || (risk >= Risk::Mutating && session.is_some_and(|s| self.always_ask_unknown(s)))
+    fn always(
+        &self,
+        session: Option<SessionId>,
+        name: &str,
+        risk: Risk,
+        forced: Option<&AlwaysAskWhy>,
+    ) -> Option<AlwaysAskWhy> {
+        forced
+            .cloned()
+            .or_else(|| self.always_ask_match(session, name))
+            .or_else(|| {
+                (risk >= Risk::Mutating && session.is_some_and(|s| self.always_ask_unknown(s)))
+                    .then_some(AlwaysAskWhy::Unreadable)
+            })
     }
 
     /// `id` or an ancestor is in [`Self::always_ask_unreadable`].
@@ -1976,7 +2001,7 @@ impl ToolRegistry {
         session: SessionId,
         name: &str,
         risk: Risk,
-        protected: bool,
+        forced: Option<&AlwaysAskWhy>,
         args: &serde_json::Value,
     ) -> String {
         match self.capped(session, name, risk) {
@@ -1984,7 +2009,7 @@ impl ToolRegistry {
             None if self.human_only(name, Some(args)) && self.owner_absent(session) => {
                 "denied: only the owner can approve this, and this conversation is not the owner's (a contact's turn or a non-owner chat thread)".to_owned()
             }
-            None if self.always(Some(session), name, risk, protected) && self.owner_absent(session) => {
+            None if self.always(Some(session), name, risk, forced).is_some() && self.owner_absent(session) => {
                 format!(
                     "always ask: {name} needs the owner's approval and the owner is not in this conversation"
                 )
@@ -2002,12 +2027,12 @@ impl ToolRegistry {
         name: &str,
         risk: Risk,
         mentions: bool,
-        protected: bool,
+        forced: Option<&AlwaysAskWhy>,
         args: &serde_json::Value,
     ) -> Result<Option<ActorRef<Approval>>, String> {
-        match self.effective(Some(session), name, risk, mentions, protected, Some(args)) {
+        match self.effective(Some(session), name, risk, mentions, forced, Some(args)) {
             PolicyAction::Allow => Ok(None),
-            PolicyAction::Deny => Err(self.denied(session, name, risk, protected, args)),
+            PolicyAction::Deny => Err(self.denied(session, name, risk, forced, args)),
             PolicyAction::Ask => self.approval_actor().map(Some),
         }
     }
@@ -2024,14 +2049,14 @@ impl ToolRegistry {
 
     /// Spec, origin, identity and effective action of one tool; `risk` is
     /// the call's risk when args were given ([`call_risk`]), else the spec's;
-    /// `protected` is [`Self::protected_write`] of those args.
+    /// `forced` is [`Self::forced`] of those args.
     fn inspect(
         &self,
         tool: &DynTool,
         session: Option<SessionId>,
         mentions: bool,
         risk: Option<Risk>,
-        protected: bool,
+        forced: Option<&AlwaysAskWhy>,
         args: Option<&serde_json::Value>,
     ) -> ToolInspection {
         let mut spec = tool.spec();
@@ -2039,7 +2064,7 @@ impl ToolRegistry {
             spec.risk = risk;
         }
         ToolInspection {
-            action: self.effective(session, &spec.name, spec.risk, mentions, protected, args),
+            action: self.effective(session, &spec.name, spec.risk, mentions, forced, args),
             identity: identity(tool, &spec),
             source: tool.source(),
             spec,
@@ -2050,7 +2075,7 @@ impl ToolRegistry {
     /// other (46 §6.3): visibility, communication availability (50 §0.5),
     /// the bound identity, the current schema, that the activation is for
     /// *this* call, then policy. `Err` is the reply for a call that never ran.
-    /// The last element is the approval actor when the press is not the approval
+    /// The last element is the approval card when the press is not the approval
     /// (219 §2.2: an always-ask call raises a real card).
     #[allow(clippy::type_complexity)]
     fn admit_app(
@@ -2063,7 +2088,7 @@ impl ToolRegistry {
             DynTool,
             ToolSpec,
             Option<Admitted>,
-            Option<ActorRef<Approval>>,
+            Option<Card>,
         ),
         Refused,
     > {
@@ -2101,20 +2126,20 @@ impl ToolRegistry {
         let mentions = mentions(&tool, &call.args);
         // The identity above binds the declared spec; the gate sees the call's risk.
         spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
-        let protected = self.protected_write(call.session, name, spec.risk, &call.args)
-            || self.external_always(Some(call.session), &tool, name, &call.args);
+        let forced = self.forced(call.session, &tool, name, spec.risk, &call.args);
+        let always = self.always(Some(call.session), name, spec.risk, forced.as_ref());
         let mut card = None;
         match self.effective(
             Some(call.session),
             name,
             spec.risk,
             mentions,
-            protected,
+            forced.as_ref(),
             Some(&call.args),
         ) {
             PolicyAction::Allow => {}
             PolicyAction::Deny => {
-                let why = self.denied(call.session, name, spec.risk, protected, &call.args);
+                let why = self.denied(call.session, name, spec.risk, forced.as_ref(), &call.args);
                 return Err(Unavailable(format!("{name}: {why}")));
             }
             PolicyAction::Ask => match activation {
@@ -2126,11 +2151,13 @@ impl ToolRegistry {
                 }
                 None => return Err(Refused::NeedsApproval),
                 // 219 §2.2: nor is it the approval of an always-ask call: the press raises a card.
-                Some(_) if self.always(Some(call.session), name, spec.risk, protected) => {
-                    card = Some(
-                        self.approval_actor()
+                Some(_) if always.is_some() => {
+                    card = Some(Card {
+                        approval: self
+                            .approval_actor()
                             .map_err(|why| Unavailable(format!("{name}: {why}")))?,
-                    );
+                        always_ask: always,
+                    });
                 }
                 Some(a) => tracing::info!(
                     tool = %name, risk = ?spec.risk, secrets = mentions,
@@ -2231,10 +2258,10 @@ impl ToolRegistry {
     }
 }
 
-/// An approval card to raise before a call runs (219 §2.3: `always_ask` marks it so).
+/// An approval card to raise before a call runs (219 §2.3: `always_ask` marks it so, and why).
 struct Card {
     approval: ActorRef<Approval>,
-    always_ask: bool,
+    always_ask: Option<AlwaysAskWhy>,
 }
 
 impl Message<AppInvoke> for ToolRegistry {
@@ -2245,11 +2272,7 @@ impl Message<AppInvoke> for ToolRegistry {
         let Some(tx) = tx else { return reply };
         match self.admit_app(&m.call, m.activation.as_ref(), &m.expected_identity) {
             Err(r) => tx.send(r.into()),
-            Ok((tool, spec, admitted, approval)) => {
-                let card = approval.map(|approval| Card {
-                    approval,
-                    always_ask: true,
-                });
+            Ok((tool, spec, admitted, card)) => {
                 self.dispatch(tool, spec, m.call, card, admitted, None, move |out| {
                     tx.send(AppInvoked::Completed(out));
                 });
@@ -2271,16 +2294,15 @@ impl Message<InspectTool> for ToolRegistry {
             .args
             .as_ref()
             .map(|a| call_risk(&tool, m.session, tool.spec().risk, a));
-        let protected = m.args.as_ref().is_some_and(|a| {
-            self.protected_write(m.session, &m.name, risk.unwrap_or(Risk::ReadOnly), a)
-                || self.external_always(Some(m.session), &tool, &m.name, a)
+        let forced = m.args.as_ref().and_then(|a| {
+            self.forced(m.session, &tool, &m.name, risk.unwrap_or(Risk::ReadOnly), a)
         });
         Ok(self.inspect(
             &tool,
             Some(m.session),
             mentions,
             risk,
-            protected,
+            forced.as_ref(),
             m.args.as_ref(),
         ))
     }
@@ -2298,7 +2320,7 @@ impl Message<DescribeTools> for ToolRegistry {
             .tools
             .iter()
             .filter(|(name, _)| !session.is_some_and(|s| self.is_hidden(s, name)))
-            .map(|(_, t)| self.inspect(t, session, false, None, false, None))
+            .map(|(_, t)| self.inspect(t, session, false, None, None, None))
             .filter(|i| session.is_none_or(|s| self.capped(s, &i.spec.name, i.spec.risk).is_none()))
             .collect();
         out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
@@ -2316,7 +2338,7 @@ impl Message<ExternalApproval> for ToolRegistry {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let approval = match self.gate(m.session, &m.tool, m.risk, false, false, &m.args) {
+        let approval = match self.gate(m.session, &m.tool, m.risk, false, None, &m.args) {
             Ok(None) => {
                 tx.send(ExternalVerdict::plain(Decision::Allow));
                 return reply;
@@ -2329,7 +2351,7 @@ impl Message<ExternalApproval> for ToolRegistry {
             }
         };
         let human_only = self.human_only(&m.tool, Some(&m.args));
-        let always_ask = self.always(Some(m.session), &m.tool, m.risk, false);
+        let always_ask = self.always(Some(m.session), &m.tool, m.risk, None);
         tokio::spawn(async move {
             let req = RequestApproval {
                 session: m.session,
@@ -2430,6 +2452,16 @@ impl Message<ListBuiltins> for ToolRegistry {
     ) -> Vec<BuiltinCategory> {
         let chain = session.map(|s| self.hidden_chain(s)).unwrap_or_default();
         let mut by_category: HashMap<&'static str, Vec<BuiltinTool>> = HashMap::new();
+        // 221 D10: the marked connections; a placeholder only reads, a `secret_*` tool may do any.
+        let mut secret_keys: Vec<String> = self
+            .always_ask_sets(session)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.starts_with("secret:"))
+            .cloned()
+            .collect();
+        secret_keys.sort();
+        secret_keys.dedup();
         for (name, tool) in &self.tools {
             if !matches!(tool.source(), ToolSource::Native { .. }) {
                 continue;
@@ -2453,6 +2485,14 @@ impl Message<ListBuiltins> for ToolRegistry {
                 hidden: chain.iter().any(|set| {
                     names(set) || tool_category.as_ref().is_some_and(|key| set.contains(key))
                 }),
+                action: Some(self.effective(session, name, spec.risk, false, None, None)),
+                secret_asks: if name.starts_with("secret_") {
+                    secret_keys.clone()
+                } else if tool.consumes_secrets() {
+                    secret_keys.iter().filter(|k| k.ends_with(":read")).cloned().collect()
+                } else {
+                    Vec::new()
+                },
             });
         }
         CATEGORIES
@@ -2892,6 +2932,21 @@ fn sorted(set: &HashSet<String>) -> Vec<String> {
     v
 }
 
+/// The `keys` any of `sets` contains, sorted and deduplicated, as an [`AlwaysAskWhy::Entries`];
+/// `None` when none matched.
+fn entries_why(
+    sets: &[&HashSet<String>],
+    keys: impl IntoIterator<Item = String>,
+) -> Option<AlwaysAskWhy> {
+    let mut entries: Vec<String> = keys
+        .into_iter()
+        .filter(|k| sets.iter().any(|s| s.contains(k)))
+        .collect();
+    entries.sort();
+    entries.dedup();
+    (!entries.is_empty()).then_some(AlwaysAskWhy::Entries { entries })
+}
+
 impl Message<InstallCommunicationAccess> for ToolRegistry {
     type Reply = ();
 
@@ -3313,19 +3368,18 @@ impl ToolRegistry {
         let mentions = mentions(&tool, &call.args);
         // 209 D14: the approval card and the gate both see the call's risk.
         spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
-        let protected = self.protected_write(call.session, &call.name, spec.risk, &call.args)
-            || self.external_always(Some(call.session), &tool, &call.name, &call.args);
+        let forced = self.forced(call.session, &tool, &call.name, spec.risk, &call.args);
         let card = match self.gate(
             call.session,
             &call.name,
             spec.risk,
             mentions,
-            protected,
+            forced.as_ref(),
             &call.args,
         ) {
             Ok(a) => a.map(|approval| Card {
                 approval,
-                always_ask: self.always(Some(call.session), &call.name, spec.risk, protected),
+                always_ask: self.always(Some(call.session), &call.name, spec.risk, forced.as_ref()),
             }),
             Err(why) => {
                 tx.send(ToolOutput::err(format!("{}: {why}", call.name)));
@@ -7529,6 +7583,157 @@ pub(crate) mod tests {
         assert_eq!(*lock(&cards), [(true, false)]);
     }
 
+    /// A `Destructive` stand-in for the `shell` builtin; it consumes secrets like it.
+    struct Sh;
+
+    #[async_trait::async_trait]
+    impl Tool for Sh {
+        const NAME: &'static str = "shell";
+        const RISK: Risk = Risk::Destructive;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("ran"))
+        }
+    }
+
+    /// The owner's `tools:` section of 2026-11-26: approvals off, `mutating`/`destructive` ask,
+    /// and only the Bitwarden connection's seeded entries plus `secret_delete` always ask.
+    fn owner_registry() -> ToolRegistry {
+        ToolRegistry {
+            policy: Policy {
+                read_only: PolicyAction::Allow,
+                mutating: PolicyAction::Ask,
+                destructive: PolicyAction::Ask,
+            },
+            approvals: false,
+            always_ask: [
+                "secret:bw/vw:delete",
+                "secret:bw/vw:read",
+                "secret:bw/vw:send",
+                "secret:bw/vw:write",
+                "secret_delete",
+            ]
+            .map(str::to_owned)
+            .into(),
+            ..build(vec![Arc::new(Sh), Arc::new(Touch)], None)
+        }
+    }
+
+    /// `tools.approvals: false` and a chat with no pin (`sessions.approvals` NULL): the chat
+    /// inherits the switch, so neither a destructive `shell` nor a mutating call asks, not
+    /// even with a vault placeholder in the args, while unrelated `secret:` entries exist. Only
+    /// an entry naming the tool, or the chat's pin on, asks; the entry says why.
+    #[test]
+    fn approvals_off_with_no_pin_asks_only_for_always_ask_entries() {
+        let mut reg = owner_registry();
+        let s = SessionId::new();
+        let args = serde_json::json!({ "command": "rm -rf build" });
+        let action = |reg: &ToolRegistry, name: &str, risk: Risk, mentions: bool| {
+            reg.effective(Some(s), name, risk, mentions, None, Some(&args))
+        };
+        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Allow);
+        assert_eq!(action(&reg, "shell", Risk::Destructive, true), PolicyAction::Allow);
+        assert_eq!(action(&reg, "touch", Risk::Mutating, false), PolicyAction::Allow);
+        assert_eq!(reg.always(Some(s), "shell", Risk::Destructive, None), None);
+        // A subagent of the chat inherits the same (no pin anywhere up the chain).
+        let child = SessionId::new();
+        reg.parents.insert(child, s);
+        assert_eq!(
+            reg.effective(Some(child), "shell", Risk::Destructive, false, None, Some(&args)),
+            PolicyAction::Allow
+        );
+
+        // The chat's pin on asks; a pin off with approvals on does not.
+        reg.pin.insert(s, true);
+        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Ask);
+        reg.pin.insert(s, false);
+        reg.approvals = true;
+        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Allow);
+        reg.pin.clear();
+        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Ask);
+        reg.approvals = false;
+
+        // An entry naming the tool asks with approvals off, and names itself as the reason.
+        reg.always_ask.insert("shell".into());
+        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Ask);
+        assert_eq!(
+            reg.always(Some(s), "shell", Risk::Destructive, None),
+            Some(AlwaysAskWhy::Entries {
+                entries: vec!["shell".into()]
+            })
+        );
+        assert_eq!(action(&reg, "touch", Risk::Mutating, false), PolicyAction::Allow);
+    }
+
+    /// The mandatory gates say which they are: an args-forced reason wins (a marked secret
+    /// connection, a config write), the MCP-admin tools ask while any entry exists, and an
+    /// unreadable chat list asks for `Mutating` and above only.
+    #[test]
+    fn always_ask_names_the_mandatory_gate() {
+        let mut reg = owner_registry();
+        let s = SessionId::new();
+        let secret = AlwaysAskWhy::Entries {
+            entries: vec!["secret:bw/vw:read".into()],
+        };
+        assert_eq!(
+            reg.always(Some(s), "shell", Risk::Destructive, Some(&secret)),
+            Some(secret.clone())
+        );
+        assert_eq!(
+            reg.effective(Some(s), "shell", Risk::Destructive, false, Some(&secret), None),
+            PolicyAction::Ask
+        );
+        assert_eq!(
+            reg.always(Some(s), "add_mcp_server", Risk::Mutating, None),
+            Some(AlwaysAskWhy::McpAdmin)
+        );
+        reg.always_ask_unreadable.insert(s);
+        assert_eq!(
+            reg.always(Some(s), "touch", Risk::Mutating, None),
+            Some(AlwaysAskWhy::Unreadable)
+        );
+        assert_eq!(reg.always(Some(s), "echo", Risk::ReadOnly, None), None);
+        reg.always_ask.clear();
+        reg.always_ask_unreadable.clear();
+        assert_eq!(reg.always(Some(s), "add_mcp_server", Risk::Mutating, None), None);
+    }
+
+    /// `list_builtins` shows each builtin's effective action (approvals off: `allow`) and the
+    /// marked connections that still make a secret-consuming tool ask (`shell` reads only).
+    #[tokio::test]
+    async fn builtins_list_reports_effective_action_and_secret_asks() {
+        let reg = ToolRegistry::spawn(owner_registry());
+        let cats = reg.ask(ListBuiltins(None)).await.unwrap();
+        let tool = |name: &str| {
+            cats.iter()
+                .flat_map(|c| &c.tools)
+                .find(|t| t.name == name)
+                .cloned()
+                .unwrap()
+        };
+        let shell = tool("shell");
+        assert_eq!(shell.action, Some(PolicyAction::Allow));
+        assert_eq!(shell.secret_asks, ["secret:bw/vw:read"]);
+        let s = SessionId::new();
+        reg.ask(SetApprovals {
+            session: Some(s),
+            enabled: true,
+            clear: false,
+        })
+        .await
+        .unwrap();
+        let cats = reg.ask(ListBuiltins(Some(s))).await.unwrap();
+        let shell = cats
+            .iter()
+            .flat_map(|c| &c.tools)
+            .find(|t| t.name == "shell")
+            .unwrap();
+        assert_eq!(shell.action, Some(PolicyAction::Ask));
+    }
+
     /// 219 §7 (b): a chat's entry asks with the chat's pin off and is inherited by a
     /// subagent; [`GetAlwaysAsk`] reports it as the child's `inherited`; removing it stops
     /// the asking.
@@ -8166,6 +8371,47 @@ pub(crate) mod tests {
         crate::secrets::install(Arc::new(ExtHook));
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         (vec![Arc::new(Show(entered.clone())), Arc::new(FakeOp)], entered)
+    }
+
+    /// The owner's card of 2026-11-26 23:36: approvals off, `shell` not marked, yet an
+    /// always-ask card. The command is innocent; `env.DIGITALOCEAN_TOKEN` carries a Bitwarden
+    /// reference through `vw`, whose seeded `secret:bw/vw:read` entry asks. The reason names
+    /// that entry, not `shell`; the same call without the reference runs unasked.
+    #[test]
+    fn shell_with_a_marked_bitwarden_reference_in_env_asks_and_says_why() {
+        let _ = ext_tools();
+        let reg = owner_registry();
+        let s = SessionId::new();
+        let tool = reg.tools.get("shell").unwrap().clone();
+        let command = r#"cd /Users/sky/Develop/skymoore/theuth-wt/cloud-node && git log --oneline -1 && "$THEUTH_T" mesh status >/dev/null && THEUTH_PAIR_TICKET="$(scripts/cloud-node-ticket.sh)" scripts/cloud-node-do-test.sh create 2>&1 | tail -40"#;
+        let with_ref = serde_json::json!({
+            "command": command,
+            "env": {
+                "DIGITALOCEAN_TOKEN": "{{secret:bw/vw/9f8b8f79-1f5f-4539-84ee-8bf74057373c#field:api token}}",
+                "THEUTH_T": "/Applications/theuth.app/Contents/MacOS/t",
+            },
+            "timeout_secs": 900,
+        });
+        let forced = reg.forced(s, &tool, "shell", Risk::Destructive, &with_ref);
+        let read = AlwaysAskWhy::Entries {
+            entries: vec!["secret:bw/vw:read".into()],
+        };
+        assert_eq!(forced, Some(read.clone()));
+        assert_eq!(
+            reg.always(Some(s), "shell", Risk::Destructive, forced.as_ref()),
+            Some(read)
+        );
+        assert_eq!(
+            reg.effective(Some(s), "shell", Risk::Destructive, false, forced.as_ref(), Some(&with_ref)),
+            PolicyAction::Ask
+        );
+        let plain = serde_json::json!({ "command": command, "timeout_secs": 900 });
+        let forced = reg.forced(s, &tool, "shell", Risk::Destructive, &plain);
+        assert_eq!(forced, None);
+        assert_eq!(
+            reg.effective(Some(s), "shell", Risk::Destructive, false, None, Some(&plain)),
+            PolicyAction::Allow
+        );
     }
 
     /// 221 §13 B2 (c), (f), (h): `secret:bw/c:read` in the global set raises an always-ask card
