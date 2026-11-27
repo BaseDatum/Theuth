@@ -44,6 +44,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
 pub mod rpc_sharing;
 /// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;
+pub mod claim;
 pub mod conn;
 pub mod devices;
 pub mod follow;
@@ -56,6 +57,7 @@ pub mod store;
 pub mod types;
 pub mod uplink;
 
+pub use claim::ClaimPairing;
 pub use conn::RecordChannel;
 pub use types::*;
 
@@ -659,6 +661,9 @@ impl runtime::Plugin for LinkPlugin {
         actor.register(LINK_ACTOR)?;
         // 69 §2: the hub serves the mesh identity; the tables follow the replica.
         follow::start(rt, &actor, ctx, store).await;
+        // 224 §16.12: a link claim stored before a restart arms again (or is dropped when dead).
+        let (me, data_dir) = (actor.clone(), rt.data_dir.clone());
+        tokio::spawn(async move { claim::rearm(&data_dir, &me).await });
         Ok(())
     }
 }

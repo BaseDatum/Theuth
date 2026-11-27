@@ -2,6 +2,7 @@
 //! WebSocket and copies opaque encrypted frames between it and that
 //! harness's devices (design doc 31 §5).
 
+mod claim;
 mod cookie;
 mod frame;
 mod oauth_do;
@@ -81,6 +82,8 @@ pub struct App {
     relay: Arc<Relay>,
     web: Option<Arc<web::Web>>,
     oauth: Arc<oauth_do::DoOauth>,
+    /// Link-claim rendezvous of phone-made cloud nodes (`claim`, 224 §16.12).
+    claims: Arc<claim::Claims>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -131,13 +134,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             cli.do_oauth_redirect,
             cli.do_oauth_token_url,
         ))),
+        claims: Arc::default(),
     };
 
     let mut router = Router::new()
         .route("/h/{id}", get(socket))
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics))
-        .merge(oauth_do::routes());
+        .merge(oauth_do::routes())
+        .merge(claim::routes());
     if web.is_some() {
         router = router.fallback(web::pages);
     }

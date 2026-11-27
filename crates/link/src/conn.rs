@@ -710,6 +710,8 @@ async fn commit_pairing(c: &Conn, key: &[u8; 32], hello: PairHello, psk: [u8; 32
         st.devices.insert(row.clone());
         row
     };
+    // 224 §16.12: a one-time link claim's PSK is spent now.
+    crate::claim::consumed(&c.ctx.rt.data_dir, &psk);
     // `LinkPaired` first: a consumer that treats `LinkPairing { key: None }`
     // as "expired" (the CLI, the TUI card) must already know it succeeded.
     c.ctx

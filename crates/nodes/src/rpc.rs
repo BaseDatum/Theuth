@@ -62,6 +62,12 @@ pub trait NetworkApi {
     /// shows; `None` → the mesh's name.
     #[method(name = "device_pair_start")]
     async fn device_pair_start(&self, name: Option<String>) -> RpcResult<link::PairingPayload>;
+    /// 224 §16.12: arm this engine's (ENGINE identity) pairing with a one-time link claim
+    /// (`L1.…`, from a phone-made cloud node's user data via `t mesh devices claim`), turn Link on
+    /// with the claim's relay and park this engine on the relay for the phone. Refused when the
+    /// claim expired, lives longer than 30 minutes or was used here already.
+    #[method(name = "device_pair_claim")]
+    async fn device_pair_claim(&self, claim: String) -> RpcResult<link::ClaimAccepted>;
     /// Paired nodes with liveness and child counts (32 §6.6).
     #[method(name = "list_nodes")]
     async fn list_nodes(&self) -> RpcResult<Vec<nodes::Node>>;
@@ -191,6 +197,10 @@ impl NetworkApiServer for Server {
 
     async fn device_pair_start(&self, name: Option<String>) -> RpcResult<link::PairingPayload> {
         send(&link()?, link::DevicePairStart { name }).await
+    }
+
+    async fn device_pair_claim(&self, claim: String) -> RpcResult<link::ClaimAccepted> {
+        send(&link()?, link::ClaimPairing { claim }).await
     }
 
     async fn list_nodes(&self) -> RpcResult<Vec<nodes::Node>> {

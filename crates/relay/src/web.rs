@@ -97,6 +97,7 @@ mod tests {
             relay: Arc::new(Relay::new(64)),
             web: Some(web),
             oauth: Arc::new(crate::oauth_do::DoOauth::new(None)),
+            claims: Arc::default(),
         };
         let router = Router::new()
             .route("/healthz", get(|| async { "ok" }))

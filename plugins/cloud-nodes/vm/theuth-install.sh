@@ -28,7 +28,8 @@
 # join: the ticket is $THEUTH_DATA_DIR/pair-ticket, else $THEUTH_PAIR_TICKET_FILE, else
 # $THEUTH_PAIR_TICKET, re-read every 10 s; a rejected ticket is not retried until it changes, so a
 # fresh one can be written to pair-ticket after an expiry. Joined: `.theuth-paired` is written and
-# pair-ticket deleted.
+# pair-ticket deleted. A ticket starting `L1.` is a phone's one-time link claim (224 §16.12): the
+# node forms its own mesh and `t mesh devices claim` arms it for the phone instead of `mesh add`.
 set -eu
 
 DATA="${THEUTH_DATA_DIR:-/data}"
@@ -217,14 +218,18 @@ cmd_join() {
 	while [ ! -e "$MARKER" ]; do
 		tk="$(ticket)"
 		if [ -n "$tk" ] && [ "$tk" != "$tried" ] && [ -x "$BIN/t" ]; then
-			if out="$("$BIN/t" --data-dir "$DATA" mesh add "$tk" 2>&1)"; then
+			case "$tk" in
+			L1.*) set -- mesh devices claim ;;
+			*) set -- mesh add ;;
+			esac
+			if out="$("$BIN/t" --data-dir "$DATA" "$@" "$tk" 2>&1)"; then
 				: >"$MARKER"
 				rm -f "$DATA/pair-ticket"
 				log "joined the mesh"
 				return 0
 			fi
 			case "$out" in
-			*"invalid or expired"* | *"refused"* | *"not a mesh pairing string"* | *"own pairing string"*)
+			*"invalid or expired"* | *"refused"* | *"not a mesh pairing string"* | *"own pairing string"* | *"already used"*)
 				tried="$tk"
 				log "pairing ticket rejected: $(printf '%s' "$out" | tail -n 1); write a fresh one to $DATA/pair-ticket"
 				;;

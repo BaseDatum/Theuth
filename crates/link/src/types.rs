@@ -109,6 +109,18 @@ pub struct PairingPayload {
     pub pending_id: String,
 }
 
+/// `device_pair_claim` reply (224 §16.12): the engine identity's pairing is armed with a one-time
+/// link claim and this engine is (being) parked on the relay under `id`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ClaimAccepted {
+    /// The relay rendezvous id (a hash of the claim's PSK; not secret).
+    pub id: String,
+    /// Unix ms; the claim dies then.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub expires_ms: u64,
+}
+
 /// `link_status` reply.
 #[derive(
     Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,

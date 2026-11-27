@@ -378,6 +378,30 @@ enum DevicesCmd {
         /// New name.
         name: String,
     },
+    /// Arm a one-time link claim (`L1.…`) from a phone-made cloud node's user data (design doc
+    /// 224 §16.12): the phone then pairs with this engine over the relay, once.
+    Claim {
+        /// The claim string.
+        claim: Redacted,
+    },
+}
+
+/// A secret CLI argument whose `Debug` does not show it.
+#[derive(Clone)]
+struct Redacted(String);
+
+impl std::fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl std::str::FromStr for Redacted {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -561,6 +585,9 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                 DevicesCmd::Revoke { id } => client.request("device_revoke", rpc_params![id]).await,
                 DevicesCmd::Rename { id, name } => {
                     client.request("device_rename", rpc_params![id, name]).await
+                }
+                DevicesCmd::Claim { claim } => {
+                    client.request("device_pair_claim", rpc_params![claim.0]).await
                 }
             },
         },

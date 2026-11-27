@@ -4310,6 +4310,7 @@ dependencies = [
  "futures",
  "jsonrpsee",
  "kameo",
+ "link",
  "mesh",
  "parking_lot",
  "platform",
@@ -5868,6 +5869,7 @@ dependencies = [
  "base64 0.23.1",
  "block2",
  "chrono",
+ "cloudnodes",
  "dirs 7.0.0",
  "document",
  "figment",
@@ -12702,6 +12704,8 @@ dependencies = [
  "bytes",
  "document",
  "futures",
+ "hex",
+ "hmac 0.13.0",
  "jsonrpsee",
  "kameo",
  "mesh",
@@ -12709,6 +12713,7 @@ dependencies = [
  "qrcode",
  "rand 0.10.3",
  "replica",
+ "reqwest 0.13.5",
  "rpc-core",
  "rpc-core-macros",
  "runtime",
@@ -12717,6 +12722,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.11.1",
  "snow",
  "sqlx",
  "tempfile",
@@ -12727,6 +12733,7 @@ dependencies = [
  "ts-rs",
  "url",
  "wire",
+ "zeroize",
 ]
 
 [[package]]

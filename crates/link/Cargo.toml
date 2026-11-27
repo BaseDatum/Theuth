@@ -38,6 +38,12 @@ bytes = { workspace = true }
 qrcode = { workspace = true }
 url = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+# One-time link claims (`claim`, 224 §16.12): id/MAC, the relay rendezvous PUT.
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
