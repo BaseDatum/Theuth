@@ -212,10 +212,11 @@ export type Tone = 'ok' | 'warn' | 'bad' | 'muted' | 'busy'
 const STAGE_WORD: Record<Stage, string> = { server: 'server', storage: 'storage', install: 'installing', join: 'joining', ready: 'ready' }
 
 /** Settings › Machines status: `online · direct`, `offline`, `creating · installing`, `not on this engine`. */
-export function statusOf(n: Pick<CloudNode, 'state' | 'stage' | 'reachable' | 'path'>): { text: string; tone: Tone } {
+export function statusOf(n: Pick<CloudNode, 'state' | 'stage' | 'reachable' | 'path' | 'sealed'>): { text: string; tone: Tone; hint?: string } {
   switch (n.state) {
     case 'ready':
       if (n.reachable === false || n.path === 'offline') return { text: 'offline', tone: 'bad' }
+      if (n.sealed) return { text: 'sealed', tone: 'warn', hint: 'Vault locked: unlock it from one of your devices or with the master password' }
       return { text: n.path ? `online · ${n.path}` : 'online', tone: 'ok' }
     case 'creating':
       return { text: n.stage ? `creating · ${STAGE_WORD[n.stage]}` : 'creating', tone: 'busy' }

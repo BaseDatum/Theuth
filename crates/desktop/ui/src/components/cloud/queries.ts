@@ -7,7 +7,8 @@ import { useEffect } from 'react'
 import { useAction } from '@/components/settings/shared'
 import { notify } from '@/lib/notify'
 import { useApi } from '@/lib/rpc'
-import { useQuerySupport } from '@/rpc/capabilities'
+import { useQuerySupport, useSupported } from '@/rpc/capabilities'
+import type { Requirements } from '@/rpc/discovery'
 import { on } from '@/store/sessions'
 import { type CloudProgress, foldProgress } from './format'
 import type { CloudEvent, CloudList, CloudNode, K8sInfo, NodeDesktop, NodeLogs, NodeSpec, ProviderInfo, ProviderKind, SizeList, TerminalOpen } from './types'
@@ -27,6 +28,17 @@ export const CLOUD_REQUIRED = {
   methods: ['cloud_providers', 'cloud_list', 'cloud_create', 'cloud_sizes', 'cloud_destroy'],
   topics: ['cloudnodes.events@1'],
 } as const
+
+/**
+ * The sealed vault (feat/sealed-vault adds `vault_status` and its siblings). Its method is not in this branch's
+ * bindings, so the name is typed loosely here; an engine that does not advertise it in discovery (legacy included)
+ * hides the vault field of Configure and the `sealed` status.
+ */
+const VAULT_REQUIRED = { methods: ['vault_status'] } as unknown as Requirements
+
+export function useVaultSupport(): boolean {
+  return useSupported(VAULT_REQUIRED)
+}
 
 type Changed = Extract<CloudEvent, { type: 'CloudNodeChanged' }>
 type Progress = Extract<CloudEvent, { type: 'CloudNodeProgress' }>

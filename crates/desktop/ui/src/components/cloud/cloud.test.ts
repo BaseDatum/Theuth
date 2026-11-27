@@ -7,11 +7,11 @@ import type * as Rpc from '@/lib/rpc'
 import { AlertDialog } from '@/components/ui/alert-dialog'
 import { CloudNodeWizard } from './CloudNodeWizard'
 import { DestroyBody } from './CloudNodesSettings'
-import { DESKTOP_NOTE, checkName, createLabel, defaultMemory, defaultName, desktopBlocked, destroySaving, etaText, fromPrice, localQuote, sizesOf, stageRows, userOf } from './format'
+import { DESKTOP_NOTE, checkName, createLabel, defaultMemory, defaultName, desktopBlocked, destroySaving, etaText, fromPrice, localQuote, sizesOf, stageRows, statusOf, userOf } from './format'
 import { NodeDesktopView } from './NodeDesktop'
 import { applyCloudEvent, cloudKeys } from './queries'
 import { nearestRegion } from './region'
-import { DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PriceNote, ProviderCards } from './steps'
+import { DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PriceNote, ProviderCards, VAULT_HINT } from './steps'
 import type { CloudList, CloudNode, K8sInfo, ProviderInfo, Region, SizeList } from './types'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
@@ -160,6 +160,20 @@ test('first run: no price before sign-in; the chip only from live prices of a co
   const providers = wizard('add-to-mesh', {}, null)
   expect(providers).toContain('Pick a provider')
   expect(providers).not.toMatch(/\$\d/)
+})
+
+test('vault protection and the sealed status appear only where the engine has the sealed vault', () => {
+  // This branch's engines advertise no `vault_status`: Configure has no vault field.
+  expect(wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1' } })).not.toContain(VAULT_HINT)
+  const spec = { provider: 'digitalocean' as const, name: 'sky-cloud', region: 'lon1', memory_gb: 4, volume_gb: 10, k8s: null, desktop: true }
+  const props = { provider: DO, spec, sizes: DO.sizes, quote: null, nameError: null, busy: false, onName: () => {}, onRegion: () => {}, onMemory: () => {}, onDesktop: () => {}, onCreate: () => {} }
+  const on = html(createElement(PhoneConfigureStep, { ...props, vault: { password: '', onPassword: () => {} } }))
+  expect(on).toContain('Vault protection')
+  expect(on).toContain(VAULT_HINT)
+  expect(on).toMatch(/type="password"[^>]*aria-label="Master password"/)
+  expect(statusOf(node({ sealed: true }))).toMatchObject({ text: 'sealed', tone: 'warn' })
+  expect(statusOf(node({ sealed: false })).text).toBe('online · direct')
+  expect(statusOf(node({ sealed: true, reachable: false })).text).toBe('offline')
 })
 
 test('the desktop viewer watches by default and offers Take over', () => {

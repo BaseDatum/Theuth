@@ -86,6 +86,11 @@ export type CloudNode = {
   k8s: K8sOptions | null
   /** Has the watchable desktop. */
   desktop: boolean
+  /**
+   * The node's vault is locked (sealed) until a device or the master password unlocks it. Comes from
+   * feat/sealed-vault's engine; absent on engines without it.
+   */
+  sealed?: boolean
 }
 
 export type ProviderError = { provider: ProviderKind; message: string }

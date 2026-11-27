@@ -29,7 +29,7 @@ import { Capability } from '@/rpc/capabilities'
 import { CloudNodeWizard } from './CloudNodeWizard'
 import { NodeDesktopPanel } from './NodeDesktop'
 import { type Tone, destroySaving, diskUsd, localQuote, sizesOf, statusOf, usd } from './format'
-import { CLOUD_REQUIRED, useCloudActions, useCloudEvents, useCloudList, useCloudLogs, useCloudProviders, useCloudSizes } from './queries'
+import { CLOUD_REQUIRED, useCloudActions, useCloudEvents, useCloudList, useCloudLogs, useCloudProviders, useCloudSizes, useVaultSupport } from './queries'
 import { PriceNote, ProviderBadge, SizeCards } from './steps'
 import { type CloudNode, DEFAULT_VOLUME_GB, type NodeDesktop, type ProviderInfo, type ProviderKind, type TerminalOpen } from './types'
 
@@ -55,9 +55,11 @@ const DOT: Record<Tone, string> = {
 }
 
 function Status({ node }: { node: CloudNode }) {
-  const s = statusOf(node)
+  // `sealed` is honoured only where the engine has the sealed vault (feat/sealed-vault).
+  const vault = useVaultSupport()
+  const s = statusOf({ ...node, sealed: vault && node.sealed })
   return (
-    <span title={s.text} className={cn('inline-flex min-w-0 items-center gap-1.5 truncate text-[13px] whitespace-nowrap', s.tone === 'bad' && 'text-danger', s.tone === 'warn' && 'text-warning')}>
+    <span title={s.hint ?? s.text} className={cn('inline-flex min-w-0 items-center gap-1.5 truncate text-[13px] whitespace-nowrap', s.tone === 'bad' && 'text-danger', s.tone === 'warn' && 'text-warning')}>
       <span className={cn('inline-block size-[7px] shrink-0 rounded-full', DOT[s.tone])} />
       {s.text}
     </span>

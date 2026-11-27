@@ -14,7 +14,7 @@ import { useApi } from '@/lib/rpc'
 import { openExternal } from '@/lib/platform'
 import { useConnection } from '@/store/connection'
 import { checkName, defaultMemory, defaultName, desktopBlocked, fromPrice, localQuote, offered, progressPct, sizesOf, stageRows, userOf } from './format'
-import { cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudNode, useCloudProgress, useCloudProviders, useCloudSizes, useCredentialChanged, useK8sInfo } from './queries'
+import { cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudNode, useCloudProgress, useCloudProviders, useCloudSizes, useCredentialChanged, useK8sInfo, useVaultSupport } from './queries'
 import { nearestRegion } from './region'
 import {
   ChooseStep,
@@ -73,6 +73,11 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   // The size the user picked; until then it follows the desktop choice (4 GB with it, 2 GB without).
   const [memoryPick, setMemory] = useState<number | null>(initial?.spec?.memory_gb ?? null)
   const [desktopPick, setDesktop] = useState(initial?.spec?.desktop ?? true)
+  // The sealed vault's master password: shown only where the engine has the sealed vault, and kept here, out of
+  // `NodeSpec`, until the merge with feat/sealed-vault wires it into the create call.
+  const vaultOn = useVaultSupport()
+  const [vaultPassword, setVaultPassword] = useState('')
+  const vault = vaultOn ? { password: vaultPassword, onPassword: setVaultPassword } : null
   const [k8s, setK8s] = useState<K8sOptions | null>(initial?.spec?.k8s ?? null)
   const [created, setCreated] = useState<string | null>(initial?.node ?? null)
 
@@ -215,6 +220,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           onRegion={(id) => setRegions((r) => ({ ...r, [provider.provider]: id }))}
           onMemory={setMemory}
           onDesktop={setDesktop}
+          vault={vault}
           onCreate={create}
         />
       ) : (
@@ -231,6 +237,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           onRegion={(id) => setRegions((r) => ({ ...r, [provider.provider]: id }))}
           onMemory={setMemory}
           onDesktop={setDesktop}
+          vault={vault}
           onCreate={create}
         />
       )}

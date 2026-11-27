@@ -26,6 +26,8 @@ const dark = query.get('theme') === 'dark'
 document.documentElement.classList.toggle('dark', dark)
 const state = query.get('state')
 const phone = state?.startsWith('phone-') ?? false
+/** States where the engine advertises the sealed vault (feat/sealed-vault). */
+const VAULT = state === 'phone-configure-vault' || state === 'desktop-configure-vault' || state === 'settings-machines'
 
 // ---- the catalog (catalog.rs) ----
 
@@ -144,6 +146,7 @@ const NODES: CloudNode[] =
         : [
             SKY,
             node({ name: 'lab-fly', provider: 'fly', state: 'ready', region: 'lhr', region_label: 'London', size_slug: 'shared-cpu-1x', monthly_usd: 12.19, reachable: true, path: 'relay', version: '2.31.2' }),
+            node({ name: 'vault-box', provider: 'digitalocean', state: 'ready', region: 'fra1', region_label: 'Frankfurt', size_slug: 's-2vcpu-4gb', memory_gb: 4, monthly_usd: 25, reachable: true, path: 'direct', version: '2.31.2', sealed: true }),
             node({ name: 'night-runner', provider: 'kubernetes', state: 'creating', stage: 'join', size_slug: '2Gi', k8s: { context: 'rwx-dev', namespace: 'theuth-nodes', storage_class: 'nfs-csi' } }),
             node({ name: 'theuth-test', provider: 'digitalocean', state: 'orphan', region: 'nyc3', region_label: null, size_slug: 's-1vcpu-2gb', monthly_usd: 13, version: '2.31.2' }),
           ]
@@ -203,7 +206,8 @@ const api = new Proxy(cloud as unknown as Api, {
 // Discovery that offers every method (the cloud ones too, before the bindings know them) and the cloud topic.
 const cloudMethods = Object.keys(cloud)
 const doc = {
-  methods: [...METHODS, ...cloudMethods, 'subscribe_topics'].map((name) => ({ name })),
+  // The sealed vault (feat/sealed-vault) is advertised only in the states that show it.
+  methods: [...METHODS, ...cloudMethods, 'subscribe_topics', ...(VAULT ? ['vault_status'] : [])].map((name) => ({ name })),
   'x-theuth': {
     subscriptions: Object.entries(SUBSCRIPTIONS).map(([subscribe, s]) => ({ subscribe, notification: s.notification, unsubscribe: s.unsubscribe })),
     events: [{ topic: 'cloudnodes.events', version: 1 }],
@@ -237,10 +241,12 @@ const WIZARD: Record<string, { entry: WizardEntry; initial: WizardInitial }> = {
   'phone-configure-2gb-desktop': { entry: 'first-run', initial: { step: 'configure', spec: { ...LONDON, memory_gb: 2 } } },
   'phone-configure-price-unavailable': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
   'phone-configure-loading': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
+  'phone-configure-vault': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
   'phone-progress': { entry: 'first-run', initial: { step: 'progress', spec: LONDON, node: 'sky-cloud' } },
   'phone-done': { entry: 'first-run', initial: { step: 'done', spec: LONDON, node: 'sky-cloud' } },
   'desktop-provider': { entry: 'desktop-dialog', initial: { step: 'provider', spec: { provider: 'digitalocean' } } },
   'desktop-configure': { entry: 'desktop-dialog', initial: { step: 'configure', spec: LONDON, advancedOpen: true } },
+  'desktop-configure-vault': { entry: 'desktop-dialog', initial: { step: 'configure', spec: LONDON, advancedOpen: true } },
   'desktop-k8s': { entry: 'desktop-dialog', initial: { step: 'configure', spec: { provider: 'kubernetes', name: 'sky-cloud' } } },
   'desktop-progress': { entry: 'desktop-dialog', initial: { step: 'progress', spec: LONDON, node: 'sky-cloud' } },
 }
@@ -342,11 +348,13 @@ const STATES: { name: string; label: string; phone: boolean }[] = [
   ['phone-configure-2gb-desktop', '③ 2 GB with the desktop: the note'],
   ['phone-configure-price-unavailable', '③ Price unavailable'],
   ['phone-configure-loading', '③ Sizes loading'],
+  ['phone-configure-vault', '③ Vault protection (sealed vault on)'],
   ['phone-progress', '④ Starting'],
   ['phone-done', '⑤ Ready'],
   ['phone-engines-entry', 'Engine switcher entry'],
   ['desktop-provider', 'Desktop · provider'],
   ['desktop-configure', 'Desktop · configure'],
+  ['desktop-configure-vault', 'Desktop · configure, vault protection'],
   ['desktop-k8s', 'Desktop · Kubernetes'],
   ['desktop-progress', 'Desktop · creating'],
   ['settings-machines', 'Settings › Machines'],
