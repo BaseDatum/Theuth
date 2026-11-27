@@ -5,12 +5,14 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
 import type { PtyChunk } from "@/rpc/bindings/method.agent.output"
 import { RpcError } from '@/rpc/client'
-import { attachSource, CELL_KEYS, liveRows, Terminal } from './TerminalViewer'
+import { attachSource, CELL_KEYS, liveRows, PoppedTerminal, Terminal } from './TerminalViewer'
 
 const api = { cell_input: vi.fn(async () => null), pty_input: vi.fn(async () => null), pty_resize: vi.fn(async () => null) }
 const unsub = vi.fn(async () => undefined)
 const client = { stream: vi.fn(async <T,>(_m: string, _p: unknown[], _u: string, _on: (c: T) => void) => unsub) }
 const touch = vi.fn(() => false)
+const popped = vi.fn(() => false)
+const navigate = vi.fn()
 
 vi.mock('@xterm/xterm', () => ({ Terminal: class {} }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class {} }))
@@ -20,7 +22,9 @@ vi.mock('@/store/sessions', async (original) => ({ ...(await original<object>())
 vi.mock('@/lib/platform', async (original) => ({ ...(await original<object>()), touch: () => touch() }))
 vi.mock('@/lib/chord', () => ({ isApple: () => true }))
 vi.mock('@/lib/owner', () => ({ useEngineLabel: (owner: string) => owner }))
-vi.mock('@/lib/popout', () => ({ POPOUT: null, canPopout: () => false, openPopout: async () => undefined }))
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+vi.mock('@tanstack/react-query', () => ({ useQuery: () => ({ data: [{ id: 'j1', session: 's1', name: 'dev', command: 'bash', state: 'running' }] }) }))
+vi.mock('@/lib/popout', () => ({ POPOUT: null, canPopout: () => false, isPopout: () => popped(), openPopout: async () => undefined }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 
 /** The slice of xterm `attachSource` touches. */
@@ -58,6 +62,7 @@ const onItem = () => client.stream.mock.calls[0]![3] as (c: PtyChunk) => void
 beforeEach(() => {
   vi.clearAllMocks()
   touch.mockReturnValue(false)
+  popped.mockReturnValue(false)
 })
 
 test('a cell source attaches with cell_attach/cell_detach and types through cell_input as base64 UTF-8', async () => {
@@ -185,4 +190,17 @@ test('183 §4.3: an attach refused -32014 RunsElsewhere names the owner, sends n
   }
   expect(api.cell_input).not.toHaveBeenCalled()
   expect(api.pty_input).not.toHaveBeenCalled()
+})
+
+test('PoppedTerminal renders a closeable header in-page (iPhone) and omits it in a popped OS window', () => {
+  popped.mockReturnValue(false)
+  const inPage = renderToStaticMarkup(createElement(PoppedTerminal, { session: 's1', job: 'j1' }))
+  expect(inPage).toContain('data-terminal-header=""')
+  expect(inPage).toContain('aria-label="Close terminal"')
+  expect(inPage).toContain('Terminal · j1')
+
+  popped.mockReturnValue(true)
+  const inWindow = renderToStaticMarkup(createElement(PoppedTerminal, { session: 's1', job: 'j1' }))
+  expect(inWindow).not.toContain('data-terminal-header')
+  expect(inWindow).not.toContain('aria-label="Close terminal"')
 })

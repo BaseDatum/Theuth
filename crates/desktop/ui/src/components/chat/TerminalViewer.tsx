@@ -3,7 +3,8 @@ import '@xterm/xterm/css/xterm.css'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as Xterm } from '@xterm/xterm'
 import { useQuery } from '@tanstack/react-query'
-import { AppWindow, Keyboard } from 'lucide-react'
+import { useNavigate } from '@tanstack/react-router'
+import { AppWindow, Keyboard, X } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -16,7 +17,7 @@ import { isApple } from '@/lib/chord'
 import { runsElsewhere } from '@/lib/front-door'
 import { useEngineLabel } from '@/lib/owner'
 import { touch } from '@/lib/platform'
-import { canPopout, openPopout } from '@/lib/popout'
+import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { macKeyBytes } from '@/lib/terminal-keys'
 import { swallowEngineQueries } from '@/lib/terminal-replies'
@@ -439,14 +440,33 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
   )
 }
 
-/** `/pty/$session/$job` in its own window: the terminal alone, full height. Stays up after the job exits (the final screen is the point). */
+/** `/pty/$session/$job` in its own window (popout: frameless, full height) or in-page on a phone (with a header to close back to the chat). Stays up after the job exits (the final screen is the point). */
 export function PoppedTerminal({ session, job }: JobRef) {
   const api = useApi()
+  const navigate = useNavigate()
   const { data: terminals = [] } = useQuery(terminalsQuery(api, session))
   const current = terminals.find((t) => t.id === job && t.session === session)
+  const label = labelOf(current, { session, job })
+  const popped = isPopout()
+  const close = () => void navigate({ to: '/c/$session', params: { session } })
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col gap-2 p-2">
-      <Terminal session={session} job={job} label={labelOf(current, { session, job })} popped />
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      {!popped && (
+        <header data-terminal-header="" className="flex h-[52px] shrink-0 items-center gap-1 border-b px-2">
+          <div className="flex min-w-0 flex-1 flex-col justify-center px-1">
+            <span className="truncate text-sm font-medium" title={`Terminal · ${job}`}>
+              Terminal · {job}
+            </span>
+            {label !== job && <span className="truncate text-xs text-fg-tertiary">{label}</span>}
+          </div>
+          <Button variant="ghost" size="icon" className="shrink-0 rounded-lg text-fg-secondary" aria-label="Close terminal" onClick={close}>
+            <X className="size-5" />
+          </Button>
+        </header>
+      )}
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2">
+        <Terminal session={session} job={job} label={label} popped={popped} />
+      </div>
     </div>
   )
 }
@@ -566,7 +586,7 @@ export function TerminalViewer({ session, open, onOpenChange }: { session: strin
   if (mobile)
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="bottom" showCloseButton={false} className="top-0 h-band gap-0 pt-[var(--safe-top)]">
+        <SheetContent side="bottom" showCloseButton={false} className="top-0 bottom-auto h-[var(--visible-band,100dvh)] gap-0 overflow-hidden pt-[var(--safe-top)]">
           <div className="flex h-12 shrink-0 items-center border-b border-border-subtle px-4">
             <SheetTitle className="text-base">Terminals</SheetTitle>
             <SheetClose className="ml-auto flex size-11 items-center justify-center rounded-full text-fg-secondary active:bg-layer-3">

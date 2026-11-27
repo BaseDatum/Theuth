@@ -114,12 +114,12 @@ export function TileFrame({
         </div>
         {controls}
         {popOut && canPopout() && !popped && (
-          <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Open in new window" onClick={() => void popOutAndClose(popOut, onClose)}>
+          <Button variant="ghost" className="size-9 shrink-0 rounded-lg text-fg-secondary" aria-label="Open in new window" onClick={() => void popOutAndClose(popOut, onClose)}>
             <AppWindow className="size-5" />
           </Button>
         )}
         {!popped && (
-          <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
+          <Button variant="ghost" size="icon" className="shrink-0 rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
             <X className="size-5" />
           </Button>
         )}

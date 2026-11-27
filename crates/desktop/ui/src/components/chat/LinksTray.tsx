@@ -41,9 +41,9 @@ export function LinksDash({ session, links }: { session: string; links: ChatLink
   }
   return (
     <button type="button" data-links-dash="" title={label} aria-label={`${label} · show links`} className={DASH_HIT} onClick={open}>
-      <svg key={beat} width="24" height="8" viewBox="0 0 24 8" aria-hidden className={beat ? 'link-dash link-dash-pulse text-dash-link' : 'link-dash text-dash-link'}>
-        <rect x="1" y="1" width="13" height="6" rx="3" fill="none" stroke="currentColor" strokeWidth="2" />
-        <rect x="10" y="1" width="13" height="6" rx="3" fill="none" stroke="currentColor" strokeWidth="2" />
+      <svg key={beat} width="24" height="5" viewBox="0 0 24 5" aria-hidden className={beat ? 'link-dash link-dash-pulse text-dash-link' : 'link-dash text-dash-link'}>
+        <rect x="0.625" y="0.625" width="13.75" height="3.75" rx="1.875" fill="none" stroke="currentColor" strokeWidth="1.25" />
+        <rect x="9.625" y="0.625" width="13.75" height="3.75" rx="1.875" fill="none" stroke="currentColor" strokeWidth="1.25" />
       </svg>
     </button>
   )

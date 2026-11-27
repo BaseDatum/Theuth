@@ -519,6 +519,8 @@ test('links dash: none without links, exactly one for many; it opens the tray wi
   expect(dashes).toHaveLength(1)
   expect(dashes[0]!.getAttribute('title')).toBe('12 links')
   expect(dashes[0]!.querySelectorAll('svg')).toHaveLength(1)
+  expect(dashes[0]!.querySelector('svg')!.getAttribute('width')).toBe('24')
+  expect(dashes[0]!.querySelector('svg')!.getAttribute('height')).toBe('5')
   // It sits after every other dash on the right: the outermost end.
   const right = document.querySelector('.tray-dash-right > div')!
   expect(right.lastElementChild).toBe(dashes[0])

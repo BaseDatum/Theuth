@@ -29,7 +29,7 @@ function Terminals({ tile, first, close }: TileRender) {
       chat={tile.session}
       controls={
         <>
-          <TerminalSelect session={tile.session} terminals={terminals} job={job} onPick={pick} className="w-48 shrink" />
+          <TerminalSelect session={tile.session} terminals={terminals} job={job} onPick={pick} className="w-48 max-w-[45%] shrink" />
           {job && elsewhere && <FocusWindowButton {...job} />}
         </>
       }
