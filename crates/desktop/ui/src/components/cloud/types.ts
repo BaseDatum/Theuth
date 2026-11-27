@@ -24,6 +24,7 @@ export type {
   Stage,
   StorageClass,
   TerminalOpen,
+  VaultProtection,
 } from '@/rpc/bindings/method.cloudnodes.output'
 export type { CloudEvent }
 
@@ -50,4 +51,4 @@ export const SIZES_GB = [2, 4, 8] as const
 /** The `/data` volume every node gets (`types.rs` `DEFAULT_VOLUME_GB`). */
 export const DEFAULT_VOLUME_GB = 10
 /** The create job's stages, in order (`types.rs` `Stage`). */
-export const STAGES: readonly O.Stage[] = ['server', 'storage', 'install', 'join', 'ready']
+export const STAGES: readonly O.Stage[] = ['server', 'storage', 'install', 'join', 'vault', 'ready']

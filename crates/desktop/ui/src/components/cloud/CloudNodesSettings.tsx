@@ -7,7 +7,7 @@ import { Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { Tag } from '@/components/costs/ui'
 import { Terminal } from '@/components/chat/TerminalViewer'
-import { Empty, Section } from '@/components/settings/shared'
+import { Empty, Section, useAction } from '@/components/settings/shared'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,20 +22,22 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { useVaultApi } from '@/components/vault/api'
+import { PasswordForm } from '@/components/vault/PasswordForm'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { notify } from '@/lib/notify'
 import { cn } from '@/lib/utils'
 import { Capability } from '@/rpc/capabilities'
 import { CloudNodeWizard } from './CloudNodeWizard'
 import { NodeDesktopPanel } from './NodeDesktop'
-import { type Tone, destroySaving, diskUsd, localQuote, sizesOf, statusOf, usd } from './format'
-import { CLOUD_REQUIRED, useCloudActions, useCloudEvents, useCloudList, useCloudLogs, useCloudProviders, useCloudSizes, useVaultSupport } from './queries'
-import { PriceNote, ProviderBadge, SizeCards } from './steps'
+import { type Tone, destroySaving, diskUsd, localQuote, sizesOf, statusOf, usd, vaultRow } from './format'
+import { CLOUD_REQUIRED, cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudLogs, useCloudProviders, useCloudSizes, useVaultSupport } from './queries'
+import { PriceNote, ProviderBadge, SizeCards, VAULT_HINT } from './steps'
 import { type CloudNode, DEFAULT_VOLUME_GB, type NodeDesktop, type ProviderInfo, type ProviderKind, type TerminalOpen } from './types'
 
 export const PROVIDER_LABEL: Record<ProviderKind, string> = { digitalocean: 'DigitalOcean', fly: 'Fly.io', kubernetes: 'Kubernetes', lightsail: 'AWS Lightsail' }
 
-export type CloudDialog = 'destroy' | 'resize' | 'logs' | 'terminal' | 'desktop'
+export type CloudDialog = 'destroy' | 'resize' | 'logs' | 'terminal' | 'desktop' | 'vault'
 
 /** The section, shown only on an engine with `cloudnodes` (the rest of the Machines tab never depends on it). */
 export function CloudNodesSettings({ initial }: { initial?: { dialog: CloudDialog; node: string; adding?: boolean } | { adding: true } }) {
@@ -203,6 +205,7 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
           }}
         />
       )}
+      {open?.dialog === 'vault' && target?.peer_id && <VaultPasswordDialog name={target.name} engine={target.peer_id} onClose={() => setOpen(null)} />}
       {adding && <CloudNodeWizard entry="desktop-dialog" onClose={() => setAdding(false)} onDone={() => setAdding(false)} />}
     </Section>
   )
@@ -228,6 +231,7 @@ export function NodeRow({
   const orphan = node.state === 'orphan'
   const live = node.state === 'ready'
   const settled = live || node.state === 'failed' || node.state === 'volume_kept' || orphan
+  const vault = vaultRow(node)
   return (
     <li data-cloud-node={node.name} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border-subtle py-3 last:border-0 md:grid md:grid-cols-[1.5rem_minmax(0,1fr)_8.5rem_8rem_4.5rem_4.75rem] md:gap-x-3">
       <ProviderBadge kind={node.provider} className="size-6 text-[10px]" />
@@ -281,7 +285,37 @@ export function NodeRow({
           </DropdownMenuContent>
         </DropdownMenu>
       )}
+      {vault && (
+        <div data-vault={node.vault} className="flex w-full min-w-0 items-center gap-2 text-xs md:col-span-5 md:col-start-2">
+          <span className={cn('min-w-0 truncate', vault.tone === 'warn' ? 'text-warning' : 'text-fg-secondary')}>{vault.text}</span>
+          {vault.action && (
+            <Button size="xs" variant={vault.tone === 'warn' ? 'outline' : 'link'} className={cn(vault.tone !== 'warn' && 'h-auto px-0 text-xs')} onClick={() => onOpen('vault')}>
+              Set master password
+            </Button>
+          )}
+        </div>
+      )}
     </li>
+  )
+}
+
+/**
+ * 225: "Set master password" for a node's vault: Settings › Vault's own form, sent to the node over the mesh
+ * (`vault_add_password(engine, …)`). The list then re-reads the node's vault and drops the line.
+ */
+export function VaultPasswordDialog({ name, engine, onClose }: { name: string; engine: string; onClose: () => void }) {
+  const api = useVaultApi()
+  const add = useAction((pw: string) => api.addPassword(engine, pw), { keys: [cloudKeys.list], onSuccess: () => notify.success(`${name}'s vault has a master password`) })
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Master password for {name}</DialogTitle>
+          <DialogDescription>{VAULT_HINT}</DialogDescription>
+        </DialogHeader>
+        <PasswordForm mode="add" name={name} onSubmit={(next) => add.mutateAsync(next)} onDone={onClose} onCancel={onClose} />
+      </DialogContent>
+    </Dialog>
   )
 }
 
