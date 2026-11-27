@@ -30,11 +30,15 @@ export const CLOUD_REQUIRED = {
 } as const
 
 /**
- * The sealed vault (feat/sealed-vault adds `vault_status` and its siblings). Its method is not in this branch's
- * bindings, so the name is typed loosely here; an engine that does not advertise it in discovery (legacy included)
- * hides the vault field of Configure and the `sealed` status.
+ * The sealed vault (design 225) on the connected engine, and a `cloud_create` that takes the master password for the
+ * node it makes (`vault_password`). `vault_status` is called by name (`components/vault/api.ts`), so the requirement
+ * is typed loosely. An engine without either (legacy included) hides the vault field of Configure and the `sealed`
+ * status, and creates nodes as before.
  */
-const VAULT_REQUIRED = { methods: ['vault_status'] } as unknown as Requirements
+const VAULT_REQUIRED = {
+  methods: ['vault_status'],
+  fields: [{ method: 'cloud_create', parameter: 'vault_password', path: [] }],
+} as unknown as Requirements
 
 export function useVaultSupport(): boolean {
   return useSupported(VAULT_REQUIRED)
@@ -176,7 +180,8 @@ export function useCloudActions() {
   const keys = [cloudKeys.list] as const
   const providers = [cloudKeys.providers] as const
   return {
-    create: useAction((spec: NodeSpec): Promise<CloudNode> => api.cloud_create(spec), {
+    // `vaultPassword`: the node's master password, only from an engine with `useVaultSupport` (else `null`).
+    create: useAction(({ spec, vaultPassword }: { spec: NodeSpec; vaultPassword: string | null }): Promise<CloudNode> => api.cloud_create(spec, vaultPassword), {
       keys,
       // The row shows at once in `creating`; the events then own it.
       onSuccess: (node) => qc.setQueryData<CloudList>(cloudKeys.list, (list) => upsertNode(list, node)),

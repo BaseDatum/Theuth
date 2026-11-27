@@ -57,13 +57,13 @@ async function items(): Promise<string[]> {
   return labels
 }
 
-test.each(['ios', 'web'] as const)('183 §12.10 lifted: an %s container without a local engine offers ⋯ Share with contact… when the engine has the share methods, never when one is missing', async (c) => {
+test.each(['ios', 'web'] as const)('183 §12.10 lifted: an %s container offers ⋯ Share with contact… when the engine has the share methods, never when one is missing', async (c) => {
   if (c === 'ios') {
     Object.assign(window, { __TAURI_INTERNALS__: {} })
     vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15')
   }
   expect(container()).toBe(c)
-  expect(hasLocal()).toBe(false)
+  expect(hasLocal()).toBe(c === 'ios')
   expect(await items()).toContain('Share with contact…')
   useConnection.setState({ discovery: { ...ready, unavailable: new Set(['a2a_export_put']) } })
   expect(await items()).not.toContain('Share with contact…')

@@ -19,7 +19,6 @@ mesh = { workspace = true }  # 185 B6: `is_hub` in the sync manifest
 platform = { workspace = true }
 tools = { workspace = true }
 document = { workspace = true }
-decision = { workspace = true }  # 212: peek_memory's local judge
 search = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -33,6 +32,9 @@ tracing = { workspace = true }
 kameo = { workspace = true }
 sqlx = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+decision = { workspace = true }  # 212: peek_memory's local judge
 
 [dev-dependencies]
 figment = { workspace = true }

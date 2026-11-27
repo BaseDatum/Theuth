@@ -36,7 +36,7 @@ import { installPagePreview } from '@/lib/page-preview'
 import { startWebProfileSync } from '@/lib/web-profile'
 import { startWebViewAgent } from '@/lib/web-view-agent'
 import { startElementForms } from '@/lib/element-form'
-import { container, isDesktop } from '@/lib/platform'
+import { container, isDesktop, isIos } from '@/lib/platform'
 import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
 import { onOwnerChanged, onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
 import { usePrivateOwner } from '@/lib/private'
@@ -88,7 +88,7 @@ const OVERLAY = isOverlay()
 /** A popout (`lib/popout.ts`) is a second shell at the route in its URL: it connects like main but registers none of main's singletons. */
 const AUX = ISLAND || OVERLAY || POPOUT !== null
 /** 176 C3: names this window's local socket in the engine's ws log lines and in `client_log`. */
-const CLIENT_TAG = ISLAND ? 'island' : POPOUT ? 'popout' : 'desktop-main'
+const CLIENT_TAG = ISLAND ? 'island' : POPOUT ? 'popout' : isIos() ? 'ios-main' : 'desktop-main'
 /** 176 U4: a reconnect or a hidden spell shorter than this skips `info` and the liveness `list_sessions`. */
 const CHEAP_GAP_MS = 30_000
 
@@ -115,6 +115,7 @@ let owned = false
  * `quit-requested`, `/exit` and the startup screen's Quit all land here; a repeat only adds `restart` to the overlay.
  */
 async function quit(restart = false): Promise<void> {
+  if (!isDesktop()) return
   const local = scope(LOCAL)
   // 171 §5.3 (F6 a): a live cell run shows the pre-quit sheet before the overlay; Cancel keeps the app open.
   if (!(await confirmQuit(local.connection.getState().api, isTauri() ? tauriShellQuit : undefined))) return
@@ -408,30 +409,34 @@ function useTauri(): void {
     if (AUX) return
     // The shell reports every chunk; the slot needs about four updates a second.
     let progressAt = 0
-    const unlistens = [
-      onNavigate((path) => router.history.push(path)),
-      onQuitRequested((p) => void quit(p.restart)),
-      onQuitProgress((p) => useQuit.getState().send({ type: 'progress', ...p })),
-      // `crates/desktop/src/models.rs`: one notice, updated in place, for the whole batch.
-      onModelsProgress((p) => {
-        const id = 'models'
-        if (p.state === 'downloading') {
-          if (Date.now() - progressAt < MODELS_PROGRESS_MS) return
-          progressAt = Date.now()
-          notify.loading(`Downloading speech models… ${Math.round((100 * p.done) / p.total)}%`, { id, description: p.file })
-        } else if (p.state === 'verifying') notify.loading('Verifying models…', { id, description: p.file })
-        else if (p.state === 'ready') {
-          notify.success('Speech models ready', { id, description: undefined })
-          // The daemon reloads lazily but the UI gates the mic on `model.state`; ask again so the button unlocks without a restart.
-          const api = useConnection.getState().api
-          if (api) void api.dictation_prewarm().then(setModel).catch(() => undefined)
-        } else notify.error(`Speech models: ${p.message}`, { id, description: undefined })
-      }),
-    ]
-    const onQuit = () => void quit()
-    window.addEventListener('theuth:quit', onQuit)
-    // 163: the drained turns tick off as the engine finishes or suspends them (`TurnFinished` / `TurnSuspended`).
-    const offSlices = scope(LOCAL).sessions.subscribe((s) => useQuit.getState().send({ type: 'slices', slices: s.sessions }))
+    const unlistens: Promise<() => void>[] = [onNavigate((path) => router.history.push(path))]
+    let onQuit: (() => void) | undefined
+    let offSlices: (() => void) | undefined
+    if (isDesktop()) {
+      unlistens.push(
+        onQuitRequested((p) => void quit(p.restart)),
+        onQuitProgress((p) => useQuit.getState().send({ type: 'progress', ...p })),
+        // `crates/desktop/src/models.rs`: one notice, updated in place, for the whole batch.
+        onModelsProgress((p) => {
+          const id = 'models'
+          if (p.state === 'downloading') {
+            if (Date.now() - progressAt < MODELS_PROGRESS_MS) return
+            progressAt = Date.now()
+            notify.loading(`Downloading speech models… ${Math.round((100 * p.done) / p.total)}%`, { id, description: p.file })
+          } else if (p.state === 'verifying') notify.loading('Verifying models…', { id, description: p.file })
+          else if (p.state === 'ready') {
+            notify.success('Speech models ready', { id, description: undefined })
+            // The daemon reloads lazily but the UI gates the mic on `model.state`; ask again so the button unlocks without a restart.
+            const api = useConnection.getState().api
+            if (api) void api.dictation_prewarm().then(setModel).catch(() => undefined)
+          } else notify.error(`Speech models: ${p.message}`, { id, description: undefined })
+        }),
+      )
+      onQuit = () => void quit()
+      window.addEventListener('theuth:quit', onQuit)
+      // 163: the drained turns tick off as the engine finishes or suspends them (`TurnFinished` / `TurnSuspended`).
+      offSlices = scope(LOCAL).sessions.subscribe((s) => useQuit.getState().send({ type: 'slices', slices: s.sessions }))
+    }
     void primeNotifications()
     // The updater swaps a `.app` bundle (update.rs `bundle_dir`): macOS only.
     if (container() === 'macos') startUpdateListener()
@@ -440,8 +445,8 @@ function useTauri(): void {
     if (isDesktop()) void setHiddenFromCapture(useMeetingSettings.getState().hidden)
     return () => {
       for (const u of unlistens) void u.then((f) => f())
-      window.removeEventListener('theuth:quit', onQuit)
-      offSlices()
+      if (onQuit) window.removeEventListener('theuth:quit', onQuit)
+      offSlices?.()
     }
   }, [])
   useGlobalShortcuts()
@@ -790,16 +795,17 @@ function Main() {
   useEffect(() => (ISLAND || OVERLAY ? undefined : startElementForms()), [])
   // The shell flips both windows; each webview mirrors the value into its own settings copy.
   useEffect(() => {
+    if (!isDesktop()) return
     const off = onCaptureHidden((h) => useMeetingSettings.getState().setHidden(h))
     return () => void off.then((f) => f())
   }, [])
 
-  // The desktop's own daemon (25's launch path), relaunched on demand from the startup screen.
+  // The desktop's own daemon (25's launch path) or iOS's embedded engine, relaunched on demand from the startup screen.
   useEffect(() => {
     if (!hasLocal()) return
     const ctl = new AbortController()
     const { how } = attempt
-    const get = how === 'connect' || how === 'join' ? connection : () => relaunch(how === 'force')
+    const get = how === 'connect' || how === 'join' || !isDesktop() ? connection : () => relaunch(how === 'force')
     boot(
       scope(LOCAL),
       async () => {
@@ -878,8 +884,8 @@ function Main() {
       {/* 209 §9: an agent acting on a tile no frame of this window shows, in the windows `startWebViewAgent` runs in. */}
       {!ISLAND && !OVERLAY && <AgentTileBanner />}
       {/* 163 D5: portalled to <body>; it makes everything else there inert while it is up. */}
-      {!AUX && <QuitOverlay />}
-      {!AUX && <PreQuit />}
+      {!AUX && isDesktop() && <QuitOverlay />}
+      {!AUX && isDesktop() && <PreQuit />}
     </>
   )
 }

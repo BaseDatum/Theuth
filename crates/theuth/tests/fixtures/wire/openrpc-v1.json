@@ -16755,6 +16755,17 @@
             ],
             "description": "Lifecycle."
           },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.VaultProtection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How its vault is protected; `None` when unknown (older records, orphans)."
+          },
           "version": {
             "description": "`t --version` on the node, when it answered.",
             "type": [
@@ -16793,7 +16804,8 @@
           "auto_update",
           "desktop",
           "created_ms",
-          "k8s"
+          "k8s",
+          "vault"
         ],
         "type": "object"
       },
@@ -16950,8 +16962,48 @@
             "type": "string"
           },
           {
+            "const": "vault",
+            "description": "The node's sealed vault gets the master password and this engine's device unlock\n(design doc 225); skipped where the node's release has no sealed vault yet.",
+            "type": "string"
+          },
+          {
             "const": "ready",
             "description": "A reachable mesh peer.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.output.VaultProtection": {
+        "description": "How the node's sealed vault is protected (design doc 225), as the create job and the list\nlast saw it. Never the password itself.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "The create job holds a master password (in memory) to add once the node joined.",
+            "type": "string"
+          },
+          {
+            "const": "protected",
+            "description": "The master password and unlock from the creating engine, both confirmed on the node.",
+            "type": "string"
+          },
+          {
+            "const": "device_only",
+            "description": "Unlock from the creating engine only: the user chose no master password.",
+            "type": "string"
+          },
+          {
+            "const": "needs_password",
+            "description": "A master password was asked for and is not set (the job was interrupted, this engine\nrestarted, the call failed), or no unlock method could be confirmed: set one.",
+            "type": "string"
+          },
+          {
+            "const": "password_only",
+            "description": "The master password is set; unlock from the creating engine is not confirmed.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported",
+            "description": "The node's theuth release has no sealed vault yet (no `vault_status`).",
             "type": "string"
           }
         ]
@@ -17235,6 +17287,17 @@
             ],
             "description": "Lifecycle."
           },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.VaultProtection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How its vault is protected; `None` when unknown (older records, orphans)."
+          },
           "version": {
             "description": "`t --version` on the node, when it answered.",
             "type": [
@@ -17407,8 +17470,48 @@
             "type": "string"
           },
           {
+            "const": "vault",
+            "description": "The node's sealed vault gets the master password and this engine's device unlock\n(design doc 225); skipped where the node's release has no sealed vault yet.",
+            "type": "string"
+          },
+          {
             "const": "ready",
             "description": "A reachable mesh peer.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.receiver.VaultProtection": {
+        "description": "How the node's sealed vault is protected (design doc 225), as the create job and the list\nlast saw it. Never the password itself.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "The create job holds a master password (in memory) to add once the node joined.",
+            "type": "string"
+          },
+          {
+            "const": "protected",
+            "description": "The master password and unlock from the creating engine, both confirmed on the node.",
+            "type": "string"
+          },
+          {
+            "const": "device_only",
+            "description": "Unlock from the creating engine only: the user chose no master password.",
+            "type": "string"
+          },
+          {
+            "const": "needs_password",
+            "description": "A master password was asked for and is not set (the job was interrupted, this engine\nrestarted, the call failed), or no unlock method could be confirmed: set one.",
+            "type": "string"
+          },
+          {
+            "const": "password_only",
+            "description": "The master password is set; unlock from the creating engine is not confirmed.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported",
+            "description": "The node's theuth release has no sealed vault yet (no `vault_status`).",
             "type": "string"
           }
         ]
@@ -49484,6 +49587,13 @@
             "default": "chat",
             "description": "Row kind (141 §8.1): `observed` = a watch-only harness subagent; the\nsession view hides the composer without a second RPC. `chat` from an\nolder harness."
           },
+          "mesh_id": {
+            "description": "Optional mesh identifier tagging an on-device session for multi-mesh\nmobile UIs (Shape A); stored on the root, inherited by descendants.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "model": {
             "description": "Canonical model id the session runs on.",
             "type": "string"
@@ -53395,6 +53505,13 @@
             ],
             "default": "epochs",
             "description": "Memory mode (137 D1): `epochs` from an older harness."
+          },
+          "mesh_id": {
+            "description": "Optional mesh identifier tagging an on-device session for multi-mesh\nmobile UIs (Shape A); stored on the root, inherited by descendants.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "model": {
             "description": "Model used.",
@@ -60915,6 +61032,13 @@
             "default": "chat",
             "description": "Row kind (141 §8.1): `observed` = a watch-only harness subagent; the\nsession view hides the composer without a second RPC. `chat` from an\nolder harness."
           },
+          "mesh_id": {
+            "description": "Optional mesh identifier tagging an on-device session for multi-mesh\nmobile UIs (Shape A); stored on the root, inherited by descendants.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "model": {
             "description": "Canonical model id the session runs on.",
             "type": "string"
@@ -64697,6 +64821,13 @@
             ],
             "default": "epochs",
             "description": "Memory mode (137 D1): `epochs` from an older harness."
+          },
+          "mesh_id": {
+            "description": "Optional mesh identifier tagging an on-device session for multi-mesh\nmobile UIs (Shape A); stored on the root, inherited by descendants.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "model": {
             "description": "Model used.",
@@ -85742,6 +85873,17 @@
             ],
             "description": "Lifecycle."
           },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.VaultProtection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How its vault is protected; `None` when unknown (older records, orphans)."
+          },
           "version": {
             "description": "`t --version` on the node, when it answered.",
             "type": [
@@ -85780,7 +85922,8 @@
           "auto_update",
           "desktop",
           "created_ms",
-          "k8s"
+          "k8s",
+          "vault"
         ],
         "type": "object"
       },
@@ -86372,6 +86515,11 @@
             "type": "string"
           },
           {
+            "const": "vault",
+            "description": "The node's sealed vault gets the master password and this engine's device unlock\n(design doc 225); skipped where the node's release has no sealed vault yet.",
+            "type": "string"
+          },
+          {
             "const": "ready",
             "description": "A reachable mesh peer.",
             "type": "string"
@@ -86423,6 +86571,41 @@
           "engine"
         ],
         "type": "object"
+      },
+      "method.cloudnodes.output.VaultProtection": {
+        "description": "How the node's sealed vault is protected (design doc 225), as the create job and the list\nlast saw it. Never the password itself.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "The create job holds a master password (in memory) to add once the node joined.",
+            "type": "string"
+          },
+          {
+            "const": "protected",
+            "description": "The master password and unlock from the creating engine, both confirmed on the node.",
+            "type": "string"
+          },
+          {
+            "const": "device_only",
+            "description": "Unlock from the creating engine only: the user chose no master password.",
+            "type": "string"
+          },
+          {
+            "const": "needs_password",
+            "description": "A master password was asked for and is not set (the job was interrupted, this engine\nrestarted, the call failed), or no unlock method could be confirmed: set one.",
+            "type": "string"
+          },
+          {
+            "const": "password_only",
+            "description": "The master password is set; unlock from the creating engine is not confirmed.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported",
+            "description": "The node's theuth release has no sealed vault yet (no `vault_status`).",
+            "type": "string"
+          }
+        ]
       },
       "method.cloudnodes.receiver.CloudList": {
         "description": "`cloud_list`: every node from local records and every connected provider's tagged\nresources; a provider that fails is reported in `errors`, not fatal.",
@@ -86594,6 +86777,17 @@
               }
             ],
             "description": "Lifecycle."
+          },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.VaultProtection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How its vault is protected; `None` when unknown (older records, orphans)."
           },
           "version": {
             "description": "`t --version` on the node, when it answered.",
@@ -87190,6 +87384,11 @@
             "type": "string"
           },
           {
+            "const": "vault",
+            "description": "The node's sealed vault gets the master password and this engine's device unlock\n(design doc 225); skipped where the node's release has no sealed vault yet.",
+            "type": "string"
+          },
+          {
             "const": "ready",
             "description": "A reachable mesh peer.",
             "type": "string"
@@ -87241,6 +87440,41 @@
           "engine"
         ],
         "type": "object"
+      },
+      "method.cloudnodes.receiver.VaultProtection": {
+        "description": "How the node's sealed vault is protected (design doc 225), as the create job and the list\nlast saw it. Never the password itself.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "The create job holds a master password (in memory) to add once the node joined.",
+            "type": "string"
+          },
+          {
+            "const": "protected",
+            "description": "The master password and unlock from the creating engine, both confirmed on the node.",
+            "type": "string"
+          },
+          {
+            "const": "device_only",
+            "description": "Unlock from the creating engine only: the user chose no master password.",
+            "type": "string"
+          },
+          {
+            "const": "needs_password",
+            "description": "A master password was asked for and is not set (the job was interrupted, this engine\nrestarted, the call failed), or no unlock method could be confirmed: set one.",
+            "type": "string"
+          },
+          {
+            "const": "password_only",
+            "description": "The master password is set; unlock from the creating engine is not confirmed.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported",
+            "description": "The node's theuth release has no sealed vault yet (no `vault_status`).",
+            "type": "string"
+          }
+        ]
       },
       "method.codeindex.input.LocateAnchor": {
         "description": "One board anchor (71 §2.3): a root-relative path with an optional 1-based\ninclusive line range, the definition name the range quotes, and the\nSHA-256 (lowercase hex) of the quoted text.",
@@ -103015,6 +103249,59 @@
           }
         ]
       },
+      "method.mcp_2dserver.output.McpTestResult": {
+        "description": "Result of [`TestServer`]: no config file or tool registration is written.",
+        "properties": {
+          "error": {
+            "description": "Redacted error detail when `status == Failed`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.mcp_2dserver.output.McpTestStatus"
+              }
+            ],
+            "description": "Probe outcome."
+          },
+          "tools": {
+            "description": "Sorted tool names advertised by the server when `status == Connected`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "status",
+          "tools",
+          "error"
+        ],
+        "type": "object"
+      },
+      "method.mcp_2dserver.output.McpTestStatus": {
+        "description": "Outcome of a non-destructive [`TestServer`] connection probe.",
+        "oneOf": [
+          {
+            "const": "connected",
+            "description": "Connected and listed tools successfully.",
+            "type": "string"
+          },
+          {
+            "const": "auth_required",
+            "description": "Server answered HTTP 401 with an OAuth challenge; save and log in to connect.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Connection or handshake failed.",
+            "type": "string"
+          }
+        ]
+      },
       "method.mcp_2dserver.output.McpToolInfo": {
         "description": "One remote tool of a connected server.",
         "properties": {
@@ -103485,6 +103772,58 @@
           {
             "const": "error",
             "description": "The last start failed; retried with backoff.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.mcp_2dserver.receiver.McpTestResult": {
+        "description": "Result of [`TestServer`]: no config file or tool registration is written.",
+        "properties": {
+          "error": {
+            "description": "Redacted error detail when `status == Failed`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.mcp_2dserver.receiver.McpTestStatus"
+              }
+            ],
+            "description": "Probe outcome."
+          },
+          "tools": {
+            "description": "Sorted tool names advertised by the server when `status == Connected`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "status",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "method.mcp_2dserver.receiver.McpTestStatus": {
+        "description": "Outcome of a non-destructive [`TestServer`] connection probe.",
+        "oneOf": [
+          {
+            "const": "connected",
+            "description": "Connected and listed tools successfully.",
+            "type": "string"
+          },
+          {
+            "const": "auth_required",
+            "description": "Server answered HTTP 401 with an OAuth challenge; save and log in to connect.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Connection or handshake failed.",
             "type": "string"
           }
         ]
@@ -131594,6 +131933,34 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.AskReply": {
+        "description": "What `vault_peer_ask` answers.",
+        "properties": {
+          "key": {
+            "description": "base64 K_dev, when approved at once.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The owner's name (labels the node's device method).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "default": false,
+            "description": "A prompt is showing on the owner.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pending"
+        ],
+        "type": "object"
+      },
       "method.secrets.output.AwsFormat": {
         "description": "AWS value shape for a `secret_request` destination.",
         "oneOf": [
@@ -132184,6 +132551,31 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.Kind": {
+        "description": "An unlock method's kind.",
+        "oneOf": [
+          {
+            "const": "keychain",
+            "description": "OS keychain (desktops).",
+            "type": "string"
+          },
+          {
+            "const": "password",
+            "description": "Master password (Argon2id).",
+            "type": "string"
+          },
+          {
+            "const": "device",
+            "description": "A paired owner engine releases the KEK over the mesh.",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "Legacy plaintext `secrets.key` (migrated Linux engines); unprotected.",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.output.ListPage": {
         "description": "One page of [`ExternalBackend::list`].",
         "properties": {
@@ -132259,6 +132651,40 @@
             "type": "object"
           }
         ]
+      },
+      "method.secrets.output.MethodView": {
+        "description": "One unlock method, as lists show it. Never key material.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`keychain` | `password` | `file` | the owner endpoint id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.Kind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "label": {
+            "description": "Human text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label",
+          "created_ms"
+        ],
+        "type": "object"
       },
       "method.secrets.output.RequestId": {
         "description": "Correlates a [`SecretsEvent::Requested`] with its [`Answer`].",
@@ -132639,6 +133065,36 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.UnlockDevice": {
+        "description": "A node this engine unlocks.",
+        "properties": {
+          "auto": {
+            "description": "Approve its unlock requests without a prompt.",
+            "type": "boolean"
+          },
+          "enrolled_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "node": {
+            "description": "Its endpoint id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "name",
+          "auto",
+          "enrolled_ms"
+        ],
+        "type": "object"
+      },
       "method.secrets.output.UnlockRequestView": {
         "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
         "properties": {
@@ -132673,6 +133129,115 @@
           "backend",
           "account",
           "reason"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.UnsealRequestView": {
+        "description": "A prompt waiting on this (owner) engine.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Prompt id.",
+            "type": "string"
+          },
+          "node": {
+            "description": "The asking node's endpoint id.",
+            "type": "string"
+          },
+          "node_name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "purpose": {
+            "description": "`unlock` | `enroll`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "node",
+          "node_name",
+          "purpose",
+          "created_ms"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.VaultStatus": {
+        "description": "`vault_status`.",
+        "properties": {
+          "asking": {
+            "description": "Owner engines a sealed engine is asking right now.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "engine": {
+            "description": "This engine's mesh id, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Why it is sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "description": "Every method.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.output.MethodView"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "This engine's name, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password_set": {
+            "description": "A `password` method exists.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "`unsealed` | `sealed`.",
+            "type": "string"
+          },
+          "unsealed_by": {
+            "description": "`keychain` | `file` | `password` | `device` | `memory`; `None` while sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warning": {
+            "description": "Loud text when the key is not protected.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "engine",
+          "name",
+          "state",
+          "unsealed_by",
+          "methods",
+          "password_set",
+          "warning",
+          "asking",
+          "error"
         ],
         "type": "object"
       },
@@ -132744,6 +133309,31 @@
           "write",
           "delete"
         ],
+        "type": "object"
+      },
+      "method.secrets.receiver.AskReply": {
+        "description": "What `vault_peer_ask` answers.",
+        "properties": {
+          "key": {
+            "description": "base64 K_dev, when approved at once.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The owner's name (labels the node's device method).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "default": false,
+            "description": "A prompt is showing on the owner.",
+            "type": "boolean"
+          }
+        },
         "type": "object"
       },
       "method.secrets.receiver.AwsFormat": {
@@ -133298,6 +133888,31 @@
         },
         "type": "object"
       },
+      "method.secrets.receiver.Kind": {
+        "description": "An unlock method's kind.",
+        "oneOf": [
+          {
+            "const": "keychain",
+            "description": "OS keychain (desktops).",
+            "type": "string"
+          },
+          {
+            "const": "password",
+            "description": "Master password (Argon2id).",
+            "type": "string"
+          },
+          {
+            "const": "device",
+            "description": "A paired owner engine releases the KEK over the mesh.",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "Legacy plaintext `secrets.key` (migrated Linux engines); unprotected.",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.receiver.ListPage": {
         "description": "One page of [`ExternalBackend::list`].",
         "properties": {
@@ -133372,6 +133987,40 @@
             "type": "object"
           }
         ]
+      },
+      "method.secrets.receiver.MethodView": {
+        "description": "One unlock method, as lists show it. Never key material.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`keychain` | `password` | `file` | the owner endpoint id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.Kind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "label": {
+            "description": "Human text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label",
+          "created_ms"
+        ],
+        "type": "object"
       },
       "method.secrets.receiver.RequestId": {
         "description": "Correlates a [`SecretsEvent::Requested`] with its [`Answer`].",
@@ -133740,6 +134389,36 @@
         ],
         "type": "object"
       },
+      "method.secrets.receiver.UnlockDevice": {
+        "description": "A node this engine unlocks.",
+        "properties": {
+          "auto": {
+            "description": "Approve its unlock requests without a prompt.",
+            "type": "boolean"
+          },
+          "enrolled_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "node": {
+            "description": "Its endpoint id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "name",
+          "auto",
+          "enrolled_ms"
+        ],
+        "type": "object"
+      },
       "method.secrets.receiver.UnlockRequestView": {
         "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
         "properties": {
@@ -133774,6 +134453,110 @@
           "backend",
           "account",
           "reason"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.UnsealRequestView": {
+        "description": "A prompt waiting on this (owner) engine.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Prompt id.",
+            "type": "string"
+          },
+          "node": {
+            "description": "The asking node's endpoint id.",
+            "type": "string"
+          },
+          "node_name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "purpose": {
+            "description": "`unlock` | `enroll`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "node",
+          "node_name",
+          "purpose",
+          "created_ms"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.VaultStatus": {
+        "description": "`vault_status`.",
+        "properties": {
+          "asking": {
+            "description": "Owner engines a sealed engine is asking right now.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "engine": {
+            "description": "This engine's mesh id, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Why it is sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "description": "Every method.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.receiver.MethodView"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "This engine's name, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password_set": {
+            "description": "A `password` method exists.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "`unsealed` | `sealed`.",
+            "type": "string"
+          },
+          "unsealed_by": {
+            "description": "`keychain` | `file` | `password` | `device` | `memory`; `None` while sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warning": {
+            "description": "Loud text when the key is not protected.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "methods",
+          "password_set",
+          "asking"
         ],
         "type": "object"
       },
@@ -133896,6 +134679,13 @@
             ],
             "default": null,
             "description": "Memory mode (137 D1): `epochs` | `endless`; `None` = `agent.endless.default_chat`."
+          },
+          "mesh_id": {
+            "description": "Optional mesh identifier tagging an on-device session for multi-mesh\nmobile UIs (Shape A). `None` for untagged sessions.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "model": {
             "default": null,
@@ -147252,6 +148042,19 @@
             "$ref": "#/components/schemas/method.cloudnodes.input.NodeSpec"
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "vault_password",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "vaultPassword"
+          ]
         }
       ],
       "result": {
@@ -167329,6 +168132,38 @@
       "x-theuth-owner": "telegram"
     },
     {
+      "name": "test_mcp_server",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "entry",
+          "required": true,
+          "schema": true,
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.mcp_2dserver.output.McpTestResult"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.mcp_2dserver.receiver.McpTestResult"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "mcp-server"
+    },
+    {
       "name": "test_schedule",
       "paramStructure": "by-position",
       "params": [
@@ -167933,6 +168768,322 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "vault_add_device",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "owner",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_add_password",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "password",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_answer_unseal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "approve",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "always",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_change_password",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "old",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "new",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_forget_node",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "node",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_peer_ask",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "nonce",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "purpose",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.AskReply"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.AskReply"
+        }
+      },
+      "x-theuth-audience": "mesh",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_peer_grant",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "nonce",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "purpose",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "mesh",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_remove_method",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "vault_rotate",
       "paramStructure": "by-position",
       "params": [],
@@ -167979,6 +169130,181 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "nodes"
+    },
+    {
+      "name": "vault_seal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_set_auto_unlock",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "node",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "auto",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_status",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_unlock_devices",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.output.UnlockDevice"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.receiver.UnlockDevice"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_unseal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "password",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_unseal_requests",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.output.UnsealRequestView"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.receiver.UnsealRequestView"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
     },
     {
       "name": "vision_effort",

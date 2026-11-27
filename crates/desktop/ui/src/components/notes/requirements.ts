@@ -29,8 +29,7 @@ export const panelRequirements = {
     "doc_unsubscribe",
     "doc_update",
     "list_sessions",
-    "load_session",
-    "meeting_get"
+    "load_session"
   ],
   "topics": [
     "document.changed@1"

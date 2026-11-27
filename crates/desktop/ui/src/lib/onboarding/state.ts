@@ -1,6 +1,6 @@
-// 215: first-run onboarding client state. The wizard's step, the checklist's dismissal, the sections visited and the
-// local mirror of the engine flag `onboarding.completed` live in localStorage `theuth-onboarding-v1`; the open wizard
-// and the pending tour are session state and never stored.
+// 215: first-run onboarding client state. The wizard's step, the checklist's dismissal, the sections visited, where
+// theuth runs (224, iPhone/iPad) and the local mirror of the engine flag `onboarding.completed` live in localStorage
+// `theuth-onboarding-v1`; the open wizard, the open "where" question and the pending tour are session state and never stored.
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect } from 'react'
 import { create } from 'zustand'
@@ -11,6 +11,7 @@ import type { ConfigFlag, ConfigFlagKey } from '@/rpc/bindings/method.rpc_2dcomp
 export type ChecklistId = 'model' | 'chat' | 'inbox' | 'costs' | 'library' | 'phone' | 'channel'
 export type TourId = 'main' | 'inbox' | 'library' | 'costs' | 'devices' | 'chat'
 export type WizardStep = 'welcome' | 'model' | 'default-model' | 'first-chat'
+export type RunsOn = 'device' | 'cloud'
 type Visit = 'inbox' | 'costs' | 'library'
 
 export interface OnboardingState {
@@ -22,6 +23,10 @@ export interface OnboardingState {
   visited: Partial<Record<Visit, true>>
   /** Tour to start once its first anchor mounts. */
   pendingTour: TourId | null
+  /** 224: the iPhone/iPad first run's answer to "Where should theuth run?"; `null` until the user picks. */
+  runsOn: RunsOn | null
+  /** That question on screen (session state). */
+  whereOpen: boolean
   openWizard(step?: WizardStep): void
   closeWizard(): void
   setStep(s: WizardStep): void
@@ -38,8 +43,8 @@ export const ONBOARDING_KEY = 'theuth-onboarding-v1'
 export const WIZARD_STEPS: readonly WizardStep[] = ['welcome', 'model', 'default-model', 'first-chat']
 
 /** The stored part of the state; the wizard's step is per run (every open names its step). */
-export type StoredOnboarding = Pick<OnboardingState, 'completed' | 'checklistDismissed' | 'visited'>
-export const ONBOARDING_DEFAULT: StoredOnboarding = { completed: false, checklistDismissed: false, visited: {} }
+export type StoredOnboarding = Pick<OnboardingState, 'completed' | 'checklistDismissed' | 'visited' | 'runsOn'>
+export const ONBOARDING_DEFAULT: StoredOnboarding = { completed: false, checklistDismissed: false, visited: {}, runsOn: null }
 
 /** Parse the stored JSON; garbage or missing parts fall back to the defaults, unknown visit keys are dropped. */
 export function readOnboarding(raw: string | null): StoredOnboarding {
@@ -60,6 +65,7 @@ export function readOnboarding(raw: string | null): StoredOnboarding {
     completed: typeof o.completed === 'boolean' ? o.completed : d.completed,
     checklistDismissed: typeof o.checklistDismissed === 'boolean' ? o.checklistDismissed : d.checklistDismissed,
     visited,
+    runsOn: o.runsOn === 'device' || o.runsOn === 'cloud' ? o.runsOn : d.runsOn,
   }
 }
 
@@ -69,6 +75,7 @@ export const useOnboarding = create<OnboardingState>()((set) => ({
   step: 'welcome',
   wizardOpen: false,
   pendingTour: null,
+  whereOpen: false,
   openWizard: (step = 'welcome') => set({ wizardOpen: true, step }),
   closeWizard: () => set({ wizardOpen: false }),
   setStep: (step) => set({ step }),
@@ -78,12 +85,13 @@ export const useOnboarding = create<OnboardingState>()((set) => ({
   requestTour: (pendingTour) => set({ pendingTour }),
   clearPendingTour: () => set({ pendingTour: null }),
   // The engine flag is not local state: `completed` keeps mirroring it, and finishing or skipping the wizard writes it.
-  reset: () => set((s) => ({ ...ONBOARDING_DEFAULT, step: 'welcome', visited: {}, completed: s.completed, pendingTour: null })),
+  // Where theuth runs is a choice, not tour progress: it stays too.
+  reset: () => set((s) => ({ ...ONBOARDING_DEFAULT, step: 'welcome', visited: {}, completed: s.completed, runsOn: s.runsOn, pendingTour: null })),
 }))
 
 useOnboarding.subscribe((s, prev) => {
-  if (s.completed === prev.completed && s.checklistDismissed === prev.checklistDismissed && s.visited === prev.visited) return
-  const stored: StoredOnboarding = { completed: s.completed, checklistDismissed: s.checklistDismissed, visited: s.visited }
+  if (s.completed === prev.completed && s.checklistDismissed === prev.checklistDismissed && s.visited === prev.visited && s.runsOn === prev.runsOn) return
+  const stored: StoredOnboarding = { completed: s.completed, checklistDismissed: s.checklistDismissed, visited: s.visited, runsOn: s.runsOn }
   try {
     globalThis.localStorage?.setItem(ONBOARDING_KEY, JSON.stringify(stored))
   } catch {

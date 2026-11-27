@@ -42,6 +42,7 @@ const STATES = [
   'resize',
   'logs',
   'desktop-view',
+  'vault-password',
 ]
 
 async function up(url: string): Promise<boolean> {

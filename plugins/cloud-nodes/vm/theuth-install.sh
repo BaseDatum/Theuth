@@ -9,6 +9,13 @@
 #   theuth-install.sh config NAME KIND   first start: mesh.name / class into config.yaml
 #   theuth-install.sh join            until paired: `t mesh add <ticket>` (blocks; exit 0 when paired)
 #
+# install and config also seal a fresh node's vault (design doc 225): `secrets.key_store: sealed`
+# is appended to the config.yaml `config` wrote, once both a `t` with the sealed vault is installed
+# and no vault exists yet. The engine then keeps the vault key in memory until the creating engine
+# adds its device unlock and the master password over the mesh; `secrets.key` is never written.
+# A `t` without the sealed vault (`t vault --help` fails) would refuse the setting and not start,
+# so it is left out; that node's vault stays as its release makes it.
+#
 # install: $THEUTH_BAKED_DIR (the image's build-time-verified release; unset on a VM) when it is
 # newer than what is installed, then — unless THEUTH_BOOT_UPDATE=0 — the release manifest's
 # `cli-linux-<arch>` tarball when that is newer and the same major: downloaded, verified with
@@ -158,6 +165,27 @@ cmd_install() {
 		log "no t installed in $BIN"
 		return 1
 	fi
+	seal_config
+}
+
+CONFIG_MARK='# written by theuth-install.sh config (a cloud node, design doc 224)'
+
+# seal_config: see the header. Only a config.yaml `config` wrote, only before the vault exists.
+seal_config() {
+	[ -s "$DATA/config.yaml" ] && [ -x "$BIN/t" ] || return 0
+	[ "$(head -n 1 "$DATA/config.yaml")" = "$CONFIG_MARK" ] || return 0
+	if grep -q '^secrets:' "$DATA/config.yaml"; then
+		return 0
+	fi
+	for f in secrets.key vault-keys.json secrets.sqlite; do
+		[ ! -e "$DATA/$f" ] || return 0
+	done
+	if ! "$BIN/t" vault --help >/dev/null 2>&1; then
+		log "this t has no sealed vault yet; vault key_store left to the release"
+		return 0
+	fi
+	printf 'secrets:\n  key_store: sealed\n' >>"$DATA/config.yaml"
+	log "vault: key_store sealed (no key file; the creating engine protects it)"
 }
 
 # config NAME KIND: only when there is no config.yaml yet (the engine's first run appends its own
@@ -167,7 +195,10 @@ cmd_config() {
 	[ ! -e "$DATA/config.yaml" ] || return 0
 	case "$name" in
 	'' | *[!a-z0-9-]* | -*) log "node name must be [a-z0-9-]; mesh.name left to the hostname" ;;
-	*) printf 'mesh:\n  name: %s\n  class: %s\n  nearby: false\n' "$name" "$class" >"$DATA/config.yaml" ;;
+	*)
+		printf '%s\nmesh:\n  name: %s\n  class: %s\n  nearby: false\n' "$CONFIG_MARK" "$name" "$class" >"$DATA/config.yaml"
+		seal_config
+		;;
 	esac
 }
 

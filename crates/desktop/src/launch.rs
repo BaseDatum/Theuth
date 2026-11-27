@@ -53,18 +53,7 @@ pub const EXIT_GRACE: Duration = Duration::from_secs(12);
 const EXIT_POLL: Duration = Duration::from_millis(100);
 const LOG_CAP: usize = 64 * 1024;
 
-/// What the webview needs to open the WebSocket (18 §2 step 5).
-#[derive(Clone, Serialize)]
-pub struct Connection {
-    /// `ws://<listen>/?token=<token>`.
-    pub url: String,
-    /// Contents of `<data_dir>/token`.
-    pub token: String,
-    /// The daemon's data directory (attachments are written under it).
-    pub data_dir: PathBuf,
-    /// True when this app started the daemon and will hang it up on quit.
-    pub owned: bool,
-}
+pub use crate::commands::Connection;
 
 /// The daemon we started: on Unix the pty master and the shell-turned-daemon
 /// child; on Windows the plain `t.exe` child and the Job Object it lives in.

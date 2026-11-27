@@ -3,6 +3,8 @@
 //! a small constant of the count before them. Its own test binary, so the
 //! parallel unit-test runner cannot move the count under it.
 
+#![cfg(not(target_os = "ios"))]
+
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};

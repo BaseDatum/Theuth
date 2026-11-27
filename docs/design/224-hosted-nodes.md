@@ -478,7 +478,7 @@ Lightsail** (listed with its price, *coming soon*, not creatable).
 
 `cloud_providers`, `cloud_import_credential(provider, id)`, `cloud_set_token(provider, token)`,
 `cloud_forget_credential(provider)`, `cloud_oauth_start(provider)`, `cloud_oauth_cancel(provider)`,
-`cloud_quote(spec)`, `cloud_k8s_info(context?)`, `cloud_create(spec)` (returns at once, state
+`cloud_quote(spec)`, `cloud_k8s_info(context?)`, `cloud_create(spec, vault_password?)` (returns at once, state
 `creating`), `cloud_list` (`{nodes, errors}`), `cloud_status(name)`, `cloud_restart(name)`,
 `cloud_resize(name, memory_gb)`, `cloud_update(name)`, `cloud_destroy(name, keep_volume?)`,
 `cloud_terminal(name)`, `cloud_logs(name, tail?)`. Events: `CloudNodeChanged{node}`,
@@ -522,7 +522,10 @@ record update:
 3. **Install** — the node downloads and verifies the newest signed release (minisign, §5); the
    engine cannot observe this directly, so the stage ends when the node dials the mesh.
 4. **Join** — a new peer named `<name>` appeared in `mesh_status`; waits until it is reachable.
-5. **Ready**.
+5. **Vault** — *Protecting the vault*: the node's sealed vault gets this engine's device unlock and
+   the master password (§16.11). Never fails the create; skipped on a node whose release has no
+   sealed vault yet.
+6. **Ready**.
 
 The percentage and "about N minutes left" are estimates from the measured 232 s.
 
@@ -607,10 +610,14 @@ Mockup approved by the owner; screenshots of the fixture in `docs/design/224-ass
   saving, and offers to keep the disk); *＋ Add cloud node* opens the wizard without the "why"
   screen. Phone: an *Add a cloud node — always on, joins this mesh* entry for the engine switcher.
 
-  The Configure step reserves *Vault protection: Unlock from my devices + master password* (desktop:
-  Advanced; phone: below the desktop toggle) and the list a *sealed* status, both shown only when
-  the engine advertises `vault_status` (feat/sealed-vault); the password is not sent yet — wired at
-  that merge.
+  The Configure step has **Vault protection** (phone: below the desktop toggle; desktop: a card
+  below the sizes): master password + confirmation, the strength meter of Settings › Vault, and one
+  line, *"Unlock from your devices; this password is the fallback. It can't be recovered."* Empty
+  is allowed (device unlock only); otherwise Create waits for ≥ 12 characters typed twice. The
+  create button still names the price. A ready node whose vault lacks a master password shows one
+  line under its row with *Set master password* (§16.11). Field and line appear only when the
+  connected engine advertises `vault_status` and `cloud_create`'s `vault_password` parameter; the
+  list's *sealed* status stays behind the same check.
 
 ### 16.9 As built (this branch)
 
@@ -674,3 +681,68 @@ agents use a browser and apps you can watch and take over"; off = a terminal-onl
   on the node; enabling needs the packages installed (apt on the node). Both need a small
   node-side RPC (the engine has passwordless sudo); not built. Today: destroy keeping the disk and
   create again with the other choice (the node comes back as the same engine).
+
+### 16.11 The vault (design doc 225)
+
+A new node's vault is **sealed from its first start** and protected by the creating engine (device
+unlock) and the master password typed in the wizard; no unwrapped vault key is written to its disk.
+
+**Node config.** `theuth-install.sh` (VM cloud-init and the engine image's entrypoint run the same
+script) marks the `config.yaml` it writes for a node and appends `secrets: {key_store: sealed}` to
+it once a `t` is installed whose CLI has `t vault` and no vault exists yet (no `secrets.key`,
+`vault-keys.json` or `secrets.sqlite`). On a fresh data dir the engine then keeps the DEK in memory
+with no method (225 §1, `envelope::boot`: `Unsealed { by: "memory" }`), never mints `secrets.key`,
+and still pairs; right after the pairing it asks the creating engine to become its unlock device,
+approved without a prompt inside the 15-minute pairing grace. A VM gets the change at once (the
+script rides the user data); Fly and Kubernetes get it with the next engine image (the script is
+baked in).
+
+**Release gap.** A node installs the *released* `t` from `latest.json`, which may predate 225. That
+`t` would refuse `key_store: sealed` and not start, so the script leaves it out when `t vault
+--help` fails. The create job detects the gap by method, not version: `vault_status` on the node
+answers JSON-RPC method-not-found (-32601). The stage then says *"Vault protection arrives with the
+next theuth release on this node"*, sends nothing, and the node is created and ready (`vault:
+unsupported`). Once the node updates into 225, its vault is the release's default (`file` on a
+headless Linux box); `cloud_list` re-reads it and the row asks for a master password, which adds
+the `password` method and shreds `secrets.key` (225 §0.2).
+
+**At create time** (`Cloud::create` → `create_job` → `wait_join` → `protect_vault`):
+
+1. `cloud_create(spec, vault_password)` — the password is checked (≥ 12 characters, else refused
+   before anything is made), moved into a `Zeroizing<String>` owned by the spawned job; the record
+   gets `vault: pending`. It is not in `NodeSpec`, the record, user data, provider metadata, env or
+   any event.
+2. Server, storage, install, join as before; the ticket's channel never carries the password.
+3. **Vault**: `vault_status(null)` forwarded to the node (`theuth/rpc/1`). Method-not-found →
+   `unsupported`, stop. Otherwise wait (≤ 150 s) until its methods list `device:<this engine>`,
+   calling `vault_add_device(null, <this engine>)` on the node once if it is not there at the
+   first look.
+4. `vault_add_password(null, pw)` on the node, forwarded the same way (the node derives the KEK;
+   the password crosses only the mesh's end-to-end connection). The job's copy is dropped (zeroed)
+   right after the call returns, whatever it answered.
+5. `vault_status(null)` again; the record's `vault` becomes `protected` (password + this
+   device), `device_only` (no password asked, device confirmed), `password_only` (device not
+   confirmed) or `needs_password` (asked for but not set, or nothing confirmed).
+6. Ready.
+
+**Failures.** The node is created and ready in every case. `vault_add_password` refused or the
+node unreachable → `needs_password`. The engine restarts mid-create → the password died with the
+process; the resumed job runs the stage without it → `needs_password` (a record left `pending`
+outside a create becomes `needs_password` at resume). The job fails earlier (ticket expired) →
+`pending` is cleared. Destroy during the stage aborts the task, dropping the password.
+`needs_password` shows *"Vault: device only — set a master password"* with *Set master password*,
+which opens 225's `PasswordForm` and calls `vault_add_password(<node>, pw)` through the connected
+engine; `device_only` shows one muted line with the same action. `cloud_list`/`cloud_status`
+re-read `vault_status` (3 s, in parallel) for reachable ready nodes that are not `protected`, so the
+row follows a password set from anywhere.
+
+**Window.** Until the stage adds a method, the node's DEK is in memory only; if the node's engine
+restarts in that window after it created `secrets.sqlite` (an empty vault), it boots sealed with no
+method and that vault cannot be opened (225 §1). The window is the join plus the stage, usually
+seconds after the pairing. The Kubernetes variant of Configure has no password field: those nodes
+get device unlock only.
+
+**Residual copies** (not zeroizable from here): the JSON-RPC request buffers on the way in
+(app → engine) and the forwarded request line (engine → node); the browser's input state until
+the create call returns (then cleared) and React Query's mutation variables until they are
+collected — the same exposure as 225's own `vault_unseal` / Settings › Vault forms.

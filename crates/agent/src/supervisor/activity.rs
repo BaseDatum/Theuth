@@ -56,11 +56,12 @@ impl Agents {
             .any(|w| w.target == child.to_string());
         // A native child reports its own turn end; an ACP child's entry says.
         let reports = match &row.agent {
-            None => acp::Reports {
+            None => crate::activity::Reports {
                 permission: true,
                 turn_end: true,
                 session_load: true,
             },
+            #[cfg(not(target_os = "ios"))]
             Some(agent) => crate::peers::parse_agent(agent)
                 .ok()
                 .and_then(|(_, engine)| {
@@ -70,6 +71,8 @@ impl Agents {
                         .map(acp::Entry::reports)
                 })
                 .unwrap_or_default(),
+            #[cfg(target_os = "ios")]
+            Some(_) => crate::activity::Reports::default(),
         };
         Some(PeerFacts {
             live: self
@@ -536,7 +539,7 @@ impl Message<PeerWaitDue> for Agents {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 mod tests {
     use std::sync::Arc;
 

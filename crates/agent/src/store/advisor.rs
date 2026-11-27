@@ -322,6 +322,7 @@ mod tests {
 
     /// 125 F1: the link is captured (68 §3), so a session moved to another
     /// engine by replaying its log rows arrives with its advisor link intact.
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn link_survives_capture_and_apply_into_a_fresh_store() {
         use std::ffi::{c_int, c_void};

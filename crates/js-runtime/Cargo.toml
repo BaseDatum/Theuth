@@ -4,17 +4,24 @@ version = "2.24.0"  # frozen: only the binaries carry the product version (platf
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "The in-process JS runtime: the documents helper (packages/documents) and the app bundles (packages/apps OpenUI check/merge, mermaid parse) in deno_core runtimes, one isolate and thread per bundle, with deadline, heap and panic containment (docs/design/js-runtime-unified-as-built.md)"
+description = "The in-process JS runtime: the documents helper (packages/documents) and the app bundles (packages/apps OpenUI check/merge, mermaid parse) in deno_core (desktop) or Apple JavaScriptCore (iOS / jsc feature) runtimes, one isolate and thread per bundle, with deadline, heap and panic containment (docs/design/js-runtime-unified-as-built.md)"
+
+[features]
+# Use Apple's JavaScriptCore.framework backend on non-iOS Apple hosts (e.g. macOS) so the golden and
+# unit test suites can be exercised directly against JSC. Always active on `target_os = "ios"`.
+jsc = []
 
 [dependencies]
-# Same version and (default) features as obscura-js, so the one V8 build is shared (`cargo tree -i v8`).
-deno_core = "0.412"
 getrandom = "0.2"
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+# Same version and (default) features as obscura-js, so the one V8 build is shared (`cargo tree -i v8`).
+deno_core = "0.412"
 
 [dev-dependencies]
 serde = { workspace = true }

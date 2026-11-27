@@ -1839,6 +1839,19 @@ impl Schedule {
                 (watcher || !self.is_running(e)).then(|| (n.clone(), watcher))
             })
             .collect();
+        // 225: a sealed vault defers every due routine (not fails it): `next` stays in the past,
+        // so the first tick after the unseal fires them, `missed:` deciding as after a pause.
+        if !due.is_empty()
+            && let Some(why) = ::tools::secrets::sealed()
+        {
+            for (name, _) in &due {
+                if self.told.insert(("sealed", name.clone())) {
+                    tracing::info!(%name, "schedules: deferred until the vault is unsealed: {why}");
+                }
+            }
+            return checks;
+        }
+        self.told.retain(|(k, _)| *k != "sealed");
         for (name, watcher) in due {
             if let Some(e) = self.entries.get_mut(&name) {
                 e.ran_here = true;

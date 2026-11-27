@@ -4,9 +4,12 @@
 //! engine-local tables (`projects`, `cost_owners`, `peer_*`, `a2a_*`; 68
 //! decision 8) are never attached, so their writes leave no trace here.
 
+#[cfg(not(target_os = "ios"))]
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+#[cfg(not(target_os = "ios"))]
 use std::ptr::{self, NonNull};
 
+#[cfg(not(target_os = "ios"))]
 use libsqlite3_sys as ffi;
 
 /// Every replicated table with the column that names its session
@@ -38,6 +41,13 @@ pub const ATTACHED: [(&str, &str); 20] = [
     ("endless_nodes", "session_id"),
     ("endless_calls", "session_id"),
 ];
+
+#[cfg(not(target_os = "ios"))]
+pub(crate) use imp::*;
+
+#[cfg(not(target_os = "ios"))]
+mod imp {
+    use super::*;
 
 /// One `sqlite3_session` on one database handle. `Send` because the store
 /// only touches it while holding the write connection (the pool has exactly
@@ -380,4 +390,5 @@ impl Drop for Session {
     /// use-after-free seen as `SIGSEGV` in `sessionPreupdateOneChange`. The
     /// only deletes are in [`Session::reset`], under the handle lock.
     fn drop(&mut self) {}
+}
 }

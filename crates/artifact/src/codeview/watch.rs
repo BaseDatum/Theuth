@@ -6,12 +6,15 @@
 //! [`FileViewChange`]. Without a watcher (the platform refused one) the path is polled every 2 s.
 
 use std::collections::HashMap;
+#[cfg(not(target_os = "ios"))]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 
+#[cfg(not(target_os = "ios"))]
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
+#[cfg(not(target_os = "ios"))]
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
@@ -29,6 +32,7 @@ const BACKLOG: usize = 16;
 
 /// What keeps one path watched (dropping it stops the watch).
 enum Source {
+    #[cfg(not(target_os = "ios"))]
     Notify(
         #[expect(dead_code, reason = "held only: dropping the debouncer stops the watcher")]
         Debouncer<RecommendedWatcher, RecommendedCache>,
@@ -38,8 +42,10 @@ enum Source {
 
 impl Drop for Source {
     fn drop(&mut self) {
-        if let Source::Poll(task) = self {
-            task.abort();
+        match self {
+            Source::Poll(task) => task.abort(),
+            #[cfg(not(target_os = "ios"))]
+            Source::Notify(_) => {}
         }
     }
 }
@@ -102,6 +108,7 @@ pub fn watch(path: &Path) -> FileWatch {
         };
     }
     let (tx, rx) = broadcast::channel(BACKLOG);
+    #[cfg(not(target_os = "ios"))]
     let source = match start_notify(path, tx.clone()) {
         Ok(d) => Source::Notify(d),
         Err(e) => {
@@ -109,6 +116,8 @@ pub fn watch(path: &Path) -> FileWatch {
             Source::Poll(tokio::spawn(poll(path.to_path_buf(), tx.clone())))
         }
     };
+    #[cfg(target_os = "ios")]
+    let source = Source::Poll(tokio::spawn(poll(path.to_path_buf(), tx.clone())));
     all.insert(
         path.to_path_buf(),
         Entry {
@@ -143,6 +152,7 @@ fn state(path: &Path) -> FileViewChange {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 fn start_notify(
     path: &Path,
     tx: broadcast::Sender<FileViewChange>,

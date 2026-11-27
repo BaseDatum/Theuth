@@ -268,6 +268,22 @@ impl PeerStateWord {
     }
 }
 
+/// Harness capability flags (mirrors `acp::Reports` on desktop).
+#[cfg(not(target_os = "ios"))]
+pub use acp::Reports;
+
+/// Harness capability flags (iOS stand-in for `acp::Reports` — native sessions always report full lifecycle).
+#[cfg(target_os = "ios")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reports {
+    /// Harness surfaces permission requests.
+    pub permission: bool,
+    /// Harness signals turn completion.
+    pub turn_end: bool,
+    /// Harness supports session/load.
+    pub session_load: bool,
+}
+
 /// What the supervisor knows about one child (155 §5.1 table).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerFacts {
@@ -290,7 +306,7 @@ pub struct PeerFacts {
     /// The ledger shows admitted input for it.
     pub queued: bool,
     /// Its harness's capability entry (§8).
-    pub reports: acp::Reports,
+    pub reports: Reports,
 }
 
 /// The §5.1 fold: blocked > stalled > done > idle > running; `not_running`
@@ -524,7 +540,7 @@ mod tests {
             stalled_secs: None,
             result_delivered: true,
             queued: false,
-            reports: acp::Reports {
+            reports: Reports {
                 permission: true,
                 turn_end: true,
                 session_load: true,
@@ -594,7 +610,7 @@ mod tests {
             Blocked
         );
         let no_turn_end = PeerFacts {
-            reports: acp::Reports::default(),
+            reports: Reports::default(),
             ..f.clone()
         };
         assert_eq!(

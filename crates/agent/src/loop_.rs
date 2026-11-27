@@ -48,7 +48,7 @@ use kameo::error::ActorStopReason;
 use kameo::message::{Context, Message};
 use knowledge::{HarvestResult, KNOWLEDGE_ACTOR, Knowledge, KnowledgeActor, Put, Source};
 use models::Resolved;
-use monty_pool::Pool;
+use crate::repl::MontyPool as Pool;
 use runtime::{InputId, Runtime, SessionId, TurnId};
 use sha2::Digest as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
@@ -4403,14 +4403,15 @@ impl Turn {
     }
 
     /// A cancel landing now is a suspension, not a stop (109 §9.2, 139
-    /// §6.1): the process is shutting down or this session is draining for
-    /// a release.
+    /// §6.1): the process is shutting down, this session is draining for
+    /// a release, or the mobile engine is suspending for OS backgrounding.
     fn suspending(&self) -> bool {
         self.shared.rt.shutdown.is_cancelled()
             || self
                 .shared
                 .draining
                 .load(std::sync::atomic::Ordering::SeqCst)
+            || crate::supervisor::suspended()
     }
 
     /// The store when the knowledge plugin is up (12 §9.2) and the tree is
@@ -6566,7 +6567,12 @@ impl Turn {
         };
         loop {
             let ev = tokio::select! {
-                _ = self.cancel.cancelled() => return Err(self.aborted()),
+                _ = self.cancel.cancelled() => {
+                    if self.suspending() && !text.is_empty() {
+                        checkpoint_now(text, true, *thinking).await;
+                    }
+                    return Err(self.aborted());
+                }
                 ev = tokio::time::timeout(idle, stream.next()) => match ev {
                     Ok(ev) => ev,
                     Err(_) => {
@@ -7680,14 +7686,22 @@ impl Turn {
         turn: TurnId,
         round: u32,
     ) -> Round {
-        // 109 §9.2 step 2: no new model call opens during a drain — the turn
-        // is marked `suspended` and resumes from its newest journal step.
+        // 109 §9.2 step 2: no new model call opens during a drain or mobile
+        // background suspension — the turn is marked `suspended` and resumes
+        // from its newest journal step.
+        let bg_suspended = crate::supervisor::suspended();
         if self
             .shared
             .draining
             .load(std::sync::atomic::Ordering::SeqCst)
+            || bg_suspended
         {
-            let mut payload = serde_json::json!({ "reason": "drain" });
+            let reason = if bg_suspended {
+                "ios_background"
+            } else {
+                "drain"
+            };
+            let mut payload = serde_json::json!({ "reason": reason });
             // 178 F1: the newest `suspended` row carries the run clock too.
             if let Some(ms) = crate::durability::run_clock::ran_ms(turn) {
                 payload["ran_ms"] = ms.into();

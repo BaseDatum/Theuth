@@ -20,17 +20,21 @@ use futures::future::BoxFuture;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::{DelegatedReply, ReplySender};
+#[cfg(not(target_os = "ios"))]
 use notify::Watcher;
 use rmcp::model::{CallToolRequestParams, ContentBlock, ProtocolVersion};
+#[cfg(not(target_os = "ios"))]
+use rmcp::service::ServiceExt;
 use rmcp::service::{
     ClientInitializeError, ClientLifecycleMode, ClientServiceExt, RoleClient, RunningService,
-    ServiceExt,
 };
 use rmcp::transport::auth::{
     AuthClient, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
 };
+use rmcp::transport::StreamableHttpClientTransport;
+#[cfg(not(target_os = "ios"))]
+use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -984,6 +988,42 @@ pub struct AddServer {
     pub entry: Value,
 }
 
+/// Outcome of a non-destructive [`TestServer`] connection probe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum McpTestStatus {
+    /// Connected and listed tools successfully.
+    Connected,
+    /// Server answered HTTP 401 with an OAuth challenge; save and log in to connect.
+    AuthRequired,
+    /// Connection or handshake failed.
+    Failed,
+}
+
+/// Result of [`TestServer`]: no config file or tool registration is written.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct McpTestResult {
+    /// Probe outcome.
+    pub status: McpTestStatus,
+    /// Sorted tool names advertised by the server when `status == Connected`.
+    pub tools: Vec<String>,
+    /// Redacted error detail when `status == Failed`.
+    pub error: Option<String>,
+}
+
+/// `ask` → `Result<McpTestResult, String>`: validate and probe a candidate MCP
+/// server entry without writing any file or registering its tools.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct TestServer {
+    /// Candidate server name, `[a-z0-9][a-z0-9._-]*`.
+    pub name: String,
+    /// One server object: `command`/`args`/`env`/`cwd` or `url`/`headers`/`oauth`.
+    pub entry: Value,
+}
+
 /// `ask` → `Result<(), String>`: delete `<name>.json` when it is a bare entry,
 /// otherwise set `"disabled": true` on the entry in its file; reconcile.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1577,11 +1617,20 @@ impl Message<AddServer> for Mcp {
                 m.name
             ));
         }
-        // Connect before writing: nothing half-added, the caller fixes the
-        // entry and calls again. This one wait is the caller's own request.
-        let result = attempt(&m.name, &spec, &self.auth_dir)
-            .await
-            .map_err(|e| format!("{}: connect failed: {e:#}", m.name))?;
+        // Connect before writing: nothing half-added on hard errors, while a 401
+        // OAuth challenge still saves the server so the caller can immediately
+        // run `mcp_login` against its recorded challenge.
+        let attempt_res = match attempt(&m.name, &spec, &self.auth_dir).await {
+            Ok(ok) => Ok(ok),
+            Err(e)
+                if e.downcast_ref::<ClientInitializeError>()
+                    .and_then(ClientInitializeError::auth_challenge)
+                    .is_some() =>
+            {
+                Err(e)
+            }
+            Err(e) => return Err(format!("{}: connect failed: {e:#}", m.name)),
+        };
         if adding {
             // Added here, so homed here — before the entry, so no reconcile sees it homeless.
             if let (Some(me), Some(mut homes)) = (&self.machine, homes) {
@@ -1607,11 +1656,62 @@ impl Message<AddServer> for Mcp {
             .map(|r| r.tools.into_values().collect())
             .unwrap_or_default();
         self.state.pending.remove(&m.name);
-        self.settle(m.name.clone(), spec, Ok(result), ctx.actor_ref());
+        self.settle(m.name.clone(), spec, attempt_res, ctx.actor_ref());
         register(&mut self.state, &self.dir, &self.registry, orphans).await;
         self.rt.publish(progress(&self.state)).await;
         // The watcher's reconcile then finds it running with the same spec.
         Ok(self.server(m.name, None, &HashSet::new()))
+    }
+}
+
+impl Message<TestServer> for Mcp {
+    type Reply = Result<McpTestResult, String>;
+
+    async fn handle(
+        &mut self,
+        m: TestServer,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<McpTestResult, String> {
+        if !git::valid_name(&m.name) {
+            return Err(format!(
+                "invalid server name `{}`: use [a-z0-9][a-z0-9._-]*",
+                m.name
+            ));
+        }
+        if !is_entry(&m.entry) {
+            return Err("entry must be an object with `command` or `url`".into());
+        }
+        let Some(spec) = entry(&m.entry, &self.dir) else {
+            return Err("entry is disabled or malformed".into());
+        };
+        match attempt(&m.name, &spec, &self.auth_dir).await {
+            Ok((service, remote)) => {
+                let mut tools: Vec<String> = remote.into_iter().map(|t| t.name.to_string()).collect();
+                tools.sort();
+                drop(service);
+                Ok(McpTestResult {
+                    status: McpTestStatus::Connected,
+                    tools,
+                    error: None,
+                })
+            }
+            Err(e)
+                if e.downcast_ref::<ClientInitializeError>()
+                    .and_then(ClientInitializeError::auth_challenge)
+                    .is_some() =>
+            {
+                Ok(McpTestResult {
+                    status: McpTestStatus::AuthRequired,
+                    tools: Vec::new(),
+                    error: None,
+                })
+            }
+            Err(e) => Ok(McpTestResult {
+                status: McpTestStatus::Failed,
+                tools: Vec::new(),
+                error: Some(secrets::redact(&format!("{e:#}")).into_owned()),
+            }),
+        }
     }
 }
 
@@ -1647,6 +1747,7 @@ impl Message<RemoveServer> for Mcp {
 }
 
 /// First 60 lines of `README.md` / `README` (any case) in `dir`; empty if none.
+#[cfg(not(target_os = "ios"))]
 fn readme_head(dir: &Path) -> String {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return String::new();
@@ -1667,6 +1768,7 @@ fn readme_head(dir: &Path) -> String {
 impl Message<AddRepo> for Mcp {
     type Reply = Result<RepoInfo, String>;
 
+    #[cfg(not(target_os = "ios"))]
     async fn handle(
         &mut self,
         m: AddRepo,
@@ -1694,6 +1796,15 @@ impl Message<AddRepo> for Mcp {
             readme: readme_head(&path),
             path: path.display().to_string(),
         })
+    }
+
+    #[cfg(target_os = "ios")]
+    async fn handle(
+        &mut self,
+        _: AddRepo,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<RepoInfo, String> {
+        Err("git MCP repositories are not supported on iOS".to_owned())
     }
 }
 
@@ -2174,26 +2285,141 @@ pub async fn expand(raw: &str) -> anyhow::Result<String> {
             other => other.to_string(),
         };
     }
-    if !s.contains('$') && !s.contains('`') {
-        return Ok(s);
+    #[cfg(target_os = "ios")]
+    {
+        if s.contains("$(") || s.contains('`') {
+            tracing::warn!(
+                value = %raw,
+                "mcp expansion: shell command substitution is not supported on iOS"
+            );
+        }
+        if !s.contains('$') {
+            return Ok(s);
+        }
+        Ok(expand_env_vars(&s))
     }
-    // ponytail: `ShellKind::Brush` (Windows) is 58 §11 step 3 — brush runs the
-    // heredoc in-process there; until then the string is kept as written.
-    let Some(mut cmd) =
-        platform::shell().command(&format!("cat <<__theuth_mcp__\n{s}\n__theuth_mcp__"), false)
-    else {
-        tracing::warn!(value = %raw, "mcp expansion: no login shell on this platform; value kept as written");
-        return Ok(s);
-    };
-    let out = cmd.output().await?;
-    let err = String::from_utf8_lossy(&out.stderr);
-    if !out.status.success() || !err.trim().is_empty() {
-        // `raw`, not `s`: the expanded string may hold a secret value.
-        tracing::warn!(value = %raw, status = %out.status, "mcp expansion: {}", err.trim());
+    #[cfg(not(target_os = "ios"))]
+    {
+        if !s.contains('$') && !s.contains('`') {
+            return Ok(s);
+        }
+        // ponytail: `ShellKind::Brush` (Windows) is 58 §11 step 3 — brush runs the
+        // heredoc in-process there; until then the string is kept as written.
+        let Some(mut cmd) = platform::shell()
+            .command(&format!("cat <<__theuth_mcp__\n{s}\n__theuth_mcp__"), false)
+        else {
+            tracing::warn!(value = %raw, "mcp expansion: no login shell on this platform; value kept as written");
+            return Ok(s);
+        };
+        let out = cmd.output().await?;
+        let err = String::from_utf8_lossy(&out.stderr);
+        if !out.status.success() || !err.trim().is_empty() {
+            // `raw`, not `s`: the expanded string may hold a secret value.
+            tracing::warn!(value = %raw, status = %out.status, "mcp expansion: {}", err.trim());
+        }
+        let mut text = String::from_utf8(out.stdout)?;
+        text.pop(); // the heredoc's own trailing newline
+        Ok(text)
     }
-    let mut text = String::from_utf8(out.stdout)?;
-    text.pop(); // the heredoc's own trailing newline
-    Ok(text)
+}
+
+/// Pure-Rust `$VAR` / `${VAR}` / `${VAR:-default}` / `${VAR-default}` expansion
+/// from [`std::env::var`] (used on iOS, where spawning a shell is forbidden).
+#[cfg(any(target_os = "ios", test))]
+fn expand_env_vars(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        while i < bytes.len() && bytes[i] != b'\\' && bytes[i] != b'$' {
+            i += 1;
+        }
+        if i > start {
+            out.push_str(&s[start..i]);
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        if bytes[i] == b'\\' {
+            if i + 1 < bytes.len() && matches!(bytes[i + 1], b'$' | b'\\') {
+                out.push(bytes[i + 1] as char);
+                i += 2;
+            } else {
+                out.push('\\');
+                i += 1;
+            }
+            continue;
+        }
+        // bytes[i] == b'$'
+        if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            let mut depth = 1usize;
+            let mut j = i + 2;
+            while j < bytes.len() && depth > 0 {
+                if bytes[j] == b'$' && j + 1 < bytes.len() && bytes[j + 1] == b'{' {
+                    depth += 1;
+                    j += 2;
+                    continue;
+                }
+                if bytes[j] == b'}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            if depth == 0 {
+                let inner = &s[i + 2..j];
+                let name_end = inner
+                    .as_bytes()
+                    .iter()
+                    .enumerate()
+                    .take_while(|&(idx, &b)| {
+                        if idx == 0 {
+                            b.is_ascii_alphabetic() || b == b'_'
+                        } else {
+                            b.is_ascii_alphanumeric() || b == b'_'
+                        }
+                    })
+                    .count();
+                let (name, rest) = inner.split_at(name_end);
+                if name.is_empty() {
+                    out.push_str(&s[i..=j]);
+                } else if rest.is_empty() {
+                    out.push_str(&std::env::var(name).unwrap_or_default());
+                } else if let Some(default) = rest.strip_prefix(":-") {
+                    match std::env::var(name) {
+                        Ok(v) if !v.is_empty() => out.push_str(&v),
+                        _ => out.push_str(&expand_env_vars(default)),
+                    }
+                } else if let Some(default) = rest.strip_prefix('-') {
+                    match std::env::var(name) {
+                        Ok(v) => out.push_str(&v),
+                        Err(_) => out.push_str(&expand_env_vars(default)),
+                    }
+                } else {
+                    out.push_str(&s[i..=j]);
+                }
+                i = j + 1;
+                continue;
+            }
+        } else if i + 1 < bytes.len()
+            && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
+        {
+            let mut end = i + 2;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            let name = &s[i + 1..end];
+            out.push_str(&std::env::var(name).unwrap_or_default());
+            i = end;
+            continue;
+        }
+        out.push('$');
+        i += 1;
+    }
+    out
 }
 
 /// [`expand`] over every value of an env or header map; keys are kept as written.
@@ -2226,6 +2452,7 @@ fn http_lifecycle() -> ClientLifecycleMode {
 /// `$(gh auth token)` runs once per connection and not on every reconcile.
 async fn connect(name: &str, spec: &ServerSpec, auth_dir: &Path) -> anyhow::Result<Service> {
     let service = match &spec.transport {
+        #[cfg(not(target_os = "ios"))]
         Transport::Stdio {
             command,
             args,
@@ -2257,6 +2484,12 @@ async fn connect(name: &str, spec: &ServerSpec, auth_dir: &Path) -> anyhow::Resu
                 });
             }
             ().serve(transport).await?
+        }
+        #[cfg(target_os = "ios")]
+        Transport::Stdio { .. } => {
+            anyhow::bail!(
+                "stdio MCP servers are not supported on iOS; use a remote HTTP MCP server"
+            );
         }
         Transport::Http { url, headers, .. } => {
             let url = expand(url).await?;
@@ -2538,11 +2771,17 @@ pub async fn start(
         std::time::Duration::from_secs(120),
         None,
     ));
+    #[cfg(not(target_os = "ios"))]
     let sources: [DynTool; 4] = [
         Arc::new(tools::AddMcpServer),
         Arc::new(tools::RemoveMcpServer),
         Arc::new(tools::AddMcpRepo),
         Arc::new(tools::SyncMcpRepos),
+    ];
+    #[cfg(target_os = "ios")]
+    let sources: [DynTool; 2] = [
+        Arc::new(tools::AddMcpServer),
+        Arc::new(tools::RemoveMcpServer),
     ];
     for tool in sources {
         registry.ask(RegisterTool(tool)).await?;
@@ -2573,32 +2812,35 @@ pub async fn start(
     mcp.register(MCP_ACTOR)?;
     mcp.tell(Reconcile).await?;
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        // 187: only server configs, `config.yaml` and `homes.yaml` matter; an
-        // audit append or an image write is no reason to reconcile.
-        let config = |p: &PathBuf| {
-            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                !n.starts_with('.') && (n.ends_with(".json") || n == "config.yaml" || n == HOMES)
-            })
-        };
-        if res.is_ok_and(|e| e.paths.iter().any(config)) {
-            let _ = tx.send(());
-        }
-    })?;
-    watcher.watch(&dir, notify::RecursiveMode::NonRecursive)?;
-    tokio::spawn(async move {
-        let _watcher = watcher;
-        while rx.recv().await.is_some() {
-            // ponytail: fixed 300ms debounce; editors save in bursts. Tune if a
-            // reconnect storm ever shows up.
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            while rx.try_recv().is_ok() {}
-            if mcp.tell(Reconcile).await.is_err() {
-                break;
+    #[cfg(not(target_os = "ios"))]
+    {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            // 187: only server configs, `config.yaml` and `homes.yaml` matter; an
+            // audit append or an image write is no reason to reconcile.
+            let config = |p: &PathBuf| {
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    !n.starts_with('.') && (n.ends_with(".json") || n == "config.yaml" || n == HOMES)
+                })
+            };
+            if res.is_ok_and(|e| e.paths.iter().any(config)) {
+                let _ = tx.send(());
             }
-        }
-    });
+        })?;
+        watcher.watch(&dir, notify::RecursiveMode::NonRecursive)?;
+        tokio::spawn(async move {
+            let _watcher = watcher;
+            while rx.recv().await.is_some() {
+                // ponytail: fixed 300ms debounce; editors save in bursts. Tune if a
+                // reconnect storm ever shows up.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                while rx.try_recv().is_ok() {}
+                if mcp.tell(Reconcile).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
     Ok(())
 }
 
@@ -2845,6 +3087,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn expand_uses_the_shell_and_keeps_quotes_literal() {
         // SAFETY: test-only unique key, set before any thread reads it.
@@ -2857,6 +3100,31 @@ mod tests {
         );
         assert_eq!(expand("plain \"text\" ").await.unwrap(), "plain \"text\" ");
         assert_eq!(expand("$(false)x").await.unwrap(), "x");
+    }
+
+    #[test]
+    fn expand_env_vars_expands_dollar_and_braced_vars() {
+        // SAFETY: test-only unique keys, set before any thread reads them.
+        unsafe {
+            std::env::set_var("THEUTH_MCP_IOS_TOK", "tok123");
+            std::env::set_var("THEUTH_MCP_IOS_EMPTY", "");
+        }
+        assert_eq!(
+            expand_env_vars("Bearer $THEUTH_MCP_IOS_TOK"),
+            "Bearer tok123"
+        );
+        assert_eq!(
+            expand_env_vars("https://${THEUTH_MCP_IOS_HOST:-api.example.com}/mcp?k=${THEUTH_MCP_IOS_TOK}"),
+            "https://api.example.com/mcp?k=tok123"
+        );
+        assert_eq!(
+            expand_env_vars("${THEUTH_MCP_IOS_EMPTY:-fallback}:${THEUTH_MCP_IOS_EMPTY-empty}"),
+            "fallback:"
+        );
+        assert_eq!(
+            expand_env_vars("literal \\$THEUTH_MCP_IOS_TOK and $5"),
+            "literal $THEUTH_MCP_IOS_TOK and $5"
+        );
     }
 
     #[test]

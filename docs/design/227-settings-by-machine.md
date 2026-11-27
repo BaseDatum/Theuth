@@ -118,8 +118,8 @@ Behaviour:
   stops live.)
 - **`engine_caps`.** `display` / `interactive_user` / audio from the startup probe `theuth::subsystems::Env`,
   installed by `start_plugins` (`agent::rpc_machines::install_host_caps`). Without a probe nothing is assumed (no
-  person, display or mic): the iOS engine must install `HostCaps { interactive: true, display: true, audio: true }`
-  where it starts (feat/ios-engine; not on this branch). `display` also when `<data_dir>/desktop.json` (the node's
+  person, display or mic): the iOS engine installs `HostCaps { interactive: true, display: true, audio: true }` and its
+  own composed API as the local target (`crates/desktop/src/ios_engine.rs`, `boot_engine`). `display` also when `<data_dir>/desktop.json` (the node's
   watchable desktop) exists; `mic` from `list_input_devices` (non-empty), else the probe's audio;
   `headless = !interactive_user`; `hub = mesh::is_hub()`.
 - **The Vault tab** does not use `engine_call`: the vault RPCs take `engine` as their first positional param and

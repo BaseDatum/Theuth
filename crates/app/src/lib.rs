@@ -27,14 +27,19 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
 
 pub mod rpc_support;
 pub mod actor;
+#[cfg(not(target_os = "ios"))]
 pub mod agent_draft;
+#[cfg(not(target_os = "ios"))]
 pub mod draft;
 pub mod fence;
 pub mod helper;
+#[cfg(not(target_os = "ios"))]
 pub mod launch_card; // 159:W6
 pub mod meta;
+#[cfg(not(target_os = "ios"))]
 pub mod routine_draft;
 pub mod sched;
+#[cfg(not(target_os = "ios"))]
 pub mod study_draft;
 pub mod tool;
 
@@ -45,9 +50,13 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 
 pub use actor::{Apps, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi};
+#[cfg(not(target_os = "ios"))]
 pub use agent_draft::{AgentDraft, AgentDraftArgs, AgentDraftTool};
+#[cfg(not(target_os = "ios"))]
 pub use draft::{Draft, TaskDraftArgs, TaskDraftTool};
+#[cfg(not(target_os = "ios"))]
 pub use routine_draft::{RoutineDraft, RoutineDraftArgs, RoutineDraftTool};
+#[cfg(not(target_os = "ios"))]
 pub use study_draft::StudyDraftTool;
 pub use tool::{AppArgs, AppTool, EXAMPLE, prompt};
 
@@ -357,27 +366,30 @@ impl runtime::Plugin for AppPlugin {
                         core: core.clone(),
                     })))
                     .await;
-                let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(TaskDraftTool {
-                        core: core.clone(),
-                    })))
-                    .await;
-                let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(AgentDraftTool {
-                        core: core.clone(),
-                    })))
-                    .await;
-                let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(RoutineDraftTool {
-                        core: core.clone(),
-                    })))
-                    .await;
-                let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(StudyDraftTool {
-                        core: core.clone(),
-                    })))
-                    .await;
-                launch_card::register(&reg, core.clone()).await; // 159:W6
+                #[cfg(not(target_os = "ios"))]
+                {
+                    let _ = reg
+                        .ask(tools::RegisterTool(Arc::new(TaskDraftTool {
+                            core: core.clone(),
+                        })))
+                        .await;
+                    let _ = reg
+                        .ask(tools::RegisterTool(Arc::new(AgentDraftTool {
+                            core: core.clone(),
+                        })))
+                        .await;
+                    let _ = reg
+                        .ask(tools::RegisterTool(Arc::new(RoutineDraftTool {
+                            core: core.clone(),
+                        })))
+                        .await;
+                    let _ = reg
+                        .ask(tools::RegisterTool(Arc::new(StudyDraftTool {
+                            core: core.clone(),
+                        })))
+                        .await;
+                    launch_card::register(&reg, core.clone()).await; // 159:W6
+                }
                 let _ = reg
                     .ask(tools::RegisterPrompt {
                         plugin: "app",

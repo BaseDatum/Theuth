@@ -11,6 +11,7 @@ mod plugin_cli;
 mod secret_cli;
 mod service;
 mod subsystems;
+mod vault_cli;
 mod worker;
 #[cfg(test)]
 mod wire_discovery_tests;
@@ -211,6 +212,11 @@ enum Cmd {
     Plugin {
         #[command(subcommand)]
         cmd: plugin_cli::PluginCmd,
+    },
+    /// The sealed secrets vault (design doc 225): status, seal/unseal, unlock methods, offline init.
+    Vault {
+        #[command(subcommand)]
+        cmd: vault_cli::VaultCmd,
     },
 }
 
@@ -645,6 +651,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
         Cmd::Double { .. } => unreachable!("t double runs without an engine"),
         Cmd::Dreaming { .. } => unreachable!("t dreaming runs without an engine"),
         Cmd::Plugin { .. } => unreachable!("t plugin is served by plugin_cli::run"),
+        Cmd::Vault { .. } => unreachable!("t vault is served by vault_cli::run"),
     };
     match r {
         Ok(v) => {
@@ -1362,7 +1369,7 @@ tools:
   # pty_shell: ~        # program for `start` PTY jobs; default $SHELL, on Windows pwsh.exe else powershell.exe (58 §0.3)
 
 # secrets:                   # design doc 37; `/secrets`, Settings › Secrets, `t --secret-set`
-#   key_store: auto          # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
+#   key_store: auto          # auto | keychain | file | sealed — how the vault key opens at boot (225); auto = keychain, else <data_dir>/secrets.key (0600) with a warning; sealed = never a key file: master password / device unlock only (`t vault`)
 #   tools: true              # false: no secret_* tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed; the vault, /secrets and the harness's own keys are unaffected
 #   request_timeout_secs: 1800   # `secret_request` gives up (the model sees \"no answer\") after this
 
@@ -1731,6 +1738,7 @@ async fn run() -> anyhow::Result<()> {
                 k8s, name, image, ..
             },
         }) if k8s.k8s && k8s.dry_run => return k8s_cli::dry_run(&k8s, name, image).await,
+        Some(Cmd::Vault { cmd }) => return vault_cli::run(&data_dir, &config, cmd).await,
         Some(cmd) => return cmd_67(&data_dir, &config, cmd).await,
         None => {}
     }

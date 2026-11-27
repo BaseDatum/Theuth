@@ -9,7 +9,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::{AddRepo, AddServer, Mcp, RemoveServer, SyncMcp};
+#[cfg(not(target_os = "ios"))]
+use super::{AddRepo, SyncMcp};
+use super::{AddServer, Mcp, RemoveServer};
 use crate::{MCP_ACTOR, Risk, Tool, ToolCx, ToolOutput};
 
 /// The actor, or the text the model reads when it is not running.
@@ -87,6 +89,12 @@ impl Tool for AddMcpServer {
         };
         if a.command.is_some() == a.url.is_some() {
             return Ok(ToolOutput::err("give exactly one of `command` or `url`"));
+        }
+        #[cfg(target_os = "ios")]
+        if a.command.is_some() {
+            return Ok(ToolOutput::err(
+                "stdio MCP servers are not supported on iOS; use a remote HTTP MCP server",
+            ));
         }
         let mut entry = Map::new();
         let fields: [(&str, Option<Value>); 6] = [
@@ -197,6 +205,7 @@ impl Tool for RemoveMcpServer {
 }
 
 /// Arguments for [`AddMcpRepo`].
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AddMcpRepoArgs {
     /// Anything `git clone` accepts.
@@ -207,8 +216,10 @@ pub struct AddMcpRepoArgs {
 }
 
 /// Clones an MCP server's source.
+#[cfg(not(target_os = "ios"))]
 pub struct AddMcpRepo;
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for AddMcpRepo {
     const NAME: &'static str = "add_mcp_repo";
@@ -255,12 +266,15 @@ impl Tool for AddMcpRepo {
 }
 
 /// Arguments for [`SyncMcpRepos`]: none.
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SyncMcpArgs {}
 
 /// Pulls every cloned server repo and restarts what changed.
+#[cfg(not(target_os = "ios"))]
 pub struct SyncMcpRepos;
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for SyncMcpRepos {
     const NAME: &'static str = "sync_mcp";

@@ -1,3 +1,4 @@
+import { container } from '@/lib/platform'
 import { SUBSCRIPTIONS, type MethodMap, type TopicEvent } from '@/rpc/bindings/client'
 import { receiveStream } from '@/rpc/bindings/receive'
 import { capabilitiesSchema, disconnected, rawResult, ready, supports, UnsupportedCapability, validateDocument, verifyHash, type Capabilities, type Discovery, type DiscoveryDocument } from '@/rpc/discovery'
@@ -321,7 +322,7 @@ export class RpcClient {
       this.#attempt = 0
       this.#setRetry(null)
       this.#t.connect().catch(() => this.#schedule())
-    } else if (!this.#t.loopback) this.probe()
+    } else if (!this.#t.loopback || container() === 'ios') this.probe()
   }
 
   /**

@@ -65,9 +65,11 @@ pub use codeview::{
     DiffFileStat, DiffMode, DiffSpec, DiffViewOpened, DiffViewText, FileViewChange,
     FileViewOpened, FileViewText, ShowDiffArgs, ShowDiffTool, ShowFileArgs, ShowFileTool,
 };
+#[cfg(not(target_os = "ios"))]
+pub use tileview::{ShowPtyArgs, ShowPtyTool};
 pub use tileview::{
-    NoteViewOpened, PtyViewOpened, ShowNoteArgs, ShowNoteTool, ShowPtyArgs, ShowPtyTool,
-    ShowWhiteboardArgs, ShowWhiteboardTool, WhiteboardViewOpened,
+    NoteViewOpened, PtyViewOpened, ShowNoteArgs, ShowNoteTool, ShowWhiteboardArgs,
+    ShowWhiteboardTool, WhiteboardViewOpened,
 };
 pub use layout::{
     LayoutCallId, LayoutCommandAnswer, LayoutCommandRequested, LayoutCommandResolved, LayoutOp,
@@ -903,6 +905,7 @@ impl runtime::Plugin for ArtifactPlugin {
                         rt: rt.clone(),
                     })))
                     .await;
+                #[cfg(not(target_os = "ios"))]
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(tileview::ShowPtyTool {
                         rt: rt.clone(),

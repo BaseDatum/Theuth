@@ -11,7 +11,7 @@ import { DESKTOP_NOTE, checkName, createLabel, defaultMemory, defaultName, deskt
 import { NodeDesktopView } from './NodeDesktop'
 import { applyCloudEvent, cloudKeys } from './queries'
 import { nearestRegion } from './region'
-import { DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PriceNote, ProviderCards, VAULT_HINT } from './steps'
+import { DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PriceNote, ProviderCards, VAULT_LABEL } from './steps'
 import type { CloudList, CloudNode, K8sInfo, ProviderInfo, Region, SizeList } from './types'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
@@ -62,6 +62,7 @@ const node = (n: Partial<CloudNode> = {}): CloudNode => ({
   created_ms: null,
   k8s: null,
   desktop: true,
+  vault: null,
   ...n,
 })
 
@@ -161,14 +162,15 @@ test('first run: no price before sign-in; the chip only from live prices of a co
 })
 
 test('vault protection and the sealed status appear only where the engine has the sealed vault', () => {
-  // This branch's engines advertise no `vault_status`: Configure has no vault field.
-  expect(wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1' } })).not.toContain(VAULT_HINT)
+  // No `vault_status` / `vault_password` in this test's discovery: Configure has no vault field.
+  expect(wizard('add-to-mesh', { step: 'configure', spec: { provider: 'digitalocean', region: 'lon1' } })).not.toContain(VAULT_LABEL)
   const spec = { provider: 'digitalocean' as const, name: 'sky-cloud', region: 'lon1', memory_gb: 4, volume_gb: 10, k8s: null, desktop: true }
   const props = { provider: DO, spec, sizes: DO.sizes, quote: null, nameError: null, busy: false, onName: () => {}, onRegion: () => {}, onMemory: () => {}, onDesktop: () => {}, onCreate: () => {} }
-  const on = html(createElement(PhoneConfigureStep, { ...props, vault: { password: '', onPassword: () => {} } }))
+  const on = html(createElement(PhoneConfigureStep, { ...props, vault: { password: '', confirm: '', onPassword: () => {}, onConfirm: () => {} } }))
   expect(on).toContain('Vault protection')
-  expect(on).toContain(VAULT_HINT)
+  expect(on).toContain('Unlock from your devices; this password is the fallback.')
   expect(on).toMatch(/type="password"[^>]*aria-label="Master password"/)
+  expect(on).toMatch(/type="password"[^>]*aria-label="Confirm master password"/)
   expect(statusOf(node({ sealed: true }))).toMatchObject({ text: 'sealed', tone: 'warn' })
   expect(statusOf(node({ sealed: false })).text).toBe('online · direct')
   expect(statusOf(node({ sealed: true, reachable: false })).text).toBe('offline')
@@ -239,12 +241,12 @@ test('progress: events fold into the list and the progress entry; the stage rows
   expect(etaText(progress?.eta_secs)).toBe('About 2 minutes left')
 
   const rows = stageRows({ node: list?.nodes[0] ?? null, progress: progress as never, version: '2.31.2' })
-  expect(rows.map((r) => r.status)).toEqual(['done', 'done', 'active', 'waiting', 'waiting'])
-  expect(rows.map((r) => r.label)).toEqual(['Server created in London', 'Storage attached (10 GB)', 'Installing theuth 2.31.2 (signed)', 'Joining your mesh', 'Ready'])
+  expect(rows.map((r) => r.status)).toEqual(['done', 'done', 'active', 'waiting', 'waiting', 'waiting'])
+  expect(rows.map((r) => r.label)).toEqual(['Server created in London', 'Storage attached (10 GB)', 'Installing theuth 2.31.2 (signed)', 'Joining your mesh', 'Protecting the vault', 'Ready'])
 
   applyCloudEvent(qc, { type: 'CloudNodeChanged', node: node({ state: 'failed', stage: 'install', error: 'cloud-init timed out' }) })
   const failed = stageRows({ node: qc.getQueryData<CloudList>(cloudKeys.list)?.nodes[0] ?? null, progress: progress as never, version: null })
-  expect(failed.map((r) => r.status)).toEqual(['done', 'done', 'failed', 'waiting', 'waiting'])
+  expect(failed.map((r) => r.status)).toEqual(['done', 'done', 'failed', 'waiting', 'waiting', 'waiting'])
 
   applyCloudEvent(qc, { type: 'CloudNodeChanged', node: node() })
   // A Changed event carries no price: the row keeps the one `cloud_list` gave.

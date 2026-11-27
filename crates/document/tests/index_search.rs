@@ -4,6 +4,8 @@
 //! notes, no model → FTS5-only with `nb_index_state.model = NULL`, a model change rebuilds the
 //! vectors with FTS5 untouched, `DocumentChanged` re-indexes the changed blocks.
 
+#![cfg(not(target_os = "ios"))]
+
 use std::path::Path;
 use std::time::Duration;
 

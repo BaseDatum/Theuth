@@ -22,6 +22,10 @@ mod companion;
 #[cfg(target_os = "macos")]
 mod dock;
 #[cfg(target_os = "ios")]
+mod ios_auth;
+#[cfg(target_os = "ios")]
+mod ios_engine;
+#[cfg(target_os = "ios")]
 mod ios_keyboard;
 #[cfg(target_os = "ios")]
 mod ios_webview;
@@ -63,10 +67,10 @@ async fn wb_capture(rect: serde_json::Value, width: Option<f64>) -> Result<(), S
 /// plugins; everything else is one `cfg` side or the other.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // The library crates that read the product version link on desktop only.
-    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    // The library crates that read the product version link on desktop and iOS (embedded engine).
+    #[cfg(not(target_os = "android"))]
     platform::version::set(env!("CARGO_PKG_VERSION"));
-    tracing_subscriber::fmt::init();
+    let _ = tracing_subscriber::fmt().try_init();
     #[cfg(target_os = "linux")]
     desktop::webkit_no_gpu_workaround();
     let builder = tauri::Builder::default()
@@ -123,16 +127,24 @@ mod mobile {
     use crate::commands;
 
     pub(super) fn configure(builder: Builder<Wry>) -> Builder<Wry> {
-        builder
+        let builder = builder
             .plugin(tauri_plugin_barcode_scanner::init())
             .plugin(tauri_plugin_deep_link::init())
             .plugin(tauri_plugin_haptics::init())
             // 218: Pencil double-tap/squeeze and handwriting recognition for the web whiteboard (iPadOS 17.5+).
-            .plugin(tauri_plugin_ink::init())
+            .plugin(tauri_plugin_ink::init());
+        #[cfg(target_os = "ios")]
+        let builder = builder.manage(crate::ios_engine::IosEngine::new());
+        builder
             .invoke_handler(tauri::generate_handler![
                 commands::connection,
                 crate::pages::page_put,
                 crate::pages::page_drop,
+                // Phase 2 iOS native OAuth browser sheet (`SFSafariViewController` / `ASWebAuthenticationSession`).
+                #[cfg(target_os = "ios")]
+                crate::ios_auth::open_auth_browser,
+                #[cfg(target_os = "ios")]
+                crate::ios_auth::close_auth_browser,
                 // 205 §9: the web view tile's native layer, same contract as the desktop's.
                 #[cfg(target_os = "ios")]
                 crate::ios_webview::web_view_attach,
@@ -167,6 +179,8 @@ mod mobile {
                 crate::wb_capture
             ])
             .setup(|app| {
+                #[cfg(target_os = "ios")]
+                crate::ios_engine::init(app.handle());
                 let builder =
                     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                         .background_color(crate::page_background(system_dark()));
@@ -221,7 +235,10 @@ mod mobile {
                 event: WindowEvent::Resumed | WindowEvent::Focused(true),
                 ..
             } => background::release(),
-            RunEvent::Exit => crate::apple_cookies::unwatch(app),
+            RunEvent::Exit => {
+                crate::ios_engine::shutdown(app);
+                crate::apple_cookies::unwatch(app);
+            }
             _ => {}
         }
     }

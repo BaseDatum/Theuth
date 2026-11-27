@@ -146,7 +146,10 @@ pub trait HttpClient: Send + Sync {
 pub fn build(kind: ClientKind, cfg: &ClientConfig) -> Result<Arc<dyn HttpClient>, ClientError> {
     match kind {
         ClientKind::Reqwest => Ok(Arc::new(ReqwestClient::new(cfg)?)),
+        #[cfg(not(target_os = "ios"))]
         ClientKind::WreqChrome => Ok(Arc::new(WreqChromeClient::new(cfg)?)),
+        #[cfg(target_os = "ios")]
+        ClientKind::WreqChrome => Err(ClientError::NotBuilt),
     }
 }
 
@@ -218,10 +221,12 @@ impl HttpClient for ReqwestClient {
 /// [`GuardedResolver`] behind `wreq`'s resolver hook, `connect_timeout` /
 /// whole-request `read_timeout`, no cookie store, the profile's UA and
 /// `Accept-Language` from `cfg` when set.
+#[cfg(not(target_os = "ios"))]
 pub struct WreqChromeClient {
     client: wreq::Client,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl WreqChromeClient {
     /// Build from `cfg`.
     ///
@@ -259,10 +264,12 @@ impl WreqChromeClient {
 /// `wreq` resolver hook over the crate's [`GuardedResolver`] (route A of
 /// R1-D1): every hostname resolves through the same guard as the `reqwest`
 /// kind; a refusal surfaces as [`FetchError::Rejected`] in the error chain.
+#[cfg(not(target_os = "ios"))]
 struct GuardedWreqResolver {
     private: bool,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl wreq::dns::Resolve for GuardedWreqResolver {
     fn resolve(&self, name: wreq::dns::Name) -> wreq::dns::Resolving {
         let parsed = name.as_str().parse::<reqwest::dns::Name>();
@@ -279,6 +286,7 @@ impl wreq::dns::Resolve for GuardedWreqResolver {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl ClientError {
     /// Map a `wreq` error, surfacing a guard refusal from the resolver.
     fn from_wreq(e: &wreq::Error) -> Self {
@@ -293,6 +301,7 @@ impl ClientError {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl HttpClient for WreqChromeClient {
     fn kind(&self) -> ClientKind {
@@ -339,10 +348,16 @@ mod tests {
             max_body: 1,
             private: false,
         };
+        #[cfg(not(target_os = "ios"))]
         assert_eq!(
             build(ClientKind::WreqChrome, &cfg).unwrap().kind(),
             ClientKind::WreqChrome
         );
+        #[cfg(target_os = "ios")]
+        assert!(matches!(
+            build(ClientKind::WreqChrome, &cfg),
+            Err(ClientError::NotBuilt)
+        ));
         assert_eq!(
             build(ClientKind::Reqwest, &cfg).unwrap().kind(),
             ClientKind::Reqwest

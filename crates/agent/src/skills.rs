@@ -434,6 +434,7 @@ pub fn remove(dir: &Path, name: &str) -> Result<(), String> {
 
 /// `git clone --depth 1 <url> <dir>/<name>` (name defaults to the repo
 /// basename); returns the skills found in the clone.
+#[cfg(not(target_os = "ios"))]
 pub async fn add_repo(
     dir: &Path,
     url: &str,
@@ -452,6 +453,7 @@ pub async fn add_repo(
 }
 
 /// `rm -rf <dir>/<name>` when it is a git clone.
+#[cfg(not(target_os = "ios"))]
 pub fn remove_repo(dir: &Path, name: &str) -> Result<(), String> {
     check_name(name)?;
     let path = dir.join(name);
@@ -522,6 +524,7 @@ impl Materialised {
 /// exclude file (worktrees included — the `.git` file is git's to follow)
 /// and cwd's path under the repo root (`""` at the root, `sub/` below).
 /// `None` outside a repo or without git.
+#[cfg(not(target_os = "ios"))]
 fn git_exclude(cwd: &Path) -> Option<(PathBuf, String)> {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["rev-parse", "--git-path", "info/exclude", "--show-prefix"])
@@ -536,6 +539,11 @@ fn git_exclude(cwd: &Path) -> Option<(PathBuf, String)> {
     let path = Path::new(lines.next()?.trim());
     let prefix = lines.next().unwrap_or_default().trim().to_owned();
     Some((cwd.join(path), prefix))
+}
+
+#[cfg(target_os = "ios")]
+fn git_exclude(_cwd: &Path) -> Option<(PathBuf, String)> {
+    None
 }
 
 /// Write the `always` skills of `dir` plus those in `names` as
@@ -780,6 +788,7 @@ impl Tool for RemoveSkillTool {
 }
 
 /// Arguments for [`AddSkillRepoTool`].
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AddSkillRepoArgs {
     /// Git URL (anything `git clone` accepts).
@@ -790,11 +799,13 @@ pub struct AddSkillRepoArgs {
 }
 
 /// Clones a git repo of skills.
+#[cfg(not(target_os = "ios"))]
 pub struct AddSkillRepoTool {
     /// Skills directory.
     pub dir: PathBuf,
 }
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for AddSkillRepoTool {
     const NAME: &'static str = "add_skill_repo";
@@ -819,11 +830,13 @@ impl Tool for AddSkillRepoTool {
 }
 
 /// Deletes a cloned skill repo.
+#[cfg(not(target_os = "ios"))]
 pub struct RemoveSkillRepoTool {
     /// Skills directory.
     pub dir: PathBuf,
 }
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for RemoveSkillRepoTool {
     const NAME: &'static str = "remove_skill_repo";
@@ -841,15 +854,18 @@ impl Tool for RemoveSkillRepoTool {
 }
 
 /// Arguments for [`SyncSkillsTool`]: none.
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SyncSkillsArgs {}
 
 /// `git pull` every cloned skill repo.
+#[cfg(not(target_os = "ios"))]
 pub struct SyncSkillsTool {
     /// Skills directory.
     pub dir: PathBuf,
 }
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for SyncSkillsTool {
     const NAME: &'static str = "sync_skills";
@@ -1184,6 +1200,7 @@ mod tests {
         assert!(!skills_dir.join("pack").exists());
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[tokio::test]
     async fn repo_skills_from_a_local_bare_repo() {
         let scratch = tmp();
@@ -1269,6 +1286,7 @@ mod tests {
 
     /// 75 §4: written into a repo subdir, a worktree (`.git` is a file) and
     /// a plain dir; excluded from git exactly once; removed without a trace.
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn materialise_writes_excludes_and_removes() {
         let scratch = tmp();

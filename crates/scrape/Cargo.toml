@@ -12,7 +12,6 @@ runtime = { workspace = true }
 platform = { workspace = true }
 tools = { workspace = true }
 web = { workspace = true }
-browser = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
@@ -27,6 +26,9 @@ html-to-markdown-rs = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+browser = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

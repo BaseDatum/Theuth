@@ -8,6 +8,11 @@
 //! `CRED_PERSIST_ENTERPRISE`, which `CredWriteW` refuses with
 //! `ERROR_NO_SUCH_LOGON_SESSION` for local (non-domain) accounts;
 //! `CRED_PERSIST_LOCAL_MACHINE` is what a per-machine key wants anyway.
+//!
+//! iOS skips the desktop `keyring` crate and stores the key in
+//! `<data_dir>/secrets.key` (mode 0600) inside the app's sandboxed container,
+//! which is already hardware-encrypted at rest by iOS Data Protection and
+//! works reliably on both unsigned Simulator and device builds.
 
 use std::path::Path;
 
@@ -16,34 +21,93 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use zeroize::Zeroizing;
 
-use crate::vault::KeyStore;
-
+#[cfg(not(target_os = "ios"))]
 const SERVICE: &str = "theuth";
-const FILE: &str = "secrets.key";
+pub(crate) const FILE: &str = "secrets.key";
 
-/// Load the key for `data_dir`, creating it on first use. Returns the key
-/// and where it lives: `"keychain"` or `"file"`.
-pub fn load_or_create(data_dir: &Path, ks: KeyStore) -> anyhow::Result<([u8; 32], &'static str)> {
-    match ks {
-        KeyStore::File => Ok((file(data_dir)?, "file")),
-        KeyStore::Keychain => Ok((keychain(data_dir)?, "keychain")),
-        KeyStore::Auto => match keychain(data_dir) {
-            Ok(k) => Ok((k, "keychain")),
-            Err(e) => match fallback_reason(&e) {
-                Some(reason) => {
-                    tracing::warn!(
-                        "{reason}; vault key in {} (mode 0600)",
-                        data_dir.join(FILE).display()
-                    );
-                    Ok((file(data_dir)?, "file"))
-                }
-                None => Err(e),
-            },
-        },
+#[cfg(target_os = "ios")]
+#[derive(Debug)]
+struct IosNoKeychain;
+
+#[cfg(target_os = "ios")]
+impl std::fmt::Display for IosNoKeychain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OS keychain backend is not enabled on iOS; using iOS app-container key file")
     }
 }
 
+#[cfg(target_os = "ios")]
+impl std::error::Error for IosNoKeychain {}
+
+/// 225: the keychain item's 32 bytes; `Ok(None)` = no item. `Err` = the store failed
+/// (classify with [`fallback_reason`]) or the item is not a 32-byte key.
+pub(crate) fn keychain_read(data_dir: &Path) -> anyhow::Result<Option<[u8; 32]>> {
+    #[cfg(not(target_os = "ios"))]
+    {
+        match keychain_get(data_dir) {
+            Ok(b64) => decode(&b64).map(Some).with_context(|| {
+                format!(
+                    "keychain item {SERVICE}/{} is not a 32-byte base64 key",
+                    account(data_dir)
+                )
+            }),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = data_dir;
+        Err(anyhow::Error::new(IosNoKeychain))
+    }
+}
+
+/// 225: write the keychain item.
+pub(crate) fn keychain_write(data_dir: &Path, key: &[u8; 32]) -> anyhow::Result<()> {
+    #[cfg(not(target_os = "ios"))]
+    {
+        keychain_set(data_dir, &Zeroizing::new(B64.encode(key)))?;
+        Ok(())
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = (data_dir, key);
+        Err(anyhow::Error::new(IosNoKeychain))
+    }
+}
+
+/// 225: `secrets.key` when it exists.
+pub(crate) fn file_read(data_dir: &Path) -> anyhow::Result<Option<[u8; 32]>> {
+    let path = data_dir.join(FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    file(data_dir).map(Some)
+}
+
+/// 225: `secrets.key`, created on first use (`key_store: file`, or `auto` without a keychain).
+pub(crate) fn file_create(data_dir: &Path) -> anyhow::Result<[u8; 32]> {
+    file(data_dir)
+}
+
+/// 225: overwrite `secrets.key` with zeros, sync, unlink — once a protected method replaces it.
+/// Best effort against recovery (journaling and SSD remapping can keep old blocks).
+pub(crate) fn file_shred(data_dir: &Path) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let path = data_dir.join(FILE);
+    if !path.exists() {
+        return Ok(());
+    }
+    let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(64) as usize;
+    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&path) {
+        let _ = f.write_all(&vec![0u8; len.max(64)]);
+        let _ = f.sync_all();
+    }
+    std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))
+}
+
 /// The keychain backend this build talks to, for the log.
+#[cfg(not(target_os = "ios"))]
 const BACKEND: &str = if cfg!(target_os = "macos") {
     "macOS Keychain (keyring apple-native)"
 } else if cfg!(windows) {
@@ -55,47 +119,45 @@ const BACKEND: &str = if cfg!(target_os = "macos") {
 /// `Auto` falls back to the file only when the *store* failed (no keychain,
 /// no logon session, platform error): `Some(log line)`. A corrupt item is
 /// `None` — that is an error to surface, not a reason to mint a second key.
-fn fallback_reason(e: &anyhow::Error) -> Option<String> {
-    let store = e.downcast_ref::<keyring::Error>()?;
-    Some(format!("no keychain available: {BACKEND}: {store}"))
+pub(crate) fn fallback_reason(e: &anyhow::Error) -> Option<String> {
+    #[cfg(not(target_os = "ios"))]
+    {
+        let store = e.downcast_ref::<keyring::Error>()?;
+        Some(format!("no keychain available: {BACKEND}: {store}"))
+    }
+    #[cfg(target_os = "ios")]
+    {
+        e.downcast_ref::<IosNoKeychain>()
+            .map(|_| "iOS app-container key file".to_owned())
+    }
 }
 
-#[cfg(not(windows))]
-fn keychain(data_dir: &Path) -> anyhow::Result<[u8; 32]> {
-    let account = account(data_dir);
-    let entry = keyring::Entry::new(SERVICE, &account)?;
-    match entry.get_password() {
-        Ok(b64) => decode(&Zeroizing::new(b64)).with_context(|| {
-            format!("keychain item {SERVICE}/{account} is not a 32-byte base64 key")
-        }),
-        Err(keyring::Error::NoEntry) => {
-            let key: [u8; 32] = rand::random();
-            entry.set_password(&B64.encode(key))?;
-            Ok(key)
-        }
-        Err(e) => Err(e.into()),
-    }
+#[cfg(all(not(windows), not(target_os = "ios")))]
+fn keychain_get(data_dir: &Path) -> keyring::Result<Zeroizing<String>> {
+    keyring::Entry::new(SERVICE, &account(data_dir))?
+        .get_password()
+        .map(Zeroizing::new)
+}
+
+#[cfg(all(not(windows), not(target_os = "ios")))]
+fn keychain_set(data_dir: &Path, b64: &str) -> keyring::Result<()> {
+    keyring::Entry::new(SERVICE, &account(data_dir))?.set_password(b64)
 }
 
 /// Same item keyring would address (`<account>.<service>`), so a key written
 /// by either is read by the other.
 #[cfg(windows)]
-fn keychain(data_dir: &Path) -> anyhow::Result<[u8; 32]> {
-    let account = account(data_dir);
-    let target = format!("{account}.{SERVICE}");
-    match cred::read(&target) {
-        Ok(b64) => {
-            decode(&b64).with_context(|| format!("credential {target} is not a 32-byte base64 key"))
-        }
-        Err(keyring::Error::NoEntry) => {
-            let key: [u8; 32] = rand::random();
-            cred::write(&target, &account, &B64.encode(key))?;
-            Ok(key)
-        }
-        Err(e) => Err(e.into()),
-    }
+fn keychain_get(data_dir: &Path) -> keyring::Result<Zeroizing<String>> {
+    cred::read(&format!("{}.{SERVICE}", account(data_dir)))
 }
 
+#[cfg(windows)]
+fn keychain_set(data_dir: &Path, b64: &str) -> keyring::Result<()> {
+    let account = account(data_dir);
+    cred::write(&format!("{account}.{SERVICE}"), &account, b64)
+}
+
+#[cfg(not(target_os = "ios"))]
 fn account(data_dir: &Path) -> String {
     let abs = std::path::absolute(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
     format!("secrets:{}", abs.display())
@@ -223,6 +285,7 @@ mod tests {
 
     /// A store failure falls back (and names the backend and the raw error);
     /// a corrupt item does not — that would silently mint a second key.
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn fallback_only_for_store_errors() {
         let store: anyhow::Error =
@@ -238,5 +301,13 @@ mod tests {
         let corrupt = decode("not base64!").expect_err("bad key");
         assert!(fallback_reason(&corrupt).is_none());
         assert!(fallback_reason(&decode(&B64.encode([0u8; 7])).unwrap_err()).is_none());
+    }
+
+    #[test]
+    fn file_create_and_read_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = file_create(dir.path()).expect("create key");
+        let second = file_read(dir.path()).expect("read key").expect("present");
+        assert_eq!(first, second);
     }
 }

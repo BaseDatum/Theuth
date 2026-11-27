@@ -26,8 +26,8 @@ const dark = query.get('theme') === 'dark'
 document.documentElement.classList.toggle('dark', dark)
 const state = query.get('state')
 const phone = state?.startsWith('phone-') ?? false
-/** States where the engine advertises the sealed vault (feat/sealed-vault). */
-const VAULT = state === 'phone-configure-vault' || state === 'desktop-configure-vault' || state === 'settings-machines'
+/** States where the engine advertises the sealed vault and `cloud_create(spec, vault_password)` (design 225). */
+const VAULT = state === 'phone-configure-vault' || state === 'desktop-configure-vault' || state === 'settings-machines' || state === 'vault-password'
 
 // ---- the catalog (catalog.rs) ----
 
@@ -131,22 +131,25 @@ const node = (n: Partial<CloudNode> & Pick<CloudNode, 'name' | 'provider' | 'sta
   created_ms: now - 86_400_000,
   desktop: true,
   k8s: null,
+  vault: null,
   ...n,
 })
 
-const SKY: CloudNode = node({ name: 'sky-cloud', provider: 'digitalocean', state: 'ready', region: 'lon1', region_label: 'London', size_slug: 's-1vcpu-2gb', monthly_usd: 13, provider_state: 'active', ip: '203.0.113.24', peer_id: 'e1f2', reachable: true, path: 'direct', version: '2.31.2' })
+const SKY: CloudNode = node({ name: 'sky-cloud', provider: 'digitalocean', state: 'ready', region: 'lon1', region_label: 'London', size_slug: 's-1vcpu-2gb', monthly_usd: 13, provider_state: 'active', ip: '203.0.113.24', peer_id: 'e1f2', reachable: true, path: 'direct', version: '2.31.2', vault: 'protected' })
 // The wizard's screens see only the node they follow; Settings sees every kind of row.
 const NODES: CloudNode[] =
   state === 'phone-progress' || state === 'desktop-progress'
-    ? [{ ...SKY, state: 'creating', stage: 'install', reachable: null, path: null, version: null }]
+    ? [{ ...SKY, state: 'creating', stage: 'vault', vault: 'pending', path: 'direct', version: null }]
     : state === 'phone-done'
       ? [SKY]
       : state?.startsWith('phone-') || state?.startsWith('desktop-')
         ? []
         : [
             SKY,
-            node({ name: 'lab-fly', provider: 'fly', state: 'ready', region: 'lhr', region_label: 'London', size_slug: 'shared-cpu-1x', monthly_usd: 12.19, reachable: true, path: 'relay', version: '2.31.2' }),
-            node({ name: 'vault-box', provider: 'digitalocean', state: 'ready', region: 'fra1', region_label: 'Frankfurt', size_slug: 's-2vcpu-4gb', memory_gb: 4, monthly_usd: 25, reachable: true, path: 'direct', version: '2.31.2', sealed: true }),
+            node({ name: 'lab-fly', provider: 'fly', state: 'ready', region: 'lhr', region_label: 'London', size_slug: 'shared-cpu-1x', monthly_usd: 12.19, peer_id: 'a7c3', reachable: true, path: 'relay', version: '2.31.2', vault: 'device_only' }),
+            node({ name: 'vault-box', provider: 'digitalocean', state: 'ready', region: 'fra1', region_label: 'Frankfurt', size_slug: 's-2vcpu-4gb', memory_gb: 4, monthly_usd: 25, peer_id: 'b9d1', reachable: true, path: 'direct', version: '2.31.2', sealed: true, vault: 'protected' }),
+            // The create job lost its password (the engine restarted mid-create): device only, asking for one.
+            node({ name: 'build-box', provider: 'digitalocean', state: 'ready', region: 'ams3', region_label: 'Amsterdam', size_slug: 's-1vcpu-2gb', monthly_usd: 13, peer_id: 'c4e8', reachable: true, path: 'direct', version: '2.31.2', vault: 'needs_password' }),
             node({ name: 'night-runner', provider: 'kubernetes', state: 'creating', stage: 'join', size_slug: '2Gi', k8s: { context: 'rwx-dev', namespace: 'theuth-nodes', storage_class: 'nfs-csi', create_namespace: true, deny_cluster_network: false } }),
             node({ name: 'theuth-test', provider: 'digitalocean', state: 'orphan', region: 'nyc3', region_label: null, size_slug: 's-1vcpu-2gb', monthly_usd: 13, version: '2.31.2' }),
           ]
@@ -185,6 +188,7 @@ const cloud: CloudApi = {
   },
   cloud_desktop: () => ok({ ws_url: 'ws://127.0.0.1:9/fixture', password: 'fixture', geometry: '1280×800', engine: 'e1f2' }),
   cloud_k8s_info: () => ok(K8S),
+  // The fixture ignores the vault password: nothing is created.
   cloud_create: (spec) => ok(node({ name: spec.name, provider: spec.provider, state: 'creating', region: spec.region, region_label: info(spec.provider).regions.find((r) => r.id === spec.region)?.label ?? null, stage: 'server' })),
   cloud_list: () => ok(LIST),
   cloud_status: (name) => ok(NODES.find((n) => n.name === name) as CloudNode),
@@ -206,8 +210,13 @@ const api = new Proxy(cloud as unknown as Api, {
 // Discovery that offers every method (the cloud ones too, before the bindings know them) and the cloud topic.
 const cloudMethods = Object.keys(cloud)
 const doc = {
-  // The sealed vault (feat/sealed-vault) is advertised only in the states that show it.
-  methods: [...METHODS, ...cloudMethods, 'subscribe_topics', ...(VAULT ? ['vault_status'] : [])].map((name) => ({ name })),
+  // The sealed vault is advertised only in the states that show it, with `cloud_create`'s `vault_password` parameter.
+  methods: [
+    ...[...METHODS, ...cloudMethods, 'subscribe_topics'].map((name) =>
+      name === 'cloud_create' && VAULT ? { name, params: [{ name: 'spec', required: true, schema: {} }, { name: 'vault_password', required: false, schema: { type: ['string', 'null'] } }] } : { name, params: [] },
+    ),
+    ...(VAULT ? [{ name: 'vault_status' }] : []),
+  ],
   'x-theuth': {
     subscriptions: Object.entries(SUBSCRIPTIONS).map(([subscribe, s]) => ({ subscribe, notification: s.notification, unsubscribe: s.unsubscribe })),
     events: [{ topic: 'cloudnodes.events', version: 1 }],
@@ -221,7 +230,8 @@ active().connection.setState({
   discovery: { phase: 'ready', capabilities: null, document: doc as never, unavailable: new Set() },
 } as never)
 const qc = active().qc
-if (state === 'phone-progress' || state === 'desktop-progress') qc.setQueryData(cloudKeys.progress('sky-cloud'), { stage: 'install', pct: 62, eta_secs: 125, lines: ['droplet 4821 active', 'volume attached', 'installing theuth 2.31.2'] })
+if (state === 'phone-progress' || state === 'desktop-progress')
+  qc.setQueryData(cloudKeys.progress('sky-cloud'), { stage: 'vault', pct: 95, eta_secs: 10, lines: ['droplet 4821 active', 'volume attached', 'installing theuth 2.31.2', 'Joined the mesh; connecting', 'Protecting the vault'] })
 
 if (phone) {
   // The iOS shell as `main.tsx` marks it, with an iPhone's safe areas.
@@ -241,12 +251,12 @@ const WIZARD: Record<string, { entry: WizardEntry; initial: WizardInitial }> = {
   'phone-configure-2gb-desktop': { entry: 'first-run', initial: { step: 'configure', spec: { ...LONDON, memory_gb: 2 } } },
   'phone-configure-price-unavailable': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
   'phone-configure-loading': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
-  'phone-configure-vault': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
+  'phone-configure-vault': { entry: 'first-run', initial: { step: 'configure', spec: LONDON, vault: { password: 'otter-lantern-quarry-91', confirm: 'otter-lantern-quarry-91' } } },
   'phone-progress': { entry: 'first-run', initial: { step: 'progress', spec: LONDON, node: 'sky-cloud' } },
   'phone-done': { entry: 'first-run', initial: { step: 'done', spec: LONDON, node: 'sky-cloud' } },
   'desktop-provider': { entry: 'desktop-dialog', initial: { step: 'provider', spec: { provider: 'digitalocean' } } },
   'desktop-configure': { entry: 'desktop-dialog', initial: { step: 'configure', spec: LONDON, advancedOpen: true } },
-  'desktop-configure-vault': { entry: 'desktop-dialog', initial: { step: 'configure', spec: LONDON, advancedOpen: true } },
+  'desktop-configure-vault': { entry: 'desktop-dialog', initial: { step: 'configure', spec: LONDON, vault: { password: 'otter-lantern-quarry-91', confirm: 'otter-lantern-quarry-91' } } },
   'desktop-k8s': { entry: 'desktop-dialog', initial: { step: 'configure', spec: { provider: 'kubernetes', name: 'sky-cloud' } } },
   'desktop-progress': { entry: 'desktop-dialog', initial: { step: 'progress', spec: LONDON, node: 'sky-cloud' } },
 }
@@ -256,6 +266,7 @@ const SETTINGS: Record<string, { dialog: CloudDialog; node: string } | null> = {
   resize: { dialog: 'resize', node: 'sky-cloud' },
   logs: { dialog: 'logs', node: 'sky-cloud' },
   'desktop-view': null,
+  'vault-password': { dialog: 'vault', node: 'build-box' },
 }
 
 /** `desktop-view` has no VNC server: a drawn stand-in for the node's screen (a browser an agent is using). */
@@ -362,6 +373,7 @@ const STATES: { name: string; label: string; phone: boolean }[] = [
   ['resize', 'Resize'],
   ['logs', 'View logs'],
   ['desktop-view', 'View desktop'],
+  ['vault-password', 'Set a node’s master password'],
 ].map(([name, label]) => ({ name: name as string, label: label as string, phone: (name as string).startsWith('phone-') }))
 
 function Gallery() {

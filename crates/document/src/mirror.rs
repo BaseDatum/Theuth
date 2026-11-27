@@ -13,17 +13,26 @@
 //! apply → re-snapshot when closed) and a foreign `meta.json` by [`merge_meta`]. Foreign bytes never
 //! overwrite a local file: a snapshot is a Yjs state, and two states join.
 
+#[cfg(not(target_os = "ios"))]
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(target_os = "ios"))]
+use std::path::PathBuf;
+#[cfg(not(target_os = "ios"))]
 use std::time::{Duration, Instant};
 
 use kameo::actor::ActorRef;
+#[cfg(not(target_os = "ios"))]
 use notify::Watcher;
+#[cfg(not(target_os = "ios"))]
 use tokio::sync::mpsc;
 
-use crate::actor::{DocumentActor, MirrorChanged};
+use crate::actor::DocumentActor;
+#[cfg(not(target_os = "ios"))]
+use crate::actor::MirrorChanged;
 use crate::meta::{DocId, DocMeta, Member, ShareLink};
 
+#[cfg(not(target_os = "ios"))]
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Which mirror file a path is.
@@ -63,44 +72,52 @@ pub fn file_name(id: &DocId, kind: MirrorFile) -> String {
 /// per 300 ms burst as [`MirrorChanged`].
 pub fn start(mirror_dir: &Path, actor: ActorRef<DocumentActor>) -> anyhow::Result<()> {
     std::fs::create_dir_all(mirror_dir)?;
-    let (tx, mut rx) = mpsc::unbounded_channel::<PathBuf>();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(ev) = res {
-            for p in ev.paths {
-                let _ = tx.send(p);
-            }
-        }
-    })?;
-    watcher.watch(mirror_dir, notify::RecursiveMode::NonRecursive)?;
-    tokio::spawn(async move {
-        let _watcher = watcher;
-        let mut due: HashMap<PathBuf, Instant> = HashMap::new();
-        loop {
-            let next = due.values().min().copied();
-            tokio::select! {
-                p = rx.recv() => {
-                    let Some(p) = p else { break };
-                    if parse(&p).is_some() {
-                        due.insert(p, Instant::now() + DEBOUNCE);
-                    }
-                }
-                _ = async {
-                    match next {
-                        Some(t) => tokio::time::sleep_until(tokio::time::Instant::from_std(t)).await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    let now = Instant::now();
-                    let ready: Vec<PathBuf> = due.iter().filter(|(_, t)| **t <= now).map(|(p, _)| p.clone()).collect();
-                    for p in ready {
-                        due.remove(&p);
-                        let _ = actor.tell(MirrorChanged { path: p }).await;
-                    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = actor;
+        Ok(())
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let (tx, mut rx) = mpsc::unbounded_channel::<PathBuf>();
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(ev) = res {
+                for p in ev.paths {
+                    let _ = tx.send(p);
                 }
             }
-        }
-    });
-    Ok(())
+        })?;
+        watcher.watch(mirror_dir, notify::RecursiveMode::NonRecursive)?;
+        tokio::spawn(async move {
+            let _watcher = watcher;
+            let mut due: HashMap<PathBuf, Instant> = HashMap::new();
+            loop {
+                let next = due.values().min().copied();
+                tokio::select! {
+                    p = rx.recv() => {
+                        let Some(p) = p else { break };
+                        if parse(&p).is_some() {
+                            due.insert(p, Instant::now() + DEBOUNCE);
+                        }
+                    }
+                    _ = async {
+                        match next {
+                            Some(t) => tokio::time::sleep_until(tokio::time::Instant::from_std(t)).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        let now = Instant::now();
+                        let ready: Vec<PathBuf> = due.iter().filter(|(_, t)| **t <= now).map(|(p, _)| p.clone()).collect();
+                        for p in ready {
+                            due.remove(&p);
+                            let _ = actor.tell(MirrorChanged { path: p }).await;
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
 }
 
 /// The `meta.json` merge rule (contract §3.2), applied to `local` in place; `true` when it changed.

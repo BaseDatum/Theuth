@@ -111,6 +111,7 @@ mod tests {
             kind: Default::default(),
             memory: Default::default(),
             observed: None,
+            mesh_id: None,
         };
         let r = from_session(&s);
         assert_eq!(r.kind, Kind::Session);

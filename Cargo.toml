@@ -263,7 +263,7 @@ brush-core = "0.5"
 brush-builtins = "0.2"
 # Client features for crates/tools; `server` + `transport-streamable-http-server` for crates/mcp-server (158 §12.2)
 # and the `t mcp` shim (crates/theuth adds `transport-io`). Features unify workspace-wide anyway.
-rmcp = { version = "3", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest", "server", "transport-streamable-http-server"] }
+rmcp = { version = "3", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest", "server", "transport-streamable-http-server"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "chrono", "uuid"] }
 # Notebooks (design doc 144 §7.1): the `vec0` virtual table beside `nb_blocks` FTS5 in `documents/index.sqlite`.
 # Static: the crate compiles sqlite-vec.c and exposes `sqlite3_vec_init`, registered once per process through
@@ -454,6 +454,7 @@ chacha20poly1305 = "0.11"  # secrets vault (37)
 zeroize = "1"  # secrets vault (37)
 aho-corasick = "1"  # secrets vault (37)
 rpassword = "7"  # secrets vault (37)
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }  # 225: master-password KEK (Argon2id)
 
 [workspace.lints.rust]
 missing_docs = "warn"

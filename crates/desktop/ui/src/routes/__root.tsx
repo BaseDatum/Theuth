@@ -13,6 +13,7 @@ import { MeetingBar } from '@/components/meeting/MeetingBar'
 import { settings } from '@/components/chat/slash'
 import { PublicShareHost } from '@/components/public-share/PublicShareHost'
 import { PublicShareStrip } from '@/components/public-share/PublicShareStrip'
+import { UnsealHost } from '@/components/vault/UnsealHost'
 import { RoutineDraftBridge } from '@/components/routines/RoutineChat'
 import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { SearchDialog } from '@/components/sidebar/SearchDialog'
@@ -107,6 +108,8 @@ function Root() {
         <PendingSettingsRetry />
         <DragOverlay />
         <PublicShareHost />
+        {/* 225: sealed machines asking this device to unlock their vault (approval cards, top right). */}
+        <UnsealHost />
         {/* 215: first-run wizard, upgrade toast and tours; the host itself stays out of pop-outs and remote engines. */}
         <OnboardingHost />
         <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pl-[var(--safe-left)]">

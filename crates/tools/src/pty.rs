@@ -4,98 +4,154 @@
 //! `jobs` / `cancel_job` and `<job_result>`; stdin, a screen and no deadline
 //! are what differ (22 §1).
 
+#[cfg(not(target_os = "ios"))]
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+#[cfg(not(target_os = "ios"))]
+use std::collections::HashMap;
+#[cfg(not(target_os = "ios"))]
 use std::fmt::Write as _;
+#[cfg(not(target_os = "ios"))]
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(not(target_os = "ios"))]
 use std::num::NonZeroU16;
+#[cfg(not(target_os = "ios"))]
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "ios"))]
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+#[cfg(not(target_os = "ios"))]
+use std::sync::Mutex;
+#[cfg(not(target_os = "ios"))]
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_os = "ios"))]
+use std::time::Instant;
 
+#[cfg(not(target_os = "ios"))]
 use brush_core::Shell;
+#[cfg(not(target_os = "ios"))]
 use kameo::actor::ActorRef;
+#[cfg(not(target_os = "ios"))]
 use kameo::message::{Context, Message};
+#[cfg(not(target_os = "ios"))]
 use kameo::reply::DelegatedReply;
+#[cfg(not(target_os = "ios"))]
 use platform::ProcessTree;
+#[cfg(not(target_os = "ios"))]
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+#[cfg(not(target_os = "ios"))]
 use regex::Regex;
-use runtime::{Runtime, SessionId};
+#[cfg(not(target_os = "ios"))]
+use runtime::Runtime;
+use runtime::SessionId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Notify, broadcast, mpsc, oneshot};
+#[cfg(not(target_os = "ios"))]
+use tokio::sync::{Notify, oneshot};
+use tokio::sync::{broadcast, mpsc};
 
-use crate::activity::{self, Activity, Kind, Tracked};
+use crate::activity::Activity;
+#[cfg(not(target_os = "ios"))]
+use crate::activity::{self, Kind, Tracked};
+use crate::jobs::{JobExit, JobId};
+#[cfg(not(target_os = "ios"))]
 use crate::jobs::{
-    self, Cancel, CancelOrigin, Finished, Job, JobEvent, JobExit, JobId, Jobs, Launch, Log, Lost,
-    admit_job, lock, sep,
+    self, Cancel, CancelOrigin, Finished, Job, JobEvent, Jobs, Launch, Log, Lost, admit_job, lock,
+    sep,
 };
+#[cfg(not(target_os = "ios"))]
 use crate::journal::{JobKind, JobRow, JobState, Journal, PtyScreenRow, WaitKind, WaitRow};
+#[cfg(not(target_os = "ios"))]
 use crate::proctree::{PtyThresholds, TreeQuiet};
+#[cfg(not(target_os = "ios"))]
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Screen height at `start` (22 §1.9); a viewer may resize it (`pty_resize`).
+#[cfg(not(target_os = "ios"))]
 const ROWS: u16 = 40;
 /// Screen width at `start` (22 §1.9).
+#[cfg(not(target_os = "ios"))]
 const COLS: u16 = 120;
 /// `pty_resize` bounds: a phone is ~40 columns, a wide monitor ~300.
+#[cfg(not(target_os = "ios"))]
 const ROWS_MAX: u16 = 200;
+#[cfg(not(target_os = "ios"))]
 const COLS_MAX: u16 = 400;
 /// Output chunks a slow `subscribe_pty` client may fall behind before it is
 /// resynced from a fresh snapshot.
+#[cfg(not(target_os = "ios"))]
 const STREAM_CHUNKS: usize = 256;
 /// `send` replies once no bytes arrived for this long (22 §4.5)…
+#[cfg(not(target_os = "ios"))]
 const SETTLE_QUIET: Duration = Duration::from_millis(300);
 /// …or after this long regardless.
+#[cfg(not(target_os = "ios"))]
 const SETTLE_MAX: Duration = Duration::from_secs(2);
 /// A tool reply carries `user attached` this long after a human typed (55 §0.5).
+#[cfg(not(target_os = "ios"))]
 const USER_ATTACHED: Duration = Duration::from_secs(30);
 /// 216 §8 (review R26): set in every PTY a tool starts, after the caller's own `env`, so
 /// `t plugin approve` can refuse to run inside a terminal the agent drives. A cheap mitigation,
 /// not a boundary: the agent's shell can unset it.
 pub const AGENT_PTY_ENV: &str = "THEUTH_AGENT_PTY";
 /// `wait` default / maximum seconds (22 §4.6).
+#[cfg(not(target_os = "ios"))]
 const WAIT_DEFAULT: u64 = 30;
+#[cfg(not(target_os = "ios"))]
 const WAIT_MAX: u64 = 120;
 /// `ready.timeout` maximum seconds (22 §4.7).
+#[cfg(not(target_os = "ios"))]
 const READY_MAX: u64 = 300;
 /// `start.idle_secs` below this is raised to it (61 §1.6); `0` stays "never".
+#[cfg(not(target_os = "ios"))]
 const IDLE_MIN: u64 = 10;
 /// Longest backoff between consecutive unanswered `<job_idle>` nudges (61 §1.4).
+#[cfg(not(target_os = "ios"))]
 const IDLE_BACKOFF_MAX: Duration = Duration::from_secs(3600);
 /// TCP connect poll spacing for `ready.port`.
+#[cfg(not(target_os = "ios"))]
 const PORT_POLL: Duration = Duration::from_millis(250);
 /// Longest terminal query the responder carries across chunks (22 §4.4).
+#[cfg(not(target_os = "ios"))]
 const CARRY: usize = 16;
 /// Reader thread buffer (22 §4.2).
+#[cfg(not(target_os = "ios"))]
 const READ_BUF: usize = 64 * 1024;
 /// Normal-screen scrollback rows retained per PTY (51 §7.1).
+#[cfg(not(target_os = "ios"))]
 const HISTORY: usize = 512;
 
 /// vt100 sizes are `NonZeroU16`; every size passed here is a non-zero constant or validated.
+#[cfg(not(target_os = "ios"))]
 fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n).expect("terminal size is non-zero")
 }
 
 /// `screen.size()` as plain `(rows, cols)`.
+#[cfg(not(target_os = "ios"))]
 fn dims(screen: &vt100::Screen) -> (u16, u16) {
     let (rows, cols) = screen.size();
     (rows.get(), cols.get())
 }
 
 /// Longest `History` page (51 §7.3).
+#[cfg(not(target_os = "ios"))]
 const PAGE_MAX: u16 = 80;
 /// A serialized [`PtyPage`] is cut (top rows first) past this.
+#[cfg(not(target_os = "ios"))]
 const PAGE_BYTES: usize = 256 * 1024;
 /// Longest cell text on the wire (vt100 stores less; enforced anyway).
+#[cfg(not(target_os = "ios"))]
 const CELL_BYTES: usize = 64;
 /// Snapshot renders in flight at once, across every PTY (51 §7.4).
+#[cfg(not(target_os = "ios"))]
 pub(crate) const SNAPSHOTS: usize = 4;
 /// What one PTY is charged against [`jobs::PTY_BUDGET`] at `start`: every
 /// retained row at a generous per-cell estimate plus parser overhead. Charged
 /// once per handle; snapshot clones are transient and not charged.
+#[cfg(not(target_os = "ios"))]
 pub(crate) const RESERVE: usize = (ROWS as usize + HISTORY) * COLS as usize * 96 + 4 * 1024;
 
 /// One PTY job as `list_terminals` reports it (51 §7.3).
@@ -241,6 +297,7 @@ pub enum Color {
     },
 }
 
+#[cfg(not(target_os = "ios"))]
 impl From<vt100::Color> for Color {
     fn from(c: vt100::Color) -> Self {
         match c {
@@ -370,6 +427,7 @@ pub enum Key {
     Paste(String),
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Key {
     fn encode(&self, out: &mut Vec<u8>, screen: &vt100::Screen) -> Result<(), String> {
         let cursor = if screen.application_cursor() {
@@ -450,6 +508,7 @@ impl Key {
 
 /// `text` then `keys` as the program expects them right now (55 §2.2): the
 /// one key table, read under the parser lock so the modes are current.
+#[cfg(not(target_os = "ios"))]
 fn encode(pty: &PtyHandle, text: Option<&str>, keys: &[Key]) -> Result<Vec<u8>, String> {
     let mut out = text.map(|t| t.as_bytes().to_vec()).unwrap_or_default();
     let p = lock(&pty.parser);
@@ -488,6 +547,7 @@ impl From<Signal> for platform::Signal {
 /// `writer` and `master` are the handle's two descriptors (both dups of the
 /// master); [`PtyHandle::release`] drops them at exit, and the retained
 /// row answers from the parser's final screen alone (D2).
+#[cfg(not(target_os = "ios"))]
 pub(crate) struct PtyHandle {
     /// `None` once released: a late `send` sees "job finished".
     writer: Mutex<Option<Box<dyn Write + Send>>>,
@@ -545,6 +605,7 @@ pub enum PtyOut {
 }
 
 /// The screen cloned under the lock, with what else a page reports.
+#[cfg(not(target_os = "ios"))]
 pub(crate) struct Capture {
     screen: vt100::Screen,
     revision: u64,
@@ -553,6 +614,7 @@ pub(crate) struct Capture {
 
 /// [`render`]'s result: a [`PtyPage`] short of its job identity, and the
 /// text rows the tools show.
+#[cfg(not(target_os = "ios"))]
 pub(crate) struct PtySnapshot {
     revision: u64,
     viewport: PtyViewport,
@@ -569,6 +631,7 @@ pub(crate) struct PtySnapshot {
     exit: Option<JobExit>,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl PtyHandle {
     pub(crate) fn revision(&self) -> u64 {
         self.revision.load(SeqCst)
@@ -729,6 +792,7 @@ impl PtyHandle {
 /// Escape sequences that rebuild a terminal from the retained buffer: every
 /// scrollback row on its own line, pushed off the top so the viewer's own
 /// scrollback holds it, then the live screen with its cursor and input modes.
+#[cfg(not(target_os = "ios"))]
 fn replay(mut screen: vt100::Screen) -> Vec<u8> {
     let (rows, cols) = dims(&screen);
     let mut out = Vec::new();
@@ -751,6 +815,7 @@ fn replay(mut screen: vt100::Screen) -> Vec<u8> {
     out
 }
 
+#[cfg(not(target_os = "ios"))]
 impl PtySnapshot {
     /// Rows right-trimmed, trailing blank rows dropped (22 §4.3).
     fn text(&self) -> Vec<String> {
@@ -813,6 +878,7 @@ impl PtySnapshot {
 }
 
 /// A page cell before styling into runs, with its span in the logical text.
+#[cfg(not(target_os = "ios"))]
 struct Raw {
     text: String,
     style: Style,
@@ -822,6 +888,7 @@ struct Raw {
     len: usize,
 }
 
+#[cfg(not(target_os = "ios"))]
 fn style_of(c: &vt100::Cell) -> Style {
     Style {
         fg: c.fgcolor().into(),
@@ -841,6 +908,7 @@ fn style_of(c: &vt100::Cell) -> Style {
 /// `•` (style dropped, width kept), then merge same-style cells into runs.
 /// `spans` must return ascending, non-overlapping byte ranges; `max_len` is
 /// the longest literal it can match (`0`: nothing installed, page rows only).
+#[cfg(not(target_os = "ios"))]
 fn render(
     cap: Capture,
     viewport: PtyViewport,
@@ -1195,6 +1263,7 @@ pub enum PtyChunk {
 }
 
 /// A resolved PTY job as the tool paths see it, detached from the actor.
+#[cfg(not(target_os = "ios"))]
 struct Live {
     session: SessionId,
     id: JobId,
@@ -1206,6 +1275,7 @@ struct Live {
     journal: Arc<dyn Journal>,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Live {
     /// 109 §5.3: the model just saw this screen.
     async fn snapshot(&self) {
@@ -1215,6 +1285,7 @@ impl Live {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Jobs {
     /// 171 §9.7, 171F B23: `id` (a job id or name, live, finished or lost)
     /// is a user-cell kernel — the model neither types into nor reads one.
@@ -1322,6 +1393,7 @@ impl Jobs {
 }
 
 /// What the `start` asker waits on after [`Launch`].
+#[cfg(not(target_os = "ios"))]
 pub(crate) struct Running {
     done: oneshot::Receiver<ToolOutput>,
     claimable: Arc<AtomicBool>,
@@ -1329,6 +1401,7 @@ pub(crate) struct Running {
     log_path: PathBuf,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<StartPty> for Jobs {
     type Reply = DelegatedReply<ToolOutput>;
 
@@ -1482,6 +1555,7 @@ impl Message<StartPty> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<Launch<StartPty>> for Jobs {
     type Reply = Result<Running, String>;
 
@@ -1632,6 +1706,7 @@ impl Message<Launch<StartPty>> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<SendInput> for Jobs {
     type Reply = DelegatedReply<Result<ToolOutput, String>>;
 
@@ -1685,6 +1760,7 @@ impl Message<SendInput> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<Screen> for Jobs {
     type Reply = Result<ToolOutput, String>;
 
@@ -1703,6 +1779,7 @@ impl Message<Screen> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<Wait> for Jobs {
     type Reply = DelegatedReply<Result<ToolOutput, String>>;
 
@@ -1757,6 +1834,7 @@ impl Message<Wait> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<ListTerminals> for Jobs {
     type Reply = Vec<TerminalSummary>;
 
@@ -1794,6 +1872,7 @@ impl Message<ListTerminals> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<PtyScreen> for Jobs {
     type Reply = DelegatedReply<Result<PtyScreenReply, String>>;
 
@@ -1860,6 +1939,7 @@ impl Message<PtyScreen> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Jobs {
     /// The handle of a PTY job by exact id; `running` also refuses a finished one.
     fn pty_handle(
@@ -1881,6 +1961,7 @@ impl Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<PtyInput> for Jobs {
     type Reply = DelegatedReply<Result<(), String>>;
 
@@ -1899,6 +1980,7 @@ impl Message<PtyInput> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<PtyAttach> for Jobs {
     type Reply = DelegatedReply<Result<PtyAttached, String>>;
 
@@ -1935,6 +2017,7 @@ impl Message<PtyAttach> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<PtyResize> for Jobs {
     type Reply = Result<(), String>;
 
@@ -1947,6 +2030,7 @@ impl Message<PtyResize> for Jobs {
 /// Encode and write to the master off the runtime (a full kernel buffer
 /// blocks). `human` stamps [`PtyHandle::user_input`] and restarts the idle
 /// timer without counting as the model's interaction (61 §1.3).
+#[cfg(not(target_os = "ios"))]
 async fn write(
     pty: &Arc<PtyHandle>,
     text: Option<&str>,
@@ -1975,6 +2059,7 @@ async fn write(
 }
 
 /// What the spawn hands the job task and the handle.
+#[cfg(not(target_os = "ios"))]
 struct Spawned {
     file: std::fs::File,
     master: Box<dyn MasterPty + Send>,
@@ -1990,6 +2075,7 @@ struct Spawned {
 /// `TIOCSCTTY` in the child; ConPTY on Windows), log file created, the
 /// child's tree adopted. A `cell` job inherits nothing: `args.env` is the
 /// whole kernel environment (171 §5.4).
+#[cfg(not(target_os = "ios"))]
 fn spawn(
     dir: &Path,
     log_path: &Path,
@@ -2058,6 +2144,7 @@ fn spawn(
 // ponytail: the dup'd master fd here keeps the pty alive until every slave
 // holder exits, so a `setsid` escapee delays the drop-master SIGHUP (22 §2.4)
 // and parks this thread; poll(2) with a stop flag if that ever matters.
+#[cfg(not(target_os = "ios"))]
 fn read_loop(mut r: Box<dyn Read + Send>, tx: &mpsc::Sender<Vec<u8>>) {
     let mut buf = vec![0u8; READ_BUF];
     loop {
@@ -2075,6 +2162,7 @@ fn read_loop(mut r: Box<dyn Read + Send>, tx: &mpsc::Sender<Vec<u8>>) {
 }
 
 /// Everything one PTY job task owns.
+#[cfg(not(target_os = "ios"))]
 struct Run {
     rt: Runtime,
     me: ActorRef<Jobs>,
@@ -2112,6 +2200,7 @@ struct Run {
 }
 
 /// The reader still draining a lingering slave, and the log its bytes reach.
+#[cfg(not(target_os = "ios"))]
 type Drain = (mpsc::Receiver<Vec<u8>>, Arc<Mutex<Log>>);
 
 /// Something outlived the exit: a `&` child that ignored SIGHUP stays in
@@ -2124,6 +2213,7 @@ type Drain = (mpsc::Receiver<Vec<u8>>, Arc<Mutex<Log>>);
 /// command line. Its bytes still reach the log. A killed group that
 /// survived `KILL_WAIT` is a doubt, reported on the child alone so the
 /// job's own result is not overridden.
+#[cfg(not(target_os = "ios"))]
 async fn linger(
     job: &Activity,
     id: &JobId,
@@ -2162,6 +2252,7 @@ async fn linger(
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 fn exit_of(
     r: Result<std::io::Result<portable_pty::ExitStatus>, tokio::task::JoinError>,
 ) -> JobExit {
@@ -2173,6 +2264,7 @@ fn exit_of(
 
 /// The idle detector (61 §3.4): a timer restarted by any screen change or
 /// touch, disarmed by firing, whose interval doubles while nobody acts.
+#[cfg(not(target_os = "ios"))]
 struct Idle {
     base: Duration,
     last_change: Instant,
@@ -2184,6 +2276,7 @@ struct Idle {
     deferred: Option<Instant>,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Idle {
     fn new(base: Duration, started: Instant) -> Self {
         Self {
@@ -2255,6 +2348,7 @@ impl Idle {
 
 /// 155 §6.3: at the idle deadline. A busy tree defers; a quiet one fires as
 /// in 61 (still `None` while a `wait` watches) with the quiet reason.
+#[cfg(not(target_os = "ios"))]
 fn idle_due(
     idle: &mut Idle,
     tree: &TreeQuiet,
@@ -2277,6 +2371,7 @@ fn idle_due(
 /// `send` saw neither a screen change nor tree movement for `reaction`.
 /// `sent_at` clears on movement, on firing and when a `wait` suppresses the
 /// fire (its timeout is the answer then), so nothing fires twice.
+#[cfg(not(target_os = "ios"))]
 fn reaction_due(
     idle: &Idle,
     tree: &TreeQuiet,
@@ -2305,7 +2400,7 @@ fn reaction_due(
 
 /// The pty's foreground process group; `None` when it cannot be read (no
 /// master, no fd, `tcgetpgrp` failed).
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "ios")))]
 fn foreground_pgrp(pty: &PtyHandle) -> Option<libc::pid_t> {
     let fd = lock(&pty.master).as_ref().and_then(|m| m.as_raw_fd())?;
     // SAFETY: `tcgetpgrp` reads one int from the kernel for a live fd.
@@ -2316,6 +2411,7 @@ fn foreground_pgrp(pty: &PtyHandle) -> Option<libc::pid_t> {
 /// 155 §6.2: is the program theuth started still the terminal's foreground
 /// process group? `true` when that cannot be read (no master, no fd, or an
 /// OS without the notion), so the 61 behaviour stands.
+#[cfg(not(target_os = "ios"))]
 fn foreground_is_leader(pty: &PtyHandle) -> bool {
     #[cfg(unix)]
     {
@@ -2328,6 +2424,7 @@ fn foreground_is_leader(pty: &PtyHandle) -> bool {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Jobs {
     /// The running kernel job `id` (171): Err `no such job` | `not a cell
     /// job` | `j3 already finished`.
@@ -2347,6 +2444,7 @@ impl Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<CellKill> for Jobs {
     type Reply = Result<(), String>;
 
@@ -2383,6 +2481,7 @@ impl Message<CellKill> for Jobs {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Message<CellForeground> for Jobs {
     type Reply = Result<bool, String>;
 
@@ -2409,6 +2508,7 @@ impl Message<CellForeground> for Jobs {
 
 /// One `<job_idle>` (61 §1.8 / 155 §6.5): the wake rides the guard, the bus
 /// copy is for UIs.
+#[cfg(not(target_os = "ios"))]
 async fn nudge_model(j: &Run, nudge: u32, quiet_secs: u64, why: String) {
     let (rows, cursor) = j.pty.screen();
     let event = JobEvent::Idle {
@@ -2430,6 +2530,7 @@ async fn nudge_model(j: &Run, nudge: u32, quiet_secs: u64, why: String) {
 /// The job task (22 §4.2): ingest chunks, coalesce `Screen` events, wake the
 /// model when the screen goes quiet (61), detect exit (reaper or EOF,
 /// whichever first), then the 14 finish path with the final screen as `output`.
+#[cfg(not(target_os = "ios"))]
 async fn run(mut j: Run) {
     // 109 §5.1: the row before anything can refer to the job; the screen
     // rows (§5.3) key on it.
@@ -2642,6 +2743,7 @@ async fn run(mut j: Run) {
 }
 
 /// One chunk: log, render, answer terminal queries, wake waiters.
+#[cfg(not(target_os = "ios"))]
 fn ingest(pty: &PtyHandle, log: &Mutex<Log>, carry: &mut Vec<u8>, chunk: &[u8]) {
     lock(log).push(chunk);
     let cursor = {
@@ -2656,6 +2758,7 @@ fn ingest(pty: &PtyHandle, log: &Mutex<Log>, carry: &mut Vec<u8>, chunk: &[u8]) 
 }
 
 /// Fixed-reply terminal queries (22 §4.4); `ESC[6n` is answered from the cursor.
+#[cfg(not(target_os = "ios"))]
 const QUERIES: &[(&[u8], &[u8])] = &[
     (b"\x1b[5n", b"\x1b[0n"),
     (b"\x1b[c", b"\x1b[?62;22c"),
@@ -2667,8 +2770,10 @@ const QUERIES: &[(&[u8], &[u8])] = &[
     (b"\x1b]11;?\x07", b"\x1b]11;rgb:0000/0000/0000\x07"),
     (b"\x1b]11;?\x1b\\", b"\x1b]11;rgb:0000/0000/0000\x1b\\"),
 ];
+#[cfg(not(target_os = "ios"))]
 const CPR: &[u8] = b"\x1b[6n";
 
+#[cfg(not(target_os = "ios"))]
 enum Scan {
     /// A query of this many bytes; write the reply.
     Reply(usize, Cow<'static, [u8]>),
@@ -2678,6 +2783,7 @@ enum Scan {
 }
 
 /// Classify the bytes at an ESC.
+#[cfg(not(target_os = "ios"))]
 fn query(s: &[u8], cursor: (u16, u16)) -> Scan {
     if s.starts_with(CPR) {
         let reply = format!("\x1b[{};{}R", cursor.0 + 1, cursor.1 + 1);
@@ -2695,6 +2801,7 @@ fn query(s: &[u8], cursor: (u16, u16)) -> Scan {
 }
 
 /// The query responder (22 §4.4): replies go to the master, never the log.
+#[cfg(not(target_os = "ios"))]
 fn respond(pty: &PtyHandle, carry: &mut Vec<u8>, chunk: &[u8], cursor: (u16, u16)) {
     let data: Cow<[u8]> = if carry.is_empty() {
         Cow::Borrowed(chunk)
@@ -2725,6 +2832,7 @@ fn respond(pty: &PtyHandle, carry: &mut Vec<u8>, chunk: &[u8], cursor: (u16, u16
 
 /// Drop ESC sequences (CSI, OSC, two-byte) so a pattern matches through colour
 /// codes (22 §4.6); lossy UTF-8 of the rest.
+#[cfg(not(target_os = "ios"))]
 fn strip(bytes: &[u8]) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -2740,6 +2848,7 @@ fn strip(bytes: &[u8]) -> String {
 }
 
 /// Index just past the ESC sequence starting at `bytes[i]`.
+#[cfg(not(target_os = "ios"))]
 fn skip_esc(bytes: &[u8], mut i: usize) -> usize {
     i += 1;
     match bytes.get(i) {
@@ -2776,6 +2885,7 @@ fn skip_esc(bytes: &[u8], mut i: usize) -> usize {
 // ponytail: `kept` indexes the lossy String, which equals the kept-bytes
 // index unless invalid UTF-8 precedes the match; then the cursor lands a
 // few bytes off. Match on `regex::bytes` over the kept bytes if it matters.
+#[cfg(not(target_os = "ios"))]
 fn raw_end(bytes: &[u8], kept: usize) -> usize {
     let (mut i, mut n) = (0, 0);
     while i < bytes.len() && n < kept {
@@ -2789,12 +2899,14 @@ fn raw_end(bytes: &[u8], kept: usize) -> usize {
     i
 }
 
+#[cfg(not(target_os = "ios"))]
 fn log_len(path: &Path) -> u64 {
     std::fs::metadata(path).map_or(0, |m| m.len())
 }
 
 /// First `re` match in the log bytes appended since offset `from`, with the
 /// log offset just past it.
+#[cfg(not(target_os = "ios"))]
 fn find_since(path: &Path, from: u64, re: &Regex) -> Option<(String, u64)> {
     let mut f = std::fs::File::open(path).ok()?;
     f.seek(SeekFrom::Start(from)).ok()?;
@@ -2805,12 +2917,14 @@ fn find_since(path: &Path, from: u64, re: &Regex) -> Option<(String, u64)> {
     Some((m.as_str().to_owned(), from + raw_end(&buf, m.end()) as u64))
 }
 
+#[cfg(not(target_os = "ios"))]
 async fn connects(host: &str, port: u16) -> bool {
     tokio::time::timeout(PORT_POLL, tokio::net::TcpStream::connect((host, port)))
         .await
         .is_ok_and(|r| r.is_ok())
 }
 
+#[cfg(not(target_os = "ios"))]
 enum Outcome {
     /// Every condition passed; the log match and the offset past it, if there
     /// was a pattern.
@@ -2823,6 +2937,7 @@ enum Outcome {
 /// The shared loop of `wait` (22 §4.6) and `ready` (22 §4.7): wake on output
 /// (or every [`PORT_POLL`] for a port), re-check, until every condition
 /// passes, the job exits, or `deadline`. No pattern and no port → exit only.
+#[cfg(not(target_os = "ios"))]
 async fn await_output(
     pty: &PtyHandle,
     log: &Path,
@@ -2871,6 +2986,7 @@ async fn await_output(
 /// 22 §4.5: write, signal, settle, screen. The write moves `wait`'s read
 /// cursor to the end of the log first (55 §12): what follows the keystroke
 /// is what the model waits for next.
+#[cfg(not(target_os = "ios"))]
 async fn send(live: &Live, args: SendArgs) -> Result<ToolOutput, String> {
     live.pty.cursor.fetch_max(log_len(&live.log_path), SeqCst);
     let mut text = args.text.clone().unwrap_or_default();
@@ -2897,6 +3013,7 @@ async fn send(live: &Live, args: SendArgs) -> Result<ToolOutput, String> {
 }
 
 /// Quiet for [`SETTLE_QUIET`], or [`SETTLE_MAX`] total, or exit.
+#[cfg(not(target_os = "ios"))]
 async fn settle(pty: &PtyHandle) {
     let end = tokio::time::Instant::now() + SETTLE_MAX;
     loop {
@@ -2914,6 +3031,7 @@ async fn settle(pty: &PtyHandle) {
 
 /// 22 §4.6; the scan starts at the job's read cursor (55 §12), so output
 /// already on screen since the model's last `send` matches at once.
+#[cfg(not(target_os = "ios"))]
 async fn wait(live: &Live, args: WaitArgs) -> Result<ToolOutput, String> {
     let re = args
         .pattern
@@ -2951,6 +3069,7 @@ async fn wait(live: &Live, args: WaitArgs) -> Result<ToolOutput, String> {
     Ok(reply(live, note.as_deref(), matched.as_deref()))
 }
 
+#[cfg(not(target_os = "ios"))]
 fn label(id: &JobId, name: Option<&str>) -> String {
     match name {
         Some(n) => format!("{id} ({n})"),
@@ -2959,6 +3078,7 @@ fn label(id: &JobId, name: Option<&str>) -> String {
 }
 
 /// Local `HH:MM:SS`, as the 109 §5.3 banner reads.
+#[cfg(not(target_os = "ios"))]
 fn hhmmss(t: &chrono::DateTime<chrono::Utc>) -> String {
     t.with_timezone(&chrono::Local)
         .format("%H:%M:%S")
@@ -2968,6 +3088,7 @@ fn hhmmss(t: &chrono::DateTime<chrono::Utc>) -> String {
 /// 109 §5.3: a [`PtyPage`] from a stored `pty_screens` row — plain cells,
 /// no scrollback, `exit = lost`. The `Live` viewport only; a history page
 /// of a terminal that no longer exists is the same rows.
+#[cfg(not(target_os = "ios"))]
 fn stored_page(s: &PtyScreenRow, viewport: PtyViewport) -> PtyPage {
     let lines: Vec<Vec<StyledRun>> = s
         .text
@@ -3007,6 +3128,7 @@ fn stored_page(s: &PtyScreenRow, viewport: PtyViewport) -> PtyPage {
 }
 
 /// Rows then the `cursor:` line (22 §2.2): the `<job_idle>` body (61 §2.2).
+#[cfg(not(target_os = "ios"))]
 fn screen_body(rows: &[String], cursor: (u16, u16)) -> String {
     let mut s = rows.join("\n");
     if !rows.is_empty() {
@@ -3016,12 +3138,14 @@ fn screen_body(rows: &[String], cursor: (u16, u16)) -> String {
     s
 }
 
+#[cfg(not(target_os = "ios"))]
 fn screen_block(rows: &[String], cursor: (u16, u16)) -> String {
     format!("screen:\n{}", screen_body(rows, cursor))
 }
 
 /// The `send` / `screen` / `wait` reply (22 §2.2): state line, optional note,
 /// screen; `structured` mirrors it. The reply is the model's touch (61 §1.3).
+#[cfg(not(target_os = "ios"))]
 fn reply(live: &Live, note: Option<&str>, matched: Option<&str>) -> ToolOutput {
     live.pty.touch(true);
     let (rows, cursor) = live.pty.screen();
@@ -3056,12 +3180,14 @@ fn reply(live: &Live, note: Option<&str>, matched: Option<&str>) -> ToolOutput {
 }
 
 /// How long ago a human last typed, while that is still worth saying.
+#[cfg(not(target_os = "ios"))]
 fn attached_for(last: Option<Instant>) -> Option<Duration> {
     last.map(|t| t.elapsed()).filter(|ago| *ago < USER_ATTACHED)
 }
 
 /// kameo lifts a `Result` reply: the handler's `Err(String)` arrives as
 /// `SendError::HandlerError`; that is the model's error text.
+#[cfg(not(target_os = "ios"))]
 fn lift<M>(
     r: Result<ToolOutput, kameo::error::SendError<M, String>>,
 ) -> anyhow::Result<ToolOutput> {
@@ -3073,6 +3199,7 @@ fn lift<M>(
 }
 
 /// `start`: a command on a pty as a job with stdin and a screen.
+#[cfg(not(target_os = "ios"))]
 pub struct StartTool {
     jobs: ActorRef<Jobs>,
     shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
@@ -3083,6 +3210,7 @@ pub struct StartTool {
     pty_shell: Option<PathBuf>,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl StartTool {
     /// `shells` is [`crate::shell::ShellTool::shells`]: the default cwd is the
     /// session shell's (22 §1.5); `ready_timeout` is `tools.pty_ready_timeout_secs`;
@@ -3118,6 +3246,7 @@ impl StartTool {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for StartTool {
     const NAME: &'static str = "start";
@@ -3162,8 +3291,10 @@ impl Tool for StartTool {
 }
 
 /// `send`: type into a PTY job.
+#[cfg(not(target_os = "ios"))]
 pub struct SendTool(pub ActorRef<Jobs>);
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for SendTool {
     const NAME: &'static str = "send";
@@ -3193,8 +3324,10 @@ impl Tool for SendTool {
 }
 
 /// `screen`: the current screen of a PTY job.
+#[cfg(not(target_os = "ios"))]
 pub struct ScreenTool(pub ActorRef<Jobs>);
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for ScreenTool {
     const NAME: &'static str = "screen";
@@ -3223,8 +3356,10 @@ impl Tool for ScreenTool {
 }
 
 /// `wait`: block for a pattern or exit.
+#[cfg(not(target_os = "ios"))]
 pub struct WaitTool(pub ActorRef<Jobs>);
 
+#[cfg(not(target_os = "ios"))]
 #[async_trait::async_trait]
 impl Tool for WaitTool {
     const NAME: &'static str = "wait";
@@ -3254,7 +3389,133 @@ impl Tool for WaitTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(target_os = "ios")]
+mod ios {
+    use kameo::message::{Context, Message};
+
+    use super::{
+        CellForeground, CellKill, ListTerminals, PtyAttach, PtyAttached, PtyInput, PtyResize,
+        PtyScreen, PtyScreenReply, Screen, SendInput, StartPty, TerminalSummary, Wait,
+    };
+    use crate::ToolOutput;
+    use crate::jobs::Jobs;
+
+    const UNSUPPORTED: &str = "PTY terminals are not supported on iOS";
+
+    impl Message<StartPty> for Jobs {
+        type Reply = ToolOutput;
+
+        async fn handle(&mut self, _: StartPty, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+            ToolOutput::err(UNSUPPORTED)
+        }
+    }
+
+    impl Message<SendInput> for Jobs {
+        type Reply = Result<ToolOutput, String>;
+
+        async fn handle(
+            &mut self,
+            _: SendInput,
+            _: &mut Context<Self, Self::Reply>,
+        ) -> Self::Reply {
+            Err(UNSUPPORTED.to_owned())
+        }
+    }
+
+    impl Message<Screen> for Jobs {
+        type Reply = Result<ToolOutput, String>;
+
+        async fn handle(&mut self, _: Screen, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+            Err(UNSUPPORTED.to_owned())
+        }
+    }
+
+    impl Message<Wait> for Jobs {
+        type Reply = Result<ToolOutput, String>;
+
+        async fn handle(&mut self, _: Wait, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+            Err(UNSUPPORTED.to_owned())
+        }
+    }
+
+    impl Message<ListTerminals> for Jobs {
+        type Reply = Vec<TerminalSummary>;
+
+        async fn handle(
+            &mut self,
+            _: ListTerminals,
+            _: &mut Context<Self, Self::Reply>,
+        ) -> Self::Reply {
+            Vec::new()
+        }
+    }
+
+    impl Message<PtyScreen> for Jobs {
+        type Reply = Result<PtyScreenReply, String>;
+
+        async fn handle(
+            &mut self,
+            _: PtyScreen,
+            _: &mut Context<Self, Self::Reply>,
+        ) -> Self::Reply {
+            Ok(PtyScreenReply::Unavailable)
+        }
+    }
+
+    impl Message<PtyInput> for Jobs {
+        type Reply = Result<(), String>;
+
+        async fn handle(&mut self, _: PtyInput, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+            Err(UNSUPPORTED.to_owned())
+        }
+    }
+
+    impl Message<PtyAttach> for Jobs {
+        type Reply = Result<PtyAttached, String>;
+
+        async fn handle(
+            &mut self,
+            _: PtyAttach,
+            _: &mut Context<Self, Self::Reply>,
+        ) -> Self::Reply {
+            Err(UNSUPPORTED.to_owned())
+        }
+    }
+
+    impl Message<PtyResize> for Jobs {
+        type Reply = Result<(), String>;
+
+        async fn handle(
+            &mut self,
+            _: PtyResize,
+            _: &mut Context<Self, Self::Reply>,
+        ) -> Self::Reply {
+            Err(UNSUPPORTED.to_owned())
+        }
+    }
+
+    impl Message<CellKill> for Jobs {
+        type Reply = Result<(), String>;
+
+        async fn handle(&mut self, _: CellKill, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+            Err(UNSUPPORTED.to_owned())
+        }
+    }
+
+    impl Message<CellForeground> for Jobs {
+        type Reply = Result<bool, String>;
+
+        async fn handle(
+            &mut self,
+            _: CellForeground,
+            _: &mut Context<Self, Self::Reply>,
+        ) -> Self::Reply {
+            Err(UNSUPPORTED.to_owned())
+        }
+    }
+}
+
+#[cfg(all(test, not(target_os = "ios")))]
 mod tests {
     use super::*;
     use crate::jobs::CancelJob;

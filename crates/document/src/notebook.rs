@@ -12,7 +12,24 @@ use kameo::reply::DelegatedReply;
 use serde::{Deserialize, Serialize};
 use surface::anchor::{Locator, TheuthAnchor, TheuthKind};
 
+#[cfg(not(target_os = "ios"))]
 pub use codeindex::LocateStatus;
+
+/// How an anchor relates to the working tree or block text now.
+#[cfg(target_os = "ios")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum LocateStatus {
+    /// Target exists and its text hashes to `text_sha` (or none was given).
+    Same,
+    /// Target exists and its text differs.
+    Changed,
+    /// Target moved to another position.
+    Moved,
+    /// Target is gone.
+    Missing,
+}
 
 use crate::actor::{DocumentActor, ImportReply};
 use crate::meta::{Binding, DocEvent, DocId, DocKind, DocSummary, DocumentChanged, Principal};
@@ -539,7 +556,7 @@ type Res<T> = Result<T, String>;
 
 /// `sha256(text.trim_end())`, first 8 lowercase hex — the `?s=` drift hash of a cited block (144 §6.4).
 pub fn sha8(text: &str) -> String {
-    let mut s = codeindex::locate::text_sha(text.trim_end());
+    let mut s = platform::sha256::hex(text.trim_end().as_bytes());
     s.truncate(8);
     s
 }

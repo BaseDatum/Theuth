@@ -1,15 +1,24 @@
 //! Fetch adapter and the engine ladder `fetch → issue → island → render`
 //! (38 §0.3, §3; 122 D1 scrape side, D8 render tier, D9, D11 wiring).
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
+#[cfg(not(target_os = "ios"))]
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+#[cfg(not(target_os = "ios"))]
 use kameo::actor::ActorRef;
 use reqwest::header::HeaderMap;
-use runtime::{Runtime, SessionId};
-use serde_json::{Value, json};
+use runtime::Runtime;
+#[cfg(not(target_os = "ios"))]
+use runtime::SessionId;
+use serde_json::Value;
+#[cfg(not(target_os = "ios"))]
+use serde_json::json;
 use url::Url;
-use web::excerpt::{is_noise, prose_chars};
+#[cfg(any(not(target_os = "ios"), test))]
+use web::excerpt::is_noise;
+use web::excerpt::prose_chars;
 use web::fetch::client::ClientKind;
 use web::fetch::issue::{IssueKind, Next, PageIssue};
 use web::fetch::meta::PageMeta;
@@ -38,17 +47,20 @@ const HEAD_BYTES: usize = 4096;
 
 /// Base of the render-tier session ids: slot `i` is `RENDER_BASE + i`,
 /// distinct from `browser`'s `read_url` session.
+#[cfg(not(target_os = "ios"))]
 const RENDER_BASE: u128 = 0x7363_7261_7065_5f72_656e_6465_725f_0038;
 
 /// Browser sessions for the render tier. Each slot is one obscura isolate;
 /// `cfg.concurrency` of them let `search_web`'s parallel reads and a crawl
 /// render concurrently instead of serialising on one isolate. Idle isolates
 /// are reclaimed by the browser's idle sweeper and recreated on next use.
+#[cfg(not(target_os = "ios"))]
 struct RenderSlots {
     permits: tokio::sync::Semaphore,
     free: Mutex<Vec<SessionId>>,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl RenderSlots {
     fn new(n: usize) -> Self {
         Self {
@@ -83,12 +95,14 @@ impl RenderSlots {
 }
 
 /// One checked-out render session; `Drop` pushes it back before the permit frees.
+#[cfg(not(target_os = "ios"))]
 struct RenderSlot<'a> {
     slots: &'a RenderSlots,
     session: SessionId,
     _permit: tokio::sync::SemaphorePermit<'a>,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Drop for RenderSlot<'_> {
     fn drop(&mut self) {
         self.slots
@@ -105,6 +119,7 @@ pub struct Scrape {
     pub(crate) fetcher: Arc<Fetcher>,
     /// `scrape:` section.
     pub(crate) cfg: ScrapeConfig,
+    #[cfg(not(target_os = "ios"))]
     slots: RenderSlots,
     /// Publishes [`crate::ScrapeProgress`]; `None` in unit tests.
     pub(crate) rt: Option<Runtime>,
@@ -118,10 +133,12 @@ impl Scrape {
     /// Wrap a fetcher. The browser actor is looked up at render time.
     #[must_use]
     pub fn new(fetcher: Fetcher, cfg: ScrapeConfig) -> Self {
+        #[cfg(not(target_os = "ios"))]
         let slots = RenderSlots::new(cfg.concurrency.max(1));
         Self {
             fetcher: Arc::new(fetcher),
             cfg,
+            #[cfg(not(target_os = "ios"))]
             slots,
             rt: None,
             detect: Arc::new(web::fetch::issue::detect),
@@ -254,18 +271,22 @@ impl Scrape {
         let page = match self.fetch_http(url, only_main_content).await {
             Ok(page) => page,
             Err(e) => {
-                let guard = matches!(
-                    e.downcast_ref::<web::fetch::FetchError>(),
-                    Some(f @ web::fetch::FetchError::Rejected(_)) if !f.is_redirect_limit()
-                );
-                let Some(actor) = browser_actor().filter(|_| !guard && tools::egress::lan()) else {
-                    return Err(e);
-                };
-                tracing::debug!(url = %url, error = %e, "fetch failed; trying obscura");
-                return self
-                    .render_with(&actor, url, only_main_content)
-                    .await
-                    .map_err(|re| anyhow::anyhow!("{e}; render: {re}"));
+                #[cfg(not(target_os = "ios"))]
+                {
+                    let guard = matches!(
+                        e.downcast_ref::<web::fetch::FetchError>(),
+                        Some(f @ web::fetch::FetchError::Rejected(_)) if !f.is_redirect_limit()
+                    );
+                    if let Some(actor) = browser_actor().filter(|_| !guard && tools::egress::lan())
+                    {
+                        tracing::debug!(url = %url, error = %e, "fetch failed; trying obscura");
+                        return self
+                            .render_with(&actor, url, only_main_content)
+                            .await
+                            .map_err(|re| anyhow::anyhow!("{e}; render: {re}"));
+                    }
+                }
+                return Err(e);
             }
         };
         self.ladder(url, page, only_main_content).await
@@ -305,18 +326,26 @@ impl Scrape {
                 .as_ref()
                 .is_some_and(|i| i.next.contains(&Next::Rendered)),
         };
-        if !to_render {
-            return Ok(page);
+        #[cfg(target_os = "ios")]
+        {
+            let _ = (to_render, only_main_content);
+            Ok(page)
         }
-        let Some(actor) = browser_actor() else {
-            return Ok(page);
-        };
-        tracing::debug!(url = %url, tier = "render", issue = ?kind, "trying obscura");
-        match self.render_with(&actor, url, only_main_content).await {
-            Ok(rendered) => Ok(rendered),
-            Err(e) => {
-                tracing::debug!(error = %e, "render failed; keeping fetch");
-                Ok(page)
+        #[cfg(not(target_os = "ios"))]
+        {
+            if !to_render {
+                return Ok(page);
+            }
+            let Some(actor) = browser_actor() else {
+                return Ok(page);
+            };
+            tracing::debug!(url = %url, tier = "render", issue = ?kind, "trying obscura");
+            match self.render_with(&actor, url, only_main_content).await {
+                Ok(rendered) => Ok(rendered),
+                Err(e) => {
+                    tracing::debug!(error = %e, "render failed; keeping fetch");
+                    Ok(page)
+                }
             }
         }
     }
@@ -382,6 +411,7 @@ impl Scrape {
     }
 
     /// `browser_navigate` → `browser_markdown` → `browser_close` on a free render slot.
+    #[cfg(not(target_os = "ios"))]
     pub async fn render(&self, url: &Url, only_main_content: bool) -> anyhow::Result<Fetched> {
         anyhow::ensure!(tools::egress::lan(), web::actor::CONTACT_NO_RENDER);
         let actor = browser_actor()
@@ -389,9 +419,17 @@ impl Scrape {
         self.render_with(&actor, url, only_main_content).await
     }
 
+    /// Rendered browser fetches are not supported on iOS.
+    #[cfg(target_os = "ios")]
+    pub async fn render(&self, url: &Url, only_main_content: bool) -> anyhow::Result<Fetched> {
+        let _ = (url, only_main_content);
+        anyhow::bail!("rendered browser fetches are not supported on iOS")
+    }
+
     /// The render tier has no DOM: `only_main_content` is the markdown-level
     /// trim of leading/trailing link-only blocks (122 D8 render tier); the
     /// issue is recomputed from the rendered markdown (status 200, no headers).
+    #[cfg(not(target_os = "ios"))]
     async fn render_with(
         &self,
         actor: &ActorRef<browser::Browsers>,
@@ -509,6 +547,7 @@ pub struct Fetched {
     pub notes: Vec<String>,
 }
 
+#[cfg(not(target_os = "ios"))]
 fn browser_actor() -> Option<ActorRef<browser::Browsers>> {
     ActorRef::<browser::Browsers>::lookup(browser::BROWSER_ACTOR)
         .ok()
@@ -519,6 +558,7 @@ fn browser_actor() -> Option<ActorRef<browser::Browsers>> {
 /// [`tools::Tracked`] so the invocation that owns this fetch stays admitted
 /// until the browser finishes the command, even after a page timeout dropped
 /// this future (47 §4.2 rule 5); `session` is the slot key, never the owner.
+#[cfg(not(target_os = "ios"))]
 async fn call(
     actor: &ActorRef<browser::Browsers>,
     session: SessionId,
@@ -546,6 +586,7 @@ async fn call(
     Ok(text)
 }
 
+#[cfg(any(not(target_os = "ios"), test))]
 fn parse_navigated(reply: &str) -> Option<(&str, Option<&str>)> {
     let rest = reply.trim().strip_prefix("Navigated to ")?;
     match rest.rsplit_once(" — \"") {
@@ -637,6 +678,7 @@ fn fill_meta(a: PageMeta, b: PageMeta) -> PageMeta {
 /// Drop leading and trailing noise blocks (nav, footer, "related" rows,
 /// image rows) from rendered markdown — `excerpt`'s link-noise rule, the
 /// honest minimum for `only_main_content` on a tier without a DOM (122 D8).
+#[cfg(any(not(target_os = "ios"), test))]
 fn trim_link_blocks(md: &str) -> String {
     let blocks: Vec<&str> = md.split("\n\n").collect();
     let start = blocks
@@ -947,7 +989,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 mod slot_tests {
     use super::*;
 

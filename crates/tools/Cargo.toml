@@ -26,8 +26,6 @@ schemars = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 kameo = { workspace = true }
-brush-core = { workspace = true }
-brush-builtins = { workspace = true }
 rmcp = { workspace = true, features = ["auth"] }
 oauth = { workspace = true }
 reqwest = { workspace = true }
@@ -36,7 +34,6 @@ ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 chrono = { workspace = true }
 percent-encoding = { workspace = true }
-notify = { workspace = true }
 ignore = { workspace = true }
 globset = { workspace = true }
 similar = { workspace = true }
@@ -44,12 +41,18 @@ grep-regex = { workspace = true }
 grep-searcher = { workspace = true }
 anydoc = { workspace = true }
 regex = { workspace = true }
-portable-pty = { workspace = true }
-vt100 = { workspace = true }
 jsonschema = { workspace = true }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 base64 = { workspace = true }
 ec4rs = { workspace = true }  # 193 §3 .editorconfig
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+brush-core = { workspace = true }
+brush-builtins = { workspace = true }
+portable-pty = { workspace = true }
+vt100 = { workspace = true }
+notify = { workspace = true }
+rmcp = { workspace = true, features = ["auth", "transport-child-process"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }  # `O_NONBLOCK` open in `images.rs`

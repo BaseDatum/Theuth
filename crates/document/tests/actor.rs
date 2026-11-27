@@ -881,6 +881,7 @@ async fn notes_create_list_rename_delete() {
 /// 71 §2.1 / §5 row 2: `doc_create(kind="board", root)` makes a `DocKind::Board` note whose first block is
 /// the frontmatter `root:`; it lists by kind, reads back with the header, takes a valid `Excerpt` block,
 /// and is renamed and deleted like a note.
+#[cfg(not(target_os = "ios"))]
 #[tokio::test]
 async fn boards_create_with_root_list_by_kind_and_edit() {
     let _serial = SERIAL.lock().await;

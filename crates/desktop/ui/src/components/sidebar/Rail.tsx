@@ -20,7 +20,7 @@ import { type SessionSlice, useSessionField, useSessions } from '@/store/session
 import { AgentTree, ago } from './AgentTree'
 import { useDeskList } from './Desks'
 import { ProjectIcon } from './ProjectStyle'
-import { MachineChip, PinnedGlyph, type RowEdit, SessionActivity, SessionEdit, SessionMenu, SessionPending, subagentRunning, useRowTitle, useSessionActions } from './SessionItem'
+import { MachineChip, MeshChip, PinnedGlyph, type RowEdit, SessionActivity, SessionEdit, SessionMenu, SessionPending, subagentRunning, useRowTitle, useSessionActions } from './SessionItem'
 import { buildRows, newChatLabel, ProjectMenu, type Row, UNGROUPED, useSidebarSessions } from './SessionList'
 
 /** One icon of the collapsed rail: 36 px under a mouse, 44 px under a finger (the rail is 56 px). */
@@ -404,6 +404,7 @@ function PopChat({
           <SessionActivity id={s.id} here={s.here} running={s.running} />
           <SessionPending id={s.id} />
           <span className="min-w-0 flex-1 truncate">{title}</span>
+          <MeshChip meshId={s.mesh_id} />
           <MachineChip owner={s.owner} epoch={s.epoch} here={s.here} />
           <span className="shrink-0 text-[11px] text-fg-tertiary tabular-nums">{ago(s.updated_at)}</span>
         </Link>

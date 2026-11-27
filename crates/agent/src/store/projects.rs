@@ -326,11 +326,11 @@ mod tests {
         assert!(store.list_project_styles().await.unwrap().is_empty());
     }
 
-    /// `projects` is a record-replica table, not a session-log one: 0079 leaves the session wire
-    /// schema where 219's 0078 put it.
+    /// `projects` is a record-replica table, not a session-log one: 0079 left the session wire
+    /// schema where 219's 0078 put it; `0080_session_mesh_id` bumped it to 80 since.
     #[tokio::test]
     async fn record_table_no_wire_bump() {
-        assert_eq!(crate::store::SESSIONS_WIRE_SCHEMA, 78);
+        assert_eq!(crate::store::SESSIONS_WIRE_SCHEMA, 80);
         assert!(
             !super::super::capture::ATTACHED
                 .iter()

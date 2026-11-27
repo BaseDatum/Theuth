@@ -16,7 +16,7 @@ pub enum ShellKind {
 
 /// The shell for scripts on this host.
 pub fn shell() -> ShellKind {
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "ios")) {
         ShellKind::Brush
     } else {
         ShellKind::Login(
@@ -29,16 +29,25 @@ pub fn shell() -> ShellKind {
 
 impl ShellKind {
     /// `<shell> -c script` (`-lc` with `login`), stdin closed; `None` for
-    /// [`ShellKind::Brush`], whose caller runs `script` in-process.
+    /// [`ShellKind::Brush`] (and on iOS, where spawning a shell is unavailable),
+    /// whose caller runs `script` in-process.
     pub fn command(&self, script: &str, login: bool) -> Option<tokio::process::Command> {
-        let Self::Login(path) = self else {
-            return None;
-        };
-        let mut cmd = tokio::process::Command::new(path);
-        cmd.arg(if login { "-lc" } else { "-c" })
-            .arg(script)
-            .stdin(std::process::Stdio::null());
-        Some(cmd)
+        #[cfg(target_os = "ios")]
+        {
+            let _ = (self, script, login);
+            None
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            let Self::Login(path) = self else {
+                return None;
+            };
+            let mut cmd = tokio::process::Command::new(path);
+            cmd.arg(if login { "-lc" } else { "-c" })
+                .arg(script)
+                .stdin(std::process::Stdio::null());
+            Some(cmd)
+        }
     }
 }
 
@@ -115,7 +124,7 @@ mod tests {
         assert_eq!(args.last().map(String::as_str), Some("ls"));
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "ios")))]
     #[test]
     fn unix_runs_the_login_shell_with_lc() {
         let (program, args) = pty_command("ls", None);
@@ -132,7 +141,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "ios")))]
     #[test]
     fn quote_round_trips_through_sh() {
         for s in [
@@ -155,7 +164,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "ios")))]
     #[test]
     fn which_in_finds_a_file_on_the_given_path_only() {
         let found = which_in("sh", std::ffi::OsStr::new("/nonexistent:/bin"));

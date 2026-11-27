@@ -19,10 +19,23 @@ use std::{
 
 use futures::future::join_all;
 use kameo::actor::ActorRef;
-use monty_pool::{
-    Checkout, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, ReplConfig,
-    ResumeValue, TurnEvent, on_print_sync,
+#[cfg(any(target_os = "ios", feature = "inproc-monty"))]
+mod inproc;
+
+#[cfg(any(target_os = "ios", feature = "inproc-monty"))]
+pub use inproc::{
+    InProcCheckout as MontyCheckout, InProcPool as MontyPool, MountSpec, MountSpecMode, OnPrint,
+    PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent, on_print_sync,
 };
+#[cfg(any(target_os = "ios", feature = "inproc-monty"))]
+use inproc::{InProcCheckout as Checkout, InProcPool as Pool};
+#[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
+pub use monty_pool::{
+    Checkout as MontyCheckout, MountSpec, MountSpecMode, OnPrint, Pool as MontyPool, PoolError,
+    PrintFuture, ReplConfig, ResumeValue, TurnEvent, on_print_sync,
+};
+#[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
+use monty_pool::{Checkout, Pool, PoolConfig};
 use monty_types::{
     CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, ObjectRef, OsPolicy,
     ResourceLimits, SandboxTimeZone, SleepMode,
@@ -208,7 +221,8 @@ pub const REPL_POOL_MAX: usize = 48;
 /// production that is this binary (`t subprocess`, 08 §9), so nothing has
 /// to be installed. `None` (with one `warn!`) when the pool fails to start:
 /// the runtime is off for the process.
-pub async fn open_pool(worker: &Path, max_processes: usize) -> Option<Arc<Pool>> {
+#[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
+pub async fn open_pool(worker: &Path, max_processes: usize) -> Option<Arc<MontyPool>> {
     let mut pool = PoolConfig::subprocess(worker);
     pool.min_processes = 1;
     pool.max_processes = max_processes.max(1);
@@ -226,13 +240,22 @@ pub async fn open_pool(worker: &Path, max_processes: usize) -> Option<Arc<Pool>>
     }
 }
 
+/// Start an in-process Monty Python worker pool with up to `max_workers`
+/// dedicated OS threads (used on iOS and under `--features inproc-monty`).
+#[cfg(any(target_os = "ios", feature = "inproc-monty"))]
+pub fn open_inproc_pool(max_workers: usize) -> Arc<MontyPool> {
+    let cap = max_workers.max(1);
+    tracing::info!("python runtime on: in-process pool ({cap} workers)");
+    Arc::new(MontyPool::new(cap))
+}
+
 /// Test-only: a pool on the first python worker that answers a real checkout and
 /// feed, so a stale `t`/`monty` on `PATH` (older worker protocol; `Pool::new` does
 /// not handshake) is skipped rather than failing the test at its first checkout.
 /// Candidates: `$THEUTH_WORKER`, `$THEUTH_MONTY_WORKER`, this build's own `t`
 /// (`target/<profile>/t`, beside the test exe's `deps/`), then every `monty` and
 /// `t` on `PATH`. `None` (noted on stderr) when none works, so the test skips.
-#[cfg(test)]
+#[cfg(all(test, not(any(target_os = "ios", feature = "inproc-monty"))))]
 pub(crate) async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     for var in ["THEUTH_WORKER", "THEUTH_MONTY_WORKER"] {
@@ -275,6 +298,12 @@ pub(crate) async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
     }
     eprintln!("no compatible python worker; skipping the scenarios that need one");
     None
+}
+
+/// Test-only in-process Monty pool for iOS / `--features inproc-monty`.
+#[cfg(all(test, any(target_os = "ios", feature = "inproc-monty")))]
+pub(crate) async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
+    Some(open_inproc_pool(max_processes))
 }
 
 /// How long [`monty_sufficient`]'s type check may wait for a worker and answer.
@@ -2776,6 +2805,7 @@ mod tests {
     /// `<binary> subprocess`, e.g. a debug `t`), else the `monty` binary on
     /// `PATH` (the test runner is not a worker); `None`, with a note, when
     /// neither exists so the test skips.
+    #[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
     async fn monty_pool() -> Option<Arc<Pool>> {
         let monty = std::env::var_os("THEUTH_MONTY_WORKER")
             .map(PathBuf::from)
@@ -2796,6 +2826,11 @@ mod tests {
             eprintln!("monty pool failed to start; skipping");
         }
         pool
+    }
+
+    #[cfg(any(target_os = "ios", feature = "inproc-monty"))]
+    async fn monty_pool() -> Option<Arc<Pool>> {
+        Some(open_inproc_pool(2))
     }
 
     async fn run_cx(dir: &Path) -> RunCx {
@@ -3346,24 +3381,27 @@ mod tests {
             Some("n (int) · out1 (str, 30000) · r (list, 3)")
         );
         // worker killed mid-session → fresh worker, previous dump restored
-        let pid = repl.checkout.as_mut().unwrap().get_mut().pid().unwrap();
-        std::process::Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .status()
-            .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let out = repl.run("c4b", "r.append(4)\nr").await;
-        assert!(
-            out.is_error
-                && out.content.starts_with("RuntimeError: runtime crashed (")
-                && out.content.ends_with(
-                    "state restored to after the previous cell — this cell's effects are lost"
-                ),
-            "{}",
-            out.content
-        );
-        let out = repl.run("c4c", "r").await;
-        assert_eq!(out.content, "→ [1, 2, 3]");
+        #[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
+        {
+            let pid = repl.checkout.as_mut().unwrap().get_mut().pid().unwrap();
+            std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status()
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let out = repl.run("c4b", "r.append(4)\nr").await;
+            assert!(
+                out.is_error
+                    && out.content.starts_with("RuntimeError: runtime crashed (")
+                    && out.content.ends_with(
+                        "state restored to after the previous cell — this cell's effects are lost"
+                    ),
+                "{}",
+                out.content
+            );
+            let out = repl.run("c4c", "r").await;
+            assert_eq!(out.content, "→ [1, 2, 3]");
+        }
         repl.close().await;
 
         let mut repl = Repl::open(&pool, session, &dir, cx.clone()).await;
@@ -3796,7 +3834,10 @@ mod tests {
     /// the inventory back to it, and the next cell runs in a fresh worker
     /// opening with the `<runtime>` line that names the cause and the lost
     /// names. At turn end the line goes through the `.lost` sidecar.
+    /// Subprocess-only: relies on `monty_alloc::set_hard_limit` tripping
+    /// during `dump()`.
     #[test]
+    #[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
     fn dump_failure_keeps_heap_and_inventory_in_step() {
         crate::with_test_registry(async {
             let Some(pool) = monty_pool().await else {
@@ -4084,5 +4125,136 @@ mod tests {
             }
             pool.close().await;
         });
+    }
+
+    #[cfg(feature = "inproc-monty")]
+    #[tokio::test]
+    async fn inproc_monty_exec_persists_globals_and_resumes_async_tools() {
+        let pool = open_inproc_pool(2);
+        let cfg = ReplConfig {
+            type_check: true,
+            type_check_stubs: Some("async def echo_tool(msg: str) -> str: ...\n".to_owned()),
+            ..ReplConfig::default()
+        };
+
+        // 1. Basic Python execution + stdout capture.
+        let mut checkout = pool.checkout(&cfg).await.expect("checkout 1");
+        assert!(checkout.worker_id().is_some());
+        let mut printed = String::new();
+        let mut on_print = on_print_sync(|_, chunk| printed.push_str(chunk));
+        let ev = checkout
+            .feed("print('hello')\nx = 40 + 2\nx", Vec::new(), Vec::new(), false, &mut on_print)
+            .await
+            .expect("cell 1");
+        drop(on_print);
+        assert_eq!(printed.trim(), "hello");
+        match ev {
+            TurnEvent::Complete(v) => assert_eq!(v.as_ref().as_int(), Some(42)),
+            other => panic!("expected Complete(42), got {other:?}"),
+        }
+
+        // 2. Persisted globals across two cells.
+        let mut quiet = on_print_sync(|_, _| {});
+        let ev = checkout
+            .feed("y = x * 2\ny", Vec::new(), Vec::new(), false, &mut quiet)
+            .await
+            .expect("cell 2");
+        match ev {
+            TurnEvent::Complete(v) => assert_eq!(v.as_ref().as_int(), Some(84)),
+            other => panic!("expected Complete(84), got {other:?}"),
+        }
+
+        // 3. Async tool call suspension & resume (NameLookup -> FunctionCall -> ResolveFutures -> Complete).
+        let mut ev = checkout
+            .feed(
+                "res = await echo_tool('ios-ready')\nf'{res}:{y}'",
+                Vec::new(),
+                Vec::new(),
+                false,
+                &mut quiet,
+            )
+            .await
+            .expect("cell 3 start");
+        let mut saw_lookup = false;
+        let mut saw_call = false;
+        let mut saw_resolve = false;
+        let mut pending: HashMap<u32, String> = HashMap::new();
+        let final_val = loop {
+            ev = match ev {
+                TurnEvent::Complete(v) => break v,
+                TurnEvent::NameLookup { name, .. } => {
+                    assert_eq!(name, "echo_tool");
+                    saw_lookup = true;
+                    checkout
+                        .resume_name_lookup(
+                            NameLookupResult::Value(MontyObject::function(name, None)),
+                            &mut quiet,
+                        )
+                        .await
+                        .expect("resume_name_lookup")
+                }
+                TurnEvent::FunctionCall {
+                    function_name,
+                    args,
+                    call_id,
+                    ..
+                } => {
+                    assert_eq!(function_name, "echo_tool");
+                    let msg = args
+                        .arg(0)
+                        .and_then(|a| a.as_str())
+                        .expect("positional msg")
+                        .to_owned();
+                    pending.insert(call_id, msg);
+                    saw_call = true;
+                    checkout
+                        .resume(ResumeValue::Future, &mut quiet)
+                        .await
+                        .expect("resume future")
+                }
+                TurnEvent::ResolveFutures {
+                    pending_call_ids, ..
+                } => {
+                    saw_resolve = true;
+                    let settled = pending_call_ids
+                        .into_iter()
+                        .map(|id| {
+                            let msg = pending.remove(&id).expect("pending call");
+                            (id, ResumeValue::Return(MontyObject::string(format!("echo:{msg}"))))
+                        })
+                        .collect();
+                    checkout
+                        .resume_futures(settled, &mut quiet)
+                        .await
+                        .expect("resume_futures")
+                }
+                other => panic!("unexpected turn event: {other:?}"),
+            };
+        };
+        let _ = saw_lookup;
+        assert!(saw_call, "expected FunctionCall suspension");
+        assert!(saw_resolve, "expected ResolveFutures suspension");
+        assert_eq!(final_val.as_ref().as_str(), Some("echo:ios-ready:84"));
+
+        // 4. Dump + restore into a fresh checkout preserves persisted state.
+        let dump = checkout.dump().await.expect("dump");
+        checkout.finish().await.expect("finish 1");
+
+        let mut checkout2 = pool.checkout(&cfg).await.expect("checkout 2");
+        let (reannounced, _) = checkout2
+            .restore(dump, Vec::new(), &mut quiet)
+            .await
+            .expect("restore");
+        assert!(reannounced.is_none());
+        let ev = checkout2
+            .feed("res", Vec::new(), Vec::new(), false, &mut quiet)
+            .await
+            .expect("cell 4 after restore");
+        match ev {
+            TurnEvent::Complete(v) => assert_eq!(v.as_ref().as_str(), Some("echo:ios-ready")),
+            other => panic!("expected Complete('echo:ios-ready'), got {other:?}"),
+        }
+        checkout2.finish().await.expect("finish 2");
+        pool.close().await;
     }
 }

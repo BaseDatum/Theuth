@@ -1,6 +1,6 @@
 // `container()` from the webview's UA (31 §7.7): every Tauri shell, then a plain browser.
 import { afterEach, expect, test, vi } from 'vitest'
-import { container, deviceName, isDesktop, markContainer } from './platform'
+import { container, deviceName, isDesktop, isIos, isIpad, markContainer } from './platform'
 
 const UA = {
   mac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)',
@@ -8,6 +8,7 @@ const UA = {
   windows:
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0',
   iphone: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+  ipad: 'Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
 }
 
 function shell(userAgent: string, maxTouchPoints = 0, tauri = true) {
@@ -18,17 +19,20 @@ function shell(userAgent: string, maxTouchPoints = 0, tauri = true) {
 afterEach(() => vi.unstubAllGlobals())
 
 test.each([
-  ['macOS WKWebView', UA.mac, 0, 'macos', 'Mac'],
-  ['WebKitGTK', UA.linux, 0, 'linux', 'Linux'],
-  ['WebView2', UA.windows, 0, 'windows', 'Windows'],
-  ['WebView2 with touch (touchscreen, RDP touch redirection)', UA.windows, 10, 'windows', 'Windows'],
-  ['WebKitGTK with touch', UA.linux, 10, 'linux', 'Linux'],
-  ['iPhone', UA.iphone, 5, 'ios', 'iPhone'],
-  ['iPad (Macintosh UA, touch)', UA.mac, 5, 'ios', 'iPad'],
-] as const)('%s → %s', (_, ua, touchPoints, expected, name) => {
+  ['macOS WKWebView', UA.mac, 0, 'macos', 'Mac', false],
+  ['WebKitGTK', UA.linux, 0, 'linux', 'Linux', false],
+  ['WebView2', UA.windows, 0, 'windows', 'Windows', false],
+  ['WebView2 with touch (touchscreen, RDP touch redirection)', UA.windows, 10, 'windows', 'Windows', false],
+  ['WebKitGTK with touch', UA.linux, 10, 'linux', 'Linux', false],
+  ['iPhone', UA.iphone, 5, 'ios', 'iPhone', false],
+  ['iPad (Macintosh UA, touch)', UA.mac, 5, 'ios', 'iPad', true],
+  ['iPad (iPad UA)', UA.ipad, 5, 'ios', 'iPad', true],
+] as const)('%s → %s', (_, ua, touchPoints, expected, name, ipad) => {
   shell(ua, touchPoints)
   expect(container()).toBe(expected)
   expect(isDesktop()).toBe(expected !== 'ios')
+  expect(isIos()).toBe(expected === 'ios')
+  expect(isIpad()).toBe(ipad)
   expect(deviceName()).toBe(name)
 })
 
@@ -37,6 +41,7 @@ test('no __TAURI_INTERNALS__ → web, never desktop, whatever the UA says', () =
     shell(ua, 0, false)
     expect(container()).toBe('web')
     expect(isDesktop()).toBe(false)
+    expect(isIos()).toBe(false)
   }
   shell(UA.windows, 0, false)
   expect(deviceName()).toBe('Edge')

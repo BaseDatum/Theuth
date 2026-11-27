@@ -24,6 +24,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { isIos } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngines } from '@/link/engines'
 import type { DeviceInfo } from "@/rpc/bindings/method.nodes.output"
@@ -44,13 +45,13 @@ const DEVICE_EVENTS = ['DevicePaired', 'DevicesChanged', 'LinkRevoked'] as const
 const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.message('Copied'))
 
 /**
- * 188 Settings › Network › Devices: phones and browsers pair with a mesh here. On a node: the mesh's devices (69 §3–§4),
- * then the relay with both identities, then the other meshes this app reaches. On a bare device (web/phone, no local
- * node): "Pair with a mesh" and the meshes it reaches.
+ * 188 Settings › Network › Devices: phones and browsers pair with a mesh here. On a desktop node: the mesh's devices
+ * (69 §3–§4), then the relay with both identities, then the other meshes this app reaches. On a bare device or iOS:
+ * "Pair with a mesh" and the meshes it reaches.
  */
 export function DevicesTab() {
   const navigate = useNavigate()
-  if (!hasLocal()) {
+  if (!hasLocal() || isIos()) {
     return (
       <>
         <Section
@@ -305,7 +306,7 @@ function Reachable() {
   const presence = useEngines((s) => s.presence)
   const { remove, reorder } = useEngines.getState()
   const [forget, setForget] = useState<Engine | null>(null)
-  const bare = !hasLocal()
+  const bare = !hasLocal() || isIos()
 
   const move = (i: number, by: -1 | 1) => {
     const ids = engines.map((h) => h.id)

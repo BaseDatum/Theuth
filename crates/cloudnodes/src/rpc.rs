@@ -61,8 +61,15 @@ pub trait CloudNodesApi {
         #[argument(rename = "context")] kube_context: Option<String>,
     ) -> RpcResult<K8sInfo>;
     /// Create a node; returns at once in `creating`, the job streams `CloudNodeProgress`.
+    /// `vault_password`: the master password for the node's sealed vault (design doc 225; at
+    /// least 12 characters). Held in memory by the create job only, sent once to the node over
+    /// the mesh after it joined, then dropped; never stored, in an event or in an answer.
     #[method(name = "cloud_create")]
-    async fn cloud_create(&self, spec: NodeSpec) -> RpcResult<CloudNode>;
+    async fn cloud_create(
+        &self,
+        spec: NodeSpec,
+        vault_password: Option<String>,
+    ) -> RpcResult<CloudNode>;
     /// Every node: this engine's records, every connected provider's tagged nodes, the mesh.
     #[method(name = "cloud_list")]
     async fn cloud_list(&self) -> RpcResult<CloudList>;
@@ -149,8 +156,13 @@ impl CloudNodesApiServer for Server {
         cloud().await?.k8s_info(kube_context).await.map_err(err)
     }
 
-    async fn cloud_create(&self, spec: NodeSpec) -> RpcResult<CloudNode> {
-        cloud().await?.create(spec).await.map_err(err)
+    async fn cloud_create(
+        &self,
+        spec: NodeSpec,
+        vault_password: Option<String>,
+    ) -> RpcResult<CloudNode> {
+        let password = vault_password.map(zeroize::Zeroizing::new);
+        cloud().await?.create(spec, password).await.map_err(err)
     }
 
     async fn cloud_list(&self) -> RpcResult<CloudList> {

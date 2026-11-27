@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { INITIAL, diagnostics } from '@/lib/link-status'
+import { isDesktop, isIos } from '@/lib/platform'
 import { type StartupProgress, connection, launchLog, onLaunchLog, onStartupProgress, startupStatus } from '@/lib/tauri'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { LOCAL, hasLocal, useEngines } from '@/link/engines'
@@ -25,7 +26,53 @@ type Props = {
 /** The local daemon's launch screen, or the link overlay when the active engine is remote (31 §9). */
 export function StartupScreen(props: Props) {
   const active = useEngines((s) => s.active)
-  return active === LOCAL ? <LocalStartup {...props} /> : <LinkStartup id={active} />
+  if (active !== LOCAL) return <LinkStartup id={active} />
+  return isIos() ? <MobileLocalStartup onRetry={() => props.onRelaunch('join')} /> : <LocalStartup {...props} />
+}
+
+/**
+ * Clean mobile startup/reconnecting card for the embedded iOS engine: never invokes desktop-only Tauri commands
+ * (`launch_log`, `startup_status`, `relaunch`, `quit_ack`) and offers a simple Retry calling `connection()`.
+ */
+function MobileLocalStartup({ onRetry }: { onRetry: () => void }) {
+  const state = useConnection((s) => s.state)
+  const started = useConnection((s) => s.client !== null)
+  const info = useConnection((s) => s.info !== null)
+  const error = useConnection((s) => s.error)
+  const titleId = useId()
+  const failed = error !== undefined
+  const title = failed ? 'theuth could not start' : state === 'reconnecting' ? 'Reconnecting to theuth' : 'Starting theuth'
+  return (
+    <div className="flex h-dvh items-center justify-center bg-background p-4 text-foreground">
+      <LaunchCard role="region" aria-labelledby={titleId} title={title} titleId={titleId} failed={failed}>
+        <StepList>
+          <StepRow
+            step={{
+              id: 'engine',
+              label: 'Starting on-device engine',
+              status: started ? 'done' : failed ? 'failed' : 'active',
+              detail: !started && failed ? error : undefined,
+            }}
+          />
+          <StepRow
+            step={{
+              id: 'connect',
+              label: state === 'reconnecting' ? 'Reconnecting' : 'Connecting',
+              status: state === 'open' && info ? 'done' : started && failed ? 'failed' : started ? 'active' : 'pending',
+              detail: started && failed ? error : undefined,
+            }}
+          />
+        </StepList>
+        {(failed || state === 'reconnecting') && (
+          <div className="flex items-center justify-end gap-2">
+            <Button className="min-h-11" onClick={onRetry}>
+              Retry
+            </Button>
+          </div>
+        )}
+      </LaunchCard>
+    </div>
+  )
 }
 
 /**
@@ -106,6 +153,7 @@ function LocalStartup({ onRelaunch, onQuit }: Props) {
   const [now, setNow] = useState(since)
 
   useEffect(() => {
+    if (!isDesktop()) return
     let live = true
     const unlisten = onLaunchLog((chunk) => setLog((l) => l + chunk))
     void launchLog().then((initial) => {
@@ -119,6 +167,7 @@ function LocalStartup({ onRelaunch, onQuit }: Props) {
 
   // 222: the shell's tailer of `startup.json`; the command answers what was emitted before this screen mounted.
   useEffect(() => {
+    if (!isDesktop()) return
     let live = true
     let heard = false
     const unlisten = onStartupProgress((p) => {
