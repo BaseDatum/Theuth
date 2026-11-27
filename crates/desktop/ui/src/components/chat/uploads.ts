@@ -10,8 +10,10 @@ export type Upload = { id: string; name: string; preview?: string; status: 'pend
 /** What an upload resolves to: the engine path and, for an image, its pixel size. */
 export type Uploaded = { path: string; dims?: [number, number] }
 
+const isRasterImage = (type: string) => type.startsWith('image/') && type !== 'image/svg+xml'
+
 /** A tile's name: the file's, else what it is (a pasted image has none). */
-export const uploadName = (file: Blob & { name?: string }): string => file.name || (file.type.startsWith('image/') ? 'Pasted image' : 'File')
+export const uploadName = (file: Blob & { name?: string }): string => file.name || (isRasterImage(file.type) ? 'Pasted image' : 'File')
 
 /** Why Send waits, or `null` when nothing is uploading. */
 export function uploadWait(uploads: readonly Upload[]): string | null {
@@ -66,7 +68,7 @@ export function createUploads(upload: (file: Blob) => Promise<Uploaded>, done: (
     },
     start(files: Blob[]) {
       const added = files.map((file): Entry => {
-        const image = file.type.startsWith('image/') && typeof URL.createObjectURL === 'function'
+        const image = isRasterImage(file.type) && typeof URL.createObjectURL === 'function'
         return { id: `u${++seq}`, name: uploadName(file), preview: image ? URL.createObjectURL(file) : undefined, status: 'pending', file, run: 0 }
       })
       if (!added.length) return

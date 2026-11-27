@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import { type Active, finish } from '@/lib/dictation'
-import { dictationCommands, handsOff, placeholderFor, SendButton, spokenSend, type Tail } from './Composer'
+import { dictationCommands, handsOff, pastedFiles, placeholderFor, SendButton, spokenSend, type Tail } from './Composer'
 import { COMMANDS } from './slash'
 
 const active = (utts: Active['utts']): Active => ({ id: 'd1', before: '', after: '', utts, levels: [], startedAt: 0, device: null })
@@ -107,4 +107,31 @@ test('the draw-in is CSS-gated: with reduced motion the overlay is hidden and ev
   expect(rest).toMatch(/\.send-arrive-fill \{\s+display: none;/)
   expect(rest).not.toContain('animation')
   for (const c of ['send-arrive-square', 'send-arrive-ring', 'send-arrive-bar']) expect(motion).toMatch(new RegExp(`\\.${c} \\{\\s+animation: ${c} `))
+})
+
+test('attach file allows any file type in both the hidden input and native dialog', () => {
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  expect(src).not.toContain('accept="image/*,application/pdf"')
+  expect(src).not.toContain('Images and PDF')
+  expect(src).not.toMatch(/extensions:\s*\[[^\]]*'pdf'/)
+  expect(src).toMatch(/<input[\s\S]*?ref=\{fileInput\}[\s\S]*?type="file"[\s\S]*?multiple/)
+  expect(src).toContain('pickFiles({ multiple: true })')
+})
+
+test('pastedFiles attaches files of any type and leaves normal text pastes untouched', () => {
+  const mk = (name: string, type: string) => new File(['x'], name, { type })
+  const item = (file: File) => ({ kind: 'file' as const, getAsFile: () => file })
+  const str = () => ({ kind: 'string' as const, getAsFile: () => null })
+
+  const png = mk('shot.png', 'image/png')
+  const zip = mk('bundle.zip', 'application/zip')
+  const md = mk('notes.md', 'text/markdown')
+  const html = mk('page.html', 'text/html')
+  const svg = mk('icon.svg', 'image/svg+xml')
+  const makefile = mk('Makefile', '')
+
+  expect(pastedFiles({ items: [item(png)] })).toEqual([png])
+  expect(pastedFiles({ items: [str(), item(zip), item(md), item(html), item(svg), item(makefile)] })).toEqual([zip, md, html, svg, makefile])
+  expect(pastedFiles({ items: [], files: [zip] })).toEqual([zip])
+  expect(pastedFiles({ items: [str(), str()], files: [] })).toEqual([])
 })

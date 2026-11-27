@@ -2517,7 +2517,7 @@ impl Message<RestartTurn> for Session {
                     .ok()
                     .and_then(|mut c| c.remove(&m.turn));
                 Input {
-                    text: clock::strip_owned(text_of(&opener.content)),
+                    text: clock::strip_owned(user_text_of(&opener.content)),
                     channel,
                     files: vec![],
                     context: Vec::new(),
@@ -10645,9 +10645,13 @@ fn aux_conversation(session: SessionId) -> SessionId {
     SessionId(Uuid::from_bytes(bytes))
 }
 
-/// The user message for one input: text, then one `Binary` part per file
-/// (17 §3.2; a PDF rides as a native document part, 20 §2.5). A file that
-/// vanished since `check_files` becomes a placeholder rather than aborting the turn.
+/// Largest PDF sent as a native document part (20 §2.5: Anthropic's 32 MB).
+const MAX_PDF_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The user message for one input: view blocks, user text, then one part per
+/// attached file (image/PDF binary, inlined text/rendered document, or bare
+/// path pointer). A file that vanished since `check_files` becomes an
+/// unreadable placeholder rather than aborting the turn.
 async fn user_message(
     Input {
         text,
@@ -10664,15 +10668,425 @@ async fn user_message(
     parts.extend(context.into_iter().map(ContentPart::Text));
     parts.push(ContentPart::Text(text));
     for f in files {
-        parts.push(match file_part(&f).await {
-            Ok(b) => ContentPart::Binary(b),
+        parts.push(match attachment_part(&f).await {
+            Ok(p) => p,
             Err(e) => ContentPart::Text(format!("[file {} unreadable: {e}]", f.display())),
         });
     }
     ChatMessage::user(MessageContent::from_parts(parts))
 }
 
-/// The binary part for an attachment or tool file (17 §3.1, 52 §5.3): an
+/// Decide how one user-attached file is presented to the model:
+///
+/// 1. Raster: `tools::images::sniff` → PNG/JPEG/GIF/WebP become native image
+///    `ContentPart::Binary` via `tools::images::for_provider`; unsupported
+///    raster formats (`tools::images::unsupported_kind`: BMP/TIFF/HEIC/AVIF/ICO)
+///    become a path pointer.
+/// 2. PDF (`%PDF` header or `application/pdf`): ≤ 32 MB → native document
+///    `ContentPart::Binary`; over 32 MB → path pointer.
+/// 3. Documents (`tools::doc::format` + `tools::doc::to_markdown` for
+///    docx/pptx/xlsx/odt/rtf/epub): if conversion succeeds and the Markdown fits
+///    within `tools::fs::MAX_BYTES` (64 KiB), inline as fenced `md` text; else
+///    path pointer. Checked before archives so `.docx` is not treated as zip.
+/// 4. Archives (zip/tar/gz/bz2/xz/zst/7z/rar/dmg/iso/… by suffix, MIME, or
+///    magic bytes): path pointer only, checked before any UTF-8 sniff.
+/// 5. Text (SVG, HTML, Markdown, JSON, YAML, TOML, XML, source files, `text/*`,
+///    and extensionless files): size ≤ `tools::fs::MAX_BYTES` (64 KiB), valid
+///    UTF-8, no NUL → inline as fenced text with the file's path; else pointer.
+/// 6. Everything else → bare path pointer: `the user attached: /full/path/to/file`.
+pub(crate) async fn attachment_part(f: &Path) -> Result<ContentPart, String> {
+    enum Action {
+        Done(ContentPart),
+        ConvertDoc(Vec<u8>, tools::doc::Format),
+    }
+
+    let path = f.to_owned();
+    let action = tokio::task::spawn_blocking(move || -> Result<Action, String> {
+        let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        if !meta.is_file() {
+            return Err("not a regular file".into());
+        }
+        let file_len = meta.len();
+        let header = read_header(&path, 512)?;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        let mime = mime_guess::from_path(&path).first_or_octet_stream();
+
+        // 1. Raster images: supported → native image part; unsupported → pointer.
+        if tools::images::sniff(&header).is_some() {
+            let (bytes, mime) = tools::images::for_provider(&path)
+                .map_err(|e| format!("{e:#}"))?
+                .ok_or_else(|| "image header changed during read".to_owned())?;
+            return Ok(Action::Done(ContentPart::Binary(Binary::from_base64(
+                mime,
+                BASE64.encode(bytes),
+                name,
+            ))));
+        }
+        if tools::images::unsupported_kind(&header).is_some() {
+            return Ok(Action::Done(ContentPart::Text(pointer_line(&path))));
+        }
+
+        // 2. PDF: native document part up to 32 MB, else pointer.
+        if header.starts_with(b"%PDF") || mime == mime_guess::mime::APPLICATION_PDF {
+            if file_len > MAX_PDF_BYTES {
+                return Ok(Action::Done(ContentPart::Text(pointer_line(&path))));
+            }
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            if bytes.len() as u64 > MAX_PDF_BYTES {
+                return Ok(Action::Done(ContentPart::Text(pointer_line(&path))));
+            }
+            return Ok(Action::Done(ContentPart::Binary(Binary::from_base64(
+                "application/pdf",
+                BASE64.encode(bytes),
+                name,
+            ))));
+        }
+
+        // 3. Rich documents (docx/pptx/xlsx/odt/rtf/epub) before archive checks
+        //    so OOXML/ODF/EPUB ZIP containers are not mistaken for zip archives.
+        if file_len <= tools::doc::MAX_BYTES as u64 && looks_like_doc(&header, &path) {
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            if bytes.len() <= tools::doc::MAX_BYTES
+                && let Some(fmt) = tools::doc::format(&bytes)
+                && fmt != tools::doc::Format::Pdf
+            {
+                return Ok(Action::ConvertDoc(bytes, fmt));
+            }
+        }
+
+        // 4. Archives: pointer only, checked before any UTF-8 sniff.
+        if is_archive(&path, &header, &mime) {
+            return Ok(Action::Done(ContentPart::Text(pointer_line(&path))));
+        }
+
+        // 5. Text files (SVG, HTML, Markdown, JSON, YAML, source, or extensionless):
+        //    inline up to `tools::fs::MAX_BYTES` (64 KiB) when valid UTF-8 with no NUL.
+        if is_text_candidate(&path, &mime) && file_len <= tools::fs::MAX_BYTES as u64 {
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            if bytes.len() <= tools::fs::MAX_BYTES
+                && !bytes.contains(&0)
+                && let Ok(body) = std::str::from_utf8(&bytes)
+            {
+                let info = fence_info(&path);
+                return Ok(Action::Done(ContentPart::Text(format_inlined(
+                    &path, &info, body,
+                ))));
+            }
+        }
+
+        // 6. Everything else: bare pointer line.
+        Ok(Action::Done(ContentPart::Text(pointer_line(&path))))
+    })
+    .await
+    .map_err(|e| format!("attachment reader failed: {e}"))??;
+
+    match action {
+        Action::Done(part) => Ok(part),
+        Action::ConvertDoc(bytes, fmt) => match tools::doc::to_markdown(bytes, fmt).await {
+            Ok(md) if md.len() <= tools::fs::MAX_BYTES => {
+                Ok(ContentPart::Text(format_inlined(f, "md", &md)))
+            }
+            _ => Ok(ContentPart::Text(pointer_line(f))),
+        },
+    }
+}
+
+fn read_header(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut buf = Vec::with_capacity(limit);
+    file.by_ref()
+        .take(limit as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
+fn pointer_line(path: &Path) -> String {
+    format!("{}{}", crate::context::ATTACHMENT_PREFIX, path.display())
+}
+
+fn fence_info(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| !e.is_empty() && e.len() <= 16 && e.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn fence_for(body: &str) -> String {
+    let mut max_run = 0usize;
+    let mut run = 0usize;
+    for b in body.bytes() {
+        if b == b'`' {
+            run += 1;
+            if run > max_run {
+                max_run = run;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat((max_run + 1).max(3))
+}
+
+fn format_inlined(path: &Path, info: &str, body: &str) -> String {
+    let fence = fence_for(body);
+    let sep = if body.is_empty() || body.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    format!(
+        "{}{}\n\n{fence}{info}\n{body}{sep}{fence}",
+        crate::context::ATTACHMENT_PREFIX,
+        path.display()
+    )
+}
+
+fn looks_like_doc(header: &[u8], path: &Path) -> bool {
+    if header.starts_with(b"PK\x03\x04")
+        || header.starts_with(b"{\\rtf")
+        || header.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+    {
+        return true;
+    }
+    matches!(
+        tools::doc::Format::from_path(path),
+        Some(fmt) if fmt != tools::doc::Format::Pdf
+    )
+}
+
+fn is_archive(path: &Path, header: &[u8], mime: &mime_guess::Mime) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let lower = name.to_ascii_lowercase();
+        for suffix in [
+            ".tar.gz",
+            ".tgz",
+            ".tar.bz2",
+            ".tbz2",
+            ".tar.xz",
+            ".txz",
+            ".tar.zst",
+            ".tar",
+            ".zip",
+            ".gz",
+            ".bz2",
+            ".xz",
+            ".zst",
+            ".7z",
+            ".rar",
+            ".dmg",
+            ".iso",
+            ".cab",
+            ".lz4",
+            ".lzma",
+            ".jar",
+            ".war",
+            ".ear",
+            ".apk",
+            ".ipa",
+            ".deb",
+            ".rpm",
+        ] {
+            if lower.ends_with(suffix) {
+                return true;
+            }
+        }
+    }
+    if header.starts_with(b"PK\x03\x04")
+        || header.starts_with(b"PK\x05\x06")
+        || header.starts_with(b"PK\x07\x08")
+        || header.starts_with(&[0x1f, 0x8b])
+        || header.starts_with(b"BZh")
+        || header.starts_with(b"\xfd7zXZ\0")
+        || header.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
+        || header.starts_with(b"7z\xbc\xaf\x27\x1c")
+        || header.starts_with(b"Rar!\x1a\x07")
+        || (header.len() >= 262 && &header[257..262] == b"ustar")
+    {
+        return true;
+    }
+    matches!(
+        mime.essence_str(),
+        "application/zip"
+            | "application/x-zip-compressed"
+            | "application/x-tar"
+            | "application/gzip"
+            | "application/x-gzip"
+            | "application/x-bzip2"
+            | "application/x-xz"
+            | "application/x-7z-compressed"
+            | "application/vnd.rar"
+            | "application/x-rar-compressed"
+            | "application/x-apple-diskimage"
+            | "application/x-iso9660-image"
+            | "application/zstd"
+    )
+}
+
+fn is_text_candidate(path: &Path, mime: &mime_guess::Mime) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        // Extensionless names (Makefile, LICENSE, dotfiles, or extensionless
+        // uploads from `save_blob`) are eligible for UTF-8 + no-NUL inlining.
+        return true;
+    };
+    let ext = ext.to_ascii_lowercase();
+    if matches!(
+        ext.as_str(),
+        "rs" | "py"
+            | "pyi"
+            | "go"
+            | "ts"
+            | "tsx"
+            | "mts"
+            | "cts"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "md"
+            | "markdown"
+            | "mdx"
+            | "html"
+            | "htm"
+            | "xhtml"
+            | "svg"
+            | "xml"
+            | "xsl"
+            | "xsd"
+            | "plist"
+            | "json"
+            | "jsonc"
+            | "json5"
+            | "jsonl"
+            | "ndjson"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "css"
+            | "scss"
+            | "sass"
+            | "less"
+            | "csv"
+            | "tsv"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "ps1"
+            | "bat"
+            | "cmd"
+            | "txt"
+            | "log"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "env"
+            | "sql"
+            | "graphql"
+            | "gql"
+            | "proto"
+            | "prisma"
+            | "tf"
+            | "hcl"
+            | "nix"
+            | "zig"
+            | "c"
+            | "cc"
+            | "cpp"
+            | "cxx"
+            | "h"
+            | "hh"
+            | "hpp"
+            | "cs"
+            | "fs"
+            | "java"
+            | "kt"
+            | "kts"
+            | "scala"
+            | "groovy"
+            | "swift"
+            | "m"
+            | "mm"
+            | "rb"
+            | "pl"
+            | "pm"
+            | "php"
+            | "lua"
+            | "r"
+            | "jl"
+            | "dart"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "hrl"
+            | "hs"
+            | "ml"
+            | "mli"
+            | "clj"
+            | "cljs"
+            | "edn"
+            | "lisp"
+            | "el"
+            | "scm"
+            | "rkt"
+            | "vim"
+            | "awk"
+            | "sed"
+            | "vue"
+            | "svelte"
+            | "astro"
+            | "rst"
+            | "adoc"
+            | "tex"
+            | "bib"
+            | "org"
+            | "typ"
+            | "mmd"
+            | "mermaid"
+            | "dot"
+            | "gv"
+            | "diff"
+            | "patch"
+            | "cmake"
+            | "gradle"
+            | "lock"
+            | "dockerfile"
+            | "makefile"
+    ) {
+        return true;
+    }
+    if mime.type_() == mime_guess::mime::TEXT {
+        return true;
+    }
+    if matches!(
+        mime.suffix().map(|s| s.as_str()),
+        Some("json" | "xml")
+    ) {
+        return true;
+    }
+    matches!(
+        mime.essence_str(),
+        "image/svg+xml"
+            | "application/json"
+            | "application/xml"
+            | "application/javascript"
+            | "application/x-javascript"
+            | "application/ecmascript"
+            | "application/typescript"
+            | "application/xhtml+xml"
+            | "application/yaml"
+            | "application/x-yaml"
+            | "application/toml"
+            | "application/x-sh"
+            | "application/x-shellscript"
+            | "application/sql"
+            | "application/graphql"
+    )
+}
+
+/// The binary part for a tool-produced file (17 §3.1, 52 §5.3): an
 /// image goes through [`tools::images::for_provider`] — MIME from its bytes,
 /// decoded, scaled into provider limits — so nothing a provider rejects for
 /// size, format, animation or corruption is stored and re-sent every turn;
@@ -10958,13 +11372,38 @@ pub(crate) async fn refuse_peer(
     }
 }
 
-/// Text parts of a message joined, for history rendering; a binary part
-/// renders as `[image: <name>]` or `[document: <name>]` (17 §3.5); a tool
-/// response renders as its content followed by one tag per image (23 §5).
+/// Text parts of a message joined, for compaction, search, and model/store
+/// consumers (keeps inlined attachment bodies intact); a binary part renders as
+/// `[image: <name>]` or `[document: <name>]` (17 §3.5); a tool response renders
+/// as its content followed by one tag per image (23 §5).
 pub(crate) fn text_of(content: &MessageContent) -> String {
     let mut out = String::new();
     for part in content.iter() {
         match part {
+            ContentPart::Text(t) => out.push_str(t),
+            ContentPart::Binary(b) => binary_tag(&mut out, b),
+            ContentPart::ToolResponse(r) => {
+                out.push_str(&r.content);
+                for b in &r.images {
+                    out.push(' ');
+                    binary_tag(&mut out, b);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// User-visible bubble text of a `ChatRole::User` message: like [`text_of`],
+/// except trailing text-attachment parts (`the user attached: …`, whether
+/// inlined body or bare pointer) are omitted because they render as
+/// [`ContextAttachment`](crate::context::ContextAttachment) chips instead.
+pub(crate) fn user_text_of(content: &MessageContent) -> String {
+    let mut out = String::new();
+    for (i, part) in content.iter().enumerate() {
+        match part {
+            ContentPart::Text(t) if i > 0 && crate::context::parse_text_attachment(t).is_some() => {}
             ContentPart::Text(t) => out.push_str(t),
             ContentPart::Binary(b) => binary_tag(&mut out, b),
             ContentPart::ToolResponse(r) => {
@@ -14808,5 +15247,208 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn attachment_part_classifies_text_docs_archives_binaries_and_media() {
+        let scratch = crate::test_dir("attach-decision");
+        let dir = scratch.path();
+
+        // Small .md, .svg, .html → inlined text parts containing path + fenced body.
+        let md = dir.join("notes.md");
+        std::fs::write(&md, "# Heading\n\nBody text\n").unwrap();
+        let svg = dir.join("icon.svg");
+        std::fs::write(
+            &svg,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"4\"/></svg>",
+        )
+        .unwrap();
+        let html = dir.join("page.html");
+        std::fs::write(&html, "<!doctype html><h1>Hello</h1>").unwrap();
+        let makefile = dir.join("Makefile");
+        std::fs::write(&makefile, "all:\n\techo ok\n").unwrap();
+
+        match attachment_part(&md).await.unwrap() {
+            ContentPart::Text(s) => {
+                assert_eq!(
+                    s,
+                    format!(
+                        "the user attached: {}\n\n```md\n# Heading\n\nBody text\n```",
+                        md.display()
+                    )
+                );
+            }
+            other => panic!("expected text part for .md, got {other:?}"),
+        }
+        match attachment_part(&svg).await.unwrap() {
+            ContentPart::Text(s) => {
+                assert_eq!(
+                    s,
+                    format!(
+                        "the user attached: {}\n\n```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"4\"/></svg>\n```",
+                        svg.display()
+                    )
+                );
+            }
+            other => panic!("expected text part for .svg, got {other:?}"),
+        }
+        match attachment_part(&html).await.unwrap() {
+            ContentPart::Text(s) => {
+                assert_eq!(
+                    s,
+                    format!(
+                        "the user attached: {}\n\n```html\n<!doctype html><h1>Hello</h1>\n```",
+                        html.display()
+                    )
+                );
+            }
+            other => panic!("expected text part for .html, got {other:?}"),
+        }
+        match attachment_part(&makefile).await.unwrap() {
+            ContentPart::Text(s) => {
+                assert_eq!(
+                    s,
+                    format!(
+                        "the user attached: {}\n\n```\nall:\n\techo ok\n```",
+                        makefile.display()
+                    )
+                );
+            }
+            other => panic!("expected text part for Makefile, got {other:?}"),
+        }
+
+        // Rich document (.rtf) → converted via tools::doc::to_markdown and inlined as md.
+        let rtf = dir.join("memo.rtf");
+        std::fs::write(&rtf, r"{\rtf1\ansi Hello from RTF}").unwrap();
+        match attachment_part(&rtf).await.unwrap() {
+            ContentPart::Text(s) => {
+                assert!(
+                    s.starts_with(&format!("the user attached: {}\n\n```md\n", rtf.display())),
+                    "{s}"
+                );
+                assert!(s.contains("Hello from RTF"), "{s}");
+            }
+            other => panic!("expected rendered text part for .rtf, got {other:?}"),
+        }
+
+        // Archive (.zip) and random binary bytes → bare pointer line only, no bytes leaked.
+        let zip = dir.join("bundle.zip");
+        std::fs::write(&zip, b"PK\x03\x04SECRET_ARCHIVE_PAYLOAD").unwrap();
+        let expected_zip = format!("the user attached: {}", zip.display());
+        match attachment_part(&zip).await.unwrap() {
+            ContentPart::Text(s) => {
+                println!("pointer: {s}");
+                assert_eq!(s, expected_zip);
+                assert!(!s.contains("SECRET_ARCHIVE_PAYLOAD"));
+            }
+            other => panic!("expected pointer text for .zip, got {other:?}"),
+        }
+
+        let bin = dir.join("random.bin");
+        std::fs::write(&bin, [0xff, 0xfe, 0x00, 0xde, 0xad, b'X', b'Y']).unwrap();
+        let expected_bin = format!("the user attached: {}", bin.display());
+        match attachment_part(&bin).await.unwrap() {
+            ContentPart::Text(s) => {
+                assert_eq!(s, expected_bin);
+                assert!(!s.contains("XY"));
+            }
+            other => panic!("expected pointer text for .bin, got {other:?}"),
+        }
+
+        // Unsupported raster (.bmp) → pointer, NOT an image binary part.
+        let bmp = dir.join("legacy.bmp");
+        let mut bmp_bytes = vec![0u8; 32];
+        bmp_bytes[0..2].copy_from_slice(b"BM");
+        std::fs::write(&bmp, &bmp_bytes).unwrap();
+        match attachment_part(&bmp).await.unwrap() {
+            ContentPart::Text(s) => assert_eq!(s, format!("the user attached: {}", bmp.display())),
+            other => panic!("expected pointer text for .bmp, got {other:?}"),
+        }
+
+        // Oversized text (> tools::fs::MAX_BYTES = 64 KiB) and NUL-containing text → pointer only.
+        let big_md = dir.join("huge.md");
+        std::fs::write(&big_md, "a".repeat(tools::fs::MAX_BYTES + 1)).unwrap();
+        match attachment_part(&big_md).await.unwrap() {
+            ContentPart::Text(s) => {
+                assert_eq!(s, format!("the user attached: {}", big_md.display()))
+            }
+            other => panic!("expected pointer text for oversized .md, got {other:?}"),
+        }
+
+        let nul_txt = dir.join("has_nul.txt");
+        std::fs::write(&nul_txt, b"hello\0world").unwrap();
+        match attachment_part(&nul_txt).await.unwrap() {
+            ContentPart::Text(s) => {
+                assert_eq!(s, format!("the user attached: {}", nul_txt.display()))
+            }
+            other => panic!("expected pointer text for NUL .txt, got {other:?}"),
+        }
+
+        // PNG and PDF stay native ContentPart::Binary parts; oversized PDF (> 32 MB) falls back to pointer.
+        let png = dir.join("shot.png");
+        let mut png_bytes = Vec::new();
+        let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]));
+        img.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(&png, &png_bytes).unwrap();
+        match attachment_part(&png).await.unwrap() {
+            ContentPart::Binary(b) => {
+                assert_eq!(b.content_type, "image/png");
+                assert_eq!(b.name.as_deref(), Some("shot.png"));
+            }
+            other => panic!("expected binary image part for .png, got {other:?}"),
+        }
+
+        let pdf = dir.join("spec.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\n%stub\n").unwrap();
+        match attachment_part(&pdf).await.unwrap() {
+            ContentPart::Binary(b) => {
+                assert_eq!(b.content_type, "application/pdf");
+                assert_eq!(b.name.as_deref(), Some("spec.pdf"));
+            }
+            other => panic!("expected binary document part for .pdf, got {other:?}"),
+        }
+
+        let big_pdf = dir.join("huge.pdf");
+        let f = std::fs::File::create(&big_pdf).unwrap();
+        f.set_len(MAX_PDF_BYTES + 1).unwrap();
+        match attachment_part(&big_pdf).await.unwrap() {
+            ContentPart::Text(s) => {
+                assert_eq!(s, format!("the user attached: {}", big_pdf.display()))
+            }
+            other => panic!("expected pointer text for oversized .pdf, got {other:?}"),
+        }
+
+        // Bubble vs compaction split: user_text_of hides inlined/pointer parts,
+        // while text_of keeps the inlined body for compaction and model replay.
+        let msg = user_message(Input {
+            text: "please review".into(),
+            files: vec![md.clone(), zip.clone()],
+            context: Vec::new(),
+            channel: None,
+            replay: None,
+            ticket: None,
+            scope: None,
+            peer: None,
+            defer: false,
+            advisory: None,
+            passive: false,
+        })
+        .await;
+        assert_eq!(user_text_of(&msg.content), "please review");
+        let full = text_of(&msg.content);
+        assert!(full.contains("please review"), "{full}");
+        assert!(full.contains("# Heading"), "{full}");
+        assert!(full.contains(&expected_zip), "{full}");
+        let chips = crate::context::attachments(
+            crate::context::ContextOwner::Message { seq: 1 },
+            &msg,
+            &crate::context::Mask::default(),
+        );
+        assert_eq!(chips.len(), 2);
+        assert_eq!(chips[0].name, "notes.md");
+        assert_eq!(chips[0].path, Some(md));
+        assert_eq!(chips[1].name, "bundle.zip");
+        assert_eq!(chips[1].path, Some(zip));
     }
 }

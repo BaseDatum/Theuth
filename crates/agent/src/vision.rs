@@ -299,6 +299,14 @@ pub fn images(owner: ContextOwner, m: &ChatMessage, mask: &Mask) -> Vec<VisionIm
                     }
                 }
             }
+            ContentPart::Text(t)
+                if m.role == ChatRole::User
+                    && part > 0
+                    && context::parse_text_attachment(t).is_some()
+                    && mask.has(BinaryAt { part, image: None }) =>
+            {
+                dropped_parts += 1;
+            }
             _ => {}
         }
     }

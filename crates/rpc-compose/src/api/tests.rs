@@ -86,17 +86,23 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         policy(ev).delta != wire::Delta::Control
     }
 
-    /// A diagram's "Save SVG…" goes through `put_attachment` on the desktop shell:
-    /// `.svg` must be accepted (image cap), unknown extensions still refused.
+    /// `put_attachment` accepts svg, generic extensions (.md, .zip) and
+    /// extensionless files (Makefile/LICENSE), while refusing traversal or
+    /// malformed extensions.
     #[test]
-    fn decode_attachment_accepts_svg_and_refuses_unknown() {
+    fn decode_attachment_accepts_generic_and_refuses_traversal() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"<svg/>");
         assert_eq!(decode_attachment(b64.clone(), "svg").unwrap(), b"<svg/>");
-        let err = decode_attachment(b64, "exe").unwrap_err();
-        assert!(
-            err.message().contains("unsupported attachment type .exe"),
-            "{err}"
-        );
+        assert_eq!(decode_attachment(b64.clone(), "md").unwrap(), b"<svg/>");
+        assert_eq!(decode_attachment(b64.clone(), "zip").unwrap(), b"<svg/>");
+        assert_eq!(decode_attachment(b64.clone(), "").unwrap(), b"<svg/>");
+        for bad in ["..", "../etc", "a/b", r"a\b", "a.b", "toolongextension123"] {
+            let err = decode_attachment(b64.clone(), bad).unwrap_err();
+            assert!(
+                err.message().contains("invalid attachment extension"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     /// 109 §10.3 wire shapes the desktop's bindings rely on: the interrupted
