@@ -5,7 +5,6 @@
 import { useNavigate } from '@tanstack/react-router'
 import { Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { Tag } from '@/components/costs/ui'
 import { Terminal } from '@/components/chat/TerminalViewer'
 import { Empty, Section, useAction } from '@/components/settings/shared'
 import {

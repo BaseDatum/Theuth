@@ -48306,11 +48306,29 @@
         ],
         "type": "object"
       },
-      "method.agent.output.EngineTerminal": {
-        "description": "An interactive shell on an engine: attach with `subscribe_pty(session,\njob, rows, cols, engine)`, type with `pty_input(…, engine)`.",
+      "method.agent.output.EngineShell": {
+        "description": "An interactive login shell on an engine, outside any session or job: attach\nwith `subscribe_shell(shell, rows, cols, engine)`, type with `shell_input`,\nresize with `shell_resize`, end with `shell_close`.",
         "properties": {
           "engine": {
             "description": "Mesh id of the engine running it (pass it back as `engine`).",
+            "type": "string"
+          },
+          "shell": {
+            "description": "Shell id in the engine's in-memory registry (default `\"main\"`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "shell",
+          "engine"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.EngineTerminal": {
+        "description": "Deprecated return type of `engine_terminal` (kept only for wire-schema\nstability; `engine_terminal` now errors and directs callers to `engine_shell`).",
+        "properties": {
+          "engine": {
+            "description": "Mesh id of the engine.",
             "type": "string"
           },
           "job": {
@@ -48319,7 +48337,7 @@
                 "$ref": "#/components/schemas/method.agent.output.JobId"
               }
             ],
-            "description": "The PTY job."
+            "description": "Deprecated: PTY job id."
           },
           "session": {
             "allOf": [
@@ -48327,7 +48345,7 @@
                 "$ref": "#/components/schemas/method.agent.output.SessionId"
               }
             ],
-            "description": "The engine's owner root session holding the job."
+            "description": "Deprecated: owner root session id."
           }
         },
         "required": [
@@ -53967,6 +53985,93 @@
             "const": "cautious",
             "description": "183's capped, one-turn-per-message path.",
             "type": "string"
+          }
+        ]
+      },
+      "method.agent.output.ShellChunk": {
+        "description": "One `subscribe_shell` item.",
+        "oneOf": [
+          {
+            "description": "Start over: reset the terminal to `rows`×`cols` and write `data` (base64).",
+            "properties": {
+              "cols": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "data": {
+                "type": "string"
+              },
+              "rows": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "reset",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data",
+              "rows",
+              "cols"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Shell output (base64), in order.",
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "type": {
+                "const": "data",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The shell exited; the subscription closes.",
+            "properties": {
+              "exit": {
+                "$ref": "#/components/schemas/method.agent.output.JobExit"
+              },
+              "type": {
+                "const": "exit",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "exit"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The mesh stream to the remote engine dropped before the shell exited.",
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "const": "disconnected",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "reason"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -59784,11 +59889,29 @@
         ],
         "type": "object"
       },
-      "method.agent.receiver.EngineTerminal": {
-        "description": "An interactive shell on an engine: attach with `subscribe_pty(session,\njob, rows, cols, engine)`, type with `pty_input(…, engine)`.",
+      "method.agent.receiver.EngineShell": {
+        "description": "An interactive login shell on an engine, outside any session or job: attach\nwith `subscribe_shell(shell, rows, cols, engine)`, type with `shell_input`,\nresize with `shell_resize`, end with `shell_close`.",
         "properties": {
           "engine": {
             "description": "Mesh id of the engine running it (pass it back as `engine`).",
+            "type": "string"
+          },
+          "shell": {
+            "description": "Shell id in the engine's in-memory registry (default `\"main\"`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "shell",
+          "engine"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.EngineTerminal": {
+        "description": "Deprecated return type of `engine_terminal` (kept only for wire-schema\nstability; `engine_terminal` now errors and directs callers to `engine_shell`).",
+        "properties": {
+          "engine": {
+            "description": "Mesh id of the engine.",
             "type": "string"
           },
           "job": {
@@ -59797,7 +59920,7 @@
                 "$ref": "#/components/schemas/method.agent.receiver.JobId"
               }
             ],
-            "description": "The PTY job."
+            "description": "Deprecated: PTY job id."
           },
           "session": {
             "allOf": [
@@ -59805,7 +59928,7 @@
                 "$ref": "#/components/schemas/method.agent.receiver.SessionId"
               }
             ],
-            "description": "The engine's owner root session holding the job."
+            "description": "Deprecated: owner root session id."
           }
         },
         "required": [
@@ -65259,6 +65382,93 @@
             "const": "cautious",
             "description": "183's capped, one-turn-per-message path.",
             "type": "string"
+          }
+        ]
+      },
+      "method.agent.receiver.ShellChunk": {
+        "description": "One `subscribe_shell` item.",
+        "oneOf": [
+          {
+            "description": "Start over: reset the terminal to `rows`×`cols` and write `data` (base64).",
+            "properties": {
+              "cols": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "data": {
+                "type": "string"
+              },
+              "rows": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "reset",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data",
+              "rows",
+              "cols"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Shell output (base64), in order.",
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "type": {
+                "const": "data",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The shell exited; the subscription closes.",
+            "properties": {
+              "exit": {
+                "$ref": "#/components/schemas/method.agent.receiver.JobExit"
+              },
+              "type": {
+                "const": "exit",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "exit"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The mesh stream to the remote engine dropped before the shell exited.",
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "const": "disconnected",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "reason"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -87095,24 +87305,19 @@
         "type": "object"
       },
       "method.cloudnodes.output.TerminalOpen": {
-        "description": "`cloud_terminal`: a PTY job on the node's engine; attach with `subscribe_pty(session, job)`.",
+        "description": "`cloud_terminal`: an in-memory login shell on the node's engine (no session, no job); attach\nwith `subscribe_shell(shell, rows, cols, engine)`.",
         "properties": {
           "engine": {
-            "description": "The node's mesh endpoint id (where the PTY runs).",
+            "description": "The node's mesh endpoint id (where the shell runs).",
             "type": "string"
           },
-          "job": {
-            "description": "The PTY job.",
-            "type": "string"
-          },
-          "session": {
-            "description": "The owner root session the PTY job belongs to, on the node.",
+          "shell": {
+            "description": "Shell id in the node engine's in-memory shell registry (default `\"main\"`).",
             "type": "string"
           }
         },
         "required": [
-          "session",
-          "job",
+          "shell",
           "engine"
         ],
         "type": "object"
@@ -88186,24 +88391,19 @@
         "type": "object"
       },
       "method.cloudnodes.receiver.TerminalOpen": {
-        "description": "`cloud_terminal`: a PTY job on the node's engine; attach with `subscribe_pty(session, job)`.",
+        "description": "`cloud_terminal`: an in-memory login shell on the node's engine (no session, no job); attach\nwith `subscribe_shell(shell, rows, cols, engine)`.",
         "properties": {
           "engine": {
-            "description": "The node's mesh endpoint id (where the PTY runs).",
+            "description": "The node's mesh endpoint id (where the shell runs).",
             "type": "string"
           },
-          "job": {
-            "description": "The PTY job.",
-            "type": "string"
-          },
-          "session": {
-            "description": "The owner root session the PTY job belongs to, on the node.",
+          "shell": {
+            "description": "Shell id in the node engine's in-memory shell registry (default `\"main\"`).",
             "type": "string"
           }
         },
         "required": [
-          "session",
-          "job",
+          "shell",
           "engine"
         ],
         "type": "object"
@@ -154291,6 +154491,74 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "engine_shell",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "shell",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "cols",
+          "required": false,
+          "schema": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "rows",
+          "required": false,
+          "schema": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.EngineShell"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.EngineShell"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "engine_terminal",
       "paramStructure": "by-position",
       "params": [
@@ -167435,6 +167703,164 @@
       "x-theuth-owner": "rpc-compose"
     },
     {
+      "name": "shell_close",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "shell",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "shell_input",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "shell",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "text",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "keys",
+          "required": false,
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/method.agent.input.Key"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "shell_resize",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "shell",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "rows",
+          "required": true,
+          "schema": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "cols",
+          "required": true,
+          "schema": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "shutdown",
       "paramStructure": "by-position",
       "params": [],
@@ -168140,6 +168566,77 @@
           "required": true,
           "schema": {
             "$ref": "#/components/schemas/method.agent.input.JobId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "rows",
+          "required": false,
+          "schema": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "cols",
+          "required": false,
+          "schema": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "subscribe_shell",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "shell",
+          "required": true,
+          "schema": {
+            "type": "string"
           },
           "x-theuth-aliases": []
         },
@@ -169387,6 +169884,34 @@
     },
     {
       "name": "unsubscribe_pty",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "subscription_id",
+          "required": true,
+          "schema": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": false,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "unsubscribe_shell",
       "paramStructure": "by-position",
       "params": [
         {
@@ -172195,6 +172720,68 @@
         },
         "subscribe": "subscribe_pty",
         "unsubscribe": "unsubscribe_pty",
+        "unsubscribeAliases": []
+      },
+      {
+        "aliases": [],
+        "itemSchema": {
+          "$ref": "#/components/schemas/method.agent.output.ShellChunk"
+        },
+        "notification": "subscribe_shell",
+        "params": [
+          {
+            "name": "shell",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-theuth-aliases": []
+          },
+          {
+            "name": "rows",
+            "required": false,
+            "schema": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "x-theuth-aliases": []
+          },
+          {
+            "name": "cols",
+            "required": false,
+            "schema": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "x-theuth-aliases": []
+          },
+          {
+            "name": "engine",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "x-theuth-aliases": []
+          }
+        ],
+        "receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.ShellChunk"
+        },
+        "subscribe": "subscribe_shell",
+        "unsubscribe": "unsubscribe_shell",
         "unsubscribeAliases": []
       },
       {

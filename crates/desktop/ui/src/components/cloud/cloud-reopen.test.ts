@@ -72,6 +72,7 @@ const node = (n: Partial<CloudNode> = {}): CloudNode => ({
   desktop: true,
   vault: 'pending',
   link: null,
+  ssh: null,
   ...n,
 })
 
