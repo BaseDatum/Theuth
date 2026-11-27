@@ -2,6 +2,7 @@
 // No React, no RPC: the wizard, Settings › Machines and the tests share them. No price lives here: every number comes
 // from the provider at runtime (`cloud_sizes`, `cloud_list`'s `monthly_usd`, `ProviderInfo.volume_usd_per_gb`).
 
+import { MIN_PASSWORD } from '@/components/vault/strength'
 import { type CloudNode, DEFAULT_VOLUME_GB, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type Quote, type SizeList, type SizeOption, STAGES, type Stage } from './types'
 
 /** The provider badges of the mockup: the brands' own colours (the only hard-coded colours of the cloud UI). */
@@ -169,9 +170,9 @@ export type StageRow = { stage: Stage; label: string; status: StageStatus }
 
 const later = (a: Stage | null, b: Stage | null): Stage | null => (a === null ? b : b === null ? a : STAGES.indexOf(a) >= STAGES.indexOf(b) ? a : b)
 
-/** The progress step's five rows: done before the current stage, active (or failed) at it, waiting after. */
+/** The progress step's six rows: done before the current stage, active (or failed) at it, waiting after. */
 export function stageRows(o: {
-  node: Pick<CloudNode, 'state' | 'stage' | 'region_label' | 'region' | 'volume_gb' | 'version' | 'provider' | 'k8s'> | null
+  node: (Pick<CloudNode, 'state' | 'stage' | 'region_label' | 'region' | 'volume_gb' | 'version' | 'provider' | 'k8s'> & { vault?: CloudNode['vault'] }) | null
   progress: CloudProgress | undefined
   version: string | null
 }): StageRow[] {
@@ -187,6 +188,7 @@ export function stageRows(o: {
     storage: `Storage attached (${node?.volume_gb ?? DEFAULT_VOLUME_GB} GB)`,
     install: `Installing theuth${version ? ` ${version}` : ''} (signed)`,
     join: 'Joining your mesh',
+    vault: node?.vault === 'unsupported' ? 'Vault protection arrives with the next theuth release on this node' : 'Protecting the vault',
     ready: 'Ready',
   }
   return STAGES.map((stage, i) => ({
@@ -209,7 +211,7 @@ export function progressPct(rows: readonly StageRow[], progress: CloudProgress |
 export type Tone = 'ok' | 'warn' | 'bad' | 'muted' | 'busy'
 
 /** The row's word for the create job's current stage (`creating · installing`). */
-const STAGE_WORD: Record<Stage, string> = { server: 'server', storage: 'storage', install: 'installing', join: 'joining', ready: 'ready' }
+const STAGE_WORD: Record<Stage, string> = { server: 'server', storage: 'storage', install: 'installing', join: 'joining', vault: 'protecting the vault', ready: 'ready' }
 
 /** Settings › Machines status: `online · direct`, `offline`, `creating · installing`, `not on this engine`. */
 export function statusOf(n: Pick<CloudNode, 'state' | 'stage' | 'reachable' | 'path' | 'sealed'>): { text: string; tone: Tone; hint?: string } {
@@ -230,6 +232,39 @@ export function statusOf(n: Pick<CloudNode, 'state' | 'stage' | 'reachable' | 'p
       return { text: 'not on this engine', tone: 'warn' }
     case 'volume_kept':
       return { text: 'destroyed · disk kept', tone: 'muted' }
+  }
+}
+
+// ---- vault (design 225) ----
+
+/**
+ * The configure step's master password: empty is fine (the node's vault then unlocks from your devices only); otherwise
+ * at least 12 characters, typed twice. `null` = Create may go.
+ */
+export function vaultError(password: string, confirm: string): string | null {
+  if (!password && !confirm) return null
+  if ([...password].length < MIN_PASSWORD) return `Use at least ${MIN_PASSWORD} characters`
+  if (!confirm) return 'Confirm the master password'
+  return password === confirm ? null : 'The passwords do not match'
+}
+
+/**
+ * Settings › Machines: the one line under a node about its vault, and whether it offers "Set master password". `null`
+ * when there is nothing to say (protected, still being created, an engine that does not report it).
+ */
+export function vaultRow(n: Pick<CloudNode, 'state' | 'peer_id'> & { vault?: CloudNode['vault'] }): { text: string; tone: 'warn' | 'muted'; action: boolean } | null {
+  if (n.state !== 'ready' || !n.peer_id) return null
+  switch (n.vault ?? null) {
+    case 'needs_password':
+      return { text: 'Vault: device only — set a master password', tone: 'warn', action: true }
+    case 'device_only':
+      return { text: 'Vault: unlocks from your devices; no master password', tone: 'muted', action: true }
+    case 'password_only':
+      return { text: 'Vault: master password only; unlock from this device not confirmed', tone: 'muted', action: false }
+    case 'unsupported':
+      return { text: 'Vault protection arrives with the next theuth release on this node', tone: 'muted', action: false }
+    default:
+      return null
   }
 }
 

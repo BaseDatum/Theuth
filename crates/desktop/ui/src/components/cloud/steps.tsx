@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import { StrengthMeter } from '@/components/vault/PasswordForm'
 import { openExternal } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import {
@@ -29,6 +30,7 @@ import {
   type StageRow,
   summaryLine,
   usd,
+  vaultError,
 } from './format'
 import { DEFAULT_VOLUME_GB, type K8sInfo, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type Quote, type Region, type SizeOption } from './types'
 
@@ -307,23 +309,43 @@ export type ConfigureProps = {
   onMemory: (gb: number) => void
   onDesktop: (on: boolean) => void
   onCreate: () => void
-  /** The sealed-vault master password, only where the engine has the sealed vault (`useVaultSupport`). */
-  vault?: { password: string; onPassword: (p: string) => void } | null
+  /** The node's master password, only where the engine has the sealed vault (`useVaultSupport`). */
+  vault?: VaultInput | null
 }
 
-export const VAULT_LABEL = 'Vault protection'
-export const VAULT_HINT = 'Unlock from my devices + master password'
+/** The vault field's state: the password and its confirmation (both empty: the node's vault unlocks from devices only). */
+export type VaultInput = { password: string; confirm: string; onPassword: (p: string) => void; onConfirm: (p: string) => void }
 
-/** The sealed vault's master password: the node's vault opens from your devices, or with this password. */
-export function VaultField({ password, onPassword, bare }: { password: string; onPassword: (p: string) => void; bare?: boolean }) {
-  const body = (
-    <>
+export const VAULT_LABEL = 'Vault protection'
+export const VAULT_HINT = "Unlock from your devices; this password is the fallback. It can't be recovered."
+
+/**
+ * 225: the node's sealed vault opens from your devices; the master password typed here (twice, with the strength meter
+ * of Settings › Vault) is the fallback. Optional: left empty, the node is protected by device unlock only. The error
+ * line waits for the confirmation; the meter already says "too short".
+ */
+export function VaultField({ vault, row }: { vault: VaultInput; row?: boolean }) {
+  const error = vault.confirm ? vaultError(vault.password, vault.confirm) : null
+  return (
+    <Card>
       <div className="text-sm font-semibold">{VAULT_LABEL}</div>
       <Muted>{VAULT_HINT}</Muted>
-      <Input type="password" autoComplete="new-password" className="mt-1.5 h-8" aria-label="Master password" placeholder="Master password" value={password} onChange={(e) => onPassword(e.currentTarget.value)} />
-    </>
+      <div className={cn('mt-1.5 grid gap-1.5', row && 'grid-cols-2')}>
+        <Input type="password" autoComplete="new-password" className="h-8" aria-label="Master password" placeholder="Master password (optional)" value={vault.password} onChange={(e) => vault.onPassword(e.currentTarget.value)} />
+        <Input type="password" autoComplete="new-password" className="h-8" aria-label="Confirm master password" placeholder="Confirm master password" disabled={!vault.password && !vault.confirm} value={vault.confirm} onChange={(e) => vault.onConfirm(e.currentTarget.value)} />
+      </div>
+      {vault.password && (
+        <div className={cn('mt-1.5', row && 'max-w-[calc(50%-0.1875rem)]')}>
+          <StrengthMeter password={vault.password} />
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="mt-1 text-xs text-danger">
+          {error}
+        </p>
+      )}
+    </Card>
   )
-  return bare ? <div>{body}</div> : <Card>{body}</Card>
 }
 
 export const FLY_PRICING = 'https://fly.io/docs/about/pricing/'
@@ -472,14 +494,14 @@ export function PhoneConfigureStep(c: ConfigureProps) {
         <RegionSelect big regions={c.provider.regions} value={c.spec.region} onChange={c.onRegion} />
       </Card>
       <DesktopToggle kind={c.provider.provider} on={c.spec.desktop} onChange={c.onDesktop} />
-      {c.vault && <VaultField password={c.vault.password} onPassword={c.vault.onPassword} />}
+      {c.vault && <VaultField vault={c.vault} />}
       <SizeCards kind={c.provider.provider} sizes={c.sizes} perGb={c.provider.volume_usd_per_gb} value={c.spec.memory_gb} desktop={c.spec.desktop} volume_gb={c.spec.volume_gb} onChange={c.onMemory} />
       <Card>
         <div className="text-[13px] font-semibold">{costLine(c.quote) ?? (c.sizes ? <PriceNote kind={c.provider.provider} className="text-xs font-normal" /> : <Skeleton className="h-4 w-32" />)}</div>
         <Muted>{summaryLine(c.spec.desktop)}</Muted>
       </Card>
       <div className="mt-auto pt-2">
-        <Primary disabled={!!c.nameError} busy={c.busy} onClick={c.onCreate}>
+        <Primary disabled={!!c.nameError || (!!c.vault && vaultError(c.vault.password, c.vault.confirm) !== null)} busy={c.busy} onClick={c.onCreate}>
           {createLabel(c.spec, c.quote)}
         </Primary>
       </div>
@@ -523,6 +545,7 @@ export function DesktopConfigureFields(c: ConfigureProps & { advancedOpen?: bool
         <DesktopToggle kind={c.provider.provider} on={c.spec.desktop} onChange={c.onDesktop} />
       </div>
       <SizeCards row kind={c.provider.provider} sizes={c.sizes} perGb={c.provider.volume_usd_per_gb} value={c.spec.memory_gb} desktop={c.spec.desktop} volume_gb={c.spec.volume_gb} onChange={c.onMemory} />
+      {c.vault && <VaultField row vault={c.vault} />}
       <Collapsible defaultOpen={c.advancedOpen}>
         <Card>
           <CollapsibleTrigger className="group flex w-full items-center gap-1.5 text-sm font-semibold">
@@ -544,11 +567,6 @@ export function DesktopConfigureFields(c: ConfigureProps & { advancedOpen?: bool
                 Follow stable releases
               </div>
             </div>
-            {c.vault && (
-              <div className="mt-3 max-w-sm border-t border-border-subtle pt-3">
-                <VaultField bare password={c.vault.password} onPassword={c.vault.onPassword} />
-              </div>
-            )}
           </CollapsibleContent>
         </Card>
       </Collapsible>
@@ -562,7 +580,7 @@ export function DesktopConfigureFields(c: ConfigureProps & { advancedOpen?: bool
         }
         onBack={c.onBack}
         action={createLabel(c.spec, c.quote)}
-        disabled={!!c.nameError}
+        disabled={!!c.nameError || (!!c.vault && vaultError(c.vault.password, c.vault.confirm) !== null)}
         busy={c.busy}
         onAction={c.onCreate}
       />

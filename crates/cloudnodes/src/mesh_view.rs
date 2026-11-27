@@ -10,6 +10,29 @@ use serde_json::Value;
 use crate::providers::{CloudError, Result};
 use crate::types::{DesktopOpen, MeshPath};
 
+/// JSON-RPC "method not found": the peer's release does not have the method.
+pub const METHOD_NOT_FOUND: i32 = -32601;
+
+/// Why a peer call gave no answer.
+#[derive(Debug)]
+pub enum CallError {
+    /// The peer's engine has no such method (an older release).
+    NoMethod(String),
+    /// Anything else (the peer's error, a transport failure).
+    Failed(CloudError),
+}
+
+impl From<CallError> for CloudError {
+    fn from(e: CallError) -> Self {
+        match e {
+            CallError::NoMethod(m) => CloudError(format!(
+                "{m}: the node's theuth release does not have it yet"
+            )),
+            CallError::Failed(e) => e,
+        }
+    }
+}
+
 /// One paired engine, as `mesh_status` reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeshPeer {
@@ -32,6 +55,8 @@ pub trait MeshView: Send + Sync {
     async fn peers(&self) -> Result<Vec<MeshPeer>>;
     /// Unpair `id` (`mesh_remove(id)`, phone pairing untouched).
     async fn remove(&self, id: &str) -> Result<()>;
+    /// This engine's endpoint id.
+    async fn self_id(&self) -> Result<String>;
     /// `method(params)` on peer `id`, waiting at most `wait`. `Ok(None)`: not connected.
     async fn call(
         &self,
@@ -39,7 +64,7 @@ pub trait MeshView: Send + Sync {
         method: &str,
         params: Value,
         wait: Duration,
-    ) -> Result<Option<Value>>;
+    ) -> std::result::Result<Option<Value>, CallError>;
     /// A loopback noVNC tunnel on this engine to peer `id`'s desktop (`engine_desktop`).
     async fn desktop(&self, id: &str) -> Result<DesktopOpen>;
 }
@@ -99,13 +124,21 @@ impl MeshView for LiveMesh {
             .map_err(|e| CloudError(format!("mesh remove: {e}")))
     }
 
+    async fn self_id(&self) -> Result<String> {
+        let status = actor()?
+            .ask(mesh::Status)
+            .await
+            .map_err(|e| CloudError(format!("mesh status: {e}")))?;
+        Ok(status.self_id.0)
+    }
+
     async fn call(
         &self,
         id: &str,
         method: &str,
         params: Value,
         wait: Duration,
-    ) -> Result<Option<Value>> {
+    ) -> std::result::Result<Option<Value>, CallError> {
         let ext = jsonrpsee::Extensions::new();
         agent::rpc_forward::to_peer_within(
             &ext,
@@ -115,7 +148,13 @@ impl MeshView for LiveMesh {
             wait,
         )
         .await
-        .map_err(|e| CloudError(format!("{method} on the node: {}", e.message())))
+        .map_err(|e| {
+            if e.code() == METHOD_NOT_FOUND {
+                CallError::NoMethod(method.to_owned())
+            } else {
+                CallError::Failed(CloudError(format!("{method} on the node: {}", e.message())))
+            }
+        })
     }
 
     async fn desktop(&self, id: &str) -> Result<DesktopOpen> {

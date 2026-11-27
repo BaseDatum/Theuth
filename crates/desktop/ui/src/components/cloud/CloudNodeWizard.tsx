@@ -47,6 +47,8 @@ export type WizardInitial = {
   node?: string
   connect?: Partial<Connect>
   advancedOpen?: boolean
+  /** The vault field as typed (the fixture's screenshots). */
+  vault?: { password: string; confirm: string }
 }
 
 const DEFAULT_NAMESPACE = 'theuth-nodes'
@@ -73,11 +75,12 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   // The size the user picked; until then it follows the desktop choice (4 GB with it, 2 GB without).
   const [memoryPick, setMemory] = useState<number | null>(initial?.spec?.memory_gb ?? null)
   const [desktopPick, setDesktop] = useState(initial?.spec?.desktop ?? true)
-  // The sealed vault's master password: shown only where the engine has the sealed vault, and kept here, out of
-  // `NodeSpec`, until the merge with feat/sealed-vault wires it into the create call.
+  // The node's master password (design 225), only where the engine has the sealed vault and takes it in
+  // `cloud_create`. Kept out of `NodeSpec` (the engine never stores it) and cleared once the create call returns.
   const vaultOn = useVaultSupport()
-  const [vaultPassword, setVaultPassword] = useState('')
-  const vault = vaultOn ? { password: vaultPassword, onPassword: setVaultPassword } : null
+  const [vaultPassword, setVaultPassword] = useState(initial?.vault?.password ?? '')
+  const [vaultConfirm, setVaultConfirm] = useState(initial?.vault?.confirm ?? '')
+  const vault = vaultOn ? { password: vaultPassword, confirm: vaultConfirm, onPassword: setVaultPassword, onConfirm: setVaultConfirm } : null
   const [k8s, setK8s] = useState<K8sOptions | null>(initial?.spec?.k8s ?? null)
   const [created, setCreated] = useState<string | null>(initial?.node ?? null)
 
@@ -169,12 +172,17 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
 
   const create = () => {
     if (!spec || (nameError && !isK8s)) return
-    actions.create.mutate(spec, {
-      onSuccess: (n) => {
-        setCreated(n.name)
-        setStep('progress')
+    actions.create.mutate(
+      { spec, vaultPassword: vault && !isK8s && vaultPassword ? vaultPassword : null },
+      {
+        onSuccess: (n) => {
+          setVaultPassword('')
+          setVaultConfirm('')
+          setCreated(n.name)
+          setStep('progress')
+        },
       },
-    })
+    )
   }
 
   const retry = () => {

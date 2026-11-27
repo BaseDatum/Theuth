@@ -122,15 +122,27 @@ All but `init` call the running engine's RPC (the `cmd_67` transport); `methods`
 `vault-keys.json` offline; `init` refuses a running engine or an existing vault. Exit 2 on
 -32052 (sealed).
 
-## 4. Cloud-node wizard integration points
+## 4. Cloud-node integration (built on `feat/wizard-vault`; 224 §16.11 has the detail)
 
-- **Create:** write `secrets: {key_store: sealed}` into the node's config, then either run
-  `t vault init --password-stdin` on the node before its first start (no key ever written, the
-  node boots sealed and the wizard calls `vault_unseal(nodeId, pw)`), or after first start call
-  `vault_add_password(nodeId, pw)` (DEK was in memory only until then).
-- **Pair:** nothing to call — pairing triggers the node's `enroll` ask, auto-approved inside the
-  15-minute grace; `vault_status(nodeId).methods` then lists `device:<owner>`. To add another
-  owner later: `vault_add_device(nodeId, ownerId)`.
+- **Config.** `theuth-install.sh` appends `secrets: {key_store: sealed}` to the node's first
+  `config.yaml` (VM cloud-init and the engine image alike), only when the installed `t` has `t vault`
+  and no vault exists yet. The node starts with its DEK in memory and no method (§1), never writes
+  `secrets.key`, pairs, and its pairing `enroll` adds `device:<creating engine>` (auto-approved in
+  the 15-minute grace). `t vault init --password-stdin` is not used: it would need the password on
+  the node before first start, i.e. in user data.
+- **Password.** The wizard sends it in `cloud_create(spec, vault_password)` to the engine it is
+  connected to; the create job holds it in a `Zeroizing<String>` in memory only. After the join it
+  waits for `vault_status(node).methods` to list `device:<this engine>` (asking
+  `vault_add_device(node, <this engine>)` once if missing), calls `vault_add_password(node, pw)`
+  (forwarded over `theuth/rpc/1`, KEK derived on the node), drops the password, and reads
+  `vault_status(node)` back. Never in the node record, user data, provider metadata, env, the node's
+  disk (only the Argon2id-wrapped DEK), logs, the replicated vault or any event.
+- **Gaps.** The node's `t` predates 225 (it installs the released `t`): `vault_status` answers
+  method-not-found, the stage is skipped with *"Vault protection arrives with the next theuth
+  release on this node"*, the create succeeds. The call fails, or the creating engine restarted (the
+  password is gone): the node is ready with *"Vault: device only — set a master password"*, whose
+  action is this design's `PasswordForm` aimed at the node (`vault_add_password(node, pw)`).
+- **Another owner later:** `vault_add_device(nodeId, ownerId)`.
 
 ## 5. UI (`crates/desktop/ui/src/components/vault/`)
 

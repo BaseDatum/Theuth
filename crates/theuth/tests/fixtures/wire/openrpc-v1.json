@@ -16755,6 +16755,17 @@
             ],
             "description": "Lifecycle."
           },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.VaultProtection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How its vault is protected; `None` when unknown (older records, orphans)."
+          },
           "version": {
             "description": "`t --version` on the node, when it answered.",
             "type": [
@@ -16793,7 +16804,8 @@
           "auto_update",
           "desktop",
           "created_ms",
-          "k8s"
+          "k8s",
+          "vault"
         ],
         "type": "object"
       },
@@ -16950,8 +16962,48 @@
             "type": "string"
           },
           {
+            "const": "vault",
+            "description": "The node's sealed vault gets the master password and this engine's device unlock\n(design doc 225); skipped where the node's release has no sealed vault yet.",
+            "type": "string"
+          },
+          {
             "const": "ready",
             "description": "A reachable mesh peer.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.output.VaultProtection": {
+        "description": "How the node's sealed vault is protected (design doc 225), as the create job and the list\nlast saw it. Never the password itself.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "The create job holds a master password (in memory) to add once the node joined.",
+            "type": "string"
+          },
+          {
+            "const": "protected",
+            "description": "The master password and unlock from the creating engine, both confirmed on the node.",
+            "type": "string"
+          },
+          {
+            "const": "device_only",
+            "description": "Unlock from the creating engine only: the user chose no master password.",
+            "type": "string"
+          },
+          {
+            "const": "needs_password",
+            "description": "A master password was asked for and is not set (the job was interrupted, this engine\nrestarted, the call failed), or no unlock method could be confirmed: set one.",
+            "type": "string"
+          },
+          {
+            "const": "password_only",
+            "description": "The master password is set; unlock from the creating engine is not confirmed.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported",
+            "description": "The node's theuth release has no sealed vault yet (no `vault_status`).",
             "type": "string"
           }
         ]
@@ -17235,6 +17287,17 @@
             ],
             "description": "Lifecycle."
           },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.VaultProtection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How its vault is protected; `None` when unknown (older records, orphans)."
+          },
           "version": {
             "description": "`t --version` on the node, when it answered.",
             "type": [
@@ -17407,8 +17470,48 @@
             "type": "string"
           },
           {
+            "const": "vault",
+            "description": "The node's sealed vault gets the master password and this engine's device unlock\n(design doc 225); skipped where the node's release has no sealed vault yet.",
+            "type": "string"
+          },
+          {
             "const": "ready",
             "description": "A reachable mesh peer.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.receiver.VaultProtection": {
+        "description": "How the node's sealed vault is protected (design doc 225), as the create job and the list\nlast saw it. Never the password itself.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "The create job holds a master password (in memory) to add once the node joined.",
+            "type": "string"
+          },
+          {
+            "const": "protected",
+            "description": "The master password and unlock from the creating engine, both confirmed on the node.",
+            "type": "string"
+          },
+          {
+            "const": "device_only",
+            "description": "Unlock from the creating engine only: the user chose no master password.",
+            "type": "string"
+          },
+          {
+            "const": "needs_password",
+            "description": "A master password was asked for and is not set (the job was interrupted, this engine\nrestarted, the call failed), or no unlock method could be confirmed: set one.",
+            "type": "string"
+          },
+          {
+            "const": "password_only",
+            "description": "The master password is set; unlock from the creating engine is not confirmed.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported",
+            "description": "The node's theuth release has no sealed vault yet (no `vault_status`).",
             "type": "string"
           }
         ]
@@ -85492,6 +85595,17 @@
             ],
             "description": "Lifecycle."
           },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.VaultProtection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How its vault is protected; `None` when unknown (older records, orphans)."
+          },
           "version": {
             "description": "`t --version` on the node, when it answered.",
             "type": [
@@ -85530,7 +85644,8 @@
           "auto_update",
           "desktop",
           "created_ms",
-          "k8s"
+          "k8s",
+          "vault"
         ],
         "type": "object"
       },
@@ -86122,6 +86237,11 @@
             "type": "string"
           },
           {
+            "const": "vault",
+            "description": "The node's sealed vault gets the master password and this engine's device unlock\n(design doc 225); skipped where the node's release has no sealed vault yet.",
+            "type": "string"
+          },
+          {
             "const": "ready",
             "description": "A reachable mesh peer.",
             "type": "string"
@@ -86173,6 +86293,41 @@
           "engine"
         ],
         "type": "object"
+      },
+      "method.cloudnodes.output.VaultProtection": {
+        "description": "How the node's sealed vault is protected (design doc 225), as the create job and the list\nlast saw it. Never the password itself.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "The create job holds a master password (in memory) to add once the node joined.",
+            "type": "string"
+          },
+          {
+            "const": "protected",
+            "description": "The master password and unlock from the creating engine, both confirmed on the node.",
+            "type": "string"
+          },
+          {
+            "const": "device_only",
+            "description": "Unlock from the creating engine only: the user chose no master password.",
+            "type": "string"
+          },
+          {
+            "const": "needs_password",
+            "description": "A master password was asked for and is not set (the job was interrupted, this engine\nrestarted, the call failed), or no unlock method could be confirmed: set one.",
+            "type": "string"
+          },
+          {
+            "const": "password_only",
+            "description": "The master password is set; unlock from the creating engine is not confirmed.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported",
+            "description": "The node's theuth release has no sealed vault yet (no `vault_status`).",
+            "type": "string"
+          }
+        ]
       },
       "method.cloudnodes.receiver.CloudList": {
         "description": "`cloud_list`: every node from local records and every connected provider's tagged\nresources; a provider that fails is reported in `errors`, not fatal.",
@@ -86344,6 +86499,17 @@
               }
             ],
             "description": "Lifecycle."
+          },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.VaultProtection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How its vault is protected; `None` when unknown (older records, orphans)."
           },
           "version": {
             "description": "`t --version` on the node, when it answered.",
@@ -86940,6 +87106,11 @@
             "type": "string"
           },
           {
+            "const": "vault",
+            "description": "The node's sealed vault gets the master password and this engine's device unlock\n(design doc 225); skipped where the node's release has no sealed vault yet.",
+            "type": "string"
+          },
+          {
             "const": "ready",
             "description": "A reachable mesh peer.",
             "type": "string"
@@ -86991,6 +87162,41 @@
           "engine"
         ],
         "type": "object"
+      },
+      "method.cloudnodes.receiver.VaultProtection": {
+        "description": "How the node's sealed vault is protected (design doc 225), as the create job and the list\nlast saw it. Never the password itself.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "The create job holds a master password (in memory) to add once the node joined.",
+            "type": "string"
+          },
+          {
+            "const": "protected",
+            "description": "The master password and unlock from the creating engine, both confirmed on the node.",
+            "type": "string"
+          },
+          {
+            "const": "device_only",
+            "description": "Unlock from the creating engine only: the user chose no master password.",
+            "type": "string"
+          },
+          {
+            "const": "needs_password",
+            "description": "A master password was asked for and is not set (the job was interrupted, this engine\nrestarted, the call failed), or no unlock method could be confirmed: set one.",
+            "type": "string"
+          },
+          {
+            "const": "password_only",
+            "description": "The master password is set; unlock from the creating engine is not confirmed.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported",
+            "description": "The node's theuth release has no sealed vault yet (no `vault_status`).",
+            "type": "string"
+          }
+        ]
       },
       "method.codeindex.input.LocateAnchor": {
         "description": "One board anchor (71 §2.3): a root-relative path with an optional 1-based\ninclusive line range, the definition name the range quotes, and the\nSHA-256 (lowercase hex) of the quoted text.",
@@ -147446,6 +147652,19 @@
             "$ref": "#/components/schemas/method.cloudnodes.input.NodeSpec"
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "vault_password",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "vaultPassword"
+          ]
         }
       ],
       "result": {
