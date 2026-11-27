@@ -377,7 +377,7 @@ impl Cloud {
                 ProviderKind::Kubernetes => cfg!(feature = "kubernetes"),
                 _ => true,
             },
-            beta: kind == ProviderKind::Fly,
+            beta: false,
             desktop_only: kind == ProviderKind::Kubernetes,
             connected: stored.is_some() || kube,
             source: stored.or(kube.then_some(CredentialSource::Kubeconfig)),

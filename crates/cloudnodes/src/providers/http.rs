@@ -19,12 +19,35 @@ pub struct HttpRequest {
     pub method: String,
     /// Absolute URL (never carries a credential).
     pub url: String,
-    /// Sent as `Authorization: Bearer`.
+    /// API credential sent in the `Authorization` header (`FlyV1` for Fly macaroons, `Bearer` otherwise).
     pub bearer: Option<Zeroizing<String>>,
     /// JSON body.
     pub json: Option<Value>,
     /// Form body (when no `json`).
     pub form: Option<Vec<(String, String)>>,
+}
+
+/// Formats the HTTP `Authorization` header value for a token.
+///
+/// Fly.io macaroon tokens (`FlyV1 …`, `fm2_…`, `fm1r_…`, `fm1a_…`) use the `FlyV1` scheme
+/// without a `Bearer` prefix; `fo1_…` and all other tokens (such as DigitalOcean's) use
+/// `Bearer`.
+pub fn authorization_header(token: &str) -> Zeroizing<String> {
+    let t = token.trim();
+    if t.starts_with("FlyV1 ") {
+        Zeroizing::new(t.to_owned())
+    } else if t.starts_with("fm2_") || t.starts_with("fm1r_") || t.starts_with("fm1a_") {
+        Zeroizing::new(format!("FlyV1 {t}"))
+    } else {
+        Zeroizing::new(format!("Bearer {t}"))
+    }
+}
+
+impl HttpRequest {
+    /// The `Authorization` header value that [`ReqwestTransport`] sends for this request.
+    pub fn authorization(&self) -> Option<Zeroizing<String>> {
+        self.bearer.as_deref().map(|t| authorization_header(t))
+    }
 }
 
 impl std::fmt::Debug for HttpRequest {
@@ -87,8 +110,11 @@ impl Transport for ReqwestTransport {
     async fn send(&self, req: HttpRequest) -> anyhow::Result<HttpResponse> {
         let method = reqwest::Method::from_bytes(req.method.as_bytes()).context("http method")?;
         let mut b = self.client.request(method, &req.url);
-        if let Some(t) = &req.bearer {
-            b = b.bearer_auth(t.as_str());
+        if let Some(auth) = req.authorization() {
+            let mut hv = reqwest::header::HeaderValue::from_str(auth.as_str())
+                .context("authorization header")?;
+            hv.set_sensitive(true);
+            b = b.header(reqwest::header::AUTHORIZATION, hv);
         }
         if let Some(j) = &req.json {
             b = b.json(j);
@@ -246,6 +272,15 @@ pub mod testing {
                 .map(|r| format!("{} {}", r.method, r.url))
                 .collect()
         }
+
+        /// The `Authorization` header value per recorded request (`None` when unauthenticated).
+        pub fn auth_headers(&self) -> Vec<Option<String>> {
+            self.log
+                .lock()
+                .iter()
+                .map(|r| r.authorization().map(|a| a.to_string()))
+                .collect()
+        }
     }
 
     #[async_trait]
@@ -295,6 +330,23 @@ mod tests {
         assert!(!s.contains("dop_v1_secret") && s.contains("<redacted>"));
     }
 
+    #[test]
+    fn authorization_header_uses_flyv1_for_macaroons_and_bearer_otherwise() {
+        assert_eq!(authorization_header("FlyV1 fm2_abc").as_str(), "FlyV1 fm2_abc");
+        assert_eq!(
+            authorization_header("  FlyV1 fm2_abc,fm1r_def  ").as_str(),
+            "FlyV1 fm2_abc,fm1r_def"
+        );
+        assert_eq!(authorization_header("fm2_abc").as_str(), "FlyV1 fm2_abc");
+        assert_eq!(authorization_header("fm1r_abc").as_str(), "FlyV1 fm1r_abc");
+        assert_eq!(authorization_header("fm1a_abc").as_str(), "FlyV1 fm1a_abc");
+        assert_eq!(authorization_header("fo1_abc").as_str(), "Bearer fo1_abc");
+        assert_eq!(
+            authorization_header("dop_v1_secret").as_str(),
+            "Bearer dop_v1_secret"
+        );
+    }
+
     #[tokio::test]
     async fn api_errors_name_the_call_not_the_token() {
         let t = testing::FakeTransport::new();
@@ -303,6 +355,7 @@ mod tests {
         let e = api.call("GET", "/x?a=b", None).await.unwrap_err().0;
         assert_eq!(e, "DigitalOcean: GET /x: HTTP 401 Unable to authenticate you");
         assert_eq!(t.requests()[0].bearer.as_deref().map(String::as_str), Some("tok"));
+        assert_eq!(t.auth_headers(), [Some("Bearer tok".to_owned())]);
         assert_eq!(enc("theuth-node:a b"), "theuth-node%3Aa%20b");
     }
 }
