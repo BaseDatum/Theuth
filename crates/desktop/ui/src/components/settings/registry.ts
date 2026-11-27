@@ -37,7 +37,7 @@ export const TAB_IDS = [
   'appearance', 'app', 'shortcuts',
   'models', 'helpers', 'providers',
   'loop', 'memory', 'approvals', 'external-secrets', 'advisor', 'autoresearch', 'harnesses',
-  'suffixes', 'system',
+  'prompts', 'system',
   'dreaming', 'double', 'decision',
   'voice', 'dictation', 'voice-dictionary', 'voice-key', 'voice-history',
   'meetings', 'detection', 'live', 'speakers', 'templates',
@@ -98,4 +98,5 @@ export const MOVED_TABS: Readonly<Record<string, string>> = {
   link: 'devices',
   channels: 'signal',
   communication: 'messaging',
+  suffixes: 'prompts',
 }

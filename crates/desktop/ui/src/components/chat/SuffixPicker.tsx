@@ -16,11 +16,11 @@ function useRow(): string {
 export function SuffixList({ suffixes, onPick, onBack, onManage }: { suffixes: Suffix[]; onPick(s: Suffix): void; onBack(): void; onManage(): void }) {
   const row = useRow()
   return (
-    <div role="menu" aria-label="Prompt suffixes">
+    <div role="menu" aria-label="Prompts">
       <Button variant="ghost" className={cn('w-full justify-start text-fg-secondary', row)} onClick={onBack}>
-        <ChevronLeft /> Add prompt suffix
+        <ChevronLeft /> Prompts
       </Button>
-      {suffixes.length === 0 && <p className="px-3 py-1.5 text-sm text-fg-tertiary">No suffixes saved yet.</p>}
+      {suffixes.length === 0 && <p className="px-3 py-1.5 text-sm text-fg-tertiary">No prompts saved yet.</p>}
       {suffixes.map((s) => (
         <Button key={s.id} variant="ghost" role="menuitem" data-suffix={s.id} className={cn('w-full justify-start', row)} onClick={() => onPick(s)}>
           <span className="truncate">{s.name}</span>
@@ -28,7 +28,7 @@ export function SuffixList({ suffixes, onPick, onBack, onManage }: { suffixes: S
       ))}
       <div className="mt-1 border-t border-border-subtle pt-1">
         <Button variant="ghost" className={cn('w-full justify-start', row)} onClick={onManage}>
-          <Settings2 /> Manage suffixes…
+          <Settings2 /> Manage prompts…
         </Button>
       </div>
     </div>
