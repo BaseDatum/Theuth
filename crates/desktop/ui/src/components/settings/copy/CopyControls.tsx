@@ -12,11 +12,17 @@ import type { CopyField } from '@/components/settings/copy/set-on-all'
 import type { Machine } from '@/lib/mesh-machines'
 import { cn } from '@/lib/utils'
 import { receiveResult } from '@/rpc/bindings/receive'
+import { LOCAL } from '@/link/engines'
+
+/** Setters "Set on all machines" never offers: a forwarded `plugin_approve` always answers `needs_press` (plugins' `HumanPress` refuses every forwarded call). */
+const NEVER_COPIED: readonly string[] = ['plugin_approve']
 
 /** Whether `field` gets copy controls here. */
 export function useCopyable(field: CopyField | undefined): SettingsMachines | null {
   const settings = useSettingsMachines()
   if (!field || !settings?.tab?.copyable || !settings.target || settings.machines.length < 2) return null
+  const plan = field.plan(field.value)
+  if (plan.kind === 'calls' && plan.calls.some((c) => NEVER_COPIED.includes(c.method))) return null
   return settings
 }
 
@@ -25,29 +31,44 @@ export const differsKey = (engines: readonly string[], key: string) => ['setting
 /** One machine's value of a field (`undefined`: the getter failed there or the machine did not answer). */
 export type MachineValue<T> = { machine: Machine; value: T | undefined }
 
-/** Each reachable machine's value of `field` (`settings_values` on the connected engine), the edited machine's from the tab. */
+/**
+ * Each reachable machine's value of `field`: the mesh members' from `settings_values` on the mesh client, this device's
+ * engine's from its own client (its getter called directly), the edited machine's from the tab.
+ */
 export function useMachineValues<T>(field: CopyField<T>, settings: SettingsMachines | null): MachineValue<T>[] | null {
   const read = field.read
-  const engines = (settings?.machines ?? []).filter((m) => m.online && !m.sealed).map((m) => m.id)
+  const reachable = (settings?.machines ?? []).filter((m) => m.online && !m.sealed)
+  const local = reachable.find((m) => m.client === LOCAL && !m.forwarded)
+  const engines = reachable.filter((m) => m !== local).map((m) => m.id)
   const values = useQuery(
     {
-      enabled: !!settings && !!read && engines.length > 1,
+      enabled: !!settings?.api && !!read && engines.length > 0 && reachable.length > 1,
       queryKey: differsKey(engines, read?.key ?? ''),
-      queryFn: () => settings!.api.settings_values(engines, [read!.key]),
+      queryFn: () => settings!.api!.settings_values(engines, [read!.key]),
       staleTime: 30_000,
       retry: false,
     },
     settings?.qc,
   )
-  if (!settings || !read || !values.data) return null
-  const answers = values.data
-  return settings.machines
-    .filter((m) => engines.includes(m.id))
-    .map((machine) => {
-      if (machine.id === settings.target?.id) return { machine, value: field.value }
-      const raw = answers[machine.id]?.[read.key]
-      return { machine, value: raw === undefined || raw === null ? undefined : read.pick(receiveResult(read.key, raw)) }
-    })
+  const localValue = useQuery(
+    {
+      enabled: !!settings?.local && !!read && !!local && reachable.length > 1,
+      queryKey: [...differsKey([LOCAL], read?.key ?? '')],
+      queryFn: () => (settings!.local as unknown as Record<string, () => Promise<unknown>>)[read!.key]!(),
+      staleTime: 30_000,
+      retry: false,
+    },
+    settings?.qc,
+  )
+  if (!settings || !read || (engines.length > 0 && !values.data) || (local && settings.local && !localValue.isFetched)) return null
+  const answers = values.data ?? {}
+  return reachable.map((machine) => {
+    if (machine.id === settings.target?.id) return { machine, value: field.value }
+    // The local getter's answer is already adapted by its `Api`; a `settings_values` cell is raw wire JSON.
+    const raw = machine === local ? localValue.data : answers[machine.id]?.[read.key]
+    if (raw === undefined || raw === null) return { machine, value: undefined }
+    return { machine, value: read.pick(machine === local ? raw : receiveResult(read.key, raw)) }
+  })
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)

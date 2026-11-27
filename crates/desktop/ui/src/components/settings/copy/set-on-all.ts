@@ -1,13 +1,17 @@
 // 227 piece 3: "Set on all machines…". A copyable field says how to put a value on an engine (setter calls, or for
-// providers a `sync_providers` push from the machine being edited); the sheet runs it on the ticked machines with
-// `engine_call_all` and shows one row per machine. Machines that were offline or locked stay pending in a small queue
+// providers a `sync_providers` push from the machine being edited); the sheet runs it on the ticked machines (this
+// device's engine through its own client, the mesh through `engine_call_all`) and shows one row per machine. Machines
+// that were offline or locked stay pending in a small queue
 // held by this client (per window, in localStorage) and are retried while the app is open, when they come back.
 // The engine keeps no queue: close every window and the pending copies are only retried on the next launch.
 
 import { type SettingsNeed, engineCaps, notApplicable } from '@/components/settings/scope'
 import { ENGINE_CALL_ERROR, namedParams, userPressed } from '@/lib/engine-call'
-import type { FullApi, NodeResult, NodeStatus } from '@/lib/engine-call.types'
+import type { Api } from '@/rpc/bindings/client'
+import type { PressToken } from '@/rpc/bindings/method.agent.input'
+import type { NodeResult, NodeStatus } from '@/rpc/bindings/method.agent.output'
 import type { Machine } from '@/lib/mesh-machines'
+import { LOCAL } from '@/link/engines'
 import { RpcError } from '@/rpc/client'
 
 /** One setter call: `method(...args)` on every machine. */
@@ -51,32 +55,38 @@ export function choices(machines: readonly Machine[], opts: { needs?: readonly S
   })
 }
 
-/** A machine's result row (mock): its mark, its text, and whether it is still pending. */
-export type ResultRow = { engine: string; name: string; status: NodeStatus | 'skipped'; mark: '✓' | '◷' | '–' | '✗'; text: string; restart: boolean; pending: boolean }
+/**
+ * A machine's result row (mock): its mark, its text, whether it is still pending (queued for a retry) and whether it
+ * waits for a press ("Apply on <machine>": a setter that needs the owner's press, refused without one).
+ */
+export type ResultRow = { engine: string; name: string; status: NodeStatus | 'skipped'; mark: '✓' | '◷' | '–' | '✗'; text: string; restart: boolean; pending: boolean; press: boolean }
 
 export function resultRow(r: NodeResult | { engine: string; name: string; status: 'skipped'; message: string }): ResultRow {
-  const base = { engine: r.engine, name: r.name, status: r.status, restart: 'restart_required' in r && r.restart_required }
+  const base = { engine: r.engine, name: r.name, status: r.status, restart: 'restart_required' in r && r.restart_required, pending: false, press: false }
   switch (r.status) {
     case 'ok':
-      return { ...base, mark: '✓', text: 'applied', pending: false }
+      return { ...base, mark: '✓', text: 'applied' }
     case 'offline':
       return { ...base, mark: '◷', text: 'offline — applies when it reconnects', pending: true }
     case 'sealed':
       return { ...base, mark: '◷', text: 'vault locked — applies after unlock', pending: true }
+    case 'needs_press':
+      return { ...base, mark: '◷', text: `needs your press — Apply on ${r.name}`, press: true }
     case 'not_applicable':
-      return { ...base, mark: '–', text: `skipped — ${r.message || 'not on this machine'}`, pending: false }
+      return { ...base, mark: '–', text: `skipped — ${r.message || 'not on this machine'}` }
     case 'skipped':
-      return { ...base, mark: '–', text: `skipped — ${r.message}`, pending: false }
+      return { ...base, mark: '–', text: `skipped — ${r.message}` }
     case 'failed':
-      return { ...base, mark: '✗', text: `failed: ${r.message || 'unknown error'}`, pending: false }
+      return { ...base, mark: '✗', text: `failed: ${r.message || 'unknown error'}` }
   }
 }
 
-/** A thrown `engine_call` error as a node status. */
+/** A thrown `engine_call` error (or this device's engine's own) as a node status. */
 function statusOf(e: unknown): NodeStatus {
   if (e instanceof RpcError) {
     if (e.code === ENGINE_CALL_ERROR.offline) return 'offline'
     if (e.code === ENGINE_CALL_ERROR.sealed) return 'sealed'
+    if (e.code === ENGINE_CALL_ERROR.needsPress) return 'needs_press'
     if (e.code === ENGINE_CALL_ERROR.notApplicable || e.code === -32601) return 'not_applicable'
   }
   return 'failed'
@@ -84,47 +94,88 @@ function statusOf(e: unknown): NodeStatus {
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-/**
- * Run `plan` on `engines` (mesh ids) through the connected engine (`self`). `calls` go out one after the other with
- * `engine_call_all`; a machine that did not take one is not sent the next. Providers are pushed by the connected
- * engine with its own `sync_providers` (not forwardable: it may carry keys), so only from `self`.
- * Returns one result per engine, in order.
- */
-export async function runPlan(api: FullApi, plan: CopyPlan, engines: readonly Machine[], self: string | null): Promise<NodeResult[]> {
-  const pressed = userPressed()
-  if (plan.kind === 'providers') {
-    return Promise.all(
-      engines.map(async (m): Promise<NodeResult> => {
-        if (plan.from !== self) return { engine: m.id, name: m.name, status: 'failed', message: 'providers copy only from the machine this app is connected to', restart_required: false }
-        if (!m.online) return { engine: m.id, name: m.name, status: 'offline', restart_required: false }
-        try {
-          const report = await api.sync_providers(m.id, null, false, true)
-          const failed = report.results?.filter((r) => r.status === 'error') ?? []
-          return failed.length > 0
-            ? { engine: m.id, name: m.name, status: 'failed', message: failed.map((r) => `${r.name}: ${r.detail ?? 'error'}`).join('; '), restart_required: false }
-            : { engine: m.id, name: m.name, status: 'ok', restart_required: false, value: report }
-        } catch (e) {
-          return { engine: m.id, name: m.name, status: statusOf(e), message: message(e), restart_required: false }
-        }
-      }),
-    )
+/** The clients a run goes through: the mesh client (`engine_call_all`), this device's engine's own, and the active machine. */
+export type RunApis = { mesh: Api | null; local: Api | null; self: Machine | null }
+
+/** `apis` from the Settings page's machines. */
+export const runApis = (s: { api: Api | null; local: Api | null; connected: Machine | null }): RunApis => ({ mesh: s.api, local: s.local, self: s.connected })
+
+/** This device's engine: reached through its own client, never through `engine_call_all`. */
+const direct = (m: Machine) => m.client === LOCAL && !m.forwarded
+
+/** `calls` on this device's engine, one after the other, as one result row. */
+async function runLocal(api: Api | null, calls: readonly Call[], m: Machine): Promise<NodeResult> {
+  const row: NodeResult = { engine: m.id, name: m.name, status: 'ok', restart_required: false }
+  if (!api) return { ...row, status: 'offline' }
+  try {
+    for (const call of calls) {
+      const answer = await (api as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[call.method]!(...call.args)
+      if ((answer as { restart_required?: boolean } | null)?.restart_required) row.restart_required = true
+    }
+    return row
+  } catch (e) {
+    return { ...row, status: statusOf(e), message: message(e) }
   }
-  const results = new Map<string, NodeResult>(engines.map((m) => [m.id, { engine: m.id, name: m.name, status: 'ok', restart_required: false }]))
-  for (const call of plan.calls) {
+}
+
+/** `calls` on the mesh members `engines` through `engine_call_all`; a machine that did not take one is not sent the next. */
+async function runMesh(api: Api | null, calls: readonly Call[], engines: readonly Machine[], pressed: PressToken | null): Promise<NodeResult[]> {
+  const results = new Map<string, NodeResult>(engines.map((m) => [m.id, { engine: m.id, name: m.name, status: api ? 'ok' : 'offline', restart_required: false }]))
+  if (!api) return [...results.values()]
+  for (const call of calls) {
     const still = engines.filter((m) => results.get(m.id)!.status === 'ok').map((m) => m.id)
     if (still.length === 0) break
     const answers = await api.engine_call_all(call.method, namedParams(call.method, call.args), still, pressed)
     const seen = new Set<string>()
     for (const a of answers) {
+      // Only the engines asked for, once each: an answer for this device's engine (reached directly) is dropped.
       const before = results.get(a.engine)
-      if (!before) continue
+      if (!before || !still.includes(a.engine) || seen.has(a.engine)) continue
       seen.add(a.engine)
       results.set(a.engine, { ...a, name: before.name, restart_required: before.restart_required || a.restart_required })
     }
     // An engine the hub did not answer for is reported failed, not silently applied.
     for (const id of still) if (!seen.has(id)) results.set(id, { ...results.get(id)!, status: 'failed', message: 'no answer' })
   }
-  return engines.map((m) => results.get(m.id)!)
+  return [...results.values()]
+}
+
+/**
+ * Run `plan` on `engines`. `calls`: this device's engine directly through its own client, in parallel with
+ * `engine_call_all` on the mesh client for the rest, merged into one row per engine, in `engines`' order.
+ * Providers are pushed by the active machine's own `sync_providers` (not forwardable: it may carry keys), so only from
+ * it, and only to machines of its mesh.
+ */
+export async function runPlan(apis: RunApis, plan: CopyPlan, engines: readonly Machine[]): Promise<NodeResult[]> {
+  const pressed = userPressed()
+  if (plan.kind === 'providers') {
+    const self = apis.self
+    const api = self && direct(self) ? apis.local : apis.mesh
+    return Promise.all(
+      engines.map(async (m): Promise<NodeResult> => {
+        const row = { engine: m.id, name: m.name, restart_required: false }
+        if (!self || plan.from !== self.id || !api) return { ...row, status: 'failed', message: 'providers copy only from the machine this app is showing' }
+        if (!!m.note !== !!self.note) return { ...row, status: 'not_applicable', message: 'not in the same mesh' }
+        if (!m.online) return { ...row, status: 'offline' }
+        try {
+          const report = await api.sync_providers(m.id, null, false, true)
+          const failed = report.results?.filter((r) => r.status === 'error') ?? []
+          return failed.length > 0
+            ? { ...row, status: 'failed', message: failed.map((r) => `${r.name}: ${r.detail ?? 'error'}`).join('; ') }
+            : { ...row, status: 'ok', value: report }
+        } catch (e) {
+          return { ...row, status: statusOf(e), message: message(e) }
+        }
+      }),
+    )
+  }
+  const locals = engines.filter(direct)
+  const [mine, theirs] = await Promise.all([
+    Promise.all(locals.map((m) => runLocal(apis.local, plan.calls, m))),
+    runMesh(apis.mesh, plan.calls, engines.filter((m) => !direct(m)), pressed),
+  ])
+  const by = new Map([...theirs, ...mine].map((r) => [r.engine, r]))
+  return engines.map((m) => by.get(m.id)!)
 }
 
 // ── The pending queue ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -157,26 +208,33 @@ function writePending(list: PendingCopy[]): void {
 }
 
 /**
- * Record what is still pending of copy `id` after a run: `results`' offline and sealed engines replace the entry's
- * (a later copy of the same field replaces an earlier one, so the newest value wins); none left drops it.
+ * Record what is still pending of copy `id` after a run: its offline and sealed engines. A fresh copy (`fresh`)
+ * replaces the entry (the newest value wins); a re-run of some of its machines (Retry pending, Apply on) settles only
+ * those and keeps the rest. None left drops it.
  */
-export function settlePending(entry: Omit<PendingCopy, 'engines' | 'at'>, results: readonly NodeResult[]): void {
-  const engines = results.filter((r) => resultRow(r).pending).map((r) => r.engine)
-  const rest = readPending().filter((p) => p.id !== entry.id)
-  // Machines a newer copy of the same field covers are no longer pending for an older one.
+export function settlePending(entry: Omit<PendingCopy, 'engines' | 'at'>, results: readonly NodeResult[], fresh: boolean): void {
+  const all = readPending()
+  const ran = new Set(results.map((r) => r.engine))
+  const kept = fresh ? [] : (all.find((p) => p.id === entry.id)?.engines ?? []).filter((e) => !ran.has(e))
+  const engines = [...kept, ...results.filter((r) => resultRow(r).pending).map((r) => r.engine)]
+  const rest = all.filter((p) => p.id !== entry.id)
   writePending(engines.length > 0 ? [...rest, { ...entry, engines, at: Date.now() }] : rest)
 }
 
-/** Retry every queued copy on the machines of `machines` that are back (online, not sealed); returns the copies run. */
-export async function retryPending(api: FullApi, machines: readonly Machine[]): Promise<number> {
+/**
+ * Retry every queued copy on the machines of `machines` that are back (online, not sealed); returns the copies run.
+ * A retry carries no press: a machine that answers `needs_press` stays queued (it is never marked failed) until the
+ * sheet's "Apply on <machine>" press applies it.
+ */
+export async function retryPending(apis: RunApis, machines: readonly Machine[]): Promise<number> {
   let ran = 0
   for (const entry of readPending()) {
     const back = machines.filter((m) => entry.engines.includes(m.id) && m.online && !m.sealed)
     if (back.length === 0) continue
     ran++
-    const results = await runPlan(api, entry.plan, back, machines.find((m) => m.connected)?.id ?? null)
+    const results = await runPlan(apis, entry.plan, back)
     const still = new Set(entry.engines.filter((e) => !back.some((m) => m.id === e)))
-    for (const r of results) if (resultRow(r).pending) still.add(r.engine)
+    for (const r of results) if (resultRow(r).pending || r.status === 'needs_press') still.add(r.engine)
     const rest = readPending().filter((p) => p.id !== entry.id)
     writePending(still.size > 0 ? [...rest, { ...entry, engines: [...still] }] : rest)
   }

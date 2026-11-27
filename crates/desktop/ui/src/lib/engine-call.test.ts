@@ -1,13 +1,13 @@
 import { expect, test, vi } from 'vitest'
 import { forEngine, namedParams } from '@/lib/engine-call'
-import type { FullApi } from '@/lib/engine-call.types'
+import type { Api } from '@/rpc/bindings/client'
 
 function fakeApi() {
   return {
     set_model: vi.fn(async () => null),
     info: vi.fn(async () => ({ name: 'here' })),
     engine_call: vi.fn(async (_engine: string, method: string) => (method === 'info' ? { name: 'there' } : null)),
-  } as unknown as FullApi & { engine_call: ReturnType<typeof vi.fn>; set_model: ReturnType<typeof vi.fn> }
+  } as unknown as Api & { engine_call: ReturnType<typeof vi.fn>; set_model: ReturnType<typeof vi.fn> }
 }
 
 test('227: the connected engine is the api itself: no engine_call', async () => {
@@ -44,7 +44,7 @@ test('227: pressed is read at call time; outside a press it is null', async () =
 
 test('227: a vault method is not forwarded: it runs here with the picked engine as its own `engine` argument', async () => {
   const vault_status = vi.fn(async () => ({ sealed: false }))
-  const api = { ...fakeApi(), vault_status } as unknown as FullApi & { engine_call: ReturnType<typeof vi.fn> }
+  const api = { ...fakeApi(), vault_status } as unknown as Api & { engine_call: ReturnType<typeof vi.fn> }
   const there = forEngine(api, 'p50', 'mac') as unknown as { vault_status(engine: string | null): Promise<unknown> }
   await there.vault_status(null)
   expect(vault_status).toHaveBeenLastCalledWith('p50')

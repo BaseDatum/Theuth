@@ -5,16 +5,16 @@ import { receiveResult } from '@/rpc/bindings/receive'
 import { PARAM_NAMES } from '@/rpc/bindings/param-names'
 import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
-import { ENGINE_CALL_PARAM_NAMES, type FullApi, type PressToken } from '@/lib/engine-call.types'
+import type { PressToken } from '@/rpc/bindings/method.agent.input'
 
-/** 227 §1: the JSON-RPC errors of `engine_call` (and the statuses of `engine_call_all`). */
-export const ENGINE_CALL_ERROR = { notForwardable: -32050, offline: -32051, sealed: -32052, notApplicable: -32053 } as const
+/** 227 §1–2: the JSON-RPC errors of `engine_call` (and the statuses of `engine_call_all`). */
+export const ENGINE_CALL_ERROR = { notForwardable: -32050, offline: -32051, sealed: -32052, notApplicable: -32053, needsPress: -32054 } as const
 
 export const isEngineCallError = (e: unknown, kind: keyof typeof ENGINE_CALL_ERROR): boolean => e instanceof RpcError && e.code === ENGINE_CALL_ERROR[kind]
 
-/** `method`'s parameter names in order (the bindings' `PARAM_NAMES`, plus the four of 227 until the bindings carry them). */
+/** `method`'s parameter names in order (the bindings' `PARAM_NAMES`). */
 export function paramNames(method: string): readonly string[] | undefined {
-  return PARAM_NAMES[method] ?? (ENGINE_CALL_PARAM_NAMES as Readonly<Record<string, readonly string[]>>)[method]
+  return PARAM_NAMES[method]
 }
 
 /**
@@ -52,7 +52,7 @@ const ownsEngineParam = (method: string) => method.startsWith('vault_')
  * its answer adapted as `m`'s own would be. `pressed` defaults to `userPressed()` at call time. A vault method instead
  * runs on the connected engine with `target` as its `engine` argument.
  */
-export function forEngine(api: FullApi, target: string, active: string, pressed: () => PressToken | null = userPressed): Api {
+export function forEngine(api: Api, target: string, active: string, pressed: () => PressToken | null = userPressed): Api {
   if (target === active) return api
   const methods = new Map<string, (...args: unknown[]) => Promise<unknown>>()
   return new Proxy(api, {

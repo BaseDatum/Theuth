@@ -7,7 +7,7 @@ import { MachineRow } from '@/components/settings/MachineRow'
 import type { SettingsMachines } from '@/components/settings/machine-target'
 import type { SettingsNeed } from '@/components/settings/scope'
 import { errorText } from '@/components/settings/shared'
-import { type Choice, type CopyField, type ResultRow, choices, resultRow, runPlan, settlePending } from '@/components/settings/copy/set-on-all'
+import { type Choice, type CopyField, type ResultRow, choices, resultRow, runApis, runPlan, settlePending } from '@/components/settings/copy/set-on-all'
 import { useIsMobile } from '@/hooks/use-mobile'
 import type { Machine } from '@/lib/mesh-machines'
 import { cn } from '@/lib/utils'
@@ -41,14 +41,14 @@ export function SetOnAll({ request, settings }: { request: SetOnAllRequest; sett
   const [error, setError] = useState<string | null>(null)
   const entry = { id: `${request.tab}/${field.id}`, label: field.label, display, plan }
 
-  const run = async (targets: Machine[], keep: ResultRow[]) => {
+  const run = async (targets: Machine[], keep: ResultRow[], fresh = false) => {
     setBusy(true)
     setError(null)
     try {
-      const results = await runPlan(settings.api, plan, targets, settings.connected?.id ?? null)
-      settlePending(entry, results)
-      const fresh = new Map(results.map((r) => [r.engine, resultRow(r)]))
-      setRows(keep.map((row) => fresh.get(row.engine) ?? row))
+      const results = await runPlan(runApis(settings), plan, targets)
+      settlePending(entry, results, fresh)
+      const byEngine = new Map(results.map((r) => [r.engine, resultRow(r)]))
+      setRows(keep.map((row) => byEngine.get(row.engine) ?? row))
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -59,15 +59,17 @@ export function SetOnAll({ request, settings }: { request: SetOnAllRequest; sett
   const apply = () => {
     const ticked = picks.filter((c) => c.ticked).map((c) => c.machine)
     const skipped = picks.flatMap((c): ResultRow[] => (c.disabled ? [resultRow({ engine: c.machine.id, name: c.machine.name, status: 'skipped', message: c.disabled })] : []))
-    const placeholders = ticked.map((m): ResultRow => ({ engine: m.id, name: m.name, status: 'ok', mark: '◷', text: 'applying…', restart: false, pending: false }))
+    const placeholders = ticked.map((m): ResultRow => ({ engine: m.id, name: m.name, status: 'ok', mark: '◷', text: 'applying…', restart: false, pending: false, press: false }))
     const order = new Map(settings.machines.map((m, i) => [m.id, i]))
     const all = [...placeholders, ...skipped].sort((a, b) => order.get(a.engine)! - order.get(b.engine)!)
     setRows(all)
-    void run(ticked, all)
+    void run(ticked, all, true)
   }
 
   const pending = rows?.filter((r) => r.pending) ?? []
   const retry = () => void run(settings.machines.filter((m) => pending.some((r) => r.engine === m.id)), rows ?? [])
+  // From the click itself, so the run carries this press (`userPressed`) to that one machine.
+  const applyOn = (engine: string) => void run(settings.machines.filter((m) => m.id === engine), rows ?? [])
 
   return (
     <div data-set-on-all="" className="flex flex-col gap-4 p-4">
@@ -95,6 +97,11 @@ export function SetOnAll({ request, settings }: { request: SetOnAllRequest; sett
                 <span className="min-w-0 truncate">{row.name}</span>
                 {row.restart && <span data-restart-chip="" className="shrink-0 rounded-full border border-warning/40 px-1.5 text-[10px] leading-4 text-warning">restart needed</span>}
                 <small className="ml-auto text-right text-[12px] text-fg-tertiary">{row.text}</small>
+                {row.press && (
+                  <Button size="sm" variant="outline" data-apply-on={row.engine} className="h-6 shrink-0 px-2 text-[11px]" disabled={busy} onClick={() => applyOn(row.engine)}>
+                    Apply on {row.name}
+                  </Button>
+                )}
               </li>
             ))}
           </ul>

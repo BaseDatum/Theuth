@@ -2,7 +2,7 @@
 // offline or locked is back. Client-held: the engines keep no queue (see `set-on-all.ts`).
 
 import { useEffect, useRef, useState } from 'react'
-import { readPending, retryPending } from '@/components/settings/copy/set-on-all'
+import { readPending, retryPending, runApis } from '@/components/settings/copy/set-on-all'
 import { useSettingsMachinesValue } from '@/components/settings/machine-target'
 import { notify } from '@/lib/notify'
 
@@ -37,7 +37,7 @@ function Retry({ onEmpty }: { onEmpty: () => void }) {
   useEffect(() => {
     if (busy.current || settings.machines.length === 0) return
     busy.current = true
-    void retryPending(settings.api, settings.machines)
+    void retryPending(runApis(settings), settings.machines)
       .then((ran) => {
         if (ran > 0 && readPending().length === 0) notify.success('Pending settings applied on every machine')
         if (readPending().length === 0) onEmpty()

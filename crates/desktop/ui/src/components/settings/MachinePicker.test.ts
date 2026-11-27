@@ -5,10 +5,10 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, expect, test } from 'vitest'
 import { MachinePicker } from '@/components/settings/MachinePicker'
 import { type SettingsMachines, SettingsMachinesProvider, usePickedMachine } from '@/components/settings/machine-target'
-import type { FullApi } from '@/lib/engine-call.types'
+import type { Api } from '@/rpc/bindings/client'
 import type { Machine } from '@/lib/mesh-machines'
 
-const machine = (id: string, name: string, m: Partial<Machine> = {}): Machine => ({ id, name, kind: 'peer', connected: false, hub: false, online: true, sealed: false, path: 'direct', ...m })
+const machine = (id: string, name: string, m: Partial<Machine> = {}): Machine => ({ id, name, kind: 'peer', connected: false, client: 'hub-row', forwarded: true, hub: false, online: true, sealed: false, path: 'direct', ...m })
 const MACHINES = [
   machine('phone', 'This iPhone', { kind: 'local', path: null }),
   machine('mbp', '333 · MacBook Pro', { kind: 'hub', hub: true, connected: true, path: null }),
@@ -24,7 +24,7 @@ afterEach(() => {
 
 async function mount(phone: boolean, machines = MACHINES) {
   const connected = machines.find((m) => m.connected) ?? null
-  const settings: SettingsMachines = { machines, target: connected, connected, api: {} as FullApi, qc: new QueryClient(), tab: null, open: () => {} }
+  const settings: SettingsMachines = { machines, target: connected, connected, api: {} as Api, local: null, meshClient: 'hub-row', qc: new QueryClient(), tab: null, open: () => {} }
   const host = document.createElement('div')
   document.body.append(host)
   await act(async () => createRoot(host).render(h(SettingsMachinesProvider, { value: settings }, h(MachinePicker, { phone }))))

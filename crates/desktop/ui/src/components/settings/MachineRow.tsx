@@ -14,7 +14,7 @@ const DOT: Readonly<Record<Presence, string>> = { online: 'bg-success', offline:
 export function machineTag(m: Machine): string {
   if (!m.online) return 'offline'
   if (m.sealed) return 'vault locked'
-  if (m.kind === 'local') return m.hub ? 'local · hub' : 'local'
+  if (m.kind === 'local') return m.note ?? (m.hub ? 'local · hub' : 'local')
   if (m.hub) return 'hub'
   if (m.kind === 'cloud') return 'cloud'
   return m.path ?? 'peer'

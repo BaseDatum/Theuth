@@ -1,118 +1,208 @@
-// 227: the machines of the mesh as per-machine Settings lists them (the picker, "Set on all machines", "differs on N"):
-// the connected engine and every mesh peer (`mesh_status`), cloud nodes marked from `cloud_list`, each with its
-// `engine_caps`. This device's own engine first, then the hub, then the rest by name (cloud nodes last).
+// 227: the machines per-machine Settings lists (the picker, "Set on all machines", "differs on N").
+// - This device's own engine (`LOCAL`, when the container has one) first, labelled `LOCAL_NAME`, always reached through
+//   its own client. A device is in at most one mesh: when its engine is a member of the mesh shown it appears once (as
+//   `LOCAL`, not again as a peer); when it is not, it is still listed first, noted "not in this mesh" / "in <mesh>".
+// - The mesh shown: the active engine's; with `LOCAL` active, the local engine's own mesh when it has one, else the first
+//   paired mesh. Its connected engine is reached through that client; every other member through its `engine_call`.
+// - Then the hub, the rest by name, cloud nodes (marked from `cloud_list`) last. Each online machine with its `engine_caps`.
 
-import { useQueries } from '@tanstack/react-query'
-import { useCloudList } from '@/components/cloud/queries'
+import { type QueryClient, useQueries, useQuery } from '@tanstack/react-query'
+import { useStore } from 'zustand'
+import { cloudKeys } from '@/components/cloud/queries'
 import type { CloudList, CloudNode } from '@/components/cloud/types'
-import { useMesh } from '@/components/tasks/queries'
 import { ENGINE_CALL_ERROR } from '@/lib/engine-call'
-import { engineCallApi, type WireEngineCaps } from '@/lib/engine-call.types'
-import { useApi } from '@/lib/rpc'
-import { LOCAL, LOCAL_NAME, useEngines } from '@/link/engines'
+import type { Api } from '@/rpc/bindings/client'
+import type { EngineCapsResult } from '@/rpc/bindings/method.agent.output'
+import { LOCAL, LOCAL_NAME, hasLocal, useEngines } from '@/link/engines'
 import { RpcError } from '@/rpc/client'
-import { supports } from '@/rpc/discovery'
+import { type Discovery, supports } from '@/rpc/discovery'
 import type { MeshStatus } from '@/rpc/bindings/method.nodes.output'
-import { useConnection } from '@/store/connection'
+import { scope } from '@/store/engine-scope'
 
 /** `local`: the engine of this device; `hub`: the lease holder; `cloud`: a node of `cloud_list`; `peer`: any other. */
 export type MachineKind = 'local' | 'hub' | 'peer' | 'cloud'
 
 export type Machine = {
-  /** The mesh engine id (`mesh_status.self_id` / `Peer.id`): what `engine_call` takes. */
+  /** The mesh engine id (`mesh_status.self_id` / `Peer.id`): what `engine_call` takes. `LOCAL` for this device's engine before its id is known. */
   id: string
   name: string
   kind: MachineKind
-  /** The engine this client is connected to (the picker's default). */
+  /** The engine the app is showing (the active engine): the picker's default. */
   connected: boolean
+  /** The engine scope (`store/engine-scope`) whose client reaches it: `LOCAL` or a paired engine's id. */
+  client: string
+  /** Reached through that client's `engine_call` (a mesh member other than the engine the client is connected to). */
+  forwarded: boolean
   /** Holds the hub lease (a `local` machine may too). */
   hub: boolean
   online: boolean
   /** Its vault is locked: it answers, but nothing that needs a secret works until it is unlocked. */
   sealed: boolean
-  /** How the connected engine reaches it: `direct` (LAN), `relay`; `null` for itself or when offline. */
+  /** How the mesh reaches it: `direct` (LAN), `relay`; `null` for an engine reached by its own client or when offline. */
   path: 'direct' | 'relay' | null
-  caps?: WireEngineCaps
+  /** This device's engine outside the mesh shown: "not in this mesh" or "in <mesh>". */
+  note?: string
+  caps?: EngineCapsResult
 }
 
 export const machineKeys = {
   caps: (id: string) => ['engine-caps', id] as const,
 }
 
-/** 227: whether the connected engine forwards Settings calls (`engine_call`); without it there is no picker. */
-export function useEngineCallSupport(): boolean {
-  return useConnection((s) => s.discovery.phase === 'ready' && supports(s.discovery, { methods: ['engine_call' as never] }))
-}
+/** This device's engine as `meshMachines` needs it: reachable, and the mesh it is in (from its own `mesh_status`). */
+export type LocalEngine = { online: boolean; meshId: string | null; meshName: string | null; name?: string }
 
-type Inputs = {
+export type MachinesInput = {
+  /** The mesh shown, from its client's `mesh_status`; `undefined` before it answered (or with no mesh client). */
   mesh: MeshStatus | undefined
   cloud?: CloudList
-  /** This device runs the connected engine (the desktop's own daemon). */
-  local: boolean
-  localName?: string
-  caps?: Readonly<Record<string, WireEngineCaps | undefined>>
+  /** The engine scope whose client gave `mesh`. */
+  meshClient: string
+  /** The active engine scope (`useEngines().active`). */
+  active: string
+  /** This device's engine, `null` when the container has none. */
+  local: LocalEngine | null
+  /** `false`: the mesh client cannot `engine_call`, so only the engines reached by a client of their own are listed. */
+  forwarding?: boolean
+  caps?: Readonly<Record<string, EngineCapsResult | undefined>>
   /** Engines whose `engine_caps` answered "sealed". */
   sealed?: ReadonlySet<string>
 }
 
-/** The machines in picker order (see the module comment); `[]` before `mesh_status` answered. */
-export function meshMachines({ mesh, cloud, local, localName = LOCAL_NAME, caps = {}, sealed = new Set() }: Inputs): Machine[] {
-  if (!mesh) return []
-  const holder = mesh.lease.holder
+const rank = (m: Machine) => (m.kind === 'local' ? 0 : m.hub ? 1 : m.kind === 'cloud' ? 3 : 2)
+
+/** The machines in picker order (see the module comment). */
+export function meshMachines({ mesh, cloud, meshClient, active, local, forwarding = true, caps = {}, sealed = new Set() }: MachinesInput): Machine[] {
+  const holder = mesh?.lease.holder ?? null
   const nodes = new Map((cloud?.nodes ?? []).flatMap((n): [string, CloudNode][] => (n.peer_id ? [[n.peer_id, n]] : [])))
-  const self: Machine = {
-    id: mesh.self_id,
-    name: local ? localName : mesh.self_name,
-    kind: local ? 'local' : holder === mesh.self_id ? 'hub' : nodes.has(mesh.self_id) ? 'cloud' : 'peer',
-    connected: true,
-    hub: holder === mesh.self_id,
-    online: true,
-    sealed: sealed.has(mesh.self_id) || nodes.get(mesh.self_id)?.sealed === true,
-    path: null,
-    caps: caps[mesh.self_id],
+  const isSealed = (id: string) => sealed.has(id) || nodes.get(id)?.sealed === true
+  // The local engine is a member of the mesh shown: it is the mesh client itself, or its id is the mesh's self or a peer.
+  const localId = meshClient === LOCAL ? (mesh?.self_id ?? local?.meshId ?? null) : (local?.meshId ?? null)
+  const member = !!mesh && !!localId && (localId === mesh.self_id || mesh.peers.some((p) => p.id === localId))
+  const machines: Machine[] = []
+  if (local) {
+    const id = localId ?? LOCAL
+    machines.push({
+      id,
+      name: LOCAL_NAME,
+      kind: 'local',
+      connected: active === LOCAL,
+      client: LOCAL,
+      forwarded: false,
+      hub: member && holder === id,
+      online: local.online,
+      sealed: isSealed(id),
+      path: null,
+      note: !mesh || member ? undefined : local.meshName ? `in ${local.meshName}` : 'not in this mesh',
+      caps: caps[id],
+    })
   }
-  const peers = mesh.peers.map((p): Machine => {
-    const node = nodes.get(p.id)
-    return {
-      id: p.id,
-      name: p.name,
-      kind: holder === p.id ? 'hub' : node ? 'cloud' : 'peer',
-      connected: false,
-      hub: holder === p.id,
-      online: p.reachable && p.path !== 'offline',
-      sealed: sealed.has(p.id) || node?.sealed === true,
-      path: !p.reachable || p.path === 'offline' ? null : p.path === 'lan' ? 'direct' : 'relay',
-      caps: caps[p.id],
+  if (mesh && meshClient !== LOCAL) {
+    const self = mesh.self_id
+    if (!(member && localId === self))
+      machines.push({
+        id: self,
+        name: mesh.self_name,
+        kind: holder === self ? 'hub' : nodes.has(self) ? 'cloud' : 'peer',
+        connected: active === meshClient,
+        client: meshClient,
+        forwarded: false,
+        hub: holder === self,
+        online: true,
+        sealed: isSealed(self),
+        path: null,
+        caps: caps[self],
+      })
+  }
+  if (mesh && forwarding) {
+    for (const p of mesh.peers) {
+      // Shown once: this device's engine is the `local` row, reached through its own client.
+      if (member && p.id === localId) continue
+      const online = p.reachable && p.path !== 'offline'
+      machines.push({
+        id: p.id,
+        name: p.name,
+        kind: holder === p.id ? 'hub' : nodes.has(p.id) ? 'cloud' : 'peer',
+        connected: false,
+        client: meshClient,
+        forwarded: true,
+        hub: holder === p.id,
+        online,
+        sealed: isSealed(p.id),
+        path: !online ? null : p.path === 'lan' ? 'direct' : 'relay',
+        caps: caps[p.id],
+      })
     }
-  })
-  const rank = (m: Machine) => (m.kind === 'local' ? 0 : m.hub ? 1 : m.kind === 'cloud' ? 3 : 2)
-  return [self, ...peers].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+  }
+  return machines.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
 }
 
-/** 227: `meshMachines` of the connected engine, live (mesh and cloud polls, `engine_caps` of each online machine). */
-export function useMeshMachines(): Machine[] {
-  const api = useApi()
-  const client = useConnection((s) => s.client)
-  const full = engineCallApi(api, client ? (m, p) => client.call(m, p) : undefined)
-  const forwarding = useEngineCallSupport()
+/** Whether `discovery` advertises `engine_call` (227); without it a client reaches only its own engine. */
+export const forwards = (discovery: Discovery): boolean => discovery.phase === 'ready' && supports(discovery, { methods: ['engine_call' as never] })
+
+/** The live machine list and how to reach them. */
+export type MeshMachines = {
+  machines: Machine[]
+  /** The engine scope whose client shows the mesh (`engine_call_all`, `settings_values`, forwarding). */
+  meshClient: string
+  /** The mesh client's `Api` and query cache; `null` api before it connected. */
+  meshApi: Api | null
+  meshQc: QueryClient
+  /** This device's engine's `Api` when the container has one and it is connected. */
+  localApi: Api | null
+}
+
+function useClient(id: string) {
+  const st = scope(id)
+  const api = useStore(st.connection, (s) => (s.state === 'open' ? s.api : null))
+  const discovery = useStore(st.connection, (s) => s.discovery)
+  return { api, discovery, qc: st.qc }
+}
+
+/** 227: `meshMachines`, live: both clients' `mesh_status`, the cloud list, `engine_caps` of each online machine. */
+export function useMeshMachines(): MeshMachines {
   const active = useEngines((s) => s.active)
-  const mesh = useMesh().data
-  const cloud = useCloudList().data
-  const ids = mesh ? [mesh.self_id, ...mesh.peers.filter((p) => p.reachable).map((p) => p.id)] : []
-  const answers = useQueries({
-    queries: ids.map((id) => ({
-      enabled: forwarding,
-      queryKey: machineKeys.caps(id),
-      queryFn: () => (id === mesh?.self_id ? full.engine_caps() : (full.engine_call(id, 'engine_caps', {}) as Promise<WireEngineCaps>)),
-      staleTime: 5 * 60_000,
-      retry: false,
-    })),
-  })
-  const caps: Record<string, WireEngineCaps | undefined> = {}
+  const firstMesh = useEngines((s) => s.engines.find((h) => h.kind === 'mesh' && h.pairedAt > 0)?.id ?? null)
+  const withLocal = hasLocal()
+  const local = useClient(LOCAL)
+  const localMesh = useQuery({ enabled: withLocal && !!local.api, queryKey: ['mesh'], queryFn: () => local.api!.mesh_status(), retry: false }, local.qc)
+  // LOCAL active: its own mesh when it is in one, else the first paired mesh (one mesh is shown at a time).
+  const localInMesh = (localMesh.data?.peers.length ?? 0) > 0
+  const meshClient = active !== LOCAL ? active : localInMesh || !firstMesh ? LOCAL : firstMesh
+  const viewed = useClient(meshClient)
+  const mesh = useQuery({ enabled: !!viewed.api, queryKey: ['mesh'], queryFn: () => viewed.api!.mesh_status(), retry: false }, viewed.qc).data
+  const cloud = useQuery(
+    { enabled: !!viewed.api && supports(viewed.discovery, { methods: ['cloud_list'] }), queryKey: cloudKeys.list, queryFn: () => viewed.api!.cloud_list(), refetchInterval: 60_000, retry: false },
+    viewed.qc,
+  ).data
+  const localEngine: LocalEngine | null = withLocal
+    ? { online: !!local.api, meshId: localMesh.data?.self_id ?? null, meshName: localInMesh ? (localMesh.data!.mesh_name ?? localMesh.data!.self_name) : null }
+    : null
+  const forwarding = forwards(viewed.discovery)
+  const input: MachinesInput = { mesh, cloud, meshClient, active, local: localEngine, forwarding }
+  const reachable = meshMachines(input).filter((m) => m.online)
+  const answers = useQueries(
+    {
+      queries: reachable.map((m) => ({
+        enabled: forwarding || !m.forwarded,
+        queryKey: machineKeys.caps(m.id),
+        queryFn: (): Promise<EngineCapsResult> => {
+          const api = m.client === LOCAL ? local.api : viewed.api
+          if (!api) return Promise.reject(new Error('not connected'))
+          return m.forwarded ? (api.engine_call(m.id, 'engine_caps', {}) as Promise<EngineCapsResult>) : api.engine_caps()
+        },
+        staleTime: 5 * 60_000,
+        retry: false,
+      })),
+    },
+    viewed.qc,
+  )
+  const caps: Record<string, EngineCapsResult | undefined> = {}
   const sealed = new Set<string>()
   answers.forEach((q, i) => {
-    caps[ids[i]!] = q.data
-    if (q.error instanceof RpcError && q.error.code === ENGINE_CALL_ERROR.sealed) sealed.add(ids[i]!)
+    const id = reachable[i]!.id
+    caps[id] = q.data
+    if (q.error instanceof RpcError && q.error.code === ENGINE_CALL_ERROR.sealed) sealed.add(id)
   })
-  return meshMachines({ mesh, cloud, local: active === LOCAL, caps, sealed })
+  return { machines: meshMachines({ ...input, caps, sealed }), meshClient, meshApi: viewed.api, meshQc: viewed.qc, localApi: local.api }
 }

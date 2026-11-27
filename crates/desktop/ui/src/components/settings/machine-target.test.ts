@@ -5,15 +5,17 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, expect, test, vi } from 'vitest'
 import { MachineScope, type SettingsMachines, SettingsMachinesProvider, aimedAt } from '@/components/settings/machine-target'
 import { useAction } from '@/components/settings/shared'
-import type { FullApi } from '@/lib/engine-call.types'
 import type { Machine } from '@/lib/mesh-machines'
 import { useApi } from '@/lib/rpc'
 import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
 import { useConnection } from '@/store/connection'
+import { LOCAL } from '@/link/engines'
+import { scope } from '@/store/engine-scope'
 
-const machine = (id: string, name: string, m: Partial<Machine> = {}): Machine => ({ id, name, kind: 'peer', connected: false, hub: false, online: true, sealed: false, path: 'direct', ...m })
-const mac = machine('mac', 'This Mac', { kind: 'local', connected: true, hub: true, path: null })
+/** Everything through the active (`local`) scope's client: the Mac's engine itself, P50 by `engine_call`. */
+const machine = (id: string, name: string, m: Partial<Machine> = {}): Machine => ({ id, name, kind: 'peer', connected: false, client: LOCAL, forwarded: true, hub: false, online: true, sealed: false, path: 'direct', ...m })
+const mac = machine('mac', 'This Mac', { kind: 'local', connected: true, forwarded: false, hub: true, path: null })
 const p50 = machine('p50', 'P50 · ThinkPad')
 
 function fakeApi() {
@@ -42,7 +44,7 @@ afterEach(() => {
 
 async function mount(scope: 'machine' | 'everywhere', api: ReturnType<typeof fakeApi>) {
   useConnection.setState({ api: api as unknown as Api, state: 'open' })
-  const settings: SettingsMachines = { machines: [mac, p50], target: p50, connected: mac, api: api as unknown as FullApi, qc: new QueryClient(), tab: null, open: () => {} }
+  const settings: SettingsMachines = { machines: [mac, p50], target: p50, connected: mac, api: api as unknown as Api, local: api as unknown as Api, meshClient: LOCAL, qc: new QueryClient(), tab: null, open: () => {} }
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const host = document.createElement('div')
   document.body.append(host)
@@ -84,7 +86,7 @@ test('227: an offline target says so instead of the tab', async () => {
   })
   useConnection.setState({ api: api as unknown as Api, state: 'open' })
   const xeus = machine('xeus', 'xeus')
-  const settings: SettingsMachines = { machines: [mac, xeus], target: xeus, connected: mac, api: api as unknown as FullApi, qc: new QueryClient(), tab: null, open: () => {} }
+  const settings: SettingsMachines = { machines: [mac, xeus], target: xeus, connected: mac, api: api as unknown as Api, local: api as unknown as Api, meshClient: LOCAL, qc: new QueryClient(), tab: null, open: () => {} }
   const host = document.createElement('div')
   document.body.append(host)
   await act(async () =>
@@ -92,4 +94,23 @@ test('227: an offline target says so instead of the tab', async () => {
   )
   await vi.waitFor(() => expect(host.querySelector('[data-machine-unreachable]')?.textContent).toBe('xeus is offline. Its settings show when it reconnects.'))
   expect(host.querySelector('button[data-model]')).toBeNull()
+})
+
+test('227: an engine with a client of its own (the hub\'s while this device\'s engine is active) is used directly: no engine_call', async () => {
+  const mine = fakeApi()
+  const hub = fakeApi()
+  hub.title_model.mockImplementation(async () => ({ id: 'hub-model' }))
+  useConnection.setState({ api: mine as unknown as Api, state: 'open' })
+  scope('hub-row').connection.setState({ api: hub as unknown as Api, state: 'open' })
+  const mbp = machine('mbp', '333 · MacBook Pro', { client: 'hub-row', forwarded: false, kind: 'hub', hub: true })
+  const settings: SettingsMachines = { machines: [mac, mbp], target: mbp, connected: mac, api: hub as unknown as Api, local: mine as unknown as Api, meshClient: 'hub-row', qc: new QueryClient(), tab: null, open: () => {} }
+  const host = document.createElement('div')
+  document.body.append(host)
+  await act(async () =>
+    createRoot(host).render(h(QueryClientProvider, { client: new QueryClient() }, h(SettingsMachinesProvider, { value: settings }, h(MachineScope, { machine: mbp, children: h(Tab) })))),
+  )
+  await vi.waitFor(() => expect(host.querySelector<HTMLElement>('button[data-model]')?.dataset.model).toBe('hub-model'))
+  await act(async () => host.querySelector<HTMLButtonElement>('button[data-model]')!.click())
+  await vi.waitFor(() => expect(hub.set_title_model).toHaveBeenCalledWith('openai/gpt-6'))
+  expect([mine.title_model, mine.engine_call, hub.engine_call].map((f) => f.mock.calls.length)).toEqual([0, 0, 0])
 })
