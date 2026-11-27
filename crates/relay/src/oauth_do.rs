@@ -38,8 +38,10 @@ pub const TOKEN_URL: &str = "https://cloud.digitalocean.com/v1/oauth/token";
 const NOT_CONFIGURED: &str = "DigitalOcean sign-in is not configured on this relay";
 /// A started sign-in lives this long, redeemed or not.
 const TTL: Duration = Duration::from_secs(10 * 60);
-/// Sign-ins in flight at once; beyond, `start` refuses.
+/// Sign-ins in flight at once; beyond, `start` and pre-start `redeem` refuse.
 const MAX_PENDING: usize = 1024;
+/// Finished-state tombstones retained to prevent replay/resurrection; oldest evicted beyond this.
+const MAX_FINISHED: usize = MAX_PENDING * 4;
 /// `state` and `challenge`: base64url (no pad) of 32 bytes.
 const B64_32: usize = 43;
 
@@ -89,11 +91,68 @@ struct Pending {
     outcome: Option<Outcome>,
 }
 
+enum Entry {
+    /// An in-flight sign-in attempt.
+    Pending(Pending),
+    /// Tombstone for a redeemed or expired state, kept for `ttl` so it cannot be reused.
+    Finished(Instant),
+}
+
+/// Evict stale tombstones, convert expired pending entries into tombstones, and bound tombstone count.
+fn prune(entries: &mut HashMap<String, Entry>, now: Instant, ttl: Duration) {
+    entries.retain(|_, entry| match entry {
+        Entry::Finished(at) => now.duration_since(*at) < ttl,
+        Entry::Pending(p) => {
+            if now.duration_since(p.created) < ttl {
+                true
+            } else {
+                let expired_at = p.created.checked_add(ttl).unwrap_or(now);
+                if now.duration_since(expired_at) < ttl {
+                    *entry = Entry::Finished(expired_at);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    });
+    cap_finished(entries);
+}
+
+fn cap_finished(entries: &mut HashMap<String, Entry>) {
+    let finished = entries
+        .values()
+        .filter(|e| matches!(e, Entry::Finished(_)))
+        .count();
+    if finished <= MAX_FINISHED {
+        return;
+    }
+    let excess = finished - MAX_FINISHED;
+    let mut tombstones: Vec<(Instant, String)> = entries
+        .iter()
+        .filter_map(|(k, v)| match v {
+            Entry::Finished(at) => Some((*at, k.clone())),
+            Entry::Pending(_) => None,
+        })
+        .collect();
+    tombstones.sort_unstable_by_key(|(at, _)| *at);
+    for (_, k) in tombstones.into_iter().take(excess) {
+        entries.remove(&k);
+    }
+}
+
+fn active_pending(entries: &HashMap<String, Entry>) -> usize {
+    entries
+        .values()
+        .filter(|e| matches!(e, Entry::Pending(_)))
+        .count()
+}
+
 /// OAuth state: the app config and the sign-ins in flight.
 pub struct DoOauth {
     cfg: Option<Config>,
     http: reqwest::Client,
-    pending: Mutex<HashMap<String, Pending>>,
+    pending: Mutex<HashMap<String, Entry>>,
     ttl: Duration,
 }
 
@@ -117,7 +176,7 @@ impl DoOauth {
         }
     }
 
-    fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, Pending>> {
+    fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
         self.pending.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -194,14 +253,91 @@ fn html_escape(s: &str) -> String {
     out
 }
 
-/// The callback page: no scripts, no links, no tokens.
+/// The callback page: matches `crates/oauth/src/callback.html` with no scripts, links, or tokens.
 fn page(status: StatusCode, title: &str, text: &str) -> Response {
+    let ok = status.is_success();
+    let state = if ok { "ok" } else { "err" };
+    let mark = if ok {
+        r#"<path d="M15 27l7 7 15-16"/>"#
+    } else {
+        r#"<path d="M18 18l16 16M34 18L18 34"/>"#
+    };
+    let title = html_escape(title);
+    let text = html_escape(text);
     let body = format!(
-        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width\">\
-         <title>{t}</title></head><body style=\"font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem\">\
-         <h1 style=\"font-size:1.25rem\">{t}</h1><p>{x}</p></body></html>",
-        t = html_escape(title),
-        x = html_escape(text),
+        r#"<!doctype html>
+<html lang="en" data-state="{state}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>theuth · {title}</title>
+<style>
+  :root {{
+    --bg: #e8dcc8; --card: #f3eadf; --fg: #1a1612; --muted: #6b5e4f;
+    --line: #d4c4a8; --ok: #2f5d4a; --err: #9b2d1f;
+    --glow-ok: rgba(47, 93, 74, .18); --glow-err: rgba(155, 45, 31, .18);
+  }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{
+      --bg: #12100e; --card: #1c1915; --fg: #e8dcc8; --muted: #c9b89a;
+      --line: #2a241c; --ok: #4a8a6e; --err: #c45a48;
+      --glow-ok: rgba(74, 138, 110, .22); --glow-err: rgba(196, 90, 72, .22);
+    }}
+  }}
+  * {{ box-sizing: border-box; }}
+  html, body {{ height: 100%; margin: 0; }}
+  body {{
+    display: grid; place-items: center; padding: 24px;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }}
+  body::before {{
+    content: ""; position: fixed; inset: -40vmax; z-index: -1; pointer-events: none;
+    background: radial-gradient(closest-side, var(--glow) 0%, transparent 70%);
+    animation: breathe 6s ease-in-out infinite alternate;
+  }}
+  [data-state="ok"]  {{ --glow: var(--glow-ok);  --accent: var(--ok);  }}
+  [data-state="err"] {{ --glow: var(--glow-err); --accent: var(--err); }}
+
+  .card {{
+    width: min(100%, 400px); padding: 44px 36px 36px; text-align: center;
+    background: var(--card); border: 1px solid var(--line); border-radius: 20px;
+    box-shadow: 0 1px 2px rgba(26, 22, 18, .06), 0 24px 64px -24px rgba(26, 22, 18, .3);
+    animation: rise .5s cubic-bezier(.2,.8,.2,1) both;
+  }}
+  .mark {{ width: 72px; height: 72px; margin: 0 auto 24px; display: block; }}
+  .mark circle, .mark path {{
+    fill: none; stroke: var(--accent); stroke-width: 2.5;
+    stroke-linecap: round; stroke-linejoin: round;
+  }}
+  .mark circle {{ stroke-dasharray: 151; stroke-dashoffset: 151; animation: draw .6s .15s ease-out forwards; }}
+  .mark path   {{ stroke-dasharray: 40;  stroke-dashoffset: 40;  animation: draw .35s .6s ease-out forwards; }}
+
+  h1 {{ margin: 0 0 8px; font-size: 22px; font-weight: 600; letter-spacing: -.01em; }}
+  p  {{ margin: 0; color: var(--muted); overflow-wrap: anywhere; }}
+  .brand {{ margin-top: 28px; font-size: 12px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }}
+
+  @keyframes draw    {{ to {{ stroke-dashoffset: 0; }} }}
+  @keyframes rise    {{ from {{ opacity: 0; transform: translateY(12px) scale(.98); }} }}
+  @keyframes breathe {{ to {{ transform: scale(1.15); }} }}
+  @media (prefers-reduced-motion: reduce) {{ * {{ animation: none !important; }} .mark circle, .mark path {{ stroke-dashoffset: 0; }} }}
+</style>
+</head>
+<body>
+  <main class="card" role="status" aria-live="polite">
+    <svg class="mark" viewBox="0 0 52 52" aria-hidden="true">
+      <circle cx="26" cy="26" r="24"/>
+      {mark}
+    </svg>
+    <h1>{title}</h1>
+    <p>{text}</p>
+    <div class="brand">theuth</div>
+  </main>
+</body>
+</html>
+"#
     );
     let mut res = (status, body).into_response();
     let h = res.headers_mut();
@@ -268,16 +404,15 @@ async fn start(
             .into_response();
     }
     {
-        let mut pending = app.oauth.pending();
+        let mut entries = app.oauth.pending();
         let now = Instant::now();
-        let ttl = app.oauth.ttl;
-        pending.retain(|_, p| now.duration_since(p.created) < ttl);
-        match pending.get(state) {
-            // The same browser reopening the start URL: send it to DigitalOcean again.
-            Some(p)
+        prune(&mut entries, now, app.oauth.ttl);
+        match entries.get(state) {
+            // The same browser reopening the start URL, or a pre-start `redeem` poll that arrived first.
+            Some(Entry::Pending(p))
                 if p.outcome.is_none() && ct_eq(p.challenge.as_bytes(), challenge.as_bytes()) => {}
             Some(_) => return (StatusCode::CONFLICT, "state already in use").into_response(),
-            None if pending.len() >= MAX_PENDING => {
+            None if active_pending(&entries) >= MAX_PENDING => {
                 tracing::warn!("do-oauth: pending map full");
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -286,13 +421,13 @@ async fn start(
                     .into_response();
             }
             None => {
-                pending.insert(
+                entries.insert(
                     state.clone(),
-                    Pending {
+                    Entry::Pending(Pending {
                         challenge: challenge.clone(),
                         created: now,
                         outcome: None,
-                    },
+                    }),
                 );
             }
         }
@@ -333,6 +468,13 @@ async fn callback(
             "This sign-in link is unknown or has expired. Start again from theuth.",
         )
     };
+    let already_used = || {
+        page(
+            StatusCode::BAD_REQUEST,
+            FAILED,
+            "This sign-in link was already used. Start again from theuth.",
+        )
+    };
     let Some(state) = q.get("state").filter(|s| is_b64url(s, B64_32..=B64_32)) else {
         return unknown();
     };
@@ -341,26 +483,36 @@ async fn callback(
         .map(|e| q.get("error_description").unwrap_or(e).clone());
     let code = q.get("code").filter(|c| !c.is_empty());
     {
-        let mut pending = app.oauth.pending();
-        let Some(p) = pending.get_mut(state) else {
-            return unknown();
-        };
-        if p.created.elapsed() >= app.oauth.ttl {
-            pending.remove(state);
-            return unknown();
+        let mut entries = app.oauth.pending();
+        let now = Instant::now();
+        let ttl = app.oauth.ttl;
+        match entries.get_mut(state) {
+            None => return unknown(),
+            Some(Entry::Finished(at)) => {
+                if now.duration_since(*at) >= ttl {
+                    entries.remove(state);
+                    return unknown();
+                }
+                return already_used();
+            }
+            Some(Entry::Pending(p)) => {
+                if now.duration_since(p.created) >= ttl {
+                    entries.insert(state.clone(), Entry::Finished(now));
+                    cap_finished(&mut entries);
+                    return unknown();
+                }
+                if p.outcome.is_some() {
+                    return already_used();
+                }
+                p.outcome = Some(match (&denied, code) {
+                    (Some(e), _) => Outcome::Error(e.clone()),
+                    (None, None) => {
+                        Outcome::Error("DigitalOcean returned no authorization code".into())
+                    }
+                    (None, Some(_)) => Outcome::Exchanging,
+                });
+            }
         }
-        if p.outcome.is_some() {
-            return page(
-                StatusCode::BAD_REQUEST,
-                FAILED,
-                "This sign-in link was already used. Start again from theuth.",
-            );
-        }
-        p.outcome = Some(match (&denied, code) {
-            (Some(e), _) => Outcome::Error(e.clone()),
-            (None, None) => Outcome::Error("DigitalOcean returned no authorization code".into()),
-            (None, Some(_)) => Outcome::Exchanging,
-        });
     }
     if let Some(e) = denied {
         tracing::info!(state = tag(state), "do-oauth: denied at DigitalOcean");
@@ -409,8 +561,8 @@ async fn callback(
         }
         Outcome::Exchanging => unreachable!("set above"),
     };
-    // Pruned meanwhile (expired): the engine sees 404 and starts over.
-    if let Some(p) = app.oauth.pending().get_mut(state) {
+    // Pruned meanwhile (expired): the engine sees 410 and starts over.
+    if let Some(Entry::Pending(p)) = app.oauth.pending().get_mut(state) {
         p.outcome = Some(outcome);
     }
     res
@@ -439,42 +591,70 @@ async fn redeem(
     }
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(Sha256::digest(verifier.as_bytes()));
-    let mut pending = app.oauth.pending();
-    let Some(p) = pending.get(&state) else {
-        return json_error(StatusCode::NOT_FOUND, "unknown sign-in");
-    };
-    if p.created.elapsed() >= app.oauth.ttl {
-        pending.remove(&state);
+    let mut entries = app.oauth.pending();
+    let now = Instant::now();
+    let ttl = app.oauth.ttl;
+    if let Some(Entry::Pending(p)) = entries.get(&state)
+        && now.duration_since(p.created) >= ttl
+    {
+        entries.insert(state, Entry::Finished(now));
+        prune(&mut entries, now, ttl);
         return json_error(StatusCode::GONE, "sign-in expired");
     }
-    if !ct_eq(p.challenge.as_bytes(), challenge.as_bytes()) {
-        tracing::info!(state = tag(&state), "do-oauth: redeem with wrong verifier");
-        return json_error(StatusCode::FORBIDDEN, "verifier does not match");
-    }
-    match &p.outcome {
-        None | Some(Outcome::Exchanging) => {
-            (StatusCode::ACCEPTED, axum::Json(json!({ "pending": true }))).into_response()
-        }
-        Some(_) => {
-            let Some(Pending {
-                outcome: Some(outcome),
-                ..
-            }) = pending.remove(&state)
-            else {
-                unreachable!("checked above")
-            };
-            drop(pending);
-            match outcome {
-                Outcome::Tokens(body) => {
-                    tracing::info!(state = tag(&state), "do-oauth: redeemed");
-                    json_body(StatusCode::OK, body)
-                }
-                Outcome::Error(e) => {
-                    tracing::info!(state = tag(&state), "do-oauth: redeemed an error");
-                    json_error(StatusCode::BAD_REQUEST, &e)
-                }
-                Outcome::Exchanging => unreachable!("matched above"),
+    prune(&mut entries, now, ttl);
+    match entries.get(&state) {
+        Some(Entry::Finished(_)) => json_error(StatusCode::GONE, "sign-in already used or expired"),
+        Some(Entry::Pending(p)) => {
+            if !ct_eq(p.challenge.as_bytes(), challenge.as_bytes()) {
+                tracing::info!(state = tag(&state), "do-oauth: redeem with wrong verifier");
+                return json_error(StatusCode::FORBIDDEN, "verifier does not match");
             }
+            match &p.outcome {
+                None | Some(Outcome::Exchanging) => {
+                    (StatusCode::ACCEPTED, axum::Json(json!({ "pending": true }))).into_response()
+                }
+                Some(_) => {
+                    let Some(Entry::Pending(Pending {
+                        outcome: Some(outcome),
+                        ..
+                    })) = entries.insert(state.clone(), Entry::Finished(now))
+                    else {
+                        unreachable!("checked above")
+                    };
+                    cap_finished(&mut entries);
+                    drop(entries);
+                    match outcome {
+                        Outcome::Tokens(body) => {
+                            tracing::info!(state = tag(&state), "do-oauth: redeemed");
+                            json_body(StatusCode::OK, body)
+                        }
+                        Outcome::Error(e) => {
+                            tracing::info!(state = tag(&state), "do-oauth: redeemed an error");
+                            json_error(StatusCode::BAD_REQUEST, &e)
+                        }
+                        Outcome::Exchanging => unreachable!("matched above"),
+                    }
+                }
+            }
+        }
+        None => {
+            if active_pending(&entries) >= MAX_PENDING {
+                tracing::warn!("do-oauth: pending map full");
+                return json_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "too many sign-ins in progress; try again shortly",
+                );
+            }
+            tracing::debug!(state = tag(&state), "do-oauth: pre-start redeem registered");
+            entries.insert(
+                state,
+                Entry::Pending(Pending {
+                    challenge,
+                    created: now,
+                    outcome: None,
+                }),
+            );
+            (StatusCode::ACCEPTED, axum::Json(json!({ "pending": true }))).into_response()
         }
     }
 }
@@ -703,7 +883,10 @@ mod tests {
                  &response_type=code&scope=read%20write&state={STATE}"
             )
         );
-        assert_eq!(oauth.pending()[STATE].challenge, challenge(VERIFIER));
+        match &oauth.pending()[STATE] {
+            Entry::Pending(p) => assert_eq!(p.challenge, challenge(VERIFIER)),
+            Entry::Finished(_) => panic!("expected pending entry"),
+        }
         // Reopening the same start URL is fine; reusing the state with another challenge is not.
         assert_eq!(
             get(&r, &start_uri(STATE, VERIFIER)).await.0,
@@ -757,6 +940,13 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
         assert!(h[CONTENT_TYPE].to_str().unwrap().starts_with("text/html"));
+        assert_eq!(
+            h[CONTENT_SECURITY_POLICY],
+            "default-src 'none'; style-src 'unsafe-inline'"
+        );
+        assert!(body.contains(r#"data-state="err""#));
+        assert!(body.contains(r#"<div class="brand">theuth</div>"#));
+        assert!(!body.contains("<script"));
         assert!(body.contains("unknown or has expired"));
         let (s, _, _) = get(&r, "/oauth/digitalocean/callback?code=good&state=bad").await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -795,6 +985,10 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK);
+        assert!(page.contains(r#"data-state="ok""#));
+        assert!(page.contains("<title>theuth · Signed in</title>"));
+        assert!(page.contains(r#"<div class="brand">theuth</div>"#));
+        assert!(!page.contains("<script"));
         assert!(
             page.contains(
                 "Signed in to DigitalOcean. You can close this tab and return to theuth."
@@ -819,6 +1013,7 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert!(page.contains(r#"data-state="err""#));
         assert!(page.contains("already used"));
         assert!(seen.try_recv().is_err());
 
@@ -828,52 +1023,132 @@ mod tests {
         assert_eq!(v["access_token"], "at1");
         assert_eq!(v["refresh_token"], "rt1");
         assert_eq!(v["expires_in"], 2592000);
-        // One-time.
-        assert_eq!(redeem(VERIFIER).await.0, StatusCode::NOT_FOUND);
+        // One-time: subsequent redeem gets 410 Gone, start gets 409, callback says already used.
+        assert_eq!(redeem(VERIFIER).await.0, StatusCode::GONE);
+        assert_eq!(
+            get(&r, &start_uri(STATE, VERIFIER)).await.0,
+            StatusCode::CONFLICT
+        );
+        let (s, _, page) = get(
+            &r,
+            &format!("/oauth/digitalocean/callback?code=good&state={STATE}"),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert!(page.contains("already used"));
+    }
+
+    #[tokio::test]
+    async fn pre_start_redeem_race_succeeds_and_stays_one_time() {
+        let (token_url, _seen) = fake_do().await;
+        let r = router(configured(&token_url));
+        let redeem = |verifier: &'static str| {
+            let r = r.clone();
+            async move {
+                post_json(
+                    &r,
+                    "/oauth/digitalocean/redeem",
+                    json!({"state": STATE, "verifier": verifier}),
+                )
+                .await
+            }
+        };
+        let wrong = "d3Jvbmd3cm9uZ3dyb25nd3Jvbmd3cm9uZ3dyb25nd3I";
+
+        // Engine polls /redeem BEFORE the browser opens /start.
+        assert_eq!(
+            redeem(VERIFIER).await,
+            (StatusCode::ACCEPTED, json!({"pending": true}))
+        );
+        // Wrong verifier during the pre-start window is still refused.
+        assert_eq!(redeem(wrong).await.0, StatusCode::FORBIDDEN);
+        // Browser hits /start with matching challenge → 302; mismatched challenge → 409.
+        assert_eq!(
+            get(&r, &start_uri(STATE, "other")).await.0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            get(&r, &start_uri(STATE, VERIFIER)).await.0,
+            StatusCode::FOUND
+        );
+        // Callback exchanges the code.
+        let (s, _, page) = get(
+            &r,
+            &format!("/oauth/digitalocean/callback?code=good&state={STATE}"),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(page.contains(r#"data-state="ok""#));
+        // Redeem returns tokens once, then 410 Gone.
+        let (s, v) = redeem(VERIFIER).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["access_token"], "at1");
+        assert_eq!(v["refresh_token"], "rt1");
+        assert_eq!(redeem(VERIFIER).await.0, StatusCode::GONE);
     }
 
     #[tokio::test]
     async fn digitalocean_errors_reach_the_page_and_the_redeem() {
+        const STATE2: &str = "c3RhdGUyc3RhdGUyc3RhdGUyc3RhdGUyc3RhdGUyc3Q";
         let (token_url, _seen) = fake_do().await;
         let r = router(configured(&token_url));
-        let redeem = || {
-            post_json(
-                &r,
-                "/oauth/digitalocean/redeem",
-                json!({"state": STATE, "verifier": VERIFIER}),
-            )
+        let redeem = |state: &'static str| {
+            let r = r.clone();
+            async move {
+                post_json(
+                    &r,
+                    "/oauth/digitalocean/redeem",
+                    json!({"state": state, "verifier": VERIFIER}),
+                )
+                .await
+            }
         };
 
         // The user pressed Deny.
         get(&r, &start_uri(STATE, VERIFIER)).await;
-        let (s, _, page) = get(
+        let (s, h, page) = get(
             &r,
             &format!("/oauth/digitalocean/callback?error=access_denied&error_description=%3Cb%3Eno%3C%2Fb%3E&state={STATE}"),
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
-        assert!(page.contains("&lt;b&gt;no&lt;/b&gt;"));
         assert_eq!(
-            redeem().await,
+            h[CONTENT_SECURITY_POLICY],
+            "default-src 'none'; style-src 'unsafe-inline'"
+        );
+        assert!(page.contains(r#"data-state="err""#));
+        assert!(page.contains(r#"<div class="brand">theuth</div>"#));
+        assert!(!page.contains("<script"));
+        assert!(page.contains("&lt;b&gt;no&lt;/b&gt;"));
+        assert!(!page.contains("<b>no</b>"));
+        assert_eq!(
+            redeem(STATE).await,
             (StatusCode::BAD_REQUEST, json!({"error": "<b>no</b>"}))
         );
-        assert_eq!(redeem().await.0, StatusCode::NOT_FOUND);
+        assert_eq!(redeem(STATE).await.0, StatusCode::GONE);
 
-        // The code exchange is refused.
-        get(&r, &start_uri(STATE, VERIFIER)).await;
-        let (s, _, _) = get(
+        // The code exchange is refused (fresh state; finished STATE cannot be reused).
+        assert_eq!(
+            get(&r, &start_uri(STATE2, VERIFIER)).await.0,
+            StatusCode::FOUND
+        );
+        let (s, _, page) = get(
             &r,
-            &format!("/oauth/digitalocean/callback?code=stale&state={STATE}"),
+            &format!("/oauth/digitalocean/callback?code=stale&state={STATE2}"),
         )
         .await;
         assert_eq!(s, StatusCode::BAD_GATEWAY);
+        assert!(page.contains(r#"data-state="err""#));
+        assert!(page.contains(r#"<div class="brand">theuth</div>"#));
+        assert!(!page.contains("<script"));
         assert_eq!(
-            redeem().await,
+            redeem(STATE2).await,
             (
                 StatusCode::BAD_REQUEST,
                 json!({"error": "The provided authorization grant is invalid"})
             )
         );
+        assert_eq!(redeem(STATE2).await.0, StatusCode::GONE);
     }
 
     #[tokio::test]
@@ -911,10 +1186,14 @@ mod tests {
 
     #[tokio::test]
     async fn sign_ins_expire() {
+        const STATE2: &str = "c3RhdGUyc3RhdGUyc3RhdGUyc3RhdGUyc3RhdGUyc3Q";
         let mut oauth = configured("http://127.0.0.1:9/unused");
         oauth.ttl = Duration::from_millis(50);
         let r = router(oauth);
-        get(&r, &start_uri(STATE, VERIFIER)).await;
+        assert_eq!(
+            get(&r, &start_uri(STATE, VERIFIER)).await.0,
+            StatusCode::FOUND
+        );
         tokio::time::sleep(Duration::from_millis(80)).await;
         let (s, _) = post_json(
             &r,
@@ -923,11 +1202,30 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::GONE);
-        get(&r, &start_uri(STATE, VERIFIER)).await;
+        // Tombstone keeps the expired state from being resurrected immediately.
+        assert_eq!(
+            post_json(
+                &r,
+                "/oauth/digitalocean/redeem",
+                json!({"state": STATE, "verifier": VERIFIER}),
+            )
+            .await
+            .0,
+            StatusCode::GONE
+        );
+        assert_eq!(
+            get(&r, &start_uri(STATE, VERIFIER)).await.0,
+            StatusCode::CONFLICT
+        );
+
+        assert_eq!(
+            get(&r, &start_uri(STATE2, VERIFIER)).await.0,
+            StatusCode::FOUND
+        );
         tokio::time::sleep(Duration::from_millis(80)).await;
         let (s, _, page) = get(
             &r,
-            &format!("/oauth/digitalocean/callback?code=good&state={STATE}"),
+            &format!("/oauth/digitalocean/callback?code=good&state={STATE2}"),
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -936,24 +1234,64 @@ mod tests {
 
     #[tokio::test]
     async fn the_pending_map_is_capped() {
-        let oauth = configured("http://127.0.0.1:9/unused");
+        let oauth = Arc::new(configured("http://127.0.0.1:9/unused"));
         {
             let mut p = oauth.pending();
             for i in 0..MAX_PENDING {
                 p.insert(
                     format!("{i:0>43}"),
-                    Pending {
+                    Entry::Pending(Pending {
                         challenge: String::new(),
                         created: Instant::now(),
                         outcome: None,
-                    },
+                    }),
                 );
             }
         }
-        let r = router(oauth);
+        let app = App {
+            relay: Arc::new(Relay::new(64)),
+            web: None,
+            oauth: oauth.clone(),
+            claims: Arc::default(),
+        };
+        let r = routes()
+            .with_state(app)
+            .layer(MockConnectInfo(SocketAddr::from(([203, 0, 113, 7], 4242))));
         assert_eq!(
             get(&r, &start_uri(STATE, VERIFIER)).await.0,
             StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            post_json(
+                &r,
+                "/oauth/digitalocean/redeem",
+                json!({"state": STATE, "verifier": VERIFIER}),
+            )
+            .await
+            .0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        // Finished tombstones do not count toward MAX_PENDING and are bounded at MAX_FINISHED.
+        {
+            let mut p = oauth.pending();
+            p.clear();
+            let base = Instant::now();
+            for i in 0..(MAX_FINISHED + 10) {
+                p.insert(
+                    format!("{i:0>43}"),
+                    Entry::Finished(base - Duration::from_millis((MAX_FINISHED + 10 - i) as u64)),
+                );
+            }
+            cap_finished(&mut p);
+            assert_eq!(p.len(), MAX_FINISHED);
+            // Oldest entries were evicted; newest remain.
+            assert!(!p.contains_key(&format!("{:0>43}", 0)));
+            assert!(p.contains_key(&format!("{:0>43}", MAX_FINISHED + 9)));
+        }
+        assert_eq!(
+            get(&r, &start_uri(STATE, VERIFIER)).await.0,
+            StatusCode::FOUND
         );
     }
 }

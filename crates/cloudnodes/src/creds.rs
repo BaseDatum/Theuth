@@ -261,8 +261,14 @@ pub fn challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()))
 }
 
+/// Polls to tolerate `404 Not Found` before seeing a `202` from the relay (~30 s at the default
+/// 2 s cadence), so polling ahead of the browser opening `/start` does not abort against an older
+/// relay.
+const NOT_FOUND_GRACE_POLLS: u32 = 15;
+
 /// Poll `{relay}/oauth/digitalocean/redeem` every `every` until the tokens arrive (200), the
-/// attempt is refused (403/404/410/other) or `tries` polls answered pending (202).
+/// attempt is refused (403/410/other, or 404 after pending/grace window) or `tries` polls answered
+/// pending (202).
 pub async fn redeem(
     http: &dyn Transport,
     relay: &str,
@@ -271,6 +277,7 @@ pub async fn redeem(
     tries: u32,
     now_ms: impl Fn() -> u64,
 ) -> Result<StoredCred> {
+    let mut seen_pending = false;
     for i in 0..tries {
         if i > 0 && !every.is_zero() {
             tokio::time::sleep(every).await;
@@ -295,12 +302,16 @@ pub async fn redeem(
         };
         match resp.status {
             200 => return StoredCred::from_token_response(&resp.json()?, now_ms()),
-            202 => continue,
+            202 => {
+                seen_pending = true;
+                continue;
+            }
             403 => {
                 return Err(CloudError(
                     "the sign-in was refused (verifier mismatch)".into(),
                 ));
             }
+            404 if !seen_pending && i < NOT_FOUND_GRACE_POLLS => continue,
             404 | 410 => return Err(CloudError("the sign-in expired; try again".into())),
             s => {
                 return Err(CloudError(format!(
@@ -413,6 +424,109 @@ pub(crate) mod tests {
         let e = redeem(&*pending, "https://relay.test", &a, Duration::ZERO, 3, || 0).await;
         assert!(e.unwrap_err().0.contains("10 minutes"));
         assert_eq!(pending.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn redeem_tolerates_initial_404_before_start_but_fails_on_410_and_post_pending_404() {
+        let a = OauthAttempt::fresh();
+
+        // Initial 404s before the browser opens `/start` are tolerated and succeed once 202/200 arrive.
+        let http = FakeTransport::new();
+        http.once(
+            "POST",
+            "/oauth/digitalocean/redeem",
+            404,
+            json!({"error": "unknown sign-in"}),
+        )
+        .once(
+            "POST",
+            "/oauth/digitalocean/redeem",
+            404,
+            json!({"error": "unknown sign-in"}),
+        )
+        .once(
+            "POST",
+            "/oauth/digitalocean/redeem",
+            202,
+            json!({"pending": true}),
+        )
+        .on(
+            "POST",
+            "/oauth/digitalocean/redeem",
+            200,
+            json!({"access_token": "doo_v1_ok", "refresh_token": "dor_v1_ok", "expires_in": 3600}),
+        );
+        let cred = redeem(&*http, "https://relay.test", &a, Duration::ZERO, 20, || 0)
+            .await
+            .unwrap();
+        assert_eq!(cred.access_token, "doo_v1_ok");
+        assert_eq!(http.requests().len(), 4);
+
+        // 410 still fails immediately on the first poll.
+        let gone = FakeTransport::new();
+        gone.on(
+            "POST",
+            "/oauth/digitalocean/redeem",
+            410,
+            json!({"error": "sign-in expired"}),
+        );
+        let err = redeem(&*gone, "https://relay.test", &a, Duration::ZERO, 20, || 0)
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, "the sign-in expired; try again");
+        assert_eq!(gone.requests().len(), 1);
+
+        // 404 AFTER seeing 202 fails immediately (not tolerated).
+        let after_pending = FakeTransport::new();
+        after_pending
+            .once(
+                "POST",
+                "/oauth/digitalocean/redeem",
+                202,
+                json!({"pending": true}),
+            )
+            .on(
+                "POST",
+                "/oauth/digitalocean/redeem",
+                404,
+                json!({"error": "unknown sign-in"}),
+            );
+        let err = redeem(
+            &*after_pending,
+            "https://relay.test",
+            &a,
+            Duration::ZERO,
+            20,
+            || 0,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, "the sign-in expired; try again");
+        assert_eq!(after_pending.requests().len(), 2);
+
+        // Persistent 404s past the grace window eventually fail as expired.
+        let never_started = FakeTransport::new();
+        never_started.on(
+            "POST",
+            "/oauth/digitalocean/redeem",
+            404,
+            json!({"error": "unknown sign-in"}),
+        );
+        let err = redeem(
+            &*never_started,
+            "https://relay.test",
+            &a,
+            Duration::ZERO,
+            NOT_FOUND_GRACE_POLLS + 5,
+            || 0,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, "the sign-in expired; try again");
+        assert_eq!(
+            never_started.requests().len(),
+            (NOT_FOUND_GRACE_POLLS + 1) as usize
+        );
     }
 
     #[tokio::test]
