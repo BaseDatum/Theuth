@@ -197,7 +197,7 @@ const cloud: CloudApi = {
   cloud_resize: (name, memory_gb) => ok({ ...(NODES.find((n) => n.name === name) ?? SKY), state: 'busy' as const, memory_gb }),
   cloud_update: (name) => ok(NODES.find((n) => n.name === name) ?? SKY),
   cloud_destroy: () => ok(['droplet 4821', 'firewall theuth-sky-cloud']),
-  cloud_terminal: (name) => ok({ session: 'fixture', job: `pty-${name}`, engine: 'e1f2' }),
+  cloud_terminal: () => ok({ shell: 'main', engine: 'e1f2' }),
   cloud_logs: (name) => ok({ name, lines: LOGS }),
   // Phone-only pairing (224 §16.12) has no fixture: no node answers.
   cloud_link_pairing: () => Promise.reject(new Error('no node in the fixture')),

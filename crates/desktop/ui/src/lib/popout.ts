@@ -23,6 +23,8 @@ export type PopoutTarget =
   | { kind: 'meeting-note'; meeting: string }
   /** `/pty/$session/$job`: one agent-started terminal alone (`components/chat/TerminalViewer.tsx`). */
   | { kind: 'pty'; session: string; job: string }
+  /** `/terminal/$engine/$shell`: a standalone login shell on a mesh/cloud engine (no session, no job); label `popout-terminal-<engine>-<shell>`. */
+  | { kind: 'node-terminal'; engine: string; shell: string; name?: string }
   /** `/codemap/$session/$root`: one session's CodeMap on one root alone (73 §6.9). */
   | { kind: 'codemap'; session: string; root: string }
   /** `/talk/$session`: the session's talk view alone (76 §0.12); it attaches to the running talk, never starts one. */
@@ -58,6 +60,8 @@ const INLINE_PROPS = 4000
 export const TILE_STASH = 'popout-tile-props:'
 /** How many stashes are kept; older ones are dropped as new ones are written. */
 const STASH_KEEP = 16
+/** The localStorage key prefix recording open standalone node-terminal windows so `popout-closed` can run `shell_close`. */
+const NODE_TERMINAL_PREFIX = 'node-terminal-popout:'
 
 const propsJson = (props: unknown): string => JSON.stringify(props ?? null)
 /** A stash's id: lettered, so the router never reads it as a number (an all-digit hash would lose its leading zeros). */
@@ -81,9 +85,11 @@ const idOf = (t: PopoutTarget): string =>
             ? t.name
             : t.kind === 'pty'
               ? `${t.session}-${t.job}`
-              : t.kind === 'codemap'
-                ? `${t.session}-${t.root}`
-                : t.meeting
+              : t.kind === 'node-terminal'
+                ? `${t.engine}-${t.shell}`
+                : t.kind === 'codemap'
+                  ? `${t.session}-${t.root}`
+                  : t.meeting
 
 function tilePath(t: Extract<PopoutTarget, { kind: 'tile' }>): string {
   const json = propsJson(t.props)
@@ -108,6 +114,39 @@ export function stashTileProps(t: PopoutTarget, store: Storage | undefined = glo
     store.setItem(TILE_STASH + stashId(json), `${Date.now()}\n${json}`)
   } catch (e) {
     console.warn('popout stash', e)
+  }
+}
+
+/** Record `{ engine, shell }` for a node-terminal popout label so the main window can end the remote shell on `popout-closed`. */
+export function registerNodeTerminalPopout(
+  label: string,
+  target: { engine: string; shell: string },
+  store: Storage | undefined = globalThis.localStorage,
+): void {
+  if (!store) return
+  try {
+    store.setItem(NODE_TERMINAL_PREFIX + label, JSON.stringify(target))
+  } catch {
+    // ignore storage errors
+  }
+}
+
+/** Consume and remove the `{ engine, shell }` recorded for a closed node-terminal popout label. */
+export function takeNodeTerminalPopout(
+  label: string,
+  store: Storage | undefined = globalThis.localStorage,
+): { engine: string; shell: string } | null {
+  if (!store) return null
+  try {
+    const raw = store.getItem(NODE_TERMINAL_PREFIX + label)
+    if (!raw) return null
+    store.removeItem(NODE_TERMINAL_PREFIX + label)
+    const parsed = JSON.parse(raw) as { engine?: unknown; shell?: unknown }
+    return typeof parsed.engine === 'string' && typeof parsed.shell === 'string'
+      ? { engine: parsed.engine, shell: parsed.shell }
+      : null
+  } catch {
+    return null
   }
 }
 
@@ -150,14 +189,19 @@ const pathOf = (t: PopoutTarget): string =>
             ? `/vm/${encodeURIComponent(t.name)}`
             : t.kind === 'pty'
               ? `/pty/${encodeURIComponent(t.session)}/${encodeURIComponent(t.job)}`
-              : t.kind === 'codemap'
-                ? `/codemap/${encodeURIComponent(t.session)}/${encodeURIComponent(t.root)}`
-                : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
+              : t.kind === 'node-terminal'
+                ? `/terminal/${encodeURIComponent(t.engine)}/${encodeURIComponent(t.shell)}${t.name ? `?name=${encodeURIComponent(t.name)}` : ''}`
+                : t.kind === 'codemap'
+                  ? `/codemap/${encodeURIComponent(t.session)}/${encodeURIComponent(t.root)}`
+                  : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
 
 /** Tauri window labels allow `[A-Za-z0-9/:_-]`; ids are passed through the same filter. */
 const safe = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_')
 
-export const popoutLabel = (t: PopoutTarget): string => `popout-${t.kind}-${safe(idOf(t))}`
+export const popoutLabel = (t: PopoutTarget): string =>
+  t.kind === 'node-terminal'
+    ? `popout-terminal-${safe(t.engine)}-${safe(t.shell)}`
+    : `popout-${t.kind}-${safe(idOf(t))}`
 
 export const popoutUrl = (t: PopoutTarget): string => {
   const path = pathOf(t)
@@ -204,6 +248,11 @@ export function popoutTarget(href: string): PopoutTarget | null {
   if (label.startsWith('popout-page-')) return { kind: 'page', path: url.pathname }
   if (!id) return null
   if (head === 'pty') return sub ? { kind: 'pty', session: decodeURIComponent(id), job: decodeURIComponent(sub) } : null
+  if (head === 'terminal') {
+    if (!sub) return null
+    const name = url.searchParams.get('name') || undefined
+    return { kind: 'node-terminal', engine: decodeURIComponent(id), shell: decodeURIComponent(sub), ...(name ? { name } : {}) }
+  }
   if (head === 'codemap') return sub ? { kind: 'codemap', session: decodeURIComponent(id), root: decodeURIComponent(sub) } : null
   if (head === 'tile') {
     if (!sub) return null
@@ -258,6 +307,10 @@ export function routeWindow(href: string): PopoutTarget {
   if (id && head === 'meetings' && sub === undefined) return { kind: 'meeting', meeting: id }
   if (id && head === 'artifacts') return { kind: 'artifact', callId: id }
   if (id && head === 'vm') return { kind: 'vm', name: id }
+  if (id && head === 'terminal' && sub) {
+    const name = new URL(path, 'http://x').searchParams.get('name') || undefined
+    return { kind: 'node-terminal', engine: id, shell: decodeURIComponent(sub), ...(name ? { name } : {}) }
+  }
   return { kind: 'page', path }
 }
 
@@ -313,6 +366,7 @@ export function popoutTitle(t: PopoutTarget): string {
     case 'meeting': return 'Meeting'
     case 'meeting-note': return 'Meeting note'
     case 'pty': return 'Terminal'
+    case 'node-terminal': return t.name?.trim() || 'Terminal'
     case 'codemap': return 'CodeMap'
     case 'talk': return 'Talk'
     case 'vm': return t.name
@@ -327,6 +381,7 @@ export function popoutTitle(t: PopoutTarget): string {
 /** Open `t` in its own window (or focus it); a browser gets a named `window.open`. */
 export function openPopout(t: PopoutTarget): Promise<void> {
   stashTileProps(t)
+  if (t.kind === 'node-terminal') registerNodeTerminalPopout(popoutLabel(t), { engine: t.engine, shell: t.shell })
   if (isTauri()) return invoke<void>('open_window', { label: popoutLabel(t), url: popoutUrl(t), title: popoutTitle(t) })
   const size = popoutSize(t, window.screen)
   if (size) window.open(popoutUrl(t), popoutLabel(t), `width=${size.width},height=${size.height}`)

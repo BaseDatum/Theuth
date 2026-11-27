@@ -67,6 +67,7 @@ import { Route as PtySessionJobRouteImport } from './routes/pty.$session.$job'
 import { Route as RoutinesNameIndexRouteImport } from './routes/routines.$name.index'
 import { Route as RoutinesNameSectionRouteImport } from './routes/routines.$name.$section'
 import { Route as RoutinesNameGraphRouteImport } from './routes/routines.$name.graph'
+import { Route as TerminalEngineShellRouteImport } from './routes/terminal.$engine.$shell'
 import { Route as TileKindSessionRouteImport } from './routes/tile.$kind.$session'
 
 const IndexRoute = IndexRouteImport.update({
@@ -359,6 +360,11 @@ const RoutinesNameGraphRoute = RoutinesNameGraphRouteImport.update({
   path: '/routines/$name/graph',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TerminalEngineShellRoute = TerminalEngineShellRouteImport.update({
+  id: '/terminal/$engine/$shell',
+  path: '/terminal/$engine/$shell',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TileKindSessionRoute = TileKindSessionRouteImport.update({
   id: '/tile/$kind/$session',
   path: '/tile/$kind/$session',
@@ -422,6 +428,7 @@ export interface FileRoutesByFullPath {
   '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/routines/$name/graph': typeof RoutinesNameGraphRoute
+  '/terminal/$engine/$shell': typeof TerminalEngineShellRoute
   '/tile/$kind/$session': typeof TileKindSessionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
   '/routines/$name/': typeof RoutinesNameIndexRoute
@@ -482,6 +489,7 @@ export interface FileRoutesByTo {
   '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/routines/$name/graph': typeof RoutinesNameGraphRoute
+  '/terminal/$engine/$shell': typeof TerminalEngineShellRoute
   '/tile/$kind/$session': typeof TileKindSessionRoute
   '/agents/$name': typeof AgentsNameIndexRoute
   '/routines/$name': typeof RoutinesNameIndexRoute
@@ -544,6 +552,7 @@ export interface FileRoutesById {
   '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/routines/$name/graph': typeof RoutinesNameGraphRoute
+  '/terminal/$engine/$shell': typeof TerminalEngineShellRoute
   '/tile/$kind/$session': typeof TileKindSessionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
   '/routines/$name/': typeof RoutinesNameIndexRoute
@@ -607,6 +616,7 @@ export interface FileRouteTypes {
     | '/pty/$session/$job'
     | '/routines/$name/$section'
     | '/routines/$name/graph'
+    | '/terminal/$engine/$shell'
     | '/tile/$kind/$session'
     | '/agents/$name/'
     | '/routines/$name/'
@@ -667,6 +677,7 @@ export interface FileRouteTypes {
     | '/pty/$session/$job'
     | '/routines/$name/$section'
     | '/routines/$name/graph'
+    | '/terminal/$engine/$shell'
     | '/tile/$kind/$session'
     | '/agents/$name'
     | '/routines/$name'
@@ -728,6 +739,7 @@ export interface FileRouteTypes {
     | '/pty/$session/$job'
     | '/routines/$name/$section'
     | '/routines/$name/graph'
+    | '/terminal/$engine/$shell'
     | '/tile/$kind/$session'
     | '/agents/$name/'
     | '/routines/$name/'
@@ -784,6 +796,7 @@ export interface RootRouteChildren {
   PtySessionJobRoute: typeof PtySessionJobRoute
   RoutinesNameSectionRoute: typeof RoutinesNameSectionRoute
   RoutinesNameGraphRoute: typeof RoutinesNameGraphRoute
+  TerminalEngineShellRoute: typeof TerminalEngineShellRoute
   TileKindSessionRoute: typeof TileKindSessionRoute
   AgentsNameIndexRoute: typeof AgentsNameIndexRoute
   RoutinesNameIndexRoute: typeof RoutinesNameIndexRoute
@@ -1197,6 +1210,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RoutinesNameGraphRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/terminal/$engine/$shell': {
+      id: '/terminal/$engine/$shell'
+      path: '/terminal/$engine/$shell'
+      fullPath: '/terminal/$engine/$shell'
+      preLoaderRoute: typeof TerminalEngineShellRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/tile/$kind/$session': {
       id: '/tile/$kind/$session'
       path: '/tile/$kind/$session'
@@ -1310,6 +1330,7 @@ const rootRouteChildren: RootRouteChildren = {
   PtySessionJobRoute: PtySessionJobRoute,
   RoutinesNameSectionRoute: RoutinesNameSectionRoute,
   RoutinesNameGraphRoute: RoutinesNameGraphRoute,
+  TerminalEngineShellRoute: TerminalEngineShellRoute,
   TileKindSessionRoute: TileKindSessionRoute,
   AgentsNameIndexRoute: AgentsNameIndexRoute,
   RoutinesNameIndexRoute: RoutinesNameIndexRoute,

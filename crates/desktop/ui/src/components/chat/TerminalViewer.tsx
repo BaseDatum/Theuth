@@ -78,32 +78,43 @@ export const CELL_KEYS: [string, (app: boolean) => string][] = [
 
 type JobRef = { session: string; job: string }
 
-/** Where a `Terminal`'s bytes come from: an agent PTY job (on mesh engine `engine` when set), or a cell run's kernel PTY (171 §11.1 output). */
-export type TerminalSource = { kind: 'pty'; session: string; job: string; engine?: string } | { kind: 'cell'; run: CellRunId }
+/** Where a `Terminal`'s bytes come from: an agent PTY job, a standalone engine login shell (no session/job), or a cell run's kernel PTY (171 §11.1 output). */
+export type TerminalSource =
+  | { kind: 'pty'; session: string; job: string; engine?: string }
+  | { kind: 'shell'; shell: string; engine?: string }
+  | { kind: 'cell'; run: CellRunId }
 
-/** The trailing `engine` argument of the PTY calls: present only for a job on another engine, so local calls are unchanged. */
+type StreamChunk = PtyChunk | { type: 'disconnected'; reason: string }
+
+/** The trailing `engine` argument of the PTY/shell calls: present only for another engine, so local calls are unchanged. */
 const onEngine = (engine?: string): [] | [string] => (engine ? [engine] : [])
 
 /**
- * The wire between one source and an xterm (171 §7.4): bytes stream in (`subscribe_pty` / `cell_attach`), keystrokes
- * go out one call at a time in typing order (`pty_input` / `cell_input`), nothing is sent after `exit`. Hook-free so
- * the test drives it with fakes.
+ * The wire between one source and an xterm (171 §7.4): bytes stream in (`subscribe_pty` / `subscribe_shell` / `cell_attach`),
+ * keystrokes go out one call at a time in typing order (`pty_input` / `shell_input` / `cell_input`), nothing is sent after
+ * `exit` or `disconnected`. Hook-free so the test drives it with fakes.
  */
 export function attachSource(
   src: TerminalSource,
   term: Pick<Xterm, 'rows' | 'cols' | 'reset' | 'resize' | 'write' | 'onData' | 'attachCustomKeyEventHandler' | 'parser'>,
-  api: Pick<Api, 'pty_input' | 'cell_input'>,
+  api: Pick<Api, 'pty_input' | 'cell_input'> & { shell_input?: Api['shell_input'] },
   client: Pick<RpcClient, 'stream'>,
   onExit: (e: JobExit) => void,
   /** 183 §4.3: the attach was refused `-32014 RunsElsewhere` — the live output stays on `owner`; nothing is attached or sent. */
   onElsewhere?: (owner: string) => void,
   /** Called once a `reset` replay finishes writing, so a live PTY viewer can refit to its current box. */
   onReset?: () => void,
+  /** Called if a standalone shell stream drops or fails to attach. */
+  onDisconnect?: (reason: string) => void,
 ) {
   let ended = false
   let lane: Promise<unknown> = Promise.resolve()
   const call =
-    src.kind === 'pty' ? (d: string) => api.pty_input(src.session, src.job, d, null, ...onEngine(src.engine)) : (d: string) => api.cell_input(src.run, utf8ToB64(d))
+    src.kind === 'pty'
+      ? (d: string) => api.pty_input(src.session, src.job, d, null, ...onEngine(src.engine))
+      : src.kind === 'shell'
+        ? (d: string) => api.shell_input!(src.shell, d, null, ...onEngine(src.engine))
+        : (d: string) => api.cell_input(src.run, utf8ToB64(d))
   const send = (d: string) => {
     if (ended) return
     lane = lane.then(() => call(d).catch(() => undefined))
@@ -120,7 +131,7 @@ export function attachSource(
   })
   // 167 D2: the engine is the one responder for the queries it answers; this xterm keeps the rest.
   swallowEngineQueries(term.parser)
-  const chunk = (c: PtyChunk) => {
+  const chunk = (c: StreamChunk) => {
     switch (c.type) {
       case 'reset':
         term.reset()
@@ -137,18 +148,32 @@ export function attachSource(
         ended = true
         onExit(c.exit)
         break
+      case 'disconnected':
+        if (ended) break
+        ended = true
+        onDisconnect?.(c.reason)
+        break
     }
   }
   const off = (
     src.kind === 'pty'
       ? client.stream<PtyChunk>('subscribe_pty', [src.session, src.job, term.rows, term.cols, ...onEngine(src.engine)], 'unsubscribe_pty', chunk)
-      : client.stream<PtyChunk>('cell_attach', [src.run], 'cell_detach', chunk)
+      : src.kind === 'shell'
+        ? client.stream<StreamChunk>('subscribe_shell', [src.shell, term.rows, term.cols, ...onEngine(src.engine)], 'unsubscribe_shell', chunk)
+        : client.stream<PtyChunk>('cell_attach', [src.run], 'cell_detach', chunk)
   ).catch((e: unknown) => {
     const r = runsElsewhere(e)
-    if (!r) throw e
-    ended = true
-    onElsewhere?.(r.owner)
-    return async () => {}
+    if (r) {
+      ended = true
+      onElsewhere?.(r.owner)
+      return async () => {}
+    }
+    if (src.kind === 'shell' && onDisconnect) {
+      ended = true
+      onDisconnect(e instanceof Error ? e.message : String(e))
+      return async () => {}
+    }
+    throw e
   })
   return {
     send,
@@ -263,23 +288,28 @@ export function PopoutTerminalButton({ session, job, className }: JobRef & { cla
 export type TerminalProps = {
   label: string
   popped?: boolean
-  /** Mesh id of the engine running the PTY job (`engine_terminal`'s `engine`); unset: the connected engine. */
+  /** Mesh id of the engine running the PTY job; unset: the connected engine. */
   engine?: string
   /** Once, when the stream's `exit` chunk arrives. */
   onExit?: () => void
   /** 183 §4.3: the run's live output stays on another engine (`-32014`); its id. */
   onElsewhere?: (owner: string) => void
+  /** Called if a standalone shell stream drops or fails to attach. */
+  onDisconnect?: (reason: string) => void
+  /** Hide the footer status line (when a parent window owns its own status chrome). */
+  hideStatus?: boolean
   className?: string
 } & ((JobRef & { source?: undefined }) | { source: TerminalSource; session?: undefined; job?: undefined })
 
 /**
- * One PTY in an xterm: the source streams the program's bytes (`subscribe_pty` / `cell_attach`), xterm emulates,
- * keystrokes go back as bytes (`pty_input` / `cell_input`). A pty source's grid follows the container (`pty_resize` →
- * SIGWINCH); a cell source's kernel PTY is fixed 100×30 (171 §7.4) and is never resized. Below it the mobile key
- * strip and the status line (`label` · size · exit). `popped`: this is the window's whole content — it owns the
- * PTY's size (leaves the `mark`, restores the default grid on close) and titles the window.
+ * One PTY or standalone shell in an xterm: the source streams bytes (`subscribe_pty` / `subscribe_shell` / `cell_attach`),
+ * xterm emulates, keystrokes go back as bytes (`pty_input` / `shell_input` / `cell_input`). A pty or shell source's grid
+ * follows the container (`pty_resize` / `shell_resize` → SIGWINCH); a cell source's kernel PTY is fixed 100×30 (171 §7.4)
+ * and is never resized. Below it the mobile key strip and the status line (`label` · size · exit). `popped`: this is the
+ * window's whole content — for a `pty` source it owns the PTY's size (leaves the `mark`, restores the default grid on close)
+ * and titles the window.
  */
-export function Terminal({ session, job, engine, label, popped = false, source, onExit, onElsewhere, className }: TerminalProps) {
+export function Terminal({ session, job, engine, label, popped = false, source, onExit, onElsewhere, onDisconnect, hideStatus = false, className }: TerminalProps) {
   const api = useApi()
   const client = useConnection((s) => s.client)
   const mobile = useIsMobile()
@@ -288,8 +318,10 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
   const sendRef = useRef<(d: string) => void>(null)
   const onExitRef = useRef(onExit)
   const onElsewhereRef = useRef(onElsewhere)
+  const onDisconnectRef = useRef(onDisconnect)
   const [elsewhere, setElsewhere] = useState<string | null>(null)
   const elsewhereLabel = useEngineLabel(elsewhere ?? '')
+  const [disconnected, setDisconnected] = useState<string | null>(null)
   const [exit, setExit] = useState<JobExit | null>(null)
   const [size, setSize] = useState('')
   // A cell source's height (171F B12): rows shown and the measured row height (px, 0 until xterm has rendered).
@@ -299,24 +331,35 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
   const [keyboard, setKeyboard] = useState(false)
   // Stable by value, so an inline `source={{…}}` does not restart the stream every render.
   const run = source?.kind === 'cell' ? source.run : null
+  const shellId = source?.kind === 'shell' ? source.shell : null
+  const shellEngine = (source?.kind === 'shell' ? source.engine : undefined) || undefined
   const ptySession = source?.kind === 'pty' ? source.session : session
   const ptyJob = source?.kind === 'pty' ? source.job : job
   const ptyEngine = (source?.kind === 'pty' ? source.engine : engine) || undefined
   const src = useMemo<TerminalSource>(
-    () => (run !== null ? { kind: 'cell', run } : { kind: 'pty', session: ptySession!, job: ptyJob!, ...(ptyEngine ? { engine: ptyEngine } : {}) }),
-    [run, ptySession, ptyJob, ptyEngine],
+    () =>
+      run !== null
+        ? { kind: 'cell', run }
+        : shellId !== null
+          ? { kind: 'shell', shell: shellId, ...(shellEngine ? { engine: shellEngine } : {}) }
+          : { kind: 'pty', session: ptySession!, job: ptyJob!, ...(ptyEngine ? { engine: ptyEngine } : {}) },
+    [run, shellId, shellEngine, ptySession, ptyJob, ptyEngine],
   )
   useEffect(() => {
     onExitRef.current = onExit
     onElsewhereRef.current = onElsewhere
-  }, [onExit, onElsewhere])
+    onDisconnectRef.current = onDisconnect
+  }, [onExit, onElsewhere, onDisconnect])
 
   useEffect(() => {
     const el = host.current
     if (!el || !client) return
-    const ref = src.kind === 'pty' ? src : null
+    const ptyRef = src.kind === 'pty' ? src : null
+    const shellRef = src.kind === 'shell' ? src : null
+    const resizable = ptyRef !== null || shellRef !== null
     setExit(null)
     setElsewhere(null)
+    setDisconnected(null)
     setRows(CELL_MIN_ROWS)
     const term = new Xterm({
       theme: { background: BG, foreground: FG, cursor: FG, selectionBackground: '#e8dcc855' },
@@ -324,10 +367,10 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
       fontSize: 12,
       scrollback: 5000,
       cursorBlink: true,
-      ...(ref ? {} : { rows: CELL_ROWS, cols: CELL_COLS }),
+      ...(resizable ? {} : { rows: CELL_ROWS, cols: CELL_COLS }),
     })
-    // Only a pty source's grid follows the box; a cell's is the kernel's fixed grid (the box scrolls or clips).
-    const fit = ref ? new FitAddon() : null
+    // Only a pty or shell source's grid follows the box; a cell's is the kernel's fixed grid (the box scrolls or clips).
+    const fit = resizable ? new FitAddon() : null
     if (fit) term.loadAddon(fit)
     term.open(el)
     termRef.current = term
@@ -385,13 +428,17 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
         setElsewhere(owner)
         onElsewhereRef.current?.(owner)
       },
-      ref ? scheduleFit : undefined,
+      resizable ? scheduleFit : undefined,
+      (reason) => {
+        setDisconnected(reason)
+        onDisconnectRef.current?.(reason)
+      },
     )
     sendRef.current = wire.send
-    // pty source only: refit xterm smoothly on every frame during a resize, while debouncing `pty_resize` (SIGWINCH)
-    // until the drag settles, and restore the default grid on leaving.
+    // pty and shell sources: refit xterm smoothly on every frame during a resize, while debouncing resize RPC (SIGWINCH)
+    // until the drag settles; pty sources also restore the default grid on leaving.
     let resizeSend: ReturnType<typeof setTimeout> | undefined
-    const resized = ref
+    const resized = resizable
       ? term.onResize(({ rows, cols }) => {
           setSize(`${cols}×${rows}`)
           clearTimeout(resizeSend)
@@ -399,11 +446,13 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
           const r = Math.min(200, rows)
           const c = Math.min(400, cols)
           resizeSend = setTimeout(() => {
-            if (!wire.ended()) void api.pty_resize(ref.session, ref.job, r, c, ...onEngine(ref.engine)).catch(() => undefined)
+            if (wire.ended()) return
+            if (ptyRef) void api.pty_resize(ptyRef.session, ptyRef.job, r, c, ...onEngine(ptyRef.engine)).catch(() => undefined)
+            else if (shellRef) void api.shell_resize(shellRef.shell, r, c, ...onEngine(shellRef.engine)).catch(() => undefined)
           }, REFIT_MS)
         })
       : null
-    if (ref) setSize(`${term.cols}×${term.rows}`)
+    if (resizable) setSize(`${term.cols}×${term.rows}`)
     let disposed = false
     const ro = fit ? new ResizeObserver(scheduleFit) : null
     ro?.observe(el)
@@ -422,15 +471,15 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
       const screen = el.querySelector('.xterm-screen')?.getBoundingClientRect().height ?? 0
       if (screen > 0) setRowH(screen / term.rows)
     }
-    const parsed = ref ? null : term.onWriteParsed(grow)
-    if (!ref) grow()
-    if (ref && popped) setPopoutMark(ref)
-    // Leaving: the popped window gives the grid back; the panel only when no popped window owns it.
+    const parsed = resizable ? null : term.onWriteParsed(grow)
+    if (!resizable) grow()
+    if (ptyRef && popped) setPopoutMark(ptyRef)
+    // Leaving (pty only): the popped window gives the grid back; the panel only when no popped window owns it.
     const leave = () => {
-      if (!ref) return
-      if (popped) clearPopoutMark(ref)
-      if (!wire.ended() && (popped || !marked(ref)))
-        void api.pty_resize(ref.session, ref.job, DEFAULT_ROWS, DEFAULT_COLS, ...onEngine(ref.engine)).catch(() => undefined)
+      if (!ptyRef) return
+      if (popped) clearPopoutMark(ptyRef)
+      if (!wire.ended() && (popped || !marked(ptyRef)))
+        void api.pty_resize(ptyRef.session, ptyRef.job, DEFAULT_ROWS, DEFAULT_COLS, ...onEngine(ptyRef.engine)).catch(() => undefined)
     }
     window.addEventListener('pagehide', leave)
     window.addEventListener('beforeunload', leave)
@@ -456,12 +505,15 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
     }
   }, [src, client, api, mobile, popped])
 
-  const status = [label, size, exit && exitText(exit), elsewhere !== null && `live output on ${elsewhereLabel}`].filter(Boolean).join(' · ')
+  const status = [label, size, exit && exitText(exit), disconnected && `disconnected (${disconnected})`, elsewhere !== null && `live output on ${elsewhereLabel}`]
+    .filter(Boolean)
+    .join(' · ')
   useEffect(() => {
-    if (popped) document.title = status
-  }, [popped, status])
+    if (popped && src.kind !== 'shell') document.title = status
+  }, [popped, src.kind, status])
 
-  const keys = src.kind === 'pty' ? mobile : touch()
+  const resizable = src.kind === 'pty' || src.kind === 'shell'
+  const keys = resizable ? mobile : touch()
   return (
     <>
       <div
@@ -484,12 +536,12 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
           style={src.kind === 'cell' ? { height: rows * (rowH || 15) } : undefined}
         />
       </div>
-      {keys && !exit && (
+      {keys && !exit && !disconnected && (
         <div className="flex gap-1 overflow-x-auto" role="group" aria-label="Terminal keys">
           <Button
             variant={keyboard ? 'secondary' : 'outline'}
             size="sm"
-            className={src.kind === 'pty' ? 'h-11 min-w-11' : 'h-12 min-w-12'}
+            className={resizable ? 'h-11 min-w-11' : 'h-12 min-w-12'}
             aria-pressed={keyboard}
             aria-label={keyboard ? 'Hide keyboard' : 'Show keyboard'}
             onMouseDown={(e) => e.preventDefault()}
@@ -510,24 +562,39 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
                   {text}
                 </Button>
               ))
-            : CELL_KEYS.map(([text, seq]) => (
-                <Button
-                  key={text}
-                  variant="outline"
-                  size="sm"
-                  className="h-12 min-w-12 font-mono"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => sendRef.current?.(seq(termRef.current?.modes.applicationCursorKeysMode ?? false))}
-                >
-                  {text}
-                </Button>
-              ))}
+            : src.kind === 'shell'
+              ? TOOLBAR.map(([text, k]) => (
+                  <Button
+                    key={text}
+                    variant="outline"
+                    size="sm"
+                    className="h-11 min-w-11 font-mono"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => void api.shell_input(src.shell, null, [k], ...onEngine(src.engine)).catch(() => undefined)}
+                  >
+                    {text}
+                  </Button>
+                ))
+              : CELL_KEYS.map(([text, seq]) => (
+                  <Button
+                    key={text}
+                    variant="outline"
+                    size="sm"
+                    className="h-12 min-w-12 font-mono"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => sendRef.current?.(seq(termRef.current?.modes.applicationCursorKeysMode ?? false))}
+                  >
+                    {text}
+                  </Button>
+                ))}
         </div>
       )}
       {/* A cell's terminal lives in a note's editor: no live region there (the cell announces its run, CELLHIST). */}
-      <p aria-live={src.kind === 'pty' ? 'polite' : undefined} className={cn('truncate text-xs text-fg-secondary', exit && 'text-warning')} title={status}>
-        {status}
-      </p>
+      {!hideStatus && (
+        <p aria-live={resizable ? 'polite' : undefined} className={cn('truncate text-xs text-fg-secondary', (exit || disconnected) && 'text-warning')} title={status}>
+          {status}
+        </p>
+      )}
     </>
   )
 }

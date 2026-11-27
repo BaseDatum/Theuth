@@ -4,7 +4,7 @@
 
 import { useNavigate } from '@tanstack/react-router'
 import { Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Tag } from '@/components/costs/ui'
 import { Terminal } from '@/components/chat/TerminalViewer'
 import { Empty, Section, useAction } from '@/components/settings/shared'
@@ -27,6 +27,8 @@ import { PasswordForm } from '@/components/vault/PasswordForm'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { notify } from '@/lib/notify'
 import { isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
+import { canPopout, openPopout } from '@/lib/popout'
+import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { Capability } from '@/rpc/capabilities'
 import { CloudNodeWizard } from './CloudNodeWizard'
@@ -84,6 +86,22 @@ export function placeChip(n: CloudNode): string {
   return `☁︎ ${PROVIDER_LABEL[n.provider]}${where ? ` · ${where}` : ''}`
 }
 
+/**
+ * Desktop / browser: open the standalone node shell in its own OS popout window (`popout-terminal-<engine>-<shell>`).
+ * iOS (`!canPopout()`): fall back to a bottom sheet using the same shell subscription (still no chat, no job).
+ */
+export function dispatchTerminalOpen(
+  t: TerminalOpen,
+  name: string,
+  openSheet: (target: TerminalOpen & { name: string }) => void,
+): void {
+  if (canPopout()) {
+    void openPopout({ kind: 'node-terminal', engine: t.engine, shell: t.shell, name })
+    return
+  }
+  openSheet({ ...t, name })
+}
+
 export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialog; node?: string; adding?: boolean } }) {
   useCloudEvents()
   const mobile = useIsMobile()
@@ -105,10 +123,11 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
 
   const openTerminal = (name: string) =>
     actions.terminal.mutate(name, {
-      onSuccess: (t) => {
-        setTerminal({ ...t, name })
-        setOpen({ dialog: 'terminal', node: name })
-      },
+      onSuccess: (t) =>
+        dispatchTerminalOpen(t, name, (sheet) => {
+          setTerminal(sheet)
+          setOpen({ dialog: 'terminal', node: name })
+        }),
     })
   const openDesktop = (name: string) =>
     actions.desktop.mutate(name, {
@@ -197,9 +216,8 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
       )}
       {open?.dialog === 'logs' && target && <LogsDialog name={target.name} onClose={() => setOpen(null)} />}
       {open?.dialog === 'terminal' && terminal && (
-        <TerminalPanel
+        <TerminalSheet
           t={terminal}
-          mobile={mobile}
           onClose={() => {
             setOpen(null)
             setTerminal(null)
@@ -438,29 +456,29 @@ export function LogsDialog({ name, onClose }: { name: string; onClose: () => voi
   )
 }
 
-function TerminalPanel({ t, mobile, onClose }: { t: TerminalOpen & { name: string }; mobile: boolean; onClose: () => void }) {
-  const term = <Terminal session={t.session} job={t.job} engine={t.engine} label={t.name} onExit={onClose} className="min-h-0 flex-1" />
-  if (mobile)
-    return (
-      <Sheet open onOpenChange={(o) => !o && onClose()}>
-        <SheetContent side="bottom" className="h-[85dvh]">
-          <SheetHeader>
-            <SheetTitle>{t.name}</SheetTitle>
-            <SheetDescription className="sr-only">A shell on the cloud node.</SheetDescription>
-          </SheetHeader>
-          {term}
-        </SheetContent>
-      </Sheet>
-    )
+/** iOS-only fallback (`!canPopout()`): bottom sheet subscribed to the standalone shell (no chat, no job). */
+function TerminalSheet({ t, onClose }: { t: TerminalOpen & { name: string }; onClose: () => void }) {
+  const api = useApi()
+  const closedRef = useRef(false)
+  const end = () => {
+    if (closedRef.current) return
+    closedRef.current = true
+    void api.shell_close(t.shell, t.engine).catch(() => undefined)
+  }
+  const close = () => {
+    end()
+    onClose()
+  }
+  useEffect(() => () => end(), [t.shell, t.engine])
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex h-[75dvh] flex-col sm:max-w-4xl">
-        <DialogHeader>
-          <DialogTitle>{t.name} · terminal</DialogTitle>
-          <DialogDescription className="sr-only">A shell on the cloud node.</DialogDescription>
-        </DialogHeader>
-        {term}
-      </DialogContent>
-    </Dialog>
+    <Sheet open onOpenChange={(o) => !o && close()}>
+      <SheetContent side="bottom" className="flex h-[85dvh] flex-col">
+        <SheetHeader>
+          <SheetTitle>{t.name}</SheetTitle>
+          <SheetDescription className="sr-only">A shell on the cloud node.</SheetDescription>
+        </SheetHeader>
+        <Terminal source={{ kind: 'shell', shell: t.shell, engine: t.engine }} label={t.name} onExit={close} className="min-h-0 flex-1" />
+      </SheetContent>
+    </Sheet>
   )
 }

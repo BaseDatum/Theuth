@@ -1,12 +1,13 @@
-//! The escape hatch on any engine of the mesh (224 §cloud nodes): a login
-//! shell PTY, the engine log and the watchable desktop, here or on a peer by
-//! its id, no SSH and no inbound ports.
+//! The escape hatch on any engine of the mesh (224 §cloud nodes): an
+//! interactive login shell (in-memory, outside any session or job), the engine
+//! log and the watchable desktop, here or on a peer by its id, no SSH and no
+//! inbound ports.
 //!
-//! `engine_terminal` / `engine_logs` / `engine_desktop` run here when
-//! `engine` is unset, empty or this engine, else forward over `theuth/rpc/1`
-//! to that peer ([`forward::engine_peer`]). The PTY calls (`pty_input`,
-//! `pty_resize`, `pty_screen`, `list_terminals`) take the same trailing
-//! `engine`; the `subscribe_pty` stream for a peer's job rides its own
+//! `engine_shell` / `shell_input` / `shell_resize` / `shell_close` /
+//! `engine_logs` / `engine_desktop` run here when `engine` is unset, empty or
+//! this engine, else forward over `theuth/rpc/1` to that peer
+//! ([`forward::engine_peer`]). Both `subscribe_pty` (a session's PTY job) and
+//! `subscribe_shell` (an in-memory engine shell) for a peer ride their own
 //! `theuth/pty/1` stream ([`ALPN_PTY`]): one [`PtyOpen`] line out, one
 //! [`PtyAck`] line back, then one [`PtyChunk`] JSON line per item until
 //! `exit` or either side closes ([`open`], [`serve`]). A peer's desktop is
@@ -21,42 +22,83 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::rpc_forward as forward;
-use crate::rpc_support::{RpcServerExt, attach_pty, owner_root};
+use crate::rpc_support::attach_pty;
 use base64::Engine as _;
 use jsonrpsee::Extensions;
-use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
-use jsonrpsee::server::{SubscriptionMessage, SubscriptionSink};
+use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage, SubscriptionSink};
 use jsonrpsee::types::ErrorObjectOwned;
-use rpc_core::{Server, ask, failed, lookup};
 use replica::{ALPN_DESKTOP, ALPN_PTY, PeerId, Transport};
+use rpc_core::{Server, ask, failed};
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use tools::{JOBS_ACTOR, JobId, Jobs, ListJobs, PtyAttached, PtyChunk, PtyOut};
+use tools::shell_registry::{self, DEFAULT_SHELL_ID, login_shell, shell_cwd};
+use tools::{JobExit, JobId, Key, PtyAttached, PtyChunk, PtyOut};
 
 /// `engine_logs` lines when `tail` is unset.
 pub const LOG_TAIL_DEFAULT: u32 = 200;
 /// Most `engine_logs` lines.
 pub const LOG_TAIL_MAX: u32 = 2000;
-/// The escape-hatch shell's job name; a running one is reused.
-const TERMINAL: &str = "terminal";
 /// Longest [`PtyOpen`] / [`PtyAck`] line.
 const MAX_HEAD: u64 = 64 * 1024;
 
-/// An interactive shell on an engine: attach with `subscribe_pty(session,
-/// job, rows, cols, engine)`, type with `pty_input(…, engine)`.
+/// Deprecated return type of `engine_terminal` (kept only for wire-schema
+/// stability; `engine_terminal` now errors and directs callers to `engine_shell`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct EngineTerminal {
-    /// The engine's owner root session holding the job.
+    /// Deprecated: owner root session id.
     pub session: SessionId,
-    /// The PTY job.
+    /// Deprecated: PTY job id.
     pub job: JobId,
+    /// Mesh id of the engine.
+    pub engine: String,
+}
+
+/// An interactive login shell on an engine, outside any session or job: attach
+/// with `subscribe_shell(shell, rows, cols, engine)`, type with `shell_input`,
+/// resize with `shell_resize`, end with `shell_close`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct EngineShell {
+    /// Shell id in the engine's in-memory registry (default `"main"`).
+    pub shell: String,
     /// Mesh id of the engine running it (pass it back as `engine`).
     pub engine: String,
+}
+
+/// One `subscribe_shell` item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(missing_docs)]
+pub enum ShellChunk {
+    /// Start over: reset the terminal to `rows`×`cols` and write `data` (base64).
+    Reset { data: String, rows: u16, cols: u16 },
+    /// Shell output (base64), in order.
+    Data { data: String },
+    /// The shell exited; the subscription closes.
+    Exit { exit: JobExit },
+    /// The mesh stream to the remote engine dropped before the shell exited.
+    Disconnected { reason: String },
+}
+
+impl From<&PtyChunk> for ShellChunk {
+    fn from(c: &PtyChunk) -> Self {
+        match c {
+            PtyChunk::Reset { data, rows, cols } => Self::Reset {
+                data: data.clone(),
+                rows: *rows,
+                cols: *cols,
+            },
+            PtyChunk::Data { data } => Self::Data { data: data.clone() },
+            PtyChunk::Exit { exit } => Self::Exit { exit: exit.clone() },
+        }
+    }
 }
 
 /// The tail of an engine's own log.
@@ -88,12 +130,57 @@ pub struct EngineDesktop {
 #[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait EngineApi {
-    /// Open (or reattach to) an interactive login shell (`$SHELL -l`, else
-    /// `bash -l`) as a PTY job in the owner root session of `engine` (mesh
-    /// id; unset, empty or this engine: here). Owner only. Attach with the
-    /// usual PTY calls, passing the returned `engine`.
+    /// Deprecated: `engine_terminal` no longer creates a session or job; returns
+    /// an error directing callers to `engine_shell`. Owner only.
     #[method(name = "engine_terminal", with_extensions)]
     async fn engine_terminal(&self, engine: Option<String>) -> RpcResult<EngineTerminal>;
+    /// Open (or reuse) an interactive login shell (`$SHELL -l`, else `bash -l`)
+    /// in `engine`'s in-memory shell registry — no session, no job. `shell`
+    /// defaults to `"main"`. Owner only.
+    #[method(name = "engine_shell", with_extensions)]
+    async fn engine_shell(
+        &self,
+        engine: Option<String>,
+        shell: Option<String>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> RpcResult<EngineShell>;
+    /// Type into an in-memory engine shell: `text` verbatim, then `keys`
+    /// encoded for the shell's current terminal modes. Owner only.
+    #[method(name = "shell_input", with_extensions)]
+    async fn shell_input(
+        &self,
+        shell: String,
+        text: Option<String>,
+        keys: Option<Vec<Key>>,
+        engine: Option<String>,
+    ) -> RpcResult<()>;
+    /// Resize an in-memory engine shell's grid (SIGWINCH). Rows 2–200,
+    /// columns 10–400. Owner only.
+    #[method(name = "shell_resize", with_extensions)]
+    async fn shell_resize(
+        &self,
+        shell: String,
+        rows: u16,
+        cols: u16,
+        engine: Option<String>,
+    ) -> RpcResult<()>;
+    /// End an in-memory engine shell (SIGHUP its process group and remove it
+    /// from the registry). Idempotent. Owner only.
+    #[method(name = "shell_close", with_extensions)]
+    async fn shell_close(&self, shell: String, engine: Option<String>) -> RpcResult<()>;
+    /// Attach a terminal emulator to an in-memory engine shell: first a `reset`
+    /// replay, then every byte as `data`, `exit` when it ends, or `disconnected`
+    /// if the mesh stream drops. `rows`/`cols` resize before the snapshot.
+    /// Owner only.
+    #[subscription(name = "subscribe_shell", unsubscribe = "unsubscribe_shell", item = ShellChunk, with_extensions)]
+    async fn subscribe_shell(
+        &self,
+        shell: String,
+        rows: Option<u16>,
+        cols: Option<u16>,
+        engine: Option<String>,
+    ) -> SubscriptionResult;
     /// The last `tail` lines (default 200, max 2000) of `engine`'s newest
     /// `logs/theuth.log.*`, redacted. Owner only.
     #[method(name = "engine_logs", with_extensions)]
@@ -106,65 +193,176 @@ pub trait EngineApi {
     async fn engine_desktop(&self, engine: Option<String>) -> RpcResult<EngineDesktop>;
 }
 
+/// Open or reuse a login shell in `registry` for this engine (never touches
+/// sessions or Jobs).
+fn open_local_shell(
+    registry: &shell_registry::ShellRegistry,
+    data_dir: &Path,
+    shell: Option<&str>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> RpcResult<String> {
+    let id = shell
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_SHELL_ID);
+    let program = login_shell(std::env::var_os("SHELL").map(PathBuf::from), Path::exists);
+    let cwd = shell_cwd(data_dir);
+    let argv = [String::from("-l")];
+    registry
+        .open_or_reuse(id, (&program, &argv), &cwd, cols, rows)
+        .map_err(failed)
+}
+
 #[async_trait]
 impl EngineApiServer for Server {
     async fn engine_terminal(
         &self,
         ext: &Extensions,
-        engine: Option<String>,
+        _engine: Option<String>,
     ) -> RpcResult<EngineTerminal> {
         rpc_core::owner(ext)?;
+        Err(failed(
+            "engine_terminal has been replaced by engine_shell (standalone node terminals without sessions or jobs); update this caller",
+        ))
+    }
+
+    async fn engine_shell(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+        shell: Option<String>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> RpcResult<EngineShell> {
+        rpc_core::owner(ext)?;
         if let Some(peer) = forward::engine_peer(ext, engine.as_deref()).await? {
-            let mut t: EngineTerminal =
-                forward::call_peer(ext, &peer, "engine_terminal", (None::<String>,)).await?;
-            t.engine = peer.0;
-            return Ok(t);
+            let mut res: EngineShell = forward::call_peer(
+                ext,
+                &peer,
+                "engine_shell",
+                (None::<String>, shell, cols, rows),
+            )
+            .await?;
+            res.engine = peer.0;
+            return Ok(res);
         }
         let store = ask::<crate::Agents, _>(crate::AGENT_ACTOR, crate::DurableStore).await?;
         let me = store.engine().to_owned();
-        let session = owner_root().await?;
-        let auth = self.authorize(ext, session).await?;
-        let running = ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await?;
-        if let Some(j) = running
-            .iter()
-            .find(|j| j.pty && j.state == "running" && j.name.as_deref() == Some(TERMINAL))
+        let id = open_local_shell(
+            shell_registry::global(),
+            &self.rt.data_dir,
+            shell.as_deref(),
+            cols,
+            rows,
+        )?;
+        Ok(EngineShell { shell: id, engine: me })
+    }
+
+    async fn shell_input(
+        &self,
+        ext: &Extensions,
+        shell: String,
+        text: Option<String>,
+        keys: Option<Vec<Key>>,
+        engine: Option<String>,
+    ) -> RpcResult<()> {
+        rpc_core::owner(ext)?;
+        if let Some(peer) = forward::engine_peer(ext, engine.as_deref()).await? {
+            return forward::call_peer(ext, &peer, "shell_input", (&shell, &text, &keys)).await;
+        }
+        shell_registry::global()
+            .input(&shell, text.as_deref(), keys.as_deref().unwrap_or(&[]))
+            .map_err(failed)
+    }
+
+    async fn shell_resize(
+        &self,
+        ext: &Extensions,
+        shell: String,
+        rows: u16,
+        cols: u16,
+        engine: Option<String>,
+    ) -> RpcResult<()> {
+        rpc_core::owner(ext)?;
+        if let Some(peer) = forward::engine_peer(ext, engine.as_deref()).await? {
+            return forward::call_peer(ext, &peer, "shell_resize", (&shell, rows, cols)).await;
+        }
+        shell_registry::global()
+            .resize(&shell, rows, cols)
+            .map_err(failed)
+    }
+
+    async fn shell_close(
+        &self,
+        ext: &Extensions,
+        shell: String,
+        engine: Option<String>,
+    ) -> RpcResult<()> {
+        rpc_core::owner(ext)?;
+        if let Some(peer) = forward::engine_peer(ext, engine.as_deref()).await? {
+            return forward::call_peer(ext, &peer, "shell_close", (&shell,)).await;
+        }
+        shell_registry::global().close(&shell);
+        Ok(())
+    }
+
+    async fn subscribe_shell(
+        &self,
+        pending: PendingSubscriptionSink,
+        ext: &Extensions,
+        shell: String,
+        rows: Option<u16>,
+        cols: Option<u16>,
+        engine: Option<String>,
+    ) -> SubscriptionResult {
+        if let Err(e) = rpc_core::owner(ext) {
+            pending.reject(e).await;
+            return Ok(());
+        }
+        let remote = async {
+            let Some(peer) = forward::engine_peer(ext, engine.as_deref()).await? else {
+                return Ok(None);
+            };
+            let req = PtyOpen::Shell {
+                shell: shell.clone(),
+                rows,
+                cols,
+            };
+            open(&peer, req).await.map(Some)
+        };
+        let remote = match remote.await {
+            Ok(r) => r,
+            Err(e) => {
+                pending.reject(e).await;
+                return Ok(());
+            }
+        };
+        if let Some((read, write)) = remote {
+            let sink = pending.accept().await?;
+            tokio::spawn(relay_shell(read, write, ShellSub(sink)));
+            return Ok(());
+        }
+        let at = match shell_registry::global()
+            .attach(&shell, rows.zip(cols))
+            .map_err(failed)
         {
-            return Ok(EngineTerminal { session, job: j.id.clone(), engine: me });
-        }
-        let shell = login_shell(std::env::var_os("SHELL").map(PathBuf::from), Path::exists);
-        let out = lookup::<Jobs>(JOBS_ACTOR)?
-            .ask(tools::pty::StartPty {
-                session,
-                call_id: "engine_terminal".into(),
-                args: tools::pty::StartArgs {
-                    command: format!("{} -l", shell.display()),
-                    name: Some(TERMINAL.into()),
-                    cwd: None,
-                    env: None,
-                    ready: None,
-                    idle_secs: Some(0),
-                },
-                cwd: shell_cwd(&self.rt.data_dir),
-                ready_timeout: Duration::from_secs(30),
-                idle_after: None,
-                root: auth.resources.root.clone(),
-                activity: None,
-                pty_shell: None,
-                program: Some((shell, vec!["-l".into()])),
-                cell: None,
-            })
-            .await
-            .map_err(|e| failed(format!("jobs actor: {e}")))?;
-        if out.is_error {
-            return Err(failed(out.content));
-        }
-        let job = out
-            .structured
-            .as_ref()
-            .and_then(|s| s.get("job"))
-            .and_then(|j| j.as_str())
-            .ok_or_else(|| failed(format!("the terminal exited at once:\n{}", out.content)))?;
-        Ok(EngineTerminal { session, job: JobId(job.to_owned()), engine: me })
+            Ok(a) => a,
+            Err(e) => {
+                pending.reject(e).await;
+                return Ok(());
+            }
+        };
+        let sink = pending.accept().await?;
+        let reattach = move || {
+            let shell = shell.clone();
+            async move {
+                shell_registry::global()
+                    .attach(&shell, None)
+                    .map_err(failed)
+            }
+        };
+        tokio::spawn(pump(at, reattach, ShellSub(sink)));
+        Ok(())
     }
 
     async fn engine_logs(
@@ -208,24 +406,6 @@ impl EngineApiServer for Server {
 pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::DescribedModule::new(EngineApiServer::into_rpc(server), rpc_descriptors())
         .expect("agent RPC descriptors")
-}
-
-/// `$SHELL` when it names an existing file, else `/bin/bash`, else `/bin/sh`.
-fn login_shell(shell: Option<PathBuf>, exists: impl Fn(&Path) -> bool) -> PathBuf {
-    shell
-        .filter(|s| s.is_absolute() && exists(s))
-        .or_else(|| Some(PathBuf::from("/bin/bash")).filter(|b| exists(b)))
-        .unwrap_or_else(|| PathBuf::from("/bin/sh"))
-}
-
-/// The data dir's parent (the `engine` user's home on a node), else `$HOME`.
-fn shell_cwd(data_dir: &Path) -> PathBuf {
-    data_dir
-        .parent()
-        .filter(|p| p.is_dir())
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| data_dir.to_path_buf())
 }
 
 /// The last `n` lines of the newest `theuth.log.*` in `dir` (the daily
@@ -332,13 +512,47 @@ impl PtySink for SubscriptionSink {
     }
 }
 
+/// Where [`relay_shell`] writes [`ShellChunk`] items.
+pub(crate) trait ShellSink: Send {
+    /// One item; `false` when the reader is gone.
+    fn send_shell(&mut self, c: &ShellChunk) -> impl Future<Output = bool> + Send;
+    /// Resolves once the reader is gone.
+    fn closed(&self) -> impl Future<Output = ()> + Send;
+}
+
+/// Subscription sink adapter for `subscribe_shell`: converts [`PtyChunk`] from
+/// [`pump`] into [`ShellChunk`] and sends [`ShellChunk`] directly from
+/// [`relay_shell`].
+struct ShellSub(SubscriptionSink);
+
+impl ShellSink for ShellSub {
+    async fn send_shell(&mut self, c: &ShellChunk) -> bool {
+        let raw = serde_json::value::to_raw_value(c).expect("ShellChunk serializes");
+        SubscriptionSink::send(&self.0, SubscriptionMessage::from(raw))
+            .await
+            .is_ok()
+    }
+    async fn closed(&self) {
+        SubscriptionSink::closed(&self.0).await;
+    }
+}
+
+impl PtySink for ShellSub {
+    async fn send(&mut self, c: &PtyChunk) -> bool {
+        self.send_shell(&ShellChunk::from(c)).await
+    }
+    async fn closed(&self) {
+        SubscriptionSink::closed(&self.0).await;
+    }
+}
+
 /// The accept side's writer: JSON lines; `gone` once the opener closed.
 struct Lines<W> {
     write: W,
     gone: CancellationToken,
 }
 
-impl<W: AsyncWrite + Unpin + Send> PtySink for Lines<W> {
+impl<W: AsyncWrite + Unpin + Send> PtySink for &mut Lines<W> {
     async fn send(&mut self, c: &PtyChunk) -> bool {
         write_line(&mut self.write, c).await.is_ok()
     }
@@ -397,16 +611,51 @@ where
 }
 
 /// The first line on `theuth/pty/1`: what to attach.
+///
+/// `Job` carries `{session, job, rows?, cols?}` (identical to the legacy struct
+/// so older peers understand it); `Shell` carries `{shell, rows?, cols?}` for a
+/// standalone in-memory shell outside any session or job.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PtyOpen {
-    /// Owning session on the accepting engine.
-    pub session: SessionId,
-    /// The PTY job.
-    pub job: JobId,
-    /// Resize to `rows`×`cols` first (both or neither).
-    pub rows: Option<u16>,
-    /// See `rows`.
-    pub cols: Option<u16>,
+#[serde(untagged)]
+pub enum PtyOpen {
+    /// A standalone in-memory shell in the accepting engine's shell registry.
+    Shell {
+        /// Shell id (default `"main"`).
+        shell: String,
+        /// Resize to `rows`×`cols` first (both or neither).
+        rows: Option<u16>,
+        /// See `rows`.
+        cols: Option<u16>,
+    },
+    /// A session's PTY job on the accepting engine.
+    Job {
+        /// Owning session on the accepting engine.
+        session: SessionId,
+        /// The PTY job.
+        job: JobId,
+        /// Resize to `rows`×`cols` first (both or neither).
+        rows: Option<u16>,
+        /// See `rows`.
+        cols: Option<u16>,
+    },
+}
+
+impl PtyOpen {
+    fn without_size(&self) -> Self {
+        match self {
+            Self::Shell { shell, .. } => Self::Shell {
+                shell: shell.clone(),
+                rows: None,
+                cols: None,
+            },
+            Self::Job { session, job, .. } => Self::Job {
+                session: *session,
+                job: job.clone(),
+                rows: None,
+                cols: None,
+            },
+        }
+    }
 }
 
 /// The accept side's answer to [`PtyOpen`]: `{"ok":{}}`, then the items, or
@@ -507,12 +756,64 @@ where
     drop(write);
 }
 
+/// Relay a remote shell's `theuth/pty/1` stream into `sink`, emitting
+/// [`ShellChunk::Disconnected`] if the stream ends before `exit` while the
+/// subscriber is still listening.
+pub(crate) async fn relay_shell<R, W, S>(mut read: BufReader<R>, write: W, mut sink: S)
+where
+    R: AsyncRead + Unpin,
+    S: ShellSink,
+{
+    let mut saw_exit = false;
+    let mut sink_closed = false;
+    let mut drop_reason: Option<String> = None;
+    loop {
+        let mut line = String::new();
+        let got = tokio::select! {
+            () = sink.closed() => {
+                sink_closed = true;
+                break;
+            }
+            r = read.read_line(&mut line) => r,
+        };
+        match got {
+            Ok(0) => {
+                drop_reason = Some("connection to node lost".into());
+                break;
+            }
+            Err(e) => {
+                drop_reason = Some(format!("connection to node lost: {e}"));
+                break;
+            }
+            Ok(_) => {}
+        }
+        let Ok(chunk) = serde_json::from_str::<PtyChunk>(line.trim_end()) else {
+            drop_reason = Some("malformed terminal stream from node".into());
+            break;
+        };
+        let exit = matches!(chunk, PtyChunk::Exit { .. });
+        if !sink.send_shell(&ShellChunk::from(&chunk)).await {
+            sink_closed = true;
+            break;
+        }
+        if exit {
+            saw_exit = true;
+            break;
+        }
+    }
+    if !saw_exit && !sink_closed {
+        let reason = drop_reason.unwrap_or_else(|| "connection to node lost".into());
+        let _ = sink.send_shell(&ShellChunk::Disconnected { reason }).await;
+    }
+    drop(write);
+}
+
 /// The opener's halves of a stream after [`handshake`]: item lines to read,
 /// and the write half that keeps the stream open.
 pub(crate) type Opened<S> = (BufReader<tokio::io::ReadHalf<S>>, tokio::io::WriteHalf<S>);
 
-/// `subscribe_pty` for a job on mesh peer `peer`: attached there, or that
-/// engine's refusal / [`forward::OWNER_UNREACHABLE`].
+/// `subscribe_pty` / `subscribe_shell` on mesh peer `peer`: attached there, or
+/// that engine's refusal / [`forward::OWNER_UNREACHABLE`].
 pub(crate) async fn open(peer: &PeerId, open: PtyOpen) -> RpcResult<Opened<Box<dyn replica::ByteStream>>> {
     let Some(t) = forward::transport()
         .await
@@ -536,14 +837,14 @@ pub(crate) async fn open(peer: &PeerId, open: PtyOpen) -> RpcResult<Opened<Box<d
 pub(crate) async fn answer<S, A, F>(stream: S, attach: A) -> anyhow::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    A: Fn(SessionId, JobId, Option<(u16, u16)>) -> F,
+    A: Fn(PtyOpen) -> F,
     F: Future<Output = RpcResult<PtyAttached>>,
 {
     let (read, mut write) = tokio::io::split(stream);
     let mut read = BufReader::new(read);
     let line = tokio::time::timeout(forward::TIMEOUT, read_head(&mut read)).await??;
     let open: PtyOpen = serde_json::from_str(line.trim_end())?;
-    let at = match attach(open.session, open.job.clone(), open.rows.zip(open.cols)).await {
+    let at = match attach(open.clone()).await {
         Ok(at) => at,
         Err(e) => {
             write_line(&mut write, &PtyAck::refused(&e)).await?;
@@ -554,21 +855,25 @@ where
     // The opener sends nothing more: EOF (or any error) means it is gone.
     let gone = CancellationToken::new();
     let watch = gone.clone();
-    tokio::spawn(async move {
+    let watch_task = tokio::spawn(async move {
         let mut sink = [0u8; 256];
         while matches!(read.read(&mut sink).await, Ok(1..)) {}
         watch.cancel();
     });
-    let (session, job) = (open.session, open.job);
-    let reattach = || attach(session, job.clone(), None);
-    pump(at, reattach, Lines { write, gone: gone.clone() }).await;
+    let reattach_req = open.without_size();
+    let reattach = || attach(reattach_req.clone());
+    let mut lines = Lines { write, gone: gone.clone() };
+    pump(at, reattach, &mut lines).await;
     gone.cancel();
+    let _ = lines.write.shutdown().await;
+    watch_task.abort();
     Ok(())
 }
 
-/// Accept `theuth/pty/1` streams until shutdown: each attaches a local PTY
-/// job for the opening peer (a paired engine of the owner, trusted as
-/// `theuth/rpc/1` forwards are) and streams it.
+/// Accept `theuth/pty/1` streams until shutdown from connected (paired) peers:
+/// each attaches a local PTY job or standalone in-memory shell for the opening
+/// peer (a paired engine of the owner, trusted as `theuth/rpc/1` forwards are)
+/// and streams it.
 pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>) {
     loop {
         let accepted = tokio::select! {
@@ -577,9 +882,23 @@ pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>) {
         };
         match accepted {
             Ok((peer, stream)) => {
+                if !transport.peers().contains(&peer) {
+                    tracing::warn!(%peer, "pty stream from an unpaired peer refused");
+                    continue;
+                }
                 tokio::spawn(async move {
-                    let attach = |session, job: JobId, size| async move {
-                        attach_pty(session, &job, size).await
+                    let attach = |open: PtyOpen| async move {
+                        match open {
+                            PtyOpen::Job {
+                                session,
+                                job,
+                                rows,
+                                cols,
+                            } => attach_pty(session, &job, rows.zip(cols)).await,
+                            PtyOpen::Shell { shell, rows, cols } => shell_registry::global()
+                                .attach(&shell, rows.zip(cols))
+                                .map_err(failed),
+                        }
                     };
                     if let Err(e) = answer(stream, attach).await {
                         tracing::debug!(%peer, error = %e, "pty mesh stream ended");
@@ -858,8 +1177,106 @@ mod tests {
         }
     }
 
+    /// A sink collecting `ShellChunk` items for `relay_shell`.
+    struct CollectShell(tokio::sync::mpsc::UnboundedSender<ShellChunk>);
+    impl ShellSink for CollectShell {
+        async fn send_shell(&mut self, c: &ShellChunk) -> bool {
+            self.0.send(c.clone()).is_ok()
+        }
+        async fn closed(&self) {
+            self.0.closed().await;
+        }
+    }
+
     fn open_req() -> PtyOpen {
-        PtyOpen { session: SessionId::new(), job: JobId("j1".into()), rows: Some(30), cols: Some(100) }
+        PtyOpen::Job {
+            session: SessionId::new(),
+            job: JobId("j1".into()),
+            rows: Some(30),
+            cols: Some(100),
+        }
+    }
+
+    fn open_shell_req() -> PtyOpen {
+        PtyOpen::Shell {
+            shell: "main".into(),
+            rows: Some(30),
+            cols: Some(100),
+        }
+    }
+
+    #[test]
+    fn pty_open_wire_format_separates_job_and_shell() {
+        let job_req = open_req();
+        let job_json = serde_json::to_string(&job_req).unwrap();
+        assert!(job_json.contains("\"session\""), "{job_json}");
+        assert!(job_json.contains("\"job\""), "{job_json}");
+        assert!(!job_json.contains("\"shell\""), "{job_json}");
+        assert_eq!(serde_json::from_str::<PtyOpen>(&job_json).unwrap(), job_req);
+
+        let shell_req = open_shell_req();
+        let shell_json = serde_json::to_string(&shell_req).unwrap();
+        assert!(shell_json.contains("\"shell\":\"main\""), "{shell_json}");
+        assert!(!shell_json.contains("\"session\""), "{shell_json}");
+        assert!(!shell_json.contains("\"job\""), "{shell_json}");
+        assert_eq!(serde_json::from_str::<PtyOpen>(&shell_json).unwrap(), shell_req);
+    }
+
+    #[tokio::test]
+    async fn engine_terminal_refuses_and_never_creates_a_session_or_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::new(Runtime::new(Default::default(), dir.path().to_path_buf()));
+        // Owner call returns a clear migration error (no Agents / Jobs actors
+        // are even started in this test, proving neither owner_root nor StartPty runs).
+        let (owner_peer, _owner_guard) = rpc_core::RpcPeer::open();
+        let mut owner_ext = Extensions::new();
+        owner_ext.insert(owner_peer);
+        let err = EngineApiServer::engine_terminal(&server, &owner_ext, None)
+            .await
+            .expect_err("engine_terminal must refuse");
+        assert!(err.message().contains("engine_shell"), "{}", err.message());
+
+        // Missing peer (unauthenticated) is rejected.
+        let unauth = Extensions::new();
+        assert_eq!(
+            EngineApiServer::engine_shell(&server, &unauth, None, None, None, None)
+                .await
+                .expect_err("unauthenticated engine_shell must be rejected")
+                .code(),
+            rpc_core::UNAUTHORIZED
+        );
+
+        // Guest peer is rejected on every new shell RPC.
+        let (guest_peer, _guest_guard) = rpc_core::RpcPeer::open_guest([1; 32], [2; 32]);
+        let mut non_owner = Extensions::new();
+        non_owner.insert(guest_peer);
+        let err = EngineApiServer::engine_shell(&server, &non_owner, None, None, None, None)
+            .await
+            .expect_err("non-owner engine_shell must be rejected");
+        assert_eq!(err.code(), rpc_core::UNAUTHORIZED);
+        let err = EngineApiServer::shell_input(&server, &non_owner, "main".into(), Some("hi".into()), None, None)
+            .await
+            .expect_err("non-owner shell_input must be rejected");
+        assert_eq!(err.code(), rpc_core::UNAUTHORIZED);
+        let err = EngineApiServer::shell_resize(&server, &non_owner, "main".into(), 24, 80, None)
+            .await
+            .expect_err("non-owner shell_resize must be rejected");
+        assert_eq!(err.code(), rpc_core::UNAUTHORIZED);
+        let err = EngineApiServer::shell_close(&server, &non_owner, "main".into(), None)
+            .await
+            .expect_err("non-owner shell_close must be rejected");
+        assert_eq!(err.code(), rpc_core::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn open_local_shell_runs_without_jobs_or_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = shell_registry::ShellRegistry::new();
+        let id = open_local_shell(&reg, dir.path(), None, Some(80), Some(24)).unwrap();
+        assert_eq!(id, DEFAULT_SHELL_ID);
+        let reused = open_local_shell(&reg, dir.path(), Some("main"), None, None).unwrap();
+        assert_eq!(reused, DEFAULT_SHELL_ID);
+        reg.close(&id);
     }
 
     #[tokio::test]
@@ -872,8 +1289,8 @@ mod tests {
             let want = want.clone();
             async move {
                 let slot = slot;
-                answer(far, move |session, job, size| {
-                    assert_eq!((session, &job, size), (want.session, &want.job, Some((30, 100))));
+                answer(far, move |got| {
+                    assert_eq!(got, want);
                     let at = slot.lock().unwrap().take();
                     async move { at.ok_or_else(|| failed("attached once")) }
                 })
@@ -894,9 +1311,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shell_relay_streams_shell_open_and_emits_disconnected_on_stream_drop() {
+        let (near, far) = tokio::io::duplex(4096);
+        let (at, tx) = attached(b"hello$ ", None);
+        let slot = std::sync::Mutex::new(Some(at));
+        let want = open_shell_req();
+        let server = tokio::spawn({
+            let want = want.clone();
+            async move {
+                let slot = slot;
+                answer(far, move |got| {
+                    assert_eq!(got, want);
+                    let at = slot.lock().unwrap().take();
+                    async move { at.ok_or_else(|| failed("attached once")) }
+                })
+                .await
+            }
+        });
+        let (read, write) = handshake(near, &want).await.expect("attached");
+        let (sink_tx, mut items) = tokio::sync::mpsc::unbounded_channel();
+        let client = tokio::spawn(relay_shell(read, write, CollectShell(sink_tx)));
+        let first = tokio::time::timeout(Duration::from_secs(5), items.recv())
+            .await
+            .expect("reset arrives")
+            .unwrap();
+        assert!(matches!(
+            first,
+            ShellChunk::Reset { ref data, rows: 24, cols: 80 } if *data == b64("hello$ ")
+        ));
+        // Drop the far side's broadcast sender without an Exit event to
+        // simulate a sudden stream drop.
+        drop(tx);
+        let dropped = tokio::time::timeout(Duration::from_secs(5), items.recv())
+            .await
+            .expect("disconnected arrives on stream drop")
+            .unwrap();
+        assert!(
+            matches!(dropped, ShellChunk::Disconnected { .. }),
+            "expected Disconnected on stream drop, got {dropped:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(5), client)
+            .await
+            .expect("client ends")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server ends")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn pty_relay_passes_the_refusal_verbatim() {
         let (near, far) = tokio::io::duplex(4096);
-        let server = tokio::spawn(answer(far, |_, _, _| async {
+        let server = tokio::spawn(answer(far, |_| async {
             Err::<PtyAttached, _>(forward::runs_elsewhere("other".into()))
         }));
         let Err(Ok(e)) = handshake(near, &open_req()).await else {
@@ -912,7 +1380,7 @@ mod tests {
         let (near, far) = tokio::io::duplex(4096);
         let (at, _tx) = attached(b"", None);
         let slot = std::sync::Mutex::new(Some(at));
-        let server = tokio::spawn(answer(far, move |_, _, _| {
+        let server = tokio::spawn(answer(far, move |_| {
             let at = slot.lock().unwrap().take();
             async move { at.ok_or_else(|| failed("attached once")) }
         }));

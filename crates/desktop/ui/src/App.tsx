@@ -37,7 +37,7 @@ import { startWebProfileSync } from '@/lib/web-profile'
 import { startWebViewAgent } from '@/lib/web-view-agent'
 import { startElementForms } from '@/lib/element-form'
 import { isDesktop, isIos } from '@/lib/platform'
-import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
+import { POPOUT, closePopout, popoutMeeting, popoutSession, takeNodeTerminalPopout } from '@/lib/popout'
 import { onOwnerChanged, onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
@@ -54,6 +54,7 @@ import {
   onModelsProgress,
   onNavigate,
   onPointRefused,
+  onPopoutClosed,
   onQuitProgress,
   onQuitRequested,
   pointConfigure,
@@ -727,6 +728,21 @@ function useEventFocus(st: Stores): void {
  * `refused` needs the user (re-pair or forget), so that still gets the screen. The local engine stays
  * for `ROUTER_GRACE_MS` (176 U3): a short drop shows only the chat's "Reconnecting…" strip.
  */
+/** When a standalone node-terminal popout OS window closes, end the remote shell (`shell_close`) from the live main window. */
+function useNodeTerminalPopoutCleanup(st: Stores): void {
+  useEffect(() => {
+    if (AUX || !isDesktop()) return
+    const off = onPopoutClosed((label) => {
+      const target = takeNodeTerminalPopout(label)
+      if (!target) return
+      void st.connection.getState().api?.shell_close(target.shell, target.engine).catch(() => undefined)
+    })
+    return () => {
+      void off.then((u) => u())
+    }
+  }, [st])
+}
+
 function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(how?: RelaunchHow): void }) {
   const refused = useEngines((s) => s.presence[engine] === 'refused')
   const ready = useConnection((s) => routerMounted(s, engine === LOCAL, refused))
@@ -736,6 +752,7 @@ function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(how?: Relaun
   useEventSideEffects(scope(engine))
   useEventFocus(scope(engine))
   useForegroundReseed(scope(engine))
+  useNodeTerminalPopoutCleanup(scope(engine))
   return ready ? (
     <>
       <RouterProvider router={router} />

@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { type PopoutTarget, TILE_STASH, artifactsRail, canPopout, noteOpenMode, popoutLabel, popoutTitle, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl, soloPopout, stashTileProps, tileProps, newChatPopout } from './popout'
+import { type PopoutTarget, TILE_STASH, artifactsRail, canPopout, noteOpenMode, popoutLabel, popoutTitle, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl, registerNodeTerminalPopout, soloPopout, stashTileProps, takeNodeTerminalPopout, tileProps, newChatPopout } from './popout'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -320,6 +320,37 @@ test('a window opens named after its subject or kind, never left to the host def
   expect(popoutTitle({ kind: 'web', id: 'w', url: 'https://x.dev', title: ' Docs ' })).toBe('Docs')
   expect(popoutTitle({ kind: 'web', id: 'w', url: 'https://x.dev', title: '' })).toBe('Web')
   expect(popoutTitle({ kind: 'vm', name: 'sandbox-1' })).toBe('sandbox-1')
+  expect(popoutTitle({ kind: 'node-terminal', engine: 'e1', shell: 'main', name: 'sky-do' })).toBe('sky-do')
+  expect(popoutTitle({ kind: 'node-terminal', engine: 'e1', shell: 'main' })).toBe('Terminal')
   expect(popoutTitle({ kind: 'chat', session: 'abc' })).toBe('Chat')
   expect(popoutTitle({ kind: 'tile', tile: 'diagram', session: 's', props: {} })).toBe('Diagram')
+})
+
+test('a standalone node terminal pops out at /terminal/$engine/$shell with label popout-terminal-<engine>-<shell> and no session', () => {
+  const t: PopoutTarget = { kind: 'node-terminal', engine: 'node-1', shell: 'main', name: 'sky-do' }
+  expect(popoutLabel(t)).toBe('popout-terminal-node-1-main')
+  expect(popoutUrl(t)).toBe('/terminal/node-1/main?name=sky-do&window=popout-terminal-node-1-main')
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutTarget('tauri://localhost/terminal/node-1/main?name=sky-do&window=popout-terminal-node-1-main')).toEqual(t)
+  // Without a shell id or without `?window=`, not a popout window.
+  expect(popoutTarget('/terminal/node-1?window=x')).toBeNull()
+  expect(popoutTarget('/terminal/node-1/main')).toBeNull()
+  // Independent of any chat session or meeting.
+  expect(popoutSession(t)).toBeNull()
+  expect(popoutMeeting(t)).toBeNull()
+  expect(soloPopout(t)).toBe(true)
+
+  // Close-cleanup registry records and consumes once.
+  const map = new Map<string, string>()
+  const store = {
+    get length() { return map.size },
+    key: (i: number) => [...map.keys()][i] ?? null,
+    getItem: (k: string) => map.get(k) ?? null,
+    setItem: (k: string, v: string) => void map.set(k, v),
+    removeItem: (k: string) => void map.delete(k),
+    clear: () => map.clear(),
+  } as Storage
+  registerNodeTerminalPopout(popoutLabel(t), { engine: 'node-1', shell: 'main' }, store)
+  expect(takeNodeTerminalPopout(popoutLabel(t), store)).toEqual({ engine: 'node-1', shell: 'main' })
+  expect(takeNodeTerminalPopout(popoutLabel(t), store)).toBeNull()
 })

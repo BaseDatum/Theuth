@@ -100,6 +100,8 @@ struct FakeMesh {
     removed: Mutex<Vec<String>>,
     calls: Mutex<Vec<(String, String, Value)>>,
     vault: Mutex<FakeVault>,
+    /// Optional override for `engine_shell`: `Some(None)` = offline, `Some(Some(false))` = old node (`NoMethod`).
+    shell_override: Mutex<Option<Option<bool>>>,
 }
 
 #[async_trait]
@@ -161,9 +163,18 @@ impl MeshView for FakeMesh {
             }
             return Ok(Some(vault_json(methods)));
         }
+        if method == "engine_shell" {
+            if let Some(mode) = *self.shell_override.lock() {
+                return match mode {
+                    None => Ok(None),
+                    Some(false) => Err(CallError::NoMethod("engine_shell".into())),
+                    Some(true) => Ok(Some(json!({"shell": "main", "engine": id}))),
+                };
+            }
+            return Ok(Some(json!({"shell": "main", "engine": id})));
+        }
         Ok(Some(match method {
             "info" => json!({"version": "2.32.0"}),
-            "engine_terminal" => json!({"session": "s1", "job": "j1", "engine": id}),
             "engine_logs" => json!({"lines": ["a", "b"], "path": "/data/logs/t.log"}),
             _ => Value::Null,
         }))
@@ -531,14 +542,16 @@ async fn list_merges_records_orphans_kept_volumes_and_the_mesh() {
 
     // Terminal and logs ride the mesh to the node's engine with no engine parameter.
     let t = r.cloud.terminal("mine").await.unwrap();
-    assert_eq!(
-        (t.session.as_str(), t.job.as_str(), t.engine.as_str()),
-        ("s1", "j1", "n1")
-    );
+    assert_eq!((t.shell.as_str(), t.engine.as_str()), ("main", "n1"));
     let logs = r.cloud.logs("mine", Some(50)).await.unwrap();
     assert_eq!(logs.lines, ["a", "b"]);
     let calls = r.mesh.calls.lock().clone();
-    assert!(calls.contains(&("n1".into(), "engine_terminal".into(), json!([null]))));
+    assert!(calls.contains(&(
+        "n1".into(),
+        "engine_shell".into(),
+        json!([null, null, null, null])
+    )));
+    assert!(!calls.iter().any(|(_, m, _)| m == "engine_terminal"));
     assert!(calls.contains(&("n1".into(), "engine_logs".into(), json!([null, 50]))));
 
     // The desktop: on by default; refused for a node created without one.
@@ -551,6 +564,32 @@ async fn list_merges_records_orphans_kept_volumes_and_the_mesh() {
         r.cloud.desktop("mine").await.unwrap_err().0,
         "desktop is off for mine"
     );
+}
+
+#[tokio::test]
+async fn terminal_old_node_and_offline_errors_do_not_fall_back_to_engine_terminal() {
+    let r = rig(fast()).await;
+    r.mesh.peers.lock().push(peer("n1", "legacy", true));
+
+    // Old node without engine_shell returns a clear "update this node" error
+    // and never falls back to engine_terminal.
+    *r.mesh.shell_override.lock() = Some(Some(false));
+    let err = r.cloud.terminal("legacy").await.unwrap_err().0;
+    assert_eq!(
+        err,
+        "legacy is running an older version of theuth that does not support standalone terminals — update this node to open a terminal."
+    );
+    let calls = r.mesh.calls.lock().clone();
+    assert!(calls.iter().any(|(_, m, _)| m == "engine_shell"));
+    assert!(
+        !calls.iter().any(|(_, m, _)| m == "engine_terminal"),
+        "must never fall back to engine_terminal"
+    );
+
+    // Offline node returns a clear not-connected error.
+    *r.mesh.shell_override.lock() = Some(None);
+    let err = r.cloud.terminal("legacy").await.unwrap_err().0;
+    assert_eq!(err, "legacy is not connected");
 }
 
 #[tokio::test]
