@@ -43184,21 +43184,6 @@
           }
         ]
       },
-      "method.agent.input.PressToken": {
-        "description": "What the UI passes with a call an owner press started. Advisory only: authority is the\nengine the app is connected to, which forwards the press only when its own\n`human_press` check of the calling connection passes.",
-        "properties": {
-          "at": {
-            "description": "When the press happened (ms since epoch).",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "at"
-        ],
-        "type": "object"
-      },
       "method.agent.input.PromptSuffix": {
         "description": "One saved prompt suffix.",
         "properties": {
@@ -47878,7 +47863,7 @@
         "description": "What an engine's host offers ([`MachinesApi::engine_caps`]).",
         "properties": {
           "display": {
-            "description": "A display is reachable: macOS/iOS/Windows always; Linux a Wayland/X11 display or the\nnode's watchable desktop (`desktop.json`).",
+            "description": "A display is reachable (the startup probe), or the node's watchable desktop\n(`desktop.json`).",
             "type": "boolean"
           },
           "engine": {
@@ -50060,7 +50045,7 @@
           },
           {
             "const": "needs_press",
-            "description": "Needs the owner's press; this call had none.",
+            "description": "Needs the owner's press on that machine; no press crosses the mesh.",
             "type": "string"
           }
         ]
@@ -59344,7 +59329,7 @@
         "description": "What an engine's host offers ([`MachinesApi::engine_caps`]).",
         "properties": {
           "display": {
-            "description": "A display is reachable: macOS/iOS/Windows always; Linux a Wayland/X11 display or the\nnode's watchable desktop (`desktop.json`).",
+            "description": "A display is reachable (the startup probe), or the node's watchable desktop\n(`desktop.json`).",
             "type": "boolean"
           },
           "engine": {
@@ -61463,7 +61448,7 @@
           },
           {
             "const": "needs_press",
-            "description": "Needs the owner's press; this call had none.",
+            "description": "Needs the owner's press on that machine; no press crosses the mesh.",
             "type": "string"
           }
         ]
@@ -152423,21 +152408,6 @@
           "required": true,
           "schema": true,
           "x-theuth-aliases": []
-        },
-        {
-          "name": "pressed",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/method.agent.input.PressToken"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -152477,21 +152447,6 @@
             "type": [
               "array",
               "null"
-            ]
-          },
-          "x-theuth-aliases": []
-        },
-        {
-          "name": "pressed",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/method.agent.input.PressToken"
-              },
-              {
-                "type": "null"
-              }
             ]
           },
           "x-theuth-aliases": []

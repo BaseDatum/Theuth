@@ -3,16 +3,18 @@
 //! machine reach any other engine of the mesh through [`MachinesApi::engine_call`]:
 //! a call for this engine dispatches into this engine's own API ([`install_local_api`]), any
 //! other is forwarded once over `theuth/rpc/1` with the existing forwarder
-//! ([`forward::to_peer_via`], the core of `call_peer`). Only the methods Settings' machine tabs
-//! use ([`SETTINGS_FORWARDABLE`]) pass; nothing that carries a secret value does.
+//! ([`forward::to_peer_via`], the core of `call_peer`). Only settings getters and setters of
+//! Settings' machine tabs pass ([`SETTINGS_FORWARDABLE`]); nothing that carries a secret value,
+//! a credential, chat content or a session action does.
 //!
-//! The owner's press crosses the hop as `"_press": true` on the request line, set only when the
-//! UI passed `pressed` AND this engine's [`secrets::rpc::human_press`] saw a press; the target
-//! turns it into [`rpc_core::ForwardedPress`] ([`forward::honoured_press`]), which its own
-//! `human_press` counts. Calls this engine runs itself run as the caller's own connection.
+//! No press crosses the hop: a forwarded call runs on the target as the internal peer, which
+//! is never a human press. A setter that needs the owner's press therefore answers
+//! [`NEEDS_PRESS`] on any other machine ([`needs_press`], [`classify`]); on this engine it runs
+//! as the caller's own connection. Agents (the internal peer: MCP console, ACP agent half) may
+//! not use these RPCs at all.
 //!
 //! Errors are normalised for the client: [`NOT_FORWARDABLE`], [`OFFLINE`], [`SEALED`],
-//! [`NOT_APPLICABLE`] ([`classify`]).
+//! [`NOT_APPLICABLE`], [`NEEDS_PRESS`] ([`classify`]).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -21,6 +23,7 @@ use crate::rpc_forward as forward;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::types::error::INVALID_PARAMS_CODE;
 use jsonrpsee::types::{ErrorObjectOwned, Response, ResponsePayload};
 use replica::{PeerId, Transport};
 use rpc_core::{Server, ask, send};
@@ -38,88 +41,80 @@ pub const SEALED: i32 = -32052;
 /// JSON-RPC error: the target has no such method, or the subsystem behind it is not running
 /// there (cfg'd out on iOS, gated off on a headless node).
 pub const NOT_APPLICABLE: i32 = -32053;
-/// JSON-RPC error: the method needs the owner's press and this call carries none (a queued
-/// retry, an agent); the client offers "press to finish".
+/// JSON-RPC error: the method needs the owner's press and this call carries none (any call to
+/// another machine, a queued retry); the client offers "press to finish" on that machine.
 pub const NEEDS_PRESS: i32 = -32054;
 
+/// Most engines one call fans out to.
+pub const MAX_ENGINES: usize = 32;
+/// Most getters one `settings_values` reads.
+pub const MAX_KEYS: usize = 64;
+
 /// The message every sealed-vault error starts with (feat/sealed-vault's
-/// `crates/secrets/src/envelope.rs`); mapped to [`SEALED`] before that code lands everywhere.
+/// `crates/secrets/src/envelope.rs`); mapped to [`SEALED`] whatever its code.
 const SEALED_PREFIX: &str = "the vault is sealed";
 
-/// Every method a Settings tab of scope `machine` calls (its `required.methods`, the getters and
-/// setters its components call), sorted for [`forwardable`]'s binary search. Left out on
-/// purpose: anything that carries a secret value or a credential (`set_secret`, `login`,
-/// `acp_login`, `add_provider` / `add_account` with their key, `mcp_server_get` with the token,
-/// `mcp_server_rotate_token`, `set_external_setting`, `sync_providers` / `apply_providers`, which
-/// may carry keys and have their own owner-press flow) and the pairing ceremonies whose tickets
-/// are credentials and which need a person at the machine (`contact_window`, `contact_pair`,
-/// `contact_answer`, `contact_nearby`, `mesh_nearby`, `mesh_nearby_watch`, `mesh_pair_nearby`,
-/// `mesh_pair_answer`).
+/// The settings getters and setters a Settings tab of scope `machine` calls, sorted for
+/// [`forwardable`]'s binary search. Left out on purpose (227 §2): anything that carries or
+/// returns a secret value, a token or a credential (`set_secret`, `login`/`logout`,
+/// `acp_login`, `add_provider` / `add_account` with their key, `mcp_server_get` /
+/// `mcp_server_set` / `mcp_server_rotate_token` with the bearer token, external-secrets
+/// settings, `list_logins`, `list_secret_connections`, calendar sources whose URLs carry
+/// tokens, `sync_providers` / `apply_providers`), chat and session actions or content
+/// (`send_input`, `steer`, `desk_open`, `screen_context`, `list_sessions`, meetings,
+/// dictation history and audio, terminals, sandbox lifecycle), mesh and vault control
+/// (`mesh_set_*`, `mesh_rename`, `vault_*`), contacts and the pairing ceremonies, and plugin
+/// install/uninstall. The Vault tab forwards its own RPCs (`engine` param), not through here.
 pub const SETTINGS_FORWARDABLE: &[&str] = &[
     "a2a_export_put", "a2a_exports", "a2a_status", "add_acp", "autoresearch.mechanism",
-    "autoresearch.settings.get", "autoresearch.settings.set", "calendar_events",
-    "calendar_settings_get", "calendar_settings_set", "calendar_source_add",
-    "calendar_source_delete", "calendar_source_refresh", "calendar_sources", "computer_permissions",
-    "config_flag_get", "config_flag_set", "contact_first_answer", "contact_first_waiting",
-    "contact_list", "contact_remove", "contact_update", "decision_loaded", "decision_mode",
-    "decision_stats", "decision_training", "delete_decision_training", "delete_tool_category",
-    "desk_open", "dictation_audio_get", "dictation_history", "dictation_history_forget",
-    "dictation_status", "dictionary_counts", "dictionary_delete", "dictionary_list",
-    "dictionary_put", "dictionary_search", "documents_status", "endless_settings_get",
-    "endless_settings_set", "engine_caps", "escalate_effort", "escalate_model", "get_always_ask",
-    "get_approvals", "get_communication", "get_external_settings", "handoffs_list", "info",
-    "knowledge_harvester_effort", "knowledge_harvester_model", "list_acp", "list_acp_registry",
-    "list_aws_profiles", "list_builtins", "list_input_devices", "list_logins", "list_mcp",
+    "autoresearch.settings.get", "autoresearch.settings.set", "calendar_settings_get",
+    "calendar_settings_set", "computer_permissions", "config_flag_get", "config_flag_set",
+    "decision_loaded", "decision_mode", "decision_stats", "decision_training",
+    "delete_decision_training", "delete_tool_category", "dictation_status", "dictionary_counts",
+    "dictionary_delete", "dictionary_list", "dictionary_put", "dictionary_search",
+    "documents_status", "endless_settings_get", "endless_settings_set", "engine_caps",
+    "escalate_effort", "escalate_model", "get_always_ask", "get_approvals", "get_communication",
+    "handoffs_list", "info", "knowledge_harvester_effort", "knowledge_harvester_model", "list_acp",
+    "list_acp_registry", "list_aws_profiles", "list_builtins", "list_input_devices", "list_mcp",
     "list_models", "list_project_styles", "list_prompt_sections", "list_providers",
-    "list_schedules", "list_secret_connections", "list_sessions", "list_tool_categories",
-    "local_servers_probe", "logout", "mcp_server_audit", "mcp_server_set", "meeting_get",
-    "meeting_list", "meeting_live_diarization", "meeting_settings_get", "meeting_settings_set",
+    "list_schedules", "list_tool_categories", "local_servers_probe", "mcp_server_audit",
+    "meeting_live_diarization", "meeting_settings_get", "meeting_settings_set",
     "meeting_speaker_delete", "meeting_speakers", "meeting_template_delete", "meeting_template_put",
-    "meeting_template_reset", "meeting_templates", "mesh_rename", "mesh_set_hub", "mesh_set_nearby",
-    "mesh_status", "plugin_approve", "plugin_get", "plugin_list", "plugin_logs", "plugin_new",
-    "plugin_restart", "plugin_set_enabled", "plugin_set_hidden", "plugin_set_order",
-    "plugin_uninstall", "polish_effort", "polish_model", "provider_models", "refresh_all_models",
+    "meeting_template_reset", "meeting_templates", "mesh_status", "plugin_approve", "plugin_get",
+    "plugin_list", "plugin_logs", "plugin_restart", "plugin_set_enabled", "plugin_set_hidden",
+    "plugin_set_order", "polish_effort", "polish_model", "provider_models", "refresh_all_models",
     "refresh_provider_models", "reload_a2a", "remove_acp", "remove_provider",
-    "reset_prompt_section", "reset_provider_models", "sandbox_create", "sandbox_destroy",
-    "sandbox_install_runtime", "sandbox_pause", "sandbox_preflight", "sandbox_resize",
-    "sandbox_restore", "sandbox_resume", "sandbox_retry", "sandbox_set_shares", "sandbox_snapshot",
-    "sandbox_start", "sandbox_stop", "sandbox_terminal", "sandboxes_list", "screen_context",
-    "search_provider_test", "search_settings_get", "search_settings_set", "search_status",
-    "search_test", "send_input", "sessions_status", "set_advisor_default_effort",
-    "set_advisor_default_model", "set_advisor_immune_turns", "set_advisor_max_consults",
-    "set_advisor_notes_per_update", "set_advisor_sync_backlog", "set_always_ask", "set_approvals",
-    "set_auto_archive", "set_aws_profile", "set_builtins_disabled", "set_communication",
-    "set_compact_style", "set_decision_mode", "set_decision_share", "set_decision_training",
-    "set_default_tool_categories", "set_effort", "set_end_phrases", "set_escalate_effort",
-    "set_escalate_model", "set_hint_limit", "set_input_devices", "set_knowledge_harvester_effort",
-    "set_knowledge_harvester_model", "set_max_salvages", "set_max_tool_rounds", "set_mcp_category",
-    "set_mcp_hidden", "set_meeting_live_diarization", "set_model", "set_model_favorite",
-    "set_model_limits", "set_peek_threshold", "set_polish_effort", "set_polish_enabled",
-    "set_polish_model", "set_prompt_section", "set_prompt_section_enabled", "set_pty_idle",
-    "set_schedule_run_timeout", "set_shape", "set_shape_enabled", "set_status_every",
-    "set_stream_idle", "set_stt_engine", "set_subagent_effort", "set_subagent_model",
-    "set_subagent_timeout", "set_theuth_agent_effort", "set_theuth_agent_model", "set_title_effort",
-    "set_title_model", "set_tool_category", "set_vision_effort", "set_vision_model", "steer",
-    "subagent_effort", "subagent_model", "test_summary_call", "theuth_agent_effort",
-    "theuth_agent_model", "title_effort", "title_model", "update_status", "upsert_tool_category",
-    "vault_rotate", "vault_rotation", "vision_effort", "vision_model", "voice_mlx_download",
+    "reset_prompt_section", "reset_provider_models", "sandboxes_list", "search_provider_test",
+    "search_settings_get", "search_settings_set", "search_status", "search_test", "sessions_status",
+    "set_advisor_default_effort", "set_advisor_default_model", "set_advisor_immune_turns",
+    "set_advisor_max_consults", "set_advisor_notes_per_update", "set_advisor_sync_backlog",
+    "set_always_ask", "set_approvals", "set_auto_archive", "set_aws_profile",
+    "set_builtins_disabled", "set_communication", "set_compact_style", "set_decision_mode",
+    "set_decision_share", "set_decision_training", "set_default_tool_categories", "set_effort",
+    "set_end_phrases", "set_escalate_effort", "set_escalate_model", "set_hint_limit",
+    "set_input_devices", "set_knowledge_harvester_effort", "set_knowledge_harvester_model",
+    "set_max_salvages", "set_max_tool_rounds", "set_mcp_category", "set_mcp_hidden",
+    "set_meeting_live_diarization", "set_model", "set_model_favorite", "set_model_limits",
+    "set_peek_threshold", "set_polish_effort", "set_polish_enabled", "set_polish_model",
+    "set_prompt_section", "set_prompt_section_enabled", "set_pty_idle", "set_schedule_run_timeout",
+    "set_shape", "set_shape_enabled", "set_status_every", "set_stream_idle", "set_stt_engine",
+    "set_subagent_effort", "set_subagent_model", "set_subagent_timeout", "set_theuth_agent_effort",
+    "set_theuth_agent_model", "set_title_effort", "set_title_model", "set_tool_category",
+    "set_vision_effort", "set_vision_model", "subagent_effort", "subagent_model",
+    "test_summary_call", "theuth_agent_effort", "theuth_agent_model", "title_effort", "title_model",
+    "update_status", "upsert_tool_category", "vision_effort", "vision_model", "voice_mlx_download",
     "voice_mlx_status", "voice_settings", "voice_status",
+];
+
+/// Substrings no allowlisted name may contain (227 §2 security review).
+pub const NEVER_FORWARDABLE: &[&str] = &[
+    "send_input", "steer", "terminal", "audio", "meeting_get", "list_sessions", "vault_",
+    "mesh_set_", "contact_", "logout", "login", "secret", "token", "calendar_source",
 ];
 
 /// Whether `method` may run on another machine through [`MachinesApi::engine_call`].
 pub fn forwardable(method: &str) -> bool {
     SETTINGS_FORWARDABLE.binary_search(&method).is_ok()
-}
-
-/// What the UI passes with a call an owner press started. Advisory only: authority is the
-/// engine the app is connected to, which forwards the press only when its own
-/// `human_press` check of the calling connection passes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct PressToken {
-    /// When the press happened (ms since epoch).
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub at: u64,
 }
 
 /// One machine's outcome in [`MachinesApi::engine_call_all`].
@@ -137,7 +132,7 @@ pub enum NodeStatus {
     Sealed,
     /// The method does not exist or its subsystem is not running there.
     NotApplicable,
-    /// Needs the owner's press; this call had none.
+    /// Needs the owner's press on that machine; no press crosses the mesh.
     NeedsPress,
 }
 
@@ -173,8 +168,8 @@ pub struct EngineCaps {
     pub name: String,
     /// `std::env::consts::OS`: `macos`, `linux`, `ios`, `windows`, …
     pub platform: String,
-    /// A display is reachable: macOS/iOS/Windows always; Linux a Wayland/X11 display or the
-    /// node's watchable desktop (`desktop.json`).
+    /// A display is reachable (the startup probe), or the node's watchable desktop
+    /// (`desktop.json`).
     pub display: bool,
     /// An input device is listed (`list_input_devices`); without the voice plugin, the
     /// startup audio probe.
@@ -188,7 +183,7 @@ pub struct EngineCaps {
 }
 
 /// The host as probed at start (`theuth::subsystems::Env`), installed once by the binary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct HostCaps {
     /// A person drives this engine (not a plain `t --headless`).
     pub interactive: bool,
@@ -200,14 +195,15 @@ pub struct HostCaps {
 
 static HOST: OnceLock<HostCaps> = OnceLock::new();
 
-/// Record the startup probe; later calls are ignored.
+/// Record the startup probe; later calls are ignored. The `t` binary installs its
+/// `subsystems::Env`; an embedding host (the iOS app) installs its own.
 pub fn install_host_caps(caps: HostCaps) {
     let _ = HOST.set(caps);
 }
 
-/// The installed probe; a host that installs none (the iOS app, tests) is a person's device.
+/// The installed probe; without one, nothing is assumed (no person, display or microphone).
 fn host_caps() -> HostCaps {
-    HOST.get().copied().unwrap_or(HostCaps { interactive: true, display: true, audio: true })
+    HOST.get().copied().unwrap_or_default()
 }
 
 /// This runtime's full API, for calls this engine runs itself.
@@ -229,36 +225,31 @@ fn local_api(rt: &Runtime) -> Option<jsonrpsee::Methods> {
 #[rpc(server, client)]
 pub trait MachinesApi {
     /// 227: run Settings method `method` with `params` (by name or position) on mesh engine
-    /// `engine` (this engine: here, as the caller). Only [`SETTINGS_FORWARDABLE`] methods
-    /// (else `-32050`). `pressed`: the call started with an owner press; carried to the target
-    /// only when this engine sees the caller as a press. Errors: `-32051` offline, `-32052`
-    /// vault sealed, `-32053` not applicable there, else the target's own. Owner only.
+    /// `engine` (this engine or a paired one; this engine: here, as the caller). Only
+    /// [`SETTINGS_FORWARDABLE`] methods (else `-32050`). No press crosses the mesh: a setter
+    /// that needs one is `-32054` on another machine. Errors: `-32051` offline, `-32052` vault
+    /// sealed, `-32053` not applicable there, else the target's own. The owner's app only:
+    /// agents (the internal peer) and guests are refused.
     #[method(name = "engine_call", with_extensions)]
-    async fn engine_call(
-        &self,
-        engine: String,
-        method: String,
-        params: Value,
-        pressed: Option<PressToken>,
-    ) -> RpcResult<Value>;
+    async fn engine_call(&self, engine: String, method: String, params: Value) -> RpcResult<Value>;
     /// 227: [`engine_call`](MachinesApiServer::engine_call) on every engine of `engines`
-    /// (default: this one and every paired engine), concurrently, 30 s each; one row per
-    /// engine, never an error for one machine. Owner only.
+    /// (deduplicated, ≤ 32, each this one or a paired one; default: this one and every paired
+    /// engine), concurrently, 30 s each; one row per engine, never an error for one machine.
     #[method(name = "engine_call_all", with_extensions)]
     async fn engine_call_all(
         &self,
         method: String,
         params: Value,
         engines: Option<Vec<String>>,
-        pressed: Option<PressToken>,
     ) -> RpcResult<Vec<NodeResult>>;
-    /// 227: what this engine's host offers (display, microphone, a person at it). Cheap.
+    /// 227: what this engine's host offers (display, microphone, a person at it). Cheap. The
+    /// owner's app, or another engine forwarding for it.
     #[method(name = "engine_caps", with_extensions)]
     async fn engine_caps(&self) -> RpcResult<EngineCaps>;
-    /// 227 ("differs on N"): each getter of `keys` (allowlisted, called without params) on
-    /// each engine of `engines` (`[]`: this one and every paired engine): `{engine: {key:
-    /// value | null}}`, `null` where the getter failed or does not apply; offline engines
-    /// are omitted. Owner only.
+    /// 227 ("differs on N"): each getter of `keys` (allowlisted, ≤ 64, called without params)
+    /// on each engine of `engines` (as `engine_call_all`; `[]`: this one and every paired
+    /// engine): `{engine: {key: value | null}}`, `null` where the getter failed or does not
+    /// apply; offline engines are omitted.
     #[method(name = "settings_values", with_extensions)]
     async fn settings_values(
         &self,
@@ -290,6 +281,20 @@ fn error(code: i32, msg: impl Into<String>) -> ErrorObjectOwned {
 
 fn not_forwardable(method: &str) -> ErrorObjectOwned {
     error(NOT_FORWARDABLE, format!("not forwardable: {method}"))
+}
+
+/// The owner's app: an authenticated, non-guest connection that is not the internal peer
+/// (an agent's MCP console or ACP half). `forwarded_ok`: a call another engine forwarded
+/// (internal by construction) is admitted too — `engine_caps` only.
+pub fn owner_app(ext: &Extensions, forwarded_ok: bool) -> RpcResult<()> {
+    let peer = rpc_core::owner(ext)?;
+    if peer.is_internal() && !(forwarded_ok && ext.get::<forward::Forwarded>().is_some()) {
+        return Err(error(
+            rpc_core::UNAUTHORIZED,
+            "settings across machines are for the owner's app, not agents",
+        ));
+    }
+    Ok(())
 }
 
 /// The client's error codes for a call's raw error: unreachable → [`OFFLINE`]; sealed vault
@@ -329,7 +334,7 @@ fn wire_params(params: &Value) -> Value {
 }
 
 /// Run `method` in `local` as the caller: the caller's extensions (its connection, any
-/// [`forward::Forwarded`] / [`rpc_core::ForwardedPress`] marker) ride along.
+/// [`forward::Forwarded`] marker) ride along.
 async fn dispatch(
     local: &jsonrpsee::Methods,
     ext: &Extensions,
@@ -359,16 +364,9 @@ async fn dispatch(
     }
 }
 
-/// Whether a call carries the owner's press across the hop: the UI said so AND this engine
-/// sees its caller as a press. An agent (internal peer), a guest, or a forwarded call without
-/// [`rpc_core::ForwardedPress`] never does, whatever `pressed` says.
-pub fn press_for(ext: &Extensions, pressed: Option<&PressToken>) -> bool {
-    pressed.is_some() && secrets::rpc::human_press(ext)
-}
-
 /// Allowlisted calls that refuse (or would park a human-only card) without the owner's press:
 /// `plugin_approve` and an always-ask removal (`set_always_ask` with `on: false`). Refused up
-/// front as [`NEEDS_PRESS`] so a queued retry never leaves a card waiting on the target.
+/// front as [`NEEDS_PRESS`] wherever no press is present, so no card waits on a target.
 pub fn needs_press(method: &str, params: &Value) -> bool {
     match method {
         "plugin_approve" => true,
@@ -379,24 +377,25 @@ pub fn needs_press(method: &str, params: &Value) -> bool {
     }
 }
 
-/// One call: here when `engine` is this engine, else forwarded once. Errors are [`classify`]'d.
+/// One call: here when `engine` is this engine, else forwarded once (never with a press).
+/// Errors are [`classify`]'d.
 pub async fn call_one(
     reach: &Reach,
     ext: &Extensions,
     engine: &str,
     method: &str,
     params: &Value,
-    press: bool,
 ) -> RpcResult<Value> {
     if !forwardable(method) {
         return Err(not_forwardable(method));
     }
-    // Here the caller's own connection is the press; across the hop, the carried one.
-    let pressing = if reach.is_me(engine) { secrets::rpc::human_press(ext) } else { press };
-    if !pressing && needs_press(method, params) {
-        return Err(error(NEEDS_PRESS, format!("{method} needs the owner's press")));
+    let here = reach.is_me(engine);
+    // Here the caller's own connection may be the press; a forwarded call never is.
+    if needs_press(method, params) && !(here && secrets::rpc::human_press(ext)) {
+        let what = if here { "" } else { " on that machine" };
+        return Err(error(NEEDS_PRESS, format!("{method} needs the owner's press{what}")));
     }
-    if reach.is_me(engine) {
+    if here {
         let Some(local) = &reach.local else {
             return Err(error(NOT_APPLICABLE, "this engine has no local API to run settings calls"));
         };
@@ -424,7 +423,6 @@ pub async fn call_one(
         method,
         wire_params(params),
         forward::TIMEOUT,
-        press,
     )
     .await;
     match sent {
@@ -434,22 +432,10 @@ pub async fn call_one(
     }
 }
 
-/// Whether `method`'s answer `value` means a restart is due: the reply's own
-/// `restart_required` (`config_flag_set`, plugin flags), or a `subsystems.*` key written
-/// through `config_flag_set` (read at start only, `theuth::subsystems`).
-pub fn restart_required(method: &str, params: &Value, value: &Value) -> bool {
-    if value.get("restart_required").and_then(Value::as_bool) == Some(true) {
-        return true;
-    }
-    if method != "config_flag_set" {
-        return false;
-    }
-    let key = params
-        .get("key")
-        .or_else(|| params.get(0))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    key.starts_with("subsystems.")
+/// Whether an answer means a restart is due: the reply's own `restart_required` — what
+/// `config_flag_set` says for a plugin's `<section>.enabled` (plugins keep their boot state).
+pub fn restart_required(value: &Value) -> bool {
+    value.get("restart_required").and_then(Value::as_bool) == Some(true)
 }
 
 /// [`call_one`] on every `(engine, name)` of `targets`, concurrently, as rows.
@@ -459,22 +445,14 @@ pub async fn call_all(
     targets: &[(String, String)],
     method: &str,
     params: &Value,
-    press: bool,
 ) -> Vec<NodeResult> {
     let calls = targets.iter().map(|(engine, name)| async move {
-        let r = call_one(reach, ext, engine, method, params, press).await;
-        node_result(engine, name, method, params, r)
+        node_result(engine, name, call_one(reach, ext, engine, method, params).await)
     });
     futures::future::join_all(calls).await
 }
 
-fn node_result(
-    engine: &str,
-    name: &str,
-    method: &str,
-    params: &Value,
-    r: RpcResult<Value>,
-) -> NodeResult {
+fn node_result(engine: &str, name: &str, r: RpcResult<Value>) -> NodeResult {
     let (status, message, value) = match r {
         Ok(v) => (NodeStatus::Ok, None, Some(v)),
         Err(e) => {
@@ -491,7 +469,7 @@ fn node_result(
     NodeResult {
         engine: engine.to_owned(),
         name: name.to_owned(),
-        restart_required: value.as_ref().is_some_and(|v| restart_required(method, params, v)),
+        restart_required: value.as_ref().is_some_and(restart_required),
         status,
         message,
         value,
@@ -538,10 +516,13 @@ pub fn caps_of(
 }
 
 /// The mesh as Settings names it: this engine (ids, name) and every paired engine.
-struct Roster {
-    me: Vec<String>,
-    name: String,
-    peers: Vec<(String, String)>,
+pub struct Roster {
+    /// This engine's ids, the mesh id first.
+    pub me: Vec<String>,
+    /// This engine's display name.
+    pub name: String,
+    /// Every paired engine: `(id, name)`.
+    pub peers: Vec<(String, String)>,
 }
 
 async fn roster() -> RpcResult<Roster> {
@@ -565,27 +546,58 @@ async fn roster() -> RpcResult<Roster> {
 }
 
 impl Roster {
-    /// `engines` with names, or this engine then every peer when `None`.
-    fn targets(&self, engines: Option<Vec<String>>) -> Vec<(String, String)> {
-        let me = || (self.me[0].clone(), self.name.clone());
-        match engines {
-            None => std::iter::once(me()).chain(self.peers.iter().cloned()).collect(),
-            Some(ids) => ids
-                .into_iter()
-                .map(|id| {
-                    if self.me.contains(&id) {
-                        return (id, self.name.clone());
-                    }
-                    let name = self
-                        .peers
-                        .iter()
-                        .find(|(p, _)| *p == id)
-                        .map_or_else(|| id.clone(), |(_, n)| n.clone());
-                    (id, name)
-                })
+    /// `engine` with its name, when it is this engine (or empty) or a paired one.
+    pub fn target(&self, engine: &str) -> RpcResult<(String, String)> {
+        if engine.is_empty() || self.me.iter().any(|m| m == engine) {
+            return Ok((engine.to_owned(), self.name.clone()));
+        }
+        self.peers
+            .iter()
+            .find(|(p, _)| p == engine)
+            .cloned()
+            .ok_or_else(|| error(INVALID_PARAMS_CODE, format!("unknown engine {engine}")))
+    }
+
+    /// `engines` deduplicated with names (each this engine or a paired one), or this engine
+    /// then every peer when `None`; at most [`MAX_ENGINES`].
+    pub fn targets(&self, engines: Option<Vec<String>>) -> RpcResult<Vec<(String, String)>> {
+        let out: Vec<(String, String)> = match engines {
+            None => std::iter::once((self.me[0].clone(), self.name.clone()))
+                .chain(self.peers.iter().cloned())
                 .collect(),
+            Some(ids) => {
+                let mut out: Vec<(String, String)> = Vec::new();
+                for id in ids {
+                    let t = self.target(&id)?;
+                    if !out.iter().any(|(e, _)| *e == t.0) {
+                        out.push(t);
+                    }
+                }
+                out
+            }
+        };
+        if out.len() > MAX_ENGINES {
+            return Err(error(INVALID_PARAMS_CODE, format!("at most {MAX_ENGINES} engines")));
+        }
+        Ok(out)
+    }
+}
+
+/// `keys` deduplicated, each allowlisted, at most [`MAX_KEYS`].
+pub fn getter_keys(keys: Vec<String>) -> RpcResult<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for k in keys {
+        if !forwardable(&k) {
+            return Err(not_forwardable(&k));
+        }
+        if !out.contains(&k) {
+            out.push(k);
         }
     }
+    if out.len() > MAX_KEYS {
+        return Err(error(INVALID_PARAMS_CODE, format!("at most {MAX_KEYS} keys")));
+    }
+    Ok(out)
 }
 
 async fn reach(rt: &Runtime, me: Vec<String>) -> Reach {
@@ -600,15 +612,15 @@ impl MachinesApiServer for Server {
         engine: String,
         method: String,
         params: Value,
-        pressed: Option<PressToken>,
     ) -> RpcResult<Value> {
-        rpc_core::owner(ext)?;
+        owner_app(ext, false)?;
         if !forwardable(&method) {
             return Err(not_forwardable(&method));
         }
         let roster = roster().await?;
+        roster.target(&engine)?;
         let reach = reach(&self.rt, roster.me).await;
-        call_one(&reach, ext, &engine, &method, &params, press_for(ext, pressed.as_ref())).await
+        call_one(&reach, ext, &engine, &method, &params).await
     }
 
     async fn engine_call_all(
@@ -617,21 +629,19 @@ impl MachinesApiServer for Server {
         method: String,
         params: Value,
         engines: Option<Vec<String>>,
-        pressed: Option<PressToken>,
     ) -> RpcResult<Vec<NodeResult>> {
-        rpc_core::owner(ext)?;
+        owner_app(ext, false)?;
         if !forwardable(&method) {
             return Err(not_forwardable(&method));
         }
         let roster = roster().await?;
-        let targets = roster.targets(engines);
+        let targets = roster.targets(engines)?;
         let reach = reach(&self.rt, roster.me).await;
-        let press = press_for(ext, pressed.as_ref());
-        Ok(call_all(&reach, ext, &targets, &method, &params, press).await)
+        Ok(call_all(&reach, ext, &targets, &method, &params).await)
     }
 
     async fn engine_caps(&self, ext: &Extensions) -> RpcResult<EngineCaps> {
-        rpc_core::owner(ext)?;
+        owner_app(ext, true)?;
         let roster = roster().await?;
         let mic = match local_api(&self.rt) {
             Some(local) => dispatch(&local, ext, "list_input_devices", &Value::Null)
@@ -650,15 +660,13 @@ impl MachinesApiServer for Server {
         engines: Vec<String>,
         keys: Vec<String>,
     ) -> RpcResult<BTreeMap<String, BTreeMap<String, Option<Value>>>> {
-        rpc_core::owner(ext)?;
-        if let Some(k) = keys.iter().find(|k| !forwardable(k)) {
-            return Err(not_forwardable(k));
-        }
+        owner_app(ext, false)?;
+        let keys = getter_keys(keys)?;
         let roster = roster().await?;
-        let targets = roster.targets((!engines.is_empty()).then_some(engines));
+        let targets = roster.targets((!engines.is_empty()).then_some(engines))?;
         let reach = reach(&self.rt, roster.me).await;
         let rows = futures::future::join_all(
-            keys.iter().map(|k| call_all(&reach, ext, &targets, k, &Value::Null, false)),
+            keys.iter().map(|k| call_all(&reach, ext, &targets, k, &Value::Null)),
         )
         .await;
         Ok(values_of(&keys, rows))

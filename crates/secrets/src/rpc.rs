@@ -230,14 +230,11 @@ pub fn install_engine_forward(f: EngineForward) {
 }
 
 /// 219 §2.4: the owner's own press (desktop/app socket, a paired device): authenticated, not a
-/// share guest, not the internal peer (MCP console, ACP agent half, TUI), still open. 227 §2: or
-/// a press another engine of this mesh forwarded ([`rpc_core::ForwardedPress`], inserted only by
-/// `rpc_forward::serve` after the forwarder checked its own caller with this function).
+/// share guest, not the internal peer (MCP console, ACP agent half, TUI, forwarded calls), still
+/// open. A call forwarded from another engine is never a press.
 pub fn human_press(ext: &Extensions) -> bool {
-    ext.get::<rpc_core::ForwardedPress>().is_some()
-        || ext
-            .get::<rpc_core::RpcPeer>()
-            .is_some_and(|p| p.guest().is_none() && !p.is_internal() && !p.is_closed())
+    ext.get::<rpc_core::RpcPeer>()
+        .is_some_and(|p| p.guest().is_none() && !p.is_internal() && !p.is_closed())
 }
 
 /// D20: a loosening from a caller that is not the owner's press needs the human-only card

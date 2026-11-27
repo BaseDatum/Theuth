@@ -1,29 +1,24 @@
 use super::*;
 use crate::communication::mesh::loopback::{Loop, nodes};
-use replica::{ByteStream, PeerEvent};
 use rpc_core::{RpcPeer, RpcPeerGuard};
 use serde_json::json;
-use tokio::sync::broadcast;
 
 const SEALED_MSG: &str = "the vault is sealed on P50 — unlock it from an owner device or with the master password";
 
 /// A target engine's API: `set_model` reports how it was called; `config_flag_set` answers
 /// `restart_required` on `b` and a sealed vault on `d`; `list_prompt_sections` the sealed
-/// code; `shutdown` (not allowlisted) reports the press like `set_model`.
+/// code; `plugin_approve` refuses without a press like the plugins crate.
 fn target_api(label: &'static str) -> jsonrpsee::Methods {
     let mut m = jsonrpsee::RpcModule::new(());
-    let seen = move |params: jsonrpsee::types::Params<'_>, ext: &Extensions| {
-        json!({
+    m.register_method("set_model", move |params, _, ext| -> RpcResult<Value> {
+        Ok(json!({
             "on": label,
             "press": secrets::rpc::human_press(ext),
             "forwarded": ext.get::<forward::Forwarded>().is_some(),
             "params": params.parse::<Value>().unwrap_or(Value::Null),
-        })
-    };
-    m.register_method("set_model", move |p, _, ext| -> RpcResult<Value> { Ok(seen(p, ext)) })
-        .unwrap();
-    m.register_method("shutdown", move |p, _, ext| -> RpcResult<Value> { Ok(seen(p, ext)) })
-        .unwrap();
+        }))
+    })
+    .unwrap();
     m.register_method("config_flag_set", move |_, _, _| -> RpcResult<Value> {
         match label {
             "d" => Err(rpc_core::failed(SEALED_MSG)),
@@ -37,6 +32,16 @@ fn target_api(label: &'static str) -> jsonrpsee::Methods {
     .unwrap();
     m.register_method("list_prompt_sections", |_, _, _| -> RpcResult<Value> {
         Err(ErrorObjectOwned::owned(SEALED, "sealed", None::<()>))
+    })
+    .unwrap();
+    m.register_method("plugin_approve", |_, _, ext| -> RpcResult<Value> {
+        if secrets::rpc::human_press(ext) {
+            Ok(json!("approved"))
+        } else {
+            Err(rpc_core::failed(
+                "plugin_approve needs a human press: the Approve button in theuth or `t plugin approve` on a terminal",
+            ))
+        }
     })
     .unwrap();
     m.into()
@@ -57,10 +62,6 @@ fn agent() -> Extensions {
     ext
 }
 
-fn token() -> PressToken {
-    PressToken { at: 1 }
-}
-
 /// `a`'s reach over `t`: its own API locally.
 fn reach_a(t: &Arc<Loop>) -> Reach {
     Reach {
@@ -70,31 +71,17 @@ fn reach_a(t: &Arc<Loop>) -> Reach {
     }
 }
 
-/// `node` answers `theuth/rpc/1` with `target_api(label)` over `t`.
+/// `t` answers `theuth/rpc/1` with `target_api(label)`.
 fn serve(t: Arc<dyn Transport>, label: &'static str) {
     let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
     tokio::spawn(forward::serve(rt, t, target_api(label)));
 }
 
-/// `inner` with a paired set that leaves `outsiders` out (an engine no longer paired).
-struct Gate {
-    inner: Arc<Loop>,
-    outsiders: Vec<PeerId>,
-}
-
-#[async_trait]
-impl Transport for Gate {
-    fn peers(&self) -> Vec<PeerId> {
-        self.inner.peers().into_iter().filter(|p| !self.outsiders.contains(p)).collect()
-    }
-    async fn open(&self, peer: &PeerId, alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
-        self.inner.open(peer, alpn).await
-    }
-    async fn accept(&self, alpn: &str) -> anyhow::Result<(PeerId, Box<dyn ByteStream>)> {
-        self.inner.accept(alpn).await
-    }
-    fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
-        self.inner.subscribe()
+fn roster() -> Roster {
+    Roster {
+        me: vec!["a".into(), "store-a".into()],
+        name: "Mac".into(),
+        peers: vec![("b".into(), "P50".into()), ("c".into(), "Cloud".into())],
     }
 }
 
@@ -103,14 +90,30 @@ fn the_allowlist_is_sorted_and_carries_no_secret_values() {
     assert!(SETTINGS_FORWARDABLE.windows(2).all(|w| w[0] < w[1]), "sorted, no duplicates");
     for m in [
         "set_secret", "secret_get", "login", "acp_login", "add_provider", "add_account",
-        "mcp_server_get", "mcp_server_rotate_token", "set_external_setting", "sync_providers",
-        "apply_providers", "contact_window", "mesh_pair_answer", "engine_call", "shutdown",
+        "mcp_server_get", "mcp_server_set", "mcp_server_rotate_token", "set_external_setting",
+        "get_external_settings", "sync_providers", "apply_providers", "contact_window",
+        "mesh_pair_answer", "engine_call", "shutdown", "send_input", "steer", "desk_open",
+        "sandbox_terminal", "sandbox_create", "dictation_audio_get", "meeting_get",
+        "list_sessions", "vault_rotate", "mesh_set_hub", "mesh_set_nearby", "mesh_rename",
+        "contact_remove", "logout", "calendar_sources", "calendar_source_add", "plugin_new",
+        "plugin_uninstall",
     ] {
         assert!(!forwardable(m), "{m} must not be forwardable");
     }
     for m in ["set_model", "config_flag_set", "engine_caps", "list_prompt_sections", "info"] {
         assert!(forwardable(m), "{m}");
     }
+}
+
+/// 227 §2 review: no settings call reaching another machine is a session action, carries
+/// content, a credential or controls the mesh/vault.
+#[test]
+fn no_allowlisted_name_matches_the_deny_patterns() {
+    let hits: Vec<_> = SETTINGS_FORWARDABLE
+        .iter()
+        .filter(|m| NEVER_FORWARDABLE.iter().any(|p| m.contains(p)))
+        .collect();
+    assert!(hits.is_empty(), "denied names on the allowlist: {hits:?}");
 }
 
 /// A typo in the list would be a method no engine has: every name is on the accepted wire.
@@ -128,11 +131,52 @@ fn every_allowlisted_method_is_on_the_wire() {
 async fn non_listed_and_secret_methods_are_refused_even_here() {
     let [a] = nodes(&["a"]).try_into().ok().unwrap();
     let (ext, _g) = owner();
-    for m in ["set_secret", "login", "shutdown"] {
-        let e = call_one(&reach_a(&a), &ext, "a", m, &Value::Null, true).await.unwrap_err();
+    for m in ["set_secret", "login", "shutdown", "mcp_server_set"] {
+        let e = call_one(&reach_a(&a), &ext, "a", m, &Value::Null).await.unwrap_err();
         assert_eq!(e.code(), NOT_FORWARDABLE, "{m}");
         assert_eq!(e.message(), format!("not forwardable: {m}"));
     }
+}
+
+#[test]
+fn agents_and_guests_may_not_use_the_machine_rpcs() {
+    let (ext, _g) = owner();
+    assert!(owner_app(&ext, false).is_ok());
+    let e = owner_app(&agent(), false).unwrap_err();
+    assert_eq!(e.code(), rpc_core::UNAUTHORIZED);
+    assert!(owner_app(&agent(), true).is_err(), "internal, not forwarded");
+    assert!(owner_app(&Extensions::new(), true).is_err(), "unauthenticated");
+    let (guest, _gg) = RpcPeer::open_guest([1; 32], [2; 32]);
+    let mut g = Extensions::new();
+    g.insert(guest);
+    assert!(owner_app(&g, true).is_err(), "share guest");
+    let mut fwd = agent();
+    fwd.insert(forward::Forwarded(PeerId("hub".into())));
+    assert!(owner_app(&fwd, true).is_ok(), "engine_caps for another engine's app");
+    assert!(owner_app(&fwd, false).is_err(), "never engine_call / _all / settings_values");
+}
+
+#[test]
+fn engines_are_deduplicated_known_and_capped() {
+    let r = roster();
+    let all = r.targets(None).unwrap();
+    assert_eq!(all.iter().map(|(e, _)| e.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
+    let got = r.targets(Some(vec!["b".into(), "store-a".into(), "b".into(), "".into()])).unwrap();
+    let got: Vec<(&str, &str)> = got.iter().map(|(e, n)| (e.as_str(), n.as_str())).collect();
+    assert_eq!(got, [("b", "P50"), ("store-a", "Mac"), ("", "Mac")]);
+    let e = r.targets(Some(vec!["b".into(), "zz".into()])).unwrap_err();
+    assert_eq!((e.code(), e.message()), (INVALID_PARAMS_CODE, "unknown engine zz"));
+    assert!(r.target("zz").is_err() && r.target("c").is_ok() && r.target("").is_ok());
+    let many = Roster {
+        peers: (0..MAX_ENGINES).map(|i| (format!("p{i}"), format!("P{i}"))).collect(),
+        ..roster()
+    };
+    assert_eq!(many.targets(None).unwrap_err().code(), INVALID_PARAMS_CODE, "self + 32 peers");
+    let k = getter_keys(vec!["info".into(), "info".into(), "title_model".into()]).unwrap();
+    assert_eq!(k, ["info", "title_model"]);
+    assert_eq!(getter_keys(vec!["set_secret".into()]).unwrap_err().code(), NOT_FORWARDABLE);
+    let keys: Vec<String> = SETTINGS_FORWARDABLE.iter().take(MAX_KEYS + 1).map(|s| (*s).to_owned()).collect();
+    assert_eq!(getter_keys(keys).unwrap_err().code(), INVALID_PARAMS_CODE);
 }
 
 #[tokio::test]
@@ -140,7 +184,7 @@ async fn this_engine_dispatches_locally_as_the_caller() {
     let [a] = nodes(&["a"]).try_into().ok().unwrap();
     let (ext, _g) = owner();
     for engine in ["a", ""] {
-        let v = call_one(&reach_a(&a), &ext, engine, "set_model", &json!({ "model": "m" }), false)
+        let v = call_one(&reach_a(&a), &ext, engine, "set_model", &json!({ "model": "m" }))
             .await
             .unwrap();
         assert_eq!(v["on"], "a");
@@ -148,8 +192,7 @@ async fn this_engine_dispatches_locally_as_the_caller() {
         assert_eq!(v["params"], json!({ "model": "m" }), "named params pass through");
         assert_eq!(v["press"], true, "the caller's own connection");
     }
-    let v = call_one(&reach_a(&a), &agent(), "a", "set_model", &Value::Null, true).await.unwrap();
-    assert_eq!(v["press"], false, "an agent's local call is no press");
+    let v = call_one(&reach_a(&a), &ext, "a", "set_model", &Value::Null).await.unwrap();
     assert_eq!(v["params"], json!([]), "null params go out as none");
 }
 
@@ -157,92 +200,82 @@ async fn this_engine_dispatches_locally_as_the_caller() {
 async fn a_peer_that_is_not_connected_is_offline() {
     let [a, _b] = nodes(&["a", "b"]).try_into().ok().unwrap();
     let (ext, _g) = owner();
-    let e = call_one(&reach_a(&a), &ext, "c", "set_model", &Value::Null, false).await.unwrap_err();
+    let e = call_one(&reach_a(&a), &ext, "c", "set_model", &Value::Null).await.unwrap_err();
     assert_eq!(e.code(), OFFLINE);
     let lone = Reach { transport: None, ..reach_a(&a) };
-    let e = call_one(&lone, &ext, "b", "set_model", &Value::Null, false).await.unwrap_err();
+    let e = call_one(&lone, &ext, "b", "set_model", &Value::Null).await.unwrap_err();
     assert_eq!(e.code(), OFFLINE, "no mesh at all");
 }
 
+/// 227 §2 review: no press crosses the mesh. The owner's own press on the hub reaches the
+/// target as the internal peer, which is never a human press; a forwarded call is not
+/// forwarded again.
 #[tokio::test]
-async fn an_owner_press_reaches_the_target_as_a_human_press() {
+async fn a_forwarded_call_is_never_a_press() {
     let [a, b] = nodes(&["a", "b"]).try_into().ok().unwrap();
     serve(b, "b");
     let (ext, _g) = owner();
-    let press = press_for(&ext, Some(&token()));
-    assert!(press);
-    let v = call_one(&reach_a(&a), &ext, "b", "set_model", &json!(["m"]), press).await.unwrap();
+    let v = call_one(&reach_a(&a), &ext, "b", "set_model", &json!(["m"])).await.unwrap();
     assert_eq!(v["on"], "b");
     assert_eq!(v["forwarded"], true);
-    assert_eq!(v["press"], true, "ForwardedPress counts as human_press on the target");
+    assert_eq!(v["press"], false, "forwarded: never a human press");
     assert_eq!(v["params"], json!(["m"]));
-    // The same owner without `pressed`: a plain forwarded call.
-    let v = call_one(&reach_a(&a), &ext, "b", "set_model", &json!(["m"]), press_for(&ext, None))
-        .await
-        .unwrap();
-    assert_eq!(v["press"], false);
+    let mut fwd = agent();
+    fwd.insert(forward::Forwarded(PeerId("x".into())));
+    let e = call_one(&reach_a(&a), &fwd, "b", "set_model", &Value::Null).await.unwrap_err();
+    assert_eq!(e.code(), NOT_APPLICABLE, "one hop only");
 }
 
+fn b_id() -> PeerId {
+    PeerId("b".into())
+}
+
+/// A paired engine writing `"_press": true` into the request line gets no press.
 #[tokio::test]
-async fn an_agent_or_internal_call_never_carries_a_press() {
+async fn a_forged_press_field_is_ignored() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let [a, b] = nodes(&["a", "b"]).try_into().ok().unwrap();
     serve(b, "b");
-    let internal = agent();
-    assert!(!press_for(&internal, Some(&token())), "internal peer claiming a press");
-    assert!(!press_for(&Extensions::new(), Some(&token())), "unauthenticated");
-    let (peer, guard) = RpcPeer::open();
-    let mut closed = Extensions::new();
-    closed.insert(peer);
-    drop(guard);
-    assert!(!press_for(&closed, Some(&token())), "closed connection");
-    let v = call_one(
-        &reach_a(&a),
-        &internal,
-        "b",
-        "set_model",
-        &Value::Null,
-        press_for(&internal, Some(&token())),
-    )
-    .await
-    .unwrap();
-    assert_eq!(v["press"], false);
-    // A forwarded request (already one hop) is never forwarded on.
-    let mut fwd = internal.clone();
-    fwd.insert(forward::Forwarded(PeerId("x".into())));
-    let e = call_one(&reach_a(&a), &fwd, "b", "set_model", &Value::Null, true).await.unwrap_err();
-    assert_eq!(e.code(), NOT_APPLICABLE);
+    let stream = a.open(&b_id(), replica::ALPN_RPC).await.unwrap();
+    let (read, mut write) = tokio::io::split(stream);
+    write
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"set_model\",\"params\":[],\"_press\":true}\n")
+        .await
+        .unwrap();
+    let mut reply = String::new();
+    BufReader::new(read).read_line(&mut reply).await.unwrap();
+    let v: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(v["result"]["press"], false, "{reply}");
 }
 
 #[tokio::test]
-async fn a_forged_press_from_an_unpaired_peer_or_on_another_method_is_ignored() {
+async fn press_gated_setters_are_needs_press_on_another_machine() {
     let [a, b] = nodes(&["a", "b"]).try_into().ok().unwrap();
-    // b no longer counts a as paired, though the stream still arrives.
-    serve(Arc::new(Gate { inner: b, outsiders: vec![PeerId("a".into())] }), "b");
+    serve(b, "b");
     let (ext, _g) = owner();
-    let v = call_one(&reach_a(&a), &ext, "b", "set_model", &Value::Null, true).await.unwrap();
-    assert_eq!(v["on"], "b");
-    assert_eq!(v["press"], false, "forged _press from a non-member");
-
-    let [a, b] = nodes(&["a", "b"]).try_into().ok().unwrap();
-    serve(b.clone(), "b");
-    // A paired peer setting `_press` on a method outside the allowlist.
-    let params = serde_json::value::to_raw_value(&Value::Array(vec![])).unwrap();
-    let raw = forward::forward_line(a.as_ref(), &b.me, "shutdown", &params, forward::TIMEOUT, true)
-        .await
-        .unwrap();
-    let v: Value = serde_json::from_str(raw.get()).unwrap();
-    assert_eq!(v["press"], false, "press only on allowlisted methods");
-
-    let line = |m: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{m}","params":[],"_press":true}}"#);
-    let members = [PeerId("a".into())];
-    assert!(forward::honoured_press(&line("set_model"), &PeerId("a".into()), &members));
-    assert!(!forward::honoured_press(&line("set_model"), &PeerId("z".into()), &members));
-    assert!(!forward::honoured_press(&line("shutdown"), &PeerId("a".into()), &members));
-    assert!(!forward::honoured_press(
-        r#"{"jsonrpc":"2.0","id":1,"method":"set_model","params":{"_press":true}}"#,
-        &PeerId("a".into()),
-        &members
-    ), "a `_press` inside params is not the line's");
+    let r = reach_a(&a);
+    let e = call_one(&r, &ext, "b", "plugin_approve", &json!(["p", "h"])).await.unwrap_err();
+    assert_eq!(e.code(), NEEDS_PRESS, "even the owner's press does not cross");
+    let off = json!({ "session": null, "tool": "shell", "on": false });
+    let e = call_one(&r, &ext, "b", "set_always_ask", &off).await.unwrap_err();
+    assert_eq!(e.code(), NEEDS_PRESS, "an always-ask removal would park a card");
+    assert!(!needs_press("set_always_ask", &json!([null, "shell", true])));
+    // Here, the owner's own connection is the press.
+    assert_eq!(call_one(&r, &ext, "a", "plugin_approve", &json!(["p", "h"])).await.unwrap(), "approved");
+    let e = call_one(&r, &agent(), "a", "plugin_approve", &Value::Null).await.unwrap_err();
+    assert_eq!(e.code(), NEEDS_PRESS, "an internal caller is no press here either");
+    // The target's own press refusal maps the same way.
+    let e = classify(rpc_core::failed(
+        "plugin_approve needs a human press: the Approve button in theuth or `t plugin approve` on a terminal",
+    ));
+    assert_eq!(e.code(), NEEDS_PRESS);
+    assert_eq!(
+        classify(rpc_core::failed("copying providers to another engine needs the owner's press")).code(),
+        NEEDS_PRESS
+    );
+    let rows = call_all(&r, &ext, &[("b".into(), "P50".into())], "plugin_approve", &Value::Null).await;
+    assert_eq!(rows[0].status, NodeStatus::NeedsPress);
+    assert_eq!(serde_json::to_value(NodeStatus::NeedsPress).unwrap(), "needs_press");
 }
 
 #[test]
@@ -250,7 +283,7 @@ fn sealed_errors_map_to_the_sealed_code() {
     let e = classify(ErrorObjectOwned::owned(SEALED, "anything", None::<()>));
     assert_eq!((e.code(), e.message()), (SEALED, "anything"), "-32052 passes unchanged");
     let e = classify(rpc_core::failed(SEALED_MSG));
-    assert_eq!((e.code(), e.message()), (SEALED, SEALED_MSG), "the branch's text, older code");
+    assert_eq!((e.code(), e.message()), (SEALED, SEALED_MSG), "the sealed-vault text, any code");
     assert_eq!(classify(rpc_core::failed("the vault is locked")).code(), SEALED);
     assert_eq!(classify(rpc_core::failed("no such model")).code(), rpc_core::ASK_FAILED);
     assert_eq!(classify(ErrorObjectOwned::owned(-32601, "x", None::<()>)).code(), NOT_APPLICABLE);
@@ -271,11 +304,11 @@ async fn a_peers_sealed_and_missing_methods_come_back_classified() {
     serve(b, "b");
     let (ext, _g) = owner();
     let r = reach_a(&a);
-    let e = call_one(&r, &ext, "b", "set_approvals", &Value::Null, false).await.unwrap_err();
+    let e = call_one(&r, &ext, "b", "set_approvals", &Value::Null).await.unwrap_err();
     assert_eq!((e.code(), e.message()), (SEALED, SEALED_MSG), "message prefix → -32052");
-    let e = call_one(&r, &ext, "b", "list_prompt_sections", &Value::Null, false).await.unwrap_err();
+    let e = call_one(&r, &ext, "b", "list_prompt_sections", &Value::Null).await.unwrap_err();
     assert_eq!(e.code(), SEALED, "-32052 from the peer unchanged");
-    let e = call_one(&r, &ext, "b", "voice_status", &Value::Null, false).await.unwrap_err();
+    let e = call_one(&r, &ext, "b", "voice_status", &Value::Null).await.unwrap_err();
     assert_eq!(e.code(), NOT_APPLICABLE, "not registered there (cfg'd out, plugin off)");
 }
 
@@ -290,7 +323,7 @@ async fn call_all_aggregates_mixed_results_with_restart_required() {
         .map(|(e, n)| ((*e).to_owned(), (*n).to_owned()))
         .collect();
     let params = json!({ "key": "decision.enabled", "on": true });
-    let rows = call_all(&reach_a(&a), &ext, &targets, "config_flag_set", &params, true).await;
+    let rows = call_all(&reach_a(&a), &ext, &targets, "config_flag_set", &params).await;
     let got: Vec<_> = rows
         .iter()
         .map(|r| (r.engine.as_str(), r.name.as_str(), r.status, r.restart_required))
@@ -312,41 +345,11 @@ async fn call_all_aggregates_mixed_results_with_restart_required() {
     assert_eq!(serde_json::to_value(NodeStatus::NotApplicable).unwrap(), "not_applicable");
 }
 
-#[tokio::test]
-async fn press_gated_setters_without_a_press_are_needs_press() {
-    let [a, b] = nodes(&["a", "b"]).try_into().ok().unwrap();
-    serve(b, "b");
-    let (ext, _g) = owner();
-    let r = reach_a(&a);
-    // A queued retry: the owner's connection, no `pressed`.
-    let e = call_one(&r, &ext, "b", "plugin_approve", &json!(["p"]), false).await.unwrap_err();
-    assert_eq!(e.code(), NEEDS_PRESS);
-    let off = json!({ "session": null, "tool": "shell", "on": false });
-    let e = call_one(&r, &ext, "b", "set_always_ask", &off, false).await.unwrap_err();
-    assert_eq!(e.code(), NEEDS_PRESS, "an always-ask removal would park a card");
-    let e = call_one(&r, &agent(), "a", "plugin_approve", &Value::Null, true).await.unwrap_err();
-    assert_eq!(e.code(), NEEDS_PRESS, "here, an agent's own connection is no press");
-    // Pressed: it goes through (not registered on the fake target).
-    let e = call_one(&r, &ext, "b", "plugin_approve", &json!(["p"]), true).await.unwrap_err();
-    assert_eq!(e.code(), NOT_APPLICABLE);
-    assert!(!needs_press("set_always_ask", &json!([null, "shell", true])));
-    let e = classify(rpc_core::failed(
-        "plugin_approve needs a human press: the Approve button in theuth or `t plugin approve` on a terminal",
-    ));
-    assert_eq!(e.code(), NEEDS_PRESS, "the target's own refusal");
-    let rows = call_all(&r, &ext, &[("b".into(), "P50".into())], "plugin_approve", &Value::Null, false).await;
-    assert_eq!(rows[0].status, NodeStatus::NeedsPress);
-    assert_eq!(serde_json::to_value(NodeStatus::NeedsPress).unwrap(), "needs_press");
-}
-
 #[test]
-fn restart_required_follows_the_reply_and_subsystem_keys() {
-    let none = json!({});
-    assert!(restart_required("config_flag_set", &json!({ "key": "subsystems.meeting", "on": false }), &none));
-    assert!(restart_required("config_flag_set", &json!(["subsystems.voice", true]), &none));
-    assert!(!restart_required("config_flag_set", &json!(["agent.auto_title", true]), &none));
-    assert!(restart_required("plugin_set_enabled", &none, &json!({ "restart_required": true })));
-    assert!(!restart_required("set_model", &json!(["subsystems.x"]), &none));
+fn restart_required_is_the_replys_own() {
+    assert!(restart_required(&json!({ "restart_required": true, "key": "a2a.enabled" })));
+    assert!(!restart_required(&json!({ "restart_required": false })));
+    assert!(!restart_required(&json!({ "enabled": true, "name": "p" })), "a plugin toggles live");
 }
 
 #[test]
@@ -378,7 +381,8 @@ fn settings_values_omits_offline_engines_and_nulls_failures() {
 
 #[test]
 fn engine_caps_shape() {
-    let node = HostCaps { interactive: false, display: false, audio: false };
+    assert_eq!(host_caps(), HostCaps::default(), "no probe: nothing assumed");
+    let node = HostCaps::default();
     let caps = caps_of("n1".into(), "cloud-1".into(), node, false, None, false);
     let v = serde_json::to_value(&caps).unwrap();
     let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();

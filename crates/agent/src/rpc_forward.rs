@@ -176,16 +176,6 @@ pub enum Route {
 #[derive(Clone, Debug)]
 pub struct Forwarded(pub PeerId);
 
-/// 227 §2: the owner's press, carried across one hop. The forwarder (the engine the owner's
-/// app is connected to) sets `"_press": true` on the request line only for an `engine_call`
-/// whose caller passed `secrets::rpc::human_press` there; [`serve`] inserts this marker only
-/// when the line's method is on [`crate::rpc_machines::SETTINGS_FORWARDABLE`] and the opening
-/// peer is in the live paired set. Trust rests on the stream: `theuth/rpc/1` is accepted only
-/// from paired engines (iroh endpoint keys, mesh `Inbound` gate), and every paired engine is
-/// this owner's — contacts and guests never reach this ALPN. No MAC: a paired engine is
-/// already able to forward any owner call; the marker adds only what its own press check saw.
-pub use rpc_core::ForwardedPress;
-
 /// `files` as a forwarded call sends them: every attachment-store path
 /// (`…/attachments/<sha16>.<ext>`) becomes the relative marker
 /// `attachments/<sha16>.<ext>`, anything else travels verbatim. Serialized
@@ -489,12 +479,10 @@ pub async fn to_peer_within<T: DeserializeOwned>(
     params: impl Serialize,
     wait: Duration,
 ) -> RpcResult<Option<T>> {
-    to_peer_via(ext, transport().await, peer, method, params, wait, false).await
+    to_peer_via(ext, transport().await, peer, method, params, wait).await
 }
 
-/// [`to_peer_within`] over a given transport (`None`: no mesh). `press` sets `"_press": true` on
-/// the line ([`ForwardedPress`]); only `rpc_machines::engine_call` passes it, after its own
-/// caller passed `human_press`.
+/// [`to_peer_within`] over a given transport (`None`: no mesh).
 pub(crate) async fn to_peer_via<T: DeserializeOwned>(
     ext: &Extensions,
     transport: Option<Arc<dyn Transport>>,
@@ -502,7 +490,6 @@ pub(crate) async fn to_peer_via<T: DeserializeOwned>(
     method: &str,
     params: impl Serialize,
     wait: Duration,
-    press: bool,
 ) -> RpcResult<Option<T>> {
     if ext.get::<Forwarded>().is_some() {
         return Ok(None);
@@ -511,7 +498,7 @@ pub(crate) async fn to_peer_via<T: DeserializeOwned>(
         return Ok(None);
     };
     let params = serde_json::value::to_raw_value(&params).map_err(|e| internal(e.to_string()))?;
-    match forward_line(transport.as_ref(), peer, method, &params, wait, press).await {
+    match forward_within(transport.as_ref(), peer, method, &params, wait).await {
         Ok(raw) => serde_json::from_str(raw.get())
             .map(Some)
             .map_err(|e| internal(e.to_string())),
@@ -541,18 +528,6 @@ pub async fn forward_within(
     params: &RawValue,
     wait: Duration,
 ) -> Result<Box<RawValue>, Result<String, ErrorObjectOwned>> {
-    forward_line(transport, owner, method, params, wait, false).await
-}
-
-/// [`forward_within`], with `"_press": true` on the request line when `press` ([`ForwardedPress`]).
-pub(crate) async fn forward_line(
-    transport: &dyn Transport,
-    owner: &PeerId,
-    method: &str,
-    params: &RawValue,
-    wait: Duration,
-    press: bool,
-) -> Result<Box<RawValue>, Result<String, ErrorObjectOwned>> {
     let exchange = async {
         let stream = transport
             .open(owner, ALPN_RPC)
@@ -560,15 +535,7 @@ pub(crate) async fn forward_line(
             .map_err(|e| format!("{e:#}"))?;
         let (read, mut write) = tokio::io::split(stream);
         let req = Request::borrowed(method, Some(params), Id::Number(1));
-        let mut line = if press {
-            let mut v = serde_json::to_value(&req).map_err(|e| e.to_string())?;
-            if let Some(o) = v.as_object_mut() {
-                o.insert(PRESS_FIELD.to_owned(), serde_json::Value::Bool(true));
-            }
-            v.to_string()
-        } else {
-            serde_json::to_string(&req).map_err(|e| e.to_string())?
-        };
+        let mut line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
         line.push('\n');
         write
             .write_all(line.as_bytes())
@@ -614,9 +581,8 @@ pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>, mut methods: json
             Ok((peer, stream)) => {
                 let mut methods = methods.clone();
                 methods.extensions_mut().insert(Forwarded(peer.clone()));
-                let transport = transport.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = answer(stream, methods, &peer, transport.as_ref()).await {
+                    if let Err(e) = answer(stream, &methods).await {
                         tracing::debug!(%peer, error = %e, "rpc mesh stream ended");
                     }
                 });
@@ -629,34 +595,10 @@ pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>, mut methods: json
     }
 }
 
-/// The request-line field carrying the owner's press ([`ForwardedPress`]).
-const PRESS_FIELD: &str = "_press";
-
-/// What [`answer`] reads of a line beyond jsonrpsee's own parse.
-#[derive(Deserialize)]
-struct PressMark {
-    method: String,
-    #[serde(rename = "_press", default)]
-    press: bool,
-}
-
-/// Whether a forwarded `line` from `peer` carries an owner press this engine honours: the
-/// `_press` field set, the method on the settings allowlist, and `peer` an engine of the live
-/// paired set (`members`). Anything else — a forged field from an engine no longer paired, a
-/// press on another method — is dropped and the call runs as the plain internal peer.
-pub(crate) fn honoured_press(line: &str, peer: &PeerId, members: &[PeerId]) -> bool {
-    line.contains(PRESS_FIELD)
-        && serde_json::from_str::<PressMark>(line).is_ok_and(|m| {
-            m.press && crate::rpc_machines::forwardable(&m.method) && members.contains(peer)
-        })
-}
-
 /// One accepted stream: request line in, response line out.
 async fn answer(
     stream: Box<dyn replica::ByteStream>,
-    mut methods: jsonrpsee::Methods,
-    peer: &PeerId,
-    transport: &dyn Transport,
+    methods: &jsonrpsee::Methods,
 ) -> anyhow::Result<()> {
     let (read, mut write) = tokio::io::split(stream);
     let mut line = String::new();
@@ -665,9 +607,6 @@ async fn answer(
         .read_line(&mut line)
         .await?;
     anyhow::ensure!(!line.trim().is_empty(), "empty request");
-    if honoured_press(line.trim_end(), peer, &transport.peers()) {
-        methods.extensions_mut().insert(ForwardedPress(peer.0.clone()));
-    }
     let (rp, _) = methods.raw_json_request(line.trim_end(), 1).await?;
     let mut out = rp.get().to_owned();
     out.push('\n');
