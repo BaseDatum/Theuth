@@ -1454,6 +1454,7 @@ function turn(
         ],
       };
     case "ModelChanged":
+      if (s.model === e.model) return undefined;
       return {
         ...s,
         model: e.model,
@@ -1463,7 +1464,7 @@ function turn(
         ],
       };
     case "EffortChanged": {
-      if (s.effort === e.effort) return s;
+      if (s.effort === e.effort) return undefined;
       const text =
         e.effort === null
           ? `effort reset: not offered by ${s.model ?? ""}`

@@ -8,6 +8,7 @@ import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
+import { empty } from '@/store/reduce'
 import { dispatch, useSessions } from '@/store/sessions'
 import { AdvisorCommand, dialogPlacement, HarnessPicker, harnessCurrent, harnessGroups, KnowledgeHarvesterCommand, ComposerModel, type Model, slashTarget } from './ModelMenu'
 import { useDrafts } from '@/lib/drafts'
@@ -193,7 +194,7 @@ test('215 C1: ComposerModel carries its own Capability — an engine without the
 
 test('215 C1 composer label (ComposerModel): a model with levels is set once and the popover stays on its chips, focused; Escape keeps it; a chip sets the effort once and closes; a model without levels closes at once', async () => {
   engine()
-  const slice = (patch: object) => useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1, ...patch } as never } }))
+  const slice = (patch: object) => useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...empty('s1'), ...s.sessions.s1, ...patch } as never } }))
   slice({ model: 'anthropic/claude-opus-4-1', effort: null })
   const calls: unknown[][] = []
   rpc.api = {
@@ -320,4 +321,59 @@ test('KnowledgeHarvesterChanged from another client writes the chat’s pick int
   await act(async () => dispatch([{ key: 'agent.events@1', event: { type: 'KnowledgeHarvesterChanged', session: 's1', harvester } }]))
   expect(qc.getQueryData(queryKeys.sessionKnowledgeHarvester('s1'))).toEqual(harvester)
   expect(useSessions.getState().sessions.s1).toBe(before)
+})
+
+test('setModel and setEffort update the session slice immediately without stream events, and later relayed events do not duplicate info lines', async () => {
+  engine()
+  const remoteId = 'remote-s1'
+  useSessions.setState((s) => ({
+    sessions: {
+      ...s.sessions,
+      [remoteId]: { ...empty(remoteId), model: 'anthropic/claude-opus-4-1', effort: null },
+    },
+  }))
+  // Neither set_model nor set_effort emits any stream event (simulates an inactive/reconnecting follow stream).
+  rpc.api = {
+    list_sessions: async () => [],
+    list_models: async () => catalog,
+    set_model: async (_s: string, id: string) => catalog.find((m) => m.id === id)!,
+    set_effort: async () => null,
+  }
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  const p = await mount(createElement(QueryClientProvider, { client: qc }, createElement(ComposerModel, { session: remoteId })))
+  const trigger = p.host.querySelector('button')!
+  await vi.waitFor(() => expect(trigger.textContent).toBe('Claude Opus 4.1'))
+
+  const at = (sel: string) => document.querySelector<HTMLElement>(sel)!
+  await p.click(trigger)
+  await p.click(at('[data-value="provider:openai"]'))
+  await p.click(at('[data-value="model:openai/gpt-5.4"]'))
+
+  await vi.waitFor(() => expect(useSessions.getState().sessions[remoteId]?.model).toBe('openai/gpt-5.4'))
+  expect(trigger.textContent).toBe('GPT-5.4')
+  expect(useSessions.getState().sessions[remoteId]?.entries.filter((e) => e.kind === 'info').map((e) => e.text)).toEqual([
+    'model → openai/gpt-5.4',
+  ])
+
+  // A matching ModelChanged arriving over the follow stream moments later is a clean no-op (no duplicate entry).
+  await act(async () => dispatch([{ key: 'agent.events@1', event: { type: 'ModelChanged', session: remoteId, model: 'openai/gpt-5.4' } }]))
+  expect(useSessions.getState().sessions[remoteId]?.entries.filter((e) => e.kind === 'info').map((e) => e.text)).toEqual([
+    'model → openai/gpt-5.4',
+  ])
+
+  // Effort chip updates the slice and composer label immediately without waiting for EffortChanged over the stream.
+  await p.click(at('[aria-label="Effort"] [data-value="effort:high"]'))
+  await vi.waitFor(() => expect(useSessions.getState().sessions[remoteId]?.effort).toBe('high'))
+  expect(trigger.textContent).toBe('GPT-5.4· high')
+  expect(useSessions.getState().sessions[remoteId]?.entries.filter((e) => e.kind === 'info').map((e) => e.text)).toEqual([
+    'model → openai/gpt-5.4',
+    'effort → high',
+  ])
+
+  // A matching EffortChanged arriving later is also a clean no-op.
+  await act(async () => dispatch([{ key: 'agent.events@1', event: { type: 'EffortChanged', session: remoteId, effort: 'high' } }]))
+  expect(useSessions.getState().sessions[remoteId]?.entries.filter((e) => e.kind === 'info').map((e) => e.text)).toEqual([
+    'model → openai/gpt-5.4',
+    'effort → high',
+  ])
 })

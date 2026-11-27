@@ -1978,3 +1978,22 @@ test('a child\'s Error lands on its parent as an error entry attributed to the c
   route(draft, { type: 'Error', session: 'kid', turn: T, message: 'model: boom' }, ctx())
   expect(draft[S]?.entries.at(-1)).toMatchObject({ kind: 'error', text: '↳ probe-gemini error: model: boom', child: 'probe-gemini' })
 })
+
+test('ModelChanged and EffortChanged are idempotent when the session already holds that value', () => {
+  let s = empty(S)
+  s = apply(s, { type: 'ModelChanged', session: S, model: 'openai/gpt-5.4' }, ctx())
+  expect(s.model).toBe('openai/gpt-5.4')
+  expect(s.entries.filter((e) => e.kind === 'info').map((e) => e.text)).toEqual(['model → openai/gpt-5.4'])
+
+  const sameModel = apply(s, { type: 'ModelChanged', session: S, model: 'openai/gpt-5.4' }, ctx())
+  expect(sameModel).toBe(s)
+  expect(sameModel.entries.filter((e) => e.kind === 'info').map((e) => e.text)).toEqual(['model → openai/gpt-5.4'])
+
+  s = apply(s, { type: 'EffortChanged', session: S, effort: 'high' }, ctx())
+  expect(s.effort).toBe('high')
+  expect(s.entries.filter((e) => e.kind === 'info').map((e) => e.text)).toEqual(['model → openai/gpt-5.4', 'effort → high'])
+
+  const sameEffort = apply(s, { type: 'EffortChanged', session: S, effort: 'high' }, ctx())
+  expect(sameEffort).toBe(s)
+  expect(sameEffort.entries.filter((e) => e.kind === 'info').map((e) => e.text)).toEqual(['model → openai/gpt-5.4', 'effort → high'])
+})
