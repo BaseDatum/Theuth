@@ -39,11 +39,14 @@ pub const UPDATE_ACTOR: &str = "update";
 pub const GITHUB_URL: &str =
     "https://github.com/BaseDatum/Theuth/releases/latest/download/latest.json";
 
-/// Fallback release manifest on S3 (39 §3.1).
+/// Secondary release manifest on Wasabi S3 (39 §3.1).
+pub const WASABI_URL: &str = "https://s3.us-central-1.wasabisys.com/theuth-releases/latest.json";
+
+/// Tertiary release manifest on self-hosted S3 (39 §3.1).
 pub const S3_URL: &str = "https://s3.rwx.dev/theuth/releases/latest.json";
 
-/// Default release manifest endpoints, tried in order (GitHub Releases first, S3 fallback).
-pub const DEFAULT_URLS: &[&str] = &[GITHUB_URL, S3_URL];
+/// Default release manifest endpoints, tried in order (GitHub Releases -> Wasabi S3 -> self-hosted S3).
+pub const DEFAULT_URLS: &[&str] = &[GITHUB_URL, WASABI_URL, S3_URL];
 
 /// Primary manifest URL (39 §3.1). Kept for callers expecting `update::URL`;
 /// `update.url` overrides the default fallback chain.
@@ -92,8 +95,8 @@ impl Default for UpdateConfig {
 impl UpdateConfig {
     /// Manifest URLs to try in order.
     ///
-    /// When `url` is unset (or blank), returns [`DEFAULT_URLS`] (GitHub Releases
-    /// first, S3 fallback). When `url` is explicitly configured, returns only that
+    /// When `url` is unset (or blank), returns [`DEFAULT_URLS`] (GitHub Releases,
+    /// then Wasabi S3, then self-hosted S3). When `url` is explicitly configured, returns only that
     /// single URL with no fallback to production endpoints.
     pub fn endpoints(&self) -> Vec<&str> {
         match self.url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -1361,7 +1364,7 @@ mod tests {
     #[test]
     fn constants_and_update_config_endpoints() {
         assert_eq!(URL, GITHUB_URL);
-        assert_eq!(DEFAULT_URLS, &[GITHUB_URL, S3_URL]);
+        assert_eq!(DEFAULT_URLS, &[GITHUB_URL, WASABI_URL, S3_URL]);
 
         let def = UpdateConfig::default();
         assert!(def.enabled);
