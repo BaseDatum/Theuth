@@ -57,6 +57,8 @@ pub mod rpc_support;
 pub mod rpc_forward;
 /// Background jobs and terminal RPC methods.
 pub mod rpc_jobs;
+/// Escape hatch on any mesh engine: `engine_terminal`, `engine_logs`, the `theuth/pty/1` relay.
+pub mod rpc_engine;
 /// Skill RPC server and client methods.
 pub mod rpc_skills;
 /// System prompt section RPC methods (list, edit, and reset core and plugin sections).
@@ -83,6 +85,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
         rpc_hub::rpc_module(server.clone()),
         rpc_settings::rpc_module(server.clone()),
         rpc_jobs::rpc_module(server.clone()),
+        rpc_engine::rpc_module(server.clone()),
         rpc_skills::rpc_module(server.clone()),
         rpc_prompts::rpc_module(server.clone()),
         rpc_suffixes::rpc_module(server.clone()),
@@ -275,8 +278,8 @@ pub use supervisor::{
 pub use supervisor::{spawn_engine_agents, spawn_test_agents};
 pub use tools::Retention;
 pub use user::{
-    Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
-    UserSink,
+    Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR,
+    UnregisterUserSink, UserChannels, UserSink, unregister_sink_on_scope_stop,
 };
 pub use vision::{VisionNote, VisionObservation, VisionSource, VisionStatus};
 

@@ -1,0 +1,16 @@
+# A theuth engine in Kubernetes (design doc 224 §7). `t mesh add --k8s` embeds this base and renders
+# it with an overlay: namespace, `namePrefix: theuth-<name>-`, the `theuth.io/node` label, the image
+# tag, storage class and size, the pairing ticket Secret (`pair`), and optionally
+# ../components/deny-cluster-network. On its own it renders a node with no ticket:
+#
+#   kubectl kustomize deploy/computer/k8s/base
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - pvc.yaml
+  - deployment.yaml
+labels:
+  - pairs:
+      theuth.io/managed: "true"
+    includeTemplates: true

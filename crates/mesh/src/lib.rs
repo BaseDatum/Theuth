@@ -142,9 +142,22 @@ pub(crate) fn docs_homes_on(
 /// hub duty (schedule ticks).
 static HUB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// The lease as the mesh actor last saw it: `None` before its first [`MeshEvent::Lease`]
+/// (no mesh plugin, or not started yet), then `Some(this engine holds it)`. Subsystems whose
+/// work is a hub duty (dreaming, channel listeners) start and stop on its changes.
+static HUB_WATCH: std::sync::LazyLock<tokio::sync::watch::Sender<Option<bool>>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::Sender::new(None));
+
 /// The mesh actor calls this on every lease change.
 pub fn set_hub(hub: bool) {
     HUB.store(hub, std::sync::atomic::Ordering::Relaxed);
+    HUB_WATCH.send_replace(Some(hub));
+}
+
+/// Follow the lease: `None` until the mesh actor emitted one, then whether this engine is
+/// the hub ([`set_hub`]).
+pub fn hub_watch() -> tokio::sync::watch::Receiver<Option<bool>> {
+    HUB_WATCH.subscribe()
 }
 
 /// Is this engine the hub? `true` when no mesh is running.
@@ -514,6 +527,15 @@ pub struct SetHubPref(pub HubPref);
 /// `t mesh add` (`t mesh pair`).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct PairingString;
+
+/// 224: `ask` → `Result<String, String>`: a key-less, single-use pairing ticket that lives
+/// `ttl_ms` (capped at an hour), for a cloud node. Separate from the Settings pairing string
+/// and opens no Nearby window.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct RemoteTicket {
+    /// How long the ticket works (ms).
+    pub ttl_ms: u64,
+}
 
 /// `ask` → `Result<Vec<EngineStats>, String>`: what every known engine
 /// advertises (this one included), for placement (`mesh_peers`, 67 §8).
@@ -1193,6 +1215,15 @@ impl Message<PairingString> for Mesh {
 }
 
 #[cfg(not(target_os = "ios"))]
+impl Message<RemoteTicket> for Mesh {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, m: RemoteTicket, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Ok(self.ctx.net.remote_ticket(m.ttl_ms).await)
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
 impl Message<ListStats> for Mesh {
     type Reply = Result<Vec<EngineStats>, String>;
 
@@ -1458,13 +1489,18 @@ impl runtime::Plugin for MeshPlugin {
         // 79 §6.6: secrets stamps its replicated rows with the engine id; it starts
         // before us and cannot ask the mesh (mesh depends on secrets), so we tell it.
         tokio::spawn(tell_secrets_engine(rt.clone(), net.id.clone()));
+        // 225: the seal gate names this engine in its prompts and sealed errors.
+        if let Some(g) = secrets::seal::installed() {
+            g.set_identity(&net.id.0, &net.name());
+        }
         // 183 §6.9: the vault the key frames and the rotation move keys in, and the key tick
         // (member rule, missing-key requests, the rotation's peer list) until shutdown.
         // P2-F1: the tick (and its paired-set refresh: unpair enforcement) runs from the start,
         // vault or not; the vault joins when it opens, `keys::start` before any tick uses it.
         let (n, rt2) = (net.clone(), rt.clone());
         tokio::spawn(async move {
-            let vault = secrets::handle(&rt2);
+            // 225: a sealed vault joins when it is unsealed, not never.
+            let vault = secrets::handle_when_open(&rt2);
             tokio::pin!(vault);
             let mut waiting = true;
             let mut every = tokio::time::interval(keys::TICK);

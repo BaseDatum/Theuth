@@ -327,12 +327,12 @@ impl Terminals {
         let lane = if matches!(request, Request::PtyInput { .. }) { Lane::OrderedInput } else { Lane::Concurrent };
         cx.spawn_request(lane, request, |api, request| async move {
             match request {
-                Request::ListTerminals(session) => Msg::Terminals(api.list_terminals(session, Some(true)).await.map_err(crate::reason)),
+                Request::ListTerminals(session) => Msg::Terminals(api.list_terminals(session, Some(true), None).await.map_err(crate::reason)),
                 Request::PtyScreen { session, job, viewport, if_revision, epoch } => {
-                    let reply = api.pty_screen(session, job.clone(), viewport, if_revision).await.map_err(crate::reason);
+                    let reply = api.pty_screen(session, job.clone(), viewport, if_revision, None).await.map_err(crate::reason);
                     Msg::PtyScreen { session, job, viewport, epoch, reply }
                 }
-                Request::PtyInput { session, job, text, keys } => Msg::Input(api.pty_input(session, job, text, Some(keys)).await.map_err(crate::reason)),
+                Request::PtyInput { session, job, text, keys } => Msg::Input(api.pty_input(session, job, text, Some(keys), None).await.map_err(crate::reason)),
             }
         });
     }

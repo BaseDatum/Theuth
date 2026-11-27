@@ -96,6 +96,7 @@ mod tests {
         let app = App {
             relay: Arc::new(Relay::new(64)),
             web: Some(web),
+            oauth: Arc::new(crate::oauth_do::DoOauth::new(None)),
         };
         let router = Router::new()
             .route("/healthz", get(|| async { "ok" }))

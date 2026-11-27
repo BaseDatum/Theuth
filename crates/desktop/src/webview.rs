@@ -36,7 +36,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, State, Url, Webview,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, State, Url, Webview,
     WebviewUrl, Window,
 };
 use tauri_plugin_opener::OpenerExt;
@@ -154,17 +154,48 @@ pub fn on_window_destroyed<R: Runtime>(window: &Window<R>) {
     }
 }
 
+/// Where the caller page's viewport origin sits in its window's content view, in logical px, given the page
+/// webview's frame there (`x`, `y`, `height`) and the viewport height the page measured (`innerHeight`).
+///
+/// The UI measures the placeholder against its viewport (`getBoundingClientRect`); a child webview is placed in
+/// the content view. On macOS Tauri's `Visible` title bar style (every window but `main`, which is `Overlay` in
+/// `tauri.macos.conf.json`) is a full-size content view (tauri-runtime-wry `title_bar_style`): the page webview
+/// spans the opaque title bar while WebKit starts its viewport below it, so a pop-out's placeholder at viewport
+/// `y` is at `y` + the title bar's height in the content view. That top inset is the frame's height less the
+/// viewport's; it is zero under `Overlay` and on the other platforms.
+fn viewport_origin(x: f64, y: f64, height: f64, viewport: Option<f64>) -> (f64, f64) {
+    let inset = viewport
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map_or(0.0, |v| (height - v).max(0.0));
+    (x, y + inset)
+}
+
+/// [`viewport_origin`] for `page`, the webview that measured the rectangle.
+fn page_origin<R: Runtime>(page: &Webview<R>, viewport: Option<f64>) -> Result<(f64, f64), String> {
+    let bounds = page.bounds().map_err(|e| e.to_string())?;
+    let scale = page.window().scale_factor().map_err(|e| e.to_string())?;
+    let at = bounds.position.to_logical::<f64>(scale);
+    let size = bounds.size.to_logical::<f64>(scale);
+    Ok(viewport_origin(at.x, at.y, size.height, viewport))
+}
+
+/// Lay `view` over the rectangle `page` measured in its viewport (205 §4.3), in one move.
+#[allow(clippy::too_many_arguments)]
 fn place<R: Runtime>(
     view: &Webview<R>,
+    page: &Webview<R>,
+    viewport: Option<f64>,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    view.set_position(LogicalPosition::new(x, y))
-        .map_err(|e| e.to_string())?;
-    view.set_size(LogicalSize::new(width, height))
-        .map_err(|e| e.to_string())
+    let (ox, oy) = page_origin(page, viewport)?;
+    view.set_bounds(Rect {
+        position: LogicalPosition::new(ox + x, oy + y).into(),
+        size: LogicalSize::new(width, height).into(),
+    })
+    .map_err(|e| e.to_string())
 }
 
 fn builder<R: Runtime>(
@@ -230,18 +261,21 @@ fn builder<R: Runtime>(
 }
 
 /// Create `label` in the caller's window at the rectangle, or move an existing one there and show it; an
-/// existing web view is not navigated (205 §4.3).
+/// existing web view is not navigated (205 §4.3). The rectangle is in the caller page's viewport, `viewport`
+/// (its `innerHeight`) tall: [`place`].
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // the contract's argument list (205 §4.3)
 pub async fn web_view_attach<R: Runtime>(
     app: AppHandle<R>,
     window: Window<R>,
+    page: Webview<R>,
     label: String,
     url: String,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
+    viewport: Option<f64>,
 ) -> Result<(), String> {
     check_label(&label)?;
     if let Some(view) = app.get_webview(&label) {
@@ -253,15 +287,16 @@ pub async fn web_view_attach<R: Runtime>(
             view.reparent(&window).map_err(|e| e.to_string())?;
             track(&app, &label, window.label());
         }
-        place(&view, x, y, width, height)?;
+        place(&view, &page, viewport, x, y, width, height)?;
         return view.show().map_err(|e| e.to_string());
     }
     let parsed = check_url(&app, &url)?;
     let builder = builder(&app, &label, parsed)?;
+    let (ox, oy) = page_origin(&page, viewport)?;
     track(&app, &label, window.label());
     let res = window.add_child(
         builder,
-        LogicalPosition::new(x, y),
+        LogicalPosition::new(ox + x, oy + y),
         LogicalSize::new(width, height),
     );
     match res {
@@ -278,17 +313,20 @@ pub async fn web_view_attach<R: Runtime>(
     }
 }
 
-/// Move and size it (205 §4.3).
+/// Move and size it to a rectangle in the caller page's viewport (205 §4.3, [`place`]).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // the contract's argument list (205 §4.3)
 pub async fn web_view_bounds<R: Runtime>(
     app: AppHandle<R>,
+    page: Webview<R>,
     label: String,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
+    viewport: Option<f64>,
 ) -> Result<(), String> {
-    place(&webview(&app, &label)?, x, y, width, height)
+    place(&webview(&app, &label)?, &page, viewport, x, y, width, height)
 }
 
 /// Show or hide it without destroying it (205 §4.3).
@@ -719,6 +757,21 @@ async fn run_call<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webview_viewport_origin() {
+        // `main` on macOS (`Overlay`), Windows, Linux: the viewport is the page's frame.
+        assert_eq!(viewport_origin(0.0, 0.0, 800.0, Some(800.0)), (0.0, 0.0));
+        // A pop-out under a `Visible` title bar: the 500 pt frame spans the 32 pt bar, the viewport is 468.
+        assert_eq!(viewport_origin(0.0, 0.0, 500.0, Some(468.0)), (0.0, 32.0));
+        // A page webview that is itself offset in its window.
+        assert_eq!(viewport_origin(10.0, 20.0, 400.0, Some(372.0)), (10.0, 48.0));
+        // No (or a nonsensical) measurement: no inset; a viewport taller than the frame is no negative inset.
+        assert_eq!(viewport_origin(0.0, 0.0, 500.0, None), (0.0, 0.0));
+        assert_eq!(viewport_origin(0.0, 0.0, 500.0, Some(0.0)), (0.0, 0.0));
+        assert_eq!(viewport_origin(0.0, 0.0, 500.0, Some(f64::NAN)), (0.0, 0.0));
+        assert_eq!(viewport_origin(0.0, 0.0, 500.0, Some(510.0)), (0.0, 0.0));
+    }
 
     #[test]
     fn webview_attach_steal_rule() {

@@ -730,7 +730,7 @@ mod tests {
                         args: serde_json::json!({}),
                         risk: Risk::Destructive,
                         call_id: None,
-                        always_ask: false,
+                        always_ask: None,
                     }))
                     .await
             })

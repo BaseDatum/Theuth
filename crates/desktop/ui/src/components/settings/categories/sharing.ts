@@ -13,11 +13,11 @@ export const sharing: SettingsCategory = {
   label: 'Sharing',
   icon: Globe,
   tabs: [
-    { id: 'shared', label: 'Overview', icon: LayoutList, Component: SharingOverviewTab, required: { methods: ['sharing_list'] } },
-    { required: {"methods":["a2a_export_put","a2a_export_remove","a2a_exports","agents_list","contact_answer","contact_first_answer","contact_first_waiting","contact_list","contact_nearby","contact_pair","contact_remove","contact_update","contact_window","list_sessions","mesh_status"],"topics":[]}, id: 'contacts', label: 'Contacts', icon: Contact, Component: ContactsTab },
-    { id: 'shared-chats', label: 'Chats and agents', icon: MessagesSquare, Component: SharedChatsTab, required: { methods: ['a2a_exports', 'a2a_export_remove', 'contact_list', 'contact_update'] } },
-    { id: 'shared-notes', label: 'Notes and notebooks', icon: NotebookText, Component: SharedNotesTab, required: { methods: ['sharing_list', 'sharing_revoke'] } },
-    { id: 'sharing', label: 'Public shares', icon: Globe, Component: SharingTab, required: { methods: ['share_settings_get', 'share_list'] } },
-    { id: 'domains', label: 'Domains', icon: AtSign, Component: DomainsTab, required: { methods: ['share_settings_get', 'share_list'] } },
+    { id: 'shared', scope: 'everywhere', copyable: false, label: 'Overview', icon: LayoutList, Component: SharingOverviewTab, required: { methods: ['sharing_list'] } },
+    { required: {"methods":["a2a_export_put","a2a_export_remove","a2a_exports","agents_list","contact_answer","contact_first_answer","contact_first_waiting","contact_list","contact_nearby","contact_pair","contact_remove","contact_update","contact_window","list_sessions","mesh_status"],"topics":[]}, id: 'contacts', scope: 'everywhere', copyable: false, label: 'Contacts', icon: Contact, Component: ContactsTab },
+    { id: 'shared-chats', scope: 'everywhere', copyable: false, label: 'Chats and agents', icon: MessagesSquare, Component: SharedChatsTab, required: { methods: ['a2a_exports', 'a2a_export_remove', 'contact_list', 'contact_update'] } },
+    { id: 'shared-notes', scope: 'everywhere', copyable: false, label: 'Notes and notebooks', icon: NotebookText, Component: SharedNotesTab, required: { methods: ['sharing_list', 'sharing_revoke'] } },
+    { id: 'sharing', scope: 'everywhere', copyable: false, label: 'Public shares', icon: Globe, Component: SharingTab, required: { methods: ['share_settings_get', 'share_list'] } },
+    { id: 'domains', scope: 'everywhere', copyable: false, label: 'Domains', icon: AtSign, Component: DomainsTab, required: { methods: ['share_settings_get', 'share_list'] } },
   ],
 }

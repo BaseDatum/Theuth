@@ -24,7 +24,9 @@ export function codeDetails(name: string, args: unknown): CodeDetails | null {
 
 /**
  * Tool arguments as display lines (mirrors `tui::model::describe`). `shell`
- * shows the command itself (`$ ` on the first line); anything else is
+ * shows the command itself (`$ ` on the first line), then `cwd` and each `env`
+ * variable (a `{{secret:…}}` reference there is what makes a call always ask,
+ * so the card must show it; references are never values); anything else is
  * `key: value` per argument, with long or multi-line strings collapsed to
  * their size and other values as one-line JSON cut at 120 chars.
  */
@@ -33,10 +35,13 @@ export function describe(name: string, args: unknown): string[] {
   if (typeof args !== 'object' || Array.isArray(args)) return [JSON.stringify(args)]
   const obj = args as Record<string, unknown>
   if (name === 'shell' && typeof obj.command === 'string') {
-    return obj.command
+    const cmd = obj.command
       .trim()
       .split('\n')
       .map((l, i) => (i === 0 ? '$ ' : '  ') + l)
+    const cwd = typeof obj.cwd === 'string' ? [`cwd: ${obj.cwd}`] : []
+    const env = obj.env && typeof obj.env === 'object' && !Array.isArray(obj.env) ? Object.entries(obj.env as Record<string, unknown>).map(([k, v]) => `env ${k}=${String(v)}`) : []
+    return [...cmd, ...cwd, ...env]
   }
   const line = (k: string, v: unknown): string => {
     if (typeof v === 'string') {

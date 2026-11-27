@@ -1,36 +1,16 @@
 import { useQuerySupport } from '@/rpc/capabilities'
-import RFB from '@novnc/novnc'
 import { useQuery } from '@tanstack/react-query'
-import { Keyboard, Maximize2, Minimize2, Play, RotateCcw } from 'lucide-react'
+import { Maximize2, Minimize2, Play, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { useHandoffs, useSandboxActions, useSandboxes, unresolved } from '@/components/settings/sandbox-queries'
 import { useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { HANDOFFS_KEY, stateLabel } from '@/store/sandboxes'
 import { on } from '@/store/sessions'
-
-// X11 keysyms (noVNC's `core/input/keysym.js` is not on the package's export map).
-const XK = { Control_L: 0xffe3, Alt_L: 0xffe9, Super_L: 0xffeb, Tab: 0xff09, F4: 0xffc1, Escape: 0xff1b, Print: 0xff61 }
-const CHORDS: readonly [string, (r: RFB) => void][] = [
-  ['Ctrl-Alt-Del', (r) => r.sendCtrlAltDel()],
-  ['Alt-Tab', (r) => chord(r, [[XK.Alt_L, 'AltLeft']], [XK.Tab, 'Tab'])],
-  ['Alt-F4', (r) => chord(r, [[XK.Alt_L, 'AltLeft']], [XK.F4, 'F4'])],
-  ['Super (app menu)', (r) => r.sendKey(XK.Super_L, 'MetaLeft')],
-  ['Escape', (r) => r.sendKey(XK.Escape, 'Escape')],
-  ['Print Screen', (r) => r.sendKey(XK.Print, 'PrintScreen')],
-]
-function chord(r: RFB, mods: [number, string][], key: [number, string]) {
-  for (const [k, c] of mods) r.sendKey(k, c, true)
-  r.sendKey(key[0], key[1])
-  for (const [k, c] of mods.reverse()) r.sendKey(k, c, false)
-}
-
-type Conn = 'connecting' | 'connected' | 'reconnecting' | 'failed'
-const RETRY_MS = [1000, 2000, 4000, 8000, 15000]
+import { SendKeysMenu, useRfb } from './rfb'
 
 /**
  * `/vm/$name` (79 §6.2, §6.5, §6.6): the live RFB session on a canvas. `scaleViewport: false`, `resizeSession: true`
@@ -65,65 +45,10 @@ export function VmDesktop({ name }: { name: string }) {
     },
   })
 
-  const box = useRef<HTMLDivElement>(null)
-  const rfb = useRef<RFB | null>(null)
-  const [conn, setConn] = useState<Conn>('connecting')
-  const [attempt, setAttempt] = useState(0)
-  const [reason, setReason] = useState<string | null>(null)
-  const [geometry, setGeometry] = useState('')
-  const [desktopName, setDesktopName] = useState('')
   const [taken, setTaken] = useState(false)
   const [fit, setFit] = useState(true)
   const viewOnly = agentBusy && !taken
-
-  // One RFB per access grant and attempt; the cleanup disconnects and drops the canvas.
-  useEffect(() => {
-    const target = box.current
-    const a = access.data
-    if (!target || !a) return
-    setConn(attempt === 0 ? 'connecting' : 'reconnecting')
-    const r = new RFB(target, a.ws_url, { credentials: { password: a.password } })
-    r.scaleViewport = false
-    r.clipViewport = false
-    r.resizeSession = fit
-    r.viewOnly = viewOnly
-    r.background = 'transparent'
-    let timer: number | undefined
-    let dead = false
-    r.addEventListener('connect', () => {
-      setConn('connected')
-      setReason(null)
-    })
-    r.addEventListener('securityfailure', (e) => setReason(e.detail.reason ?? `security failure ${e.detail.status}`))
-    r.addEventListener('desktopname', (e) => setDesktopName(e.detail.name))
-    r.addEventListener('disconnect', () => {
-      if (dead) return
-      setConn('reconnecting')
-      timer = window.setTimeout(() => setAttempt((n) => n + 1), RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)])
-    })
-    rfb.current = r
-    // The framebuffer size is the canvas's own size (unscaled): watch it for the geometry readout.
-    const canvas = target.querySelector('canvas')
-    const ro = new ResizeObserver(() => {
-      if (canvas && canvas.width > 0) setGeometry(`${canvas.width}×${canvas.height}`)
-    })
-    if (canvas) ro.observe(canvas)
-    return () => {
-      dead = true
-      clearTimeout(timer)
-      ro.disconnect()
-      rfb.current = null
-      r.disconnect()
-    }
-    // `fit` and `viewOnly` are pushed below without a reconnect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [access.data, attempt])
-  useEffect(() => {
-    if (rfb.current) rfb.current.viewOnly = viewOnly
-  }, [viewOnly])
-  useEffect(() => {
-    if (rfb.current) rfb.current.resizeSession = fit
-  }, [fit])
+  const { box, rfb, conn, reason, geometry, desktopName, reconnect } = useRfb(access.data, viewOnly, fit)
   // Another window (or the `sandbox_takeover` tool) flipped it.
   useEffect(() => on("sandbox.events@1", 'Takeover', (e) => e.name === name && setTaken(e.on)), [name])
   // A hand-off arms Take over (79 §6.6) once per row.
@@ -158,29 +83,14 @@ export function VmDesktop({ name }: { name: string }) {
               {taken ? 'Hand back' : 'Take over'}
             </Button>
           )}
-          {running && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="icon-xs" variant="ghost" aria-label="Send keys">
-                  <Keyboard />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {CHORDS.map(([label, send]) => (
-                  <DropdownMenuItem key={label} disabled={viewOnly || conn !== 'connected'} onSelect={() => rfb.current && send(rfb.current)}>
-                    {label}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          {running && <SendKeysMenu rfb={rfb} disabled={viewOnly || conn !== 'connected'} />}
           {running && (
             <Button size="icon-xs" variant="ghost" aria-label={fit ? 'Actual size' : 'Fit to window'} title={fit ? 'Actual size' : 'Fit to window'} onClick={() => setFit((f) => !f)}>
               {fit ? <Minimize2 /> : <Maximize2 />}
             </Button>
           )}
           {running && (
-            <Button size="icon-xs" variant="ghost" aria-label="Reconnect" title="Reconnect" onClick={() => setAttempt((n) => n + 1)}>
+            <Button size="icon-xs" variant="ghost" aria-label="Reconnect" title="Reconnect" onClick={reconnect}>
               <RotateCcw />
             </Button>
           )}

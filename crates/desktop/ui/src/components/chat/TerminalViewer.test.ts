@@ -110,6 +110,15 @@ test('the pty source still goes through subscribe_pty and pty_input', async () =
   expect(api.cell_input).not.toHaveBeenCalled()
 })
 
+test('224: a pty on another engine passes its id as the trailing engine on subscribe_pty and pty_input', async () => {
+  const term = fakeTerm()
+  attachSource({ kind: 'pty', session: 's', job: 'j', engine: 'node-1' }, term as unknown as Term, api, client, () => {})
+  expect(client.stream.mock.calls[0]!.slice(0, 3)).toEqual(['subscribe_pty', ['s', 'j', 30, 100, 'node-1'], 'unsubscribe_pty'])
+  term.data!('x')
+  await flush()
+  expect(api.pty_input).toHaveBeenCalledWith('s', 'j', 'x', null, 'node-1')
+})
+
 test('the cell key row: ↑ ↓ ⏎ Esc Tab ^C raw bytes, arrows per cursor-key mode, 48 px targets, only under touch (171 §11.6)', () => {
   const seq = Object.fromEntries(CELL_KEYS)
   expect(seq['↑']!(false)).toBe('\x1b[A')

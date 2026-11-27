@@ -37,6 +37,7 @@ vi.mock('@/lib/web-view-native', () => ({
   nativeWebViews: () => native.has,
   webLabel: (id: string) => `web-${id}`,
   labelId: (label: string) => label.replace(/^web-/, ''),
+  viewportHeight: () => 768,
   attach: native.attach,
   bounds: native.bounds,
   visible: native.visible,

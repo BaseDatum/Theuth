@@ -89,22 +89,27 @@ export const FOLLOW_FRAMES = 30
 export const FOLLOW_IDLE_MS = 250
 
 /**
- * Call `moved` with `el`'s rectangle whenever it changes, until the returned stop. Every frame while it moves, and for
- * `FOLLOW_FRAMES` frames after; then a poll every `FOLLOW_IDLE_MS`, so an idle frame does not keep a display-rate loop
- * running (on iPad that held the compositor busy for as long as a web view was open). A resize of `el`, a window resize,
- * a scroll anywhere, a transition or animation starting, or the sidebar's slide (`SIDEBAR_SLIDE_EVENT`: Web Animations
+ * Call `moved` with `el`'s rectangle whenever it or the page's viewport height (`native.viewportHeight`: a pop-out's
+ * title bar coming or going moves the viewport in the window, 205 §4.3) changes, until the returned stop. Every frame
+ * while it moves, and for `FOLLOW_FRAMES` frames after; then a poll every `FOLLOW_IDLE_MS`, so an idle frame does not
+ * keep a display-rate loop running (on iPad that held the compositor busy for as long as a web view was open). A resize
+ * of `el`, a window resize, a scroll anywhere, a transition or animation starting, or the sidebar's slide
+ * (`SIDEBAR_SLIDE_EVENT`: Web Animations
  * fire no event of their own) goes straight back to every frame; the poll catches what moves without any of those, one
  * poll late at worst. `moved` does not get the starting rectangle.
  */
 export function followRect(el: HTMLElement, moved: (r: native.Rect) => void): () => void {
   let last = rectOf(el)
+  let viewport = native.viewportHeight()
   let still = 0
   let frame = 0
   let poll: ReturnType<typeof setTimeout> | undefined
   const check = () => {
     const r = rectOf(el)
-    if (sameRect(r, last)) return false
+    const vh = native.viewportHeight()
+    if (sameRect(r, last) && vh === viewport) return false
     last = r
+    viewport = vh
     moved(r)
     return true
   }

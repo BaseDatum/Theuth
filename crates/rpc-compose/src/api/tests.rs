@@ -58,6 +58,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         cells::rpc_module(server.clone()),
         share::rpc_module(server.clone()),
         plugins::rpc_module(server.clone()),
+        cloudnodes::rpc_module(server.clone()),
         sandbox::rpc_module(server),
     ]).expect("test RPC descriptors").module
 }

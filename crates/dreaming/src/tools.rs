@@ -83,6 +83,24 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, seams: Arc<Seams>) {
     let _ = reg.ask(RegisterTool(Arc::new(UndoTool(s.clone())))).await;
 }
 
+/// Undo [`register`]: the engine stopped dreaming (it lost the hub lease, design doc 224).
+pub async fn unregister(reg: &ActorRef<ToolRegistry>) {
+    let _ = reg.ask(tools::UnregisterPrompt("dreaming")).await;
+    for name in [
+        LedgerTool::NAME,
+        StateTool::NAME,
+        CasePutTool::NAME,
+        CaseListTool::NAME,
+        SkillLearnedEditTool::NAME,
+        ReplayTool::NAME,
+        PreferencesSetTool::NAME,
+        JournalTool::NAME,
+        UndoTool::NAME,
+    ] {
+        let _ = reg.ask(tools::UnregisterTool(name.to_owned())).await;
+    }
+}
+
 /// Text for the transcript, the same data as a Python value for the runtime.
 fn structured<T: Serialize>(text: String, data: T) -> ToolOutput {
     ToolOutput {

@@ -98,16 +98,38 @@ pub struct Pending {
 impl Pending {
     /// Fresh random token.
     pub fn fresh() -> Self {
+        Self::fresh_for(TTL_MS)
+    }
+
+    /// Fresh random token live for `ttl_ms` (224: a cloud node's remote ticket lives longer
+    /// than the Settings pairing string, because the node installs before it dials).
+    pub fn fresh_for(ttl_ms: u64) -> Self {
         let bytes: [u8; 16] = rand::random();
         Self {
             token: BASE32_NOPAD.encode(&bytes),
-            expires_at_ms: now_ms() + TTL_MS,
+            expires_at_ms: now_ms().saturating_add(ttl_ms),
         }
     }
 
     /// Still usable.
     pub fn live(&self) -> bool {
         now_ms() < self.expires_at_ms
+    }
+}
+
+/// 224: the longest a remote ticket may live.
+pub const REMOTE_TTL_MAX_MS: u64 = 3_600_000;
+
+/// Consume a remote ticket (224 §4): drops the expired ones, then removes and accepts `token`
+/// when it is one of the live ones. Single use: a second presentation fails.
+pub fn take_remote(remote: &mut Vec<Pending>, token: &str) -> bool {
+    remote.retain(Pending::live);
+    match remote.iter().position(|p| p.token == token) {
+        Some(i) => {
+            remote.swap_remove(i);
+            true
+        }
+        None => false,
     }
 }
 
@@ -127,6 +149,17 @@ pub fn parse(s: &str) -> Option<Payload> {
         .decode(body.to_ascii_uppercase().as_bytes())
         .ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+/// `t mesh pair --remote` (224 §4): the same one-time token, id and addresses without
+/// `vault_key`/`vault_key_id`, for an engine whose ticket travels through a cloud provider's
+/// metadata or a Kubernetes Secret. The joiner needs neither: a 183 inviter hands it the
+/// keyring in `PairAck`, inside the token-checked connection.
+pub fn without_vault_key(s: &str) -> Option<String> {
+    let mut p = parse(s)?;
+    p.vault_key = None;
+    p.vault_key_id = None;
+    Some(build(&p))
 }
 
 /// One row of the peer set as it travels between engines: the `peers` table
@@ -304,6 +337,34 @@ mod tests {
         );
         assert!(parse("2.abc").is_none());
         assert!(parse("1.!!!").is_none());
+        let remote = parse(&without_vault_key(&s).unwrap()).unwrap();
+        assert_eq!((remote.vault_key, remote.vault_key_id), (None, None));
+        assert_eq!((remote.id, remote.token), (p.id, p.token.clone()));
+        assert!(without_vault_key("2.abc").is_none());
+    }
+
+    /// 224: a remote ticket opens the door once, and not after its TTL.
+    #[test]
+    fn remote_ticket_is_single_use_and_expires() {
+        let a = Pending::fresh_for(900_000);
+        let b = Pending::fresh_for(900_000);
+        assert!(
+            a.expires_at_ms > now_ms() + TTL_MS,
+            "longer than the pairing TTL"
+        );
+        let mut stale = Pending::fresh_for(900_000);
+        stale.expires_at_ms = now_ms() - 1;
+        let mut remote = vec![a.clone(), b.clone(), stale.clone()];
+        assert!(!take_remote(&mut remote, "nope"));
+        assert_eq!(remote.len(), 2, "the expired one was pruned");
+        assert!(!take_remote(&mut remote, &stale.token), "expired");
+        assert!(take_remote(&mut remote, &a.token));
+        assert!(!take_remote(&mut remote, &a.token), "single use");
+        assert!(
+            take_remote(&mut remote, &b.token),
+            "the other is still live"
+        );
+        assert!(remote.is_empty());
     }
 
     #[test]

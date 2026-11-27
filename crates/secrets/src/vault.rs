@@ -82,6 +82,10 @@ pub enum KeyStore {
     Keychain,
     /// `secrets.key` only.
     File,
+    /// 225: never a key file or a keychain item: a fresh vault keeps its key in memory until a
+    /// master password or device unlock is added (cloud nodes); an existing one boots sealed
+    /// unless such a method opens it.
+    Sealed,
 }
 
 /// One kept version. Wire-visible: never a value, never a length.
@@ -280,6 +284,11 @@ pub const SHARE_PREFIX: &str = "share/";
 /// `valid_name`.
 pub const PLUGINS_PREFIX: &str = "plugins/";
 
+/// Prefix of cloud-node provider credentials (224 §13.3): `cloud/digitalocean`, `cloud/fly`,
+/// a JSON value (`access_token`, `refresh_token`, …). `mesh/`'s rules: written only through
+/// [`Vault::set_if_version`], never listed, never expandable, one `valid_name` after the prefix.
+pub const CLOUD_PREFIX: &str = "cloud/";
+
 /// 216 D9: the name of the key that MACs `plugins/grants.yaml` ([`Vault::plugins_grants_key`]).
 /// It is kept in this engine's local-only `meta` table, not in a `vault` row, because vault
 /// rows replicate across the mesh and an approval must verify only on the engine that made it.
@@ -289,11 +298,11 @@ pub const PLUGINS_GRANTS_KEY: &str = "plugins/grants-key";
 const PLUGINS_GRANTS_AAD: &[u8] = b"theuth-plugins-grants-key-1";
 
 /// `valid_name`, or one of the `/` families a local caller may write
-/// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`, `sandbox/<vm>/<key>`,
-/// `share/<domain>/<name>/<key>`, `plugins/<name>/<key>`.
+/// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`, `cloud/<provider>`,
+/// `sandbox/<vm>/<key>`, `share/<domain>/<name>/<key>`, `plugins/<name>/<key>`.
 fn writable_name(name: &str) -> bool {
     valid_name(name)
-        || [OAUTH_PREFIX, MESH_PREFIX]
+        || [OAUTH_PREFIX, MESH_PREFIX, CLOUD_PREFIX]
             .iter()
             .any(|p| name.strip_prefix(p).is_some_and(valid_name))
         || [SANDBOX_PREFIX, SHARE_PREFIX, PLUGINS_PREFIX]
@@ -381,8 +390,14 @@ enum Guard {
 pub struct Vault {
     pool: SqlitePool,
     path: PathBuf,
-    /// This engine's key: seals the mesh keys at rest.
-    key: Zeroizing<[u8; 32]>,
+    /// This engine's key (the DEK, design 225): seals the mesh keys at rest. Kept in an
+    /// mlock'd, zeroizing buffer; on disk only wrapped per unlock method (`vault-keys.json`).
+    key: crate::envelope::LockedKey,
+    /// 225: set by [`Vault::seal`]: reads fail with the sealed text until an unlock method
+    /// opens again ([`Vault::unseal_with`]).
+    sealed: std::sync::atomic::AtomicBool,
+    /// The text a read gets while sealed.
+    sealed_msg: RwLock<String>,
     /// 183 §6.9: the mesh-wide data keys: the current one seals every new row, the retained
     /// ones still open rows not yet swept (W-31).
     ring: RwLock<rotation::Ring>,
@@ -424,8 +439,22 @@ impl Vault {
     /// present, source `import`. Err only when the key store or the file fails.
     pub async fn open(data_dir: &Path, key_store: KeyStore) -> anyhow::Result<Vault> {
         std::fs::create_dir_all(data_dir).with_context(|| data_dir.display().to_string())?;
-        let (key, key_store) = crate::key::load_or_create(data_dir, key_store)?;
-        let key = Zeroizing::new(key);
+        match crate::envelope::boot(data_dir, key_store, &crate::envelope::OsKeychain)? {
+            crate::envelope::Boot::Unsealed { dek, by } => {
+                Self::open_with_dek(data_dir, dek, by).await
+            }
+            crate::envelope::Boot::Sealed { reason } => Err(anyhow::anyhow!("{reason}")),
+        }
+    }
+
+    /// [`Vault::open`] with the DEK already unwrapped (225: the seal gate, after an unlock
+    /// method opened it). `key_store` labels how: `keychain`, `file`, `password`, `device`, `memory`.
+    pub async fn open_with_dek(
+        data_dir: &Path,
+        key: crate::envelope::LockedKey,
+        key_store: &'static str,
+    ) -> anyhow::Result<Vault> {
+        std::fs::create_dir_all(data_dir).with_context(|| data_dir.display().to_string())?;
         let path = data_dir.join(store::DB);
         let pool = store::open(&path).await?;
         let mesh_key = match store::meta_get(&pool, MESH_KEY).await? {
@@ -449,6 +478,8 @@ impl Vault {
             pool,
             path,
             key,
+            sealed: false.into(),
+            sealed_msg: RwLock::new(String::new()),
             ring: RwLock::new(ring),
             missing: RwLock::default(),
             holds: Arc::default(),
@@ -479,6 +510,42 @@ impl Vault {
     /// `"keychain"` or `"file"`.
     pub fn key_store(&self) -> &'static str {
         self.key_store
+    }
+
+    /// 225: the DEK, for rewrapping it under another unlock method. Crate-private.
+    pub(crate) fn dek(&self) -> &[u8; 32] {
+        &self.key
+    }
+
+    /// 225: sealed by [`Vault::seal`] (a running engine locked by `t vault seal`).
+    pub fn is_sealed(&self) -> bool {
+        self.sealed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 225 `vault_seal`: refuse every read with `msg` and drop the plaintext copy. The DEK and
+    /// the mesh keys stay in this process (other plugins hold the vault) until a restart.
+    pub fn seal(&self, msg: String) {
+        *self.sealed_msg.write().unwrap_or_else(PoisonError::into_inner) = msg;
+        self.sealed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut g = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        g.entries.clear();
+        g.external.clear();
+        g.scrubber = None;
+    }
+
+    /// Undo [`Vault::seal`] when `dek` is this vault's key (an unlock method opened it again).
+    pub(crate) async fn unseal_with(&self, dek: &[u8; 32]) -> anyhow::Result<bool> {
+        if !crate::envelope::ct_eq(dek, &self.key) {
+            return Ok(false);
+        }
+        self.sealed.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.refresh().await?;
+        Ok(true)
+    }
+
+    fn sealed_err(&self) -> Option<String> {
+        self.is_sealed()
+            .then(|| self.sealed_msg.read().unwrap_or_else(PoisonError::into_inner).clone())
     }
 
     /// The pool, for `replica::attach`.
@@ -676,6 +743,9 @@ impl Vault {
     /// its previous in-memory value (W-38) and its key id goes to [`Vault::missing_keys`];
     /// any other row that does not open is skipped with a warning.
     pub async fn refresh(&self) -> anyhow::Result<()> {
+        if self.is_sealed() {
+            return Ok(());
+        }
         let (rows, current) = store::rows(&self.pool).await?;
         let ring = self.ring();
         let mut missing = std::collections::BTreeSet::new();
@@ -997,12 +1067,16 @@ impl Vault {
         args: &mut serde_json::Value,
         fetched: &Fetched,
     ) -> Result<usize, String> {
+        let sealed = self.sealed_err();
         let g = self.read();
         let now = now_ms();
         let mut n = 0;
         strings(args, &mut |s| {
             if !s.contains("{{secret:") {
                 return Ok(());
+            }
+            if let Some(msg) = &sealed {
+                return Err(msg.clone());
             }
             let mut err = None;
             let out = placeholder_re().replace_all(s, |c: &regex::Captures| -> String {
@@ -1957,7 +2031,7 @@ mod tests {
     #[tokio::test]
     async fn legacy_file_becomes_rows_once() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, _) = crate::key::load_or_create(dir.path(), KeyStore::File).unwrap();
+        let key = crate::key::file_create(dir.path()).unwrap();
         let plain = serde_json::json!({"secrets": {"gh": {"note": "old", "versions": [
             {"v": 3, "value": "third-value-long", "created": "2025-01-03T00:00:00Z", "source": "user"},
             {"v": 2, "value": "second-value-long", "created": "2025-01-02T00:00:00Z", "source": "cli"}
@@ -2002,6 +2076,9 @@ mod tests {
         assert!(!writable_name("mesh/a/b"));
         assert!(writable_name("sandbox/lab/vnc"));
         assert!(!writable_name("sandbox/lab/"));
+        assert!(writable_name("cloud/digitalocean"));
+        assert!(!writable_name("cloud/"));
+        assert!(!writable_name("cloud/a/b"));
     }
 
     /// 210 §8.3: `share/<domain>/<name>/<key>` rows follow `sandbox/`'s rules: every segment a

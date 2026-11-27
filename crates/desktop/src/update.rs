@@ -7,13 +7,16 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::time::Duration;
 
-use anyhow::Context as _;
 use tauri::plugin::TauriPlugin;
 use tauri::{AppHandle, Emitter, Manager, Url, Wry};
 use tauri_plugin_updater::{Config, Update, UpdaterExt};
 
-/// Fallback manifest URL (mirrors `update::S3_URL` and the second entry in `tauri.conf.json`).
-const S3_FALLBACK_URL: &str = "https://s3.rwx.dev/theuth/releases/latest.json";
+/// Fallback manifest URLs tried in order on download failure (mirrors `update::DEFAULT_URLS`
+/// after GitHub and entries 2–3 of `tauri.conf.json`: Wasabi S3 first, then self-hosted S3).
+const FALLBACK_URLS: &[&str] = &[
+    "https://s3.us-central-1.wasabisys.com/theuth-releases/latest.json",
+    "https://s3.rwx.dev/theuth/releases/latest.json",
+];
 
 /// A verified update waiting for `RunEvent::Exit` (39 §3.3: bytes stay in memory).
 /// `restart`: Settings › General asked to install now; the quit handshake relaunches instead of exiting.
@@ -94,46 +97,75 @@ async fn check(app: &AppHandle) -> anyhow::Result<Option<String>> {
     let bytes = match update.download(|_, _| {}, || {}).await {
         Ok(bytes) => bytes,
         Err(primary_err) => {
-            let fallback_url: Url = S3_FALLBACK_URL.parse()?;
-            let can_fallback =
-                !has_override && update.download_url.host_str() != fallback_url.host_str();
-            if !can_fallback {
+            if has_override {
                 return Err(primary_err.into());
             }
-            tracing::warn!(
-                "update: download of {} from {} failed ({primary_err}); falling back to {S3_FALLBACK_URL}",
-                update.version,
-                update.download_url
-            );
-            let Some(fallback_update) = app
-                .updater_builder()
-                .endpoints(vec![fallback_url])?
-                .build()?
-                .check()
-                .await
-                .with_context(|| {
-                    format!(
-                        "fallback check against {S3_FALLBACK_URL} after download failure: {primary_err}"
-                    )
-                })?
-            else {
+            // Start after whichever fallback host already served the failed download,
+            // preserving strict order: GitHub -> Wasabi S3 -> self-hosted S3.
+            let failed_host = update.download_url.host_str().map(str::to_owned);
+            let start_idx = FALLBACK_URLS
+                .iter()
+                .position(|raw| {
+                    raw.parse::<Url>()
+                        .ok()
+                        .and_then(|u| u.host_str().map(str::to_owned))
+                        == failed_host
+                })
+                .map_or(0, |i| i + 1);
+            let remaining = &FALLBACK_URLS[start_idx..];
+            if remaining.is_empty() {
+                return Err(primary_err.into());
+            }
+
+            let mut fallback_errors = vec![format!("{}: {primary_err}", update.download_url)];
+            let mut recovered: Option<(Update, Vec<u8>)> = None;
+
+            for &fallback_str in remaining {
+                let fallback_url: Url = fallback_str.parse()?;
+                tracing::warn!(
+                    "update: download of {} failed; falling back to {fallback_str}",
+                    update.version
+                );
+                let fallback_update = match app
+                    .updater_builder()
+                    .endpoints(vec![fallback_url])?
+                    .build()?
+                    .check()
+                    .await
+                {
+                    Ok(Some(u)) => u,
+                    Ok(None) => {
+                        fallback_errors.push(format!("{fallback_str}: reported no update"));
+                        continue;
+                    }
+                    Err(e) => {
+                        fallback_errors.push(format!("{fallback_str}: check failed: {e}"));
+                        continue;
+                    }
+                };
+                if is_held(app, &fallback_update.version) {
+                    return Ok(Some(fallback_update.version));
+                }
+                match fallback_update.download(|_, _| {}, || {}).await {
+                    Ok(fallback_bytes) => {
+                        recovered = Some((fallback_update, fallback_bytes));
+                        break;
+                    }
+                    Err(e) => {
+                        fallback_errors.push(format!(
+                            "{}: download failed: {e}",
+                            fallback_update.download_url
+                        ));
+                    }
+                }
+            }
+
+            let Some((fallback_update, fallback_bytes)) = recovered else {
                 anyhow::bail!(
-                    "download from {} failed ({primary_err}) and fallback {S3_FALLBACK_URL} reported no update",
-                    update.download_url
+                    "all update download endpoints failed: {}",
+                    fallback_errors.join("; ")
                 );
             };
-            if is_held(app, &fallback_update.version) {
-                return Ok(Some(fallback_update.version));
-            }
-            let fallback_bytes = fallback_update
-                .download(|_, _| {}, || {})
-                .await
-                .with_context(|| {
-                    format!(
-                        "fallback download from {} failed (primary error: {primary_err})",
-                        fallback_update.download_url
-                    )
-                })?;
             update = fallback_update;
             fallback_bytes
         }

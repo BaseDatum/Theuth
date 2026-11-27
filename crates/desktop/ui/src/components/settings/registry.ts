@@ -8,14 +8,15 @@ import { models } from '@/components/settings/categories/models'
 import { network } from '@/components/settings/categories/network'
 import { plugins } from '@/components/settings/categories/plugins'
 import { prompt } from '@/components/settings/categories/prompt'
+import { security } from '@/components/settings/categories/security'
 import { sharing } from '@/components/settings/categories/sharing'
 import { tools } from '@/components/settings/categories/tools'
 import { voice } from '@/components/settings/categories/voice'
 import type { SettingsCategory, SettingsTab } from '@/components/settings/types'
 import { supports, type Discovery } from '@/rpc/discovery'
 
-/** 188: the categories column, top to bottom. 210: Sharing after Network (public web sharing, §7.4 item 4); 213: its hub. 216: Plugins last. */
-export const CATEGORIES: readonly SettingsCategory[] = [general, models, agent, prompt, learning, voice, meetings, calendar, network, sharing, channels, tools, plugins]
+/** 188: the categories column, top to bottom. 210: Sharing after Network (public web sharing, §7.4 item 4); 213: its hub. 225: Security (the vault) after Sharing. 216: Plugins last. */
+export const CATEGORIES: readonly SettingsCategory[] = [general, models, agent, prompt, learning, voice, meetings, calendar, network, sharing, security, channels, tools, plugins]
 
 /** A tab id and the category it belongs to. */
 export type Placed = { category: SettingsCategory; tab: SettingsTab }
@@ -43,6 +44,7 @@ export const TAB_IDS = [
   'calendar', 'briefs', 'upcoming',
   'machine', 'machines', 'devices', 'messaging', 'vms',
   'shared', 'contacts', 'shared-chats', 'shared-notes', 'sharing', 'domains',
+  'vault',
   'signal', 'slack', 'telegram',
   'categories', 'tools', 'builtins', 'search', 'mcp', 'computer', 'browser',
   'plugins',
@@ -58,6 +60,21 @@ export const shownTabs = (category: SettingsCategory, discovery?: Discovery): Se
 
 /** The categories with at least one shown tab, in column order. */
 export const shownCategories = (discovery?: Discovery): SettingsCategory[] => CATEGORIES.filter(category => shownTabs(category, discovery).length > 0)
+
+/** Per-machine Settings: a `device` tab is this client's, so the nav lists it under "This <device>", not its category. */
+export const isDeviceTab = (tab: SettingsTab): boolean => tab.scope === 'device'
+
+/** The category's shown tabs the nav lists under it: the device tabs sit in their own group. */
+export const navTabs = (category: SettingsCategory, discovery?: Discovery): SettingsTab[] => shownTabs(category, discovery).filter(tab => !isDeviceTab(tab))
+
+/** The categories column without the device tabs, in column order; a category left with none leaves the column. */
+export const navCategories = (discovery?: Discovery): SettingsCategory[] => CATEGORIES.filter(category => navTabs(category, discovery).length > 0)
+
+/** The "This <device>" group: every shown device tab, in column order. */
+export const deviceTabs = (discovery?: Discovery): SettingsTab[] => CATEGORIES.flatMap(category => shownTabs(category, discovery).filter(isDeviceTab))
+
+/** The tabs of the band over `tab`: the device group for a device tab, else its category's nav tabs. */
+export const bandTabs = ({ category, tab }: Placed, discovery?: Discovery): SettingsTab[] => (isDeviceTab(tab) ? deviceTabs(discovery) : navTabs(category, discovery))
 
 /** Where `/settings/<id>` of a known tab lands: the tab itself when shown, else its category's first shown tab, else Appearance. */
 export function shownTab(id: string, discovery?: Discovery): string {

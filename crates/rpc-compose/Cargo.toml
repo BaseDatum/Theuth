@@ -37,6 +37,7 @@ webprofile = { workspace = true }
 plugins = { workspace = true }
 tasks = { workspace = true }
 sandbox = { workspace = true }
+cloudnodes = { workspace = true }  # 224
 artifact = { workspace = true }
 app = { workspace = true }
 secrets = { workspace = true }

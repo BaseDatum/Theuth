@@ -9,9 +9,9 @@ export const prompt: SettingsCategory = {
   label: 'Prompt',
   icon: MessageSquarePlus,
   tabs: [
-    { id: 'suffixes', label: 'Suffixes', icon: MessageSquarePlus, Component: Suffixes },
+    { id: 'suffixes', scope: 'everywhere', copyable: false, label: 'Suffixes', icon: MessageSquarePlus, Component: Suffixes },
     {
-      id: 'system',
+      id: 'system', scope: 'machine', copyable: true,
       label: 'System',
       icon: FileText,
       Component: SystemPrompt,

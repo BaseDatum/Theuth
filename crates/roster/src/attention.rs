@@ -4492,6 +4492,7 @@ mod tests {
             risk: tools::Risk::Destructive,
             human_only: false,
             always_ask: false,
+            always_ask_why: None,
         };
         let q = ask(s, &[("Ship?", &["Yes"])]);
         let inputs = Inputs {
@@ -4528,6 +4529,7 @@ mod tests {
             risk: tools::Risk::Destructive,
             human_only: false,
             always_ask: false,
+            always_ask_why: None,
         };
         let mut inputs = Inputs {
             approvals: vec![(a, 40)],
@@ -5189,6 +5191,7 @@ mod tests {
             risk: tools::Risk::Destructive,
             human_only: false,
             always_ask: false,
+            always_ask_why: None,
         };
         let approval_id = format!("approval:{}", a.id.0);
         let ops = tasks::Owner::Agent("ops".into());

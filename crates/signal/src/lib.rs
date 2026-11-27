@@ -371,6 +371,11 @@ impl runtime::Plugin for SignalPlugin {
             config_path: config_path.clone(),
         });
         actor.register(SIGNAL_ACTOR)?;
+        // Hub-only gating (design doc 224): a stopped scope frees the name and the sink.
+        rt.release_on_scope_stop(actor);
+        if sink.is_some() {
+            agent::unregister_sink_on_scope_stop(rt, "signal");
+        }
 
         // First use of the registry (00 §4, 12 §2).
         let rt = rt.clone();

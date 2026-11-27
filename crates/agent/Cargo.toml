@@ -23,7 +23,7 @@ oauth = { workspace = true }
 secrets = { workspace = true }
 surface = { workspace = true }
 cursor = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }

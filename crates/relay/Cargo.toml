@@ -30,6 +30,10 @@ rand = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }
+# DigitalOcean OAuth code exchange for cloud nodes (src/oauth_do.rs, design doc 224).
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 # Same as crates/slack: with both `ring` and `aws-lc-rs` in the workspace graph,
 # `ServerConfig::builder()` panics unless a process provider is installed. `--tls` does it.
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }

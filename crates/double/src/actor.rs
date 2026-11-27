@@ -1607,7 +1607,7 @@ mod tests {
                     args,
                     risk,
                     call_id: None,
-                    always_ask: false,
+                    always_ask: None,
                 })
                 .await
                 .unwrap();
@@ -2361,7 +2361,7 @@ mod tests {
                 args: serde_json::json!({"name": "demo"}),
                 risk: Risk::Mutating,
                 call_id: None,
-                always_ask: false,
+                always_ask: None,
             }))
             .await
             .unwrap();
@@ -2392,7 +2392,9 @@ mod tests {
                 args: serde_json::json!({"command": "git push"}),
                 risk: Risk::Mutating,
                 call_id: None,
-                always_ask: true,
+                always_ask: Some(tools::AlwaysAskWhy::Entries {
+                    entries: vec!["shell".into()],
+                }),
             })
             .await
             .unwrap();

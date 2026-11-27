@@ -23,6 +23,14 @@ impl Message<Status> for Mesh {
     }
 }
 
+impl Message<RemoteTicket> for Mesh {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, _: RemoteTicket, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Err(UNAVAILABLE.into())
+    }
+}
+
 impl Message<AddPeer> for Mesh {
     type Reply = DelegatedReply<Result<Peer, String>>;
 

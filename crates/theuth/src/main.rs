@@ -3,12 +3,15 @@
 
 mod bench_models;
 mod external_backends;
+mod k8s_cli;
 mod link_cli;
 mod logs;
 mod mcp;
 mod plugin_cli;
 mod secret_cli;
 mod service;
+mod subsystems;
+mod vault_cli;
 mod worker;
 #[cfg(test)]
 mod wire_discovery_tests;
@@ -210,6 +213,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: plugin_cli::PluginCmd,
     },
+    /// The sealed secrets vault (design doc 225): status, seal/unseal, unlock methods, offline init.
+    Vault {
+        #[command(subcommand)]
+        cmd: vault_cli::VaultCmd,
+    },
 }
 
 /// `t dreaming …` (136 §3.3 item 7).
@@ -254,17 +262,25 @@ enum MeshCmd {
     /// This engine, its peers and who holds the hub lease.
     Status,
     /// Print a pairing string for `t mesh add` on another engine.
-    Pair,
+    Pair {
+        /// A ticket for an engine made elsewhere (cloud node, Kubernetes; design doc 224 §4):
+        /// the bare string, without the vault key (the joiner gets the keyring inside the
+        /// token-checked connection). One-time, valid 5 minutes.
+        #[arg(long)]
+        remote: bool,
+    },
     /// Pair with the engine behind a pairing string (mutual and transitive) —
     /// or make one first: `--ssh user@host [--key NAME | --system-ssh]` installs
     /// `t` over SSH, `--docker [--name N] [--image I | --local-t PATH]` runs it
     /// in a container here, `--vm [--name N] [--cpus N] [--memory 4G] [--disk 20G]
     /// [--share HOST[:GUEST][:ro]]… [--no-desktop] [--network public,host[,private]]
     /// [--image REF | --bootstrap] [--local-t PATH]` makes a sandbox VM (design
-    /// doc 79); all end paired (design doc 67 §13).
+    /// doc 79), `--k8s [--context C] [--namespace N] [--storage-class S]
+    /// [--deny-cluster-network]` a Deployment in a cluster (design doc 224 §7);
+    /// all end paired (design doc 67 §13).
     Add {
         /// The string `t mesh pair` printed on the other engine.
-        #[arg(required_unless_present_any = ["ssh", "docker", "vm"])]
+        #[arg(required_unless_present_any = ["ssh", "docker", "vm", "k8s"])]
         pairing: Option<String>,
         /// Make an engine on this SSH host (`[user@]host[:port]`, or an `~/.ssh/config` alias with --system-ssh).
         #[arg(long, value_name = "TARGET", conflicts_with_all = ["pairing", "docker", "vm"])]
@@ -286,10 +302,10 @@ enum MeshCmd {
         /// Make a sandbox VM on this machine (an isolated Linux desktop, design doc 79); the engine does the work.
         #[arg(long, conflicts_with_all = ["pairing", "ssh", "docker"])]
         vm: bool,
-        /// Engine and record name; default: the SSH host, `engine` for docker, `vm-1` for a VM.
+        /// Engine and record name; default: the SSH host, `engine` for docker and --k8s, `vm-1` for a VM.
         #[arg(long, value_name = "N")]
         name: Option<String>,
-        /// --docker: a pre-built image ref instead of building deploy/computer/Dockerfile; --vm: the OCI image.
+        /// --docker: a pre-built image ref instead of building deploy/computer/Dockerfile; --vm: the OCI image; --k8s: default ghcr.io/basedatum/theuth/engine:<this version>.
         #[arg(long, value_name = "I", conflicts_with_all = ["local_t", "bootstrap", "ssh"])]
         image: Option<String>,
         /// --docker / --vm: a locally built Linux `t` to install instead of the image's.
@@ -316,6 +332,13 @@ enum MeshCmd {
         /// --vm: our `theuth-vm-base:trixie` systemd base plus a first-boot install script instead of the published image.
         #[arg(long, requires = "vm")]
         bootstrap: bool,
+        #[command(flatten)]
+        k8s: Box<k8s_cli::K8sArgs>,
+    },
+    /// Engines in Kubernetes made by `t mesh add --k8s` (design doc 224 §7); kubectl only, no engine needed.
+    K8s {
+        #[command(subcommand)]
+        cmd: k8s_cli::K8sCmd,
     },
     /// Leave an engine out of the mesh.
     Remove {
@@ -442,7 +465,18 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
     let r: Result<serde_json::Value, ClientError> = match cmd {
         Cmd::Mesh { cmd } => match cmd {
             MeshCmd::Status => client.request("mesh_status", rpc_params![]).await,
-            MeshCmd::Pair => client.request("mesh_pairing_string", rpc_params![]).await,
+            MeshCmd::Pair { remote: false } => {
+                client.request("mesh_pairing_string", rpc_params![]).await
+            }
+            MeshCmd::Pair { remote: true } => {
+                let s: String = client.request("mesh_pairing_string", rpc_params![]).await?;
+                let ticket = mesh::pairing::without_vault_key(&s).ok_or_else(|| {
+                    anyhow::anyhow!("the engine returned a malformed pairing string")
+                })?;
+                println!("{ticket}");
+                return Ok(());
+            }
+            MeshCmd::K8s { .. } => unreachable!("t mesh k8s runs without an engine"),
             MeshCmd::Add {
                 pairing: Some(pairing),
                 ..
@@ -467,6 +501,13 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                 )?;
                 return sandbox_create(client, spec).await;
             }
+            MeshCmd::Add {
+                pairing: None,
+                k8s,
+                name,
+                image,
+                ..
+            } if k8s.k8s => return k8s_cli::add(&client, &k8s, name, image).await,
             MeshCmd::Add {
                 pairing: None,
                 ssh,
@@ -610,6 +651,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
         Cmd::Double { .. } => unreachable!("t double runs without an engine"),
         Cmd::Dreaming { .. } => unreachable!("t dreaming runs without an engine"),
         Cmd::Plugin { .. } => unreachable!("t plugin is served by plugin_cli::run"),
+        Cmd::Vault { .. } => unreachable!("t vault is served by vault_cli::run"),
     };
     match r {
         Ok(v) => {
@@ -1050,6 +1092,20 @@ agent:
 #   enabled: true            # false: no watcher, no actor, no tool, no prompt block
 #   run_timeout_secs: 1800   # a run still going after this is cancelled and reported as `timeout`
 
+# subsystems:                # which subsystems this engine starts for its role (design doc 226); auto | on | off each.
+#                            # auto follows the rule: dreaming/signal/slack/telegram run only on the mesh hub (channels stay
+#                            # control-only elsewhere and move with the lease); meeting/voice/talk need an interactive host
+#                            # (desktop app, TUI — never `t --headless`) and an audio device; computer needs a display (Xvfb counts).
+#                            # on: start regardless; off: never. `<name>.enabled: false` still switches a subsystem off.
+#   meeting: auto
+#   voice: auto              # on: voice notes in/out on a headless hub's Signal/Slack (design doc 45)
+#   talk: auto
+#   computer: auto
+#   dreaming: auto
+#   signal: auto
+#   slack: auto
+#   telegram: auto
+
 # mesh:                      # engines form a leaderless mesh over iroh; hub duties are a lease won by stability (design doc 67 §4). `t mesh status|pair|add|remove|hub`
 #   relay: https://iroh.relay.theuth.io   # iroh relay when hole punching fails; self-host: your `iroh-relay` URL; `none` → bind locally, never dial a relay
 #   discovery: true          # DNS/pkarr + mDNS peer lookup; false → dial remembered addresses only (one laptop, no network)
@@ -1313,7 +1369,7 @@ tools:
   # pty_shell: ~        # program for `start` PTY jobs; default $SHELL, on Windows pwsh.exe else powershell.exe (58 §0.3)
 
 # secrets:                   # design doc 37; `/secrets`, Settings › Secrets, `t --secret-set`
-#   key_store: auto          # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
+#   key_store: auto          # auto | keychain | file | sealed — how the vault key opens at boot (225); auto = keychain, else <data_dir>/secrets.key (0600) with a warning; sealed = never a key file: master password / device unlock only (`t vault`)
 #   tools: true              # false: no secret_* tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed; the vault, /secrets and the harness's own keys are unaffected
 #   request_timeout_secs: 1800   # `secret_request` gives up (the model sees \"no answer\") after this
 
@@ -1674,6 +1730,15 @@ async fn run() -> anyhow::Result<()> {
             std::process::exit(code);
         }
         Some(Cmd::Plugin { cmd }) => return plugin_cli::run(&data_dir, &config, cmd).await,
+        Some(Cmd::Mesh {
+            cmd: MeshCmd::K8s { cmd },
+        }) => return k8s_cli::run(cmd).await,
+        Some(Cmd::Mesh {
+            cmd: MeshCmd::Add {
+                k8s, name, image, ..
+            },
+        }) if k8s.k8s && k8s.dry_run => return k8s_cli::dry_run(&k8s, name, image).await,
+        Some(Cmd::Vault { cmd }) => return vault_cli::run(&data_dir, &config, cmd).await,
         Some(cmd) => return cmd_67(&data_dir, &config, cmd).await,
         None => {}
     }
@@ -1906,7 +1971,10 @@ async fn run() -> anyhow::Result<()> {
             // Takeover (63 §2.3): the engine this process would have run —
             // serving RPC, so the desktop app finds it again (§4.2).
             let start_engine: tui::StartEngine = Box::new(|rt| {
-                Box::pin(async move { start_plugins(&rt, engine_plugins(false, false)).await })
+                Box::pin(async move {
+                    let env = subsystems::Env::probe(Host::Tui, false);
+                    start_plugins(&rt, engine_plugins(false, false), env).await
+                })
             });
             vec![Box::new(tui::TuiPlugin {
                 module: rpc_module,
@@ -1999,7 +2067,7 @@ async fn run() -> anyhow::Result<()> {
             tracing::info!(plugin = name, "started");
         }
     } else {
-        start_plugins(&rt, plugins).await?;
+        start_plugins(&rt, plugins, subsystems::Env::probe(host, cli.headless)).await?;
         // 158 §12.2: theuth as an MCP server, iff `mcp_server.enabled`; the catalogue calls the API in-process.
         mcp_server::boot(
             &rt,
@@ -2107,6 +2175,7 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
         autoresearch::rpc_module(server.clone()),
         cells::rpc_module(server.clone()),
         share::rpc_module(server.clone()),
+        cloudnodes::rpc_module(server.clone()),
         sandbox::rpc_module(server),
     ]).expect("production RPC descriptors");
     let discovery = rpc_core::Discovery {
@@ -2259,6 +2328,9 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(webprofile::WebProfilePlugin),
         Box::new(tasks::TasksPlugin),
         Box::new(sandbox::SandboxPlugin),
+        // 224: cloud nodes (records, provider credentials in the vault, create jobs that pair
+        // over the mesh); after secrets and mesh.
+        Box::new(cloudnodes::CloudPlugin),
         // 210: public web sharing; after mesh (identity, endpoint, vault) and replica (shares table).
         Box::new(share::SharePlugin::engine()),
         // 216: external plugins; after roster (attention Source), before update.
@@ -2281,21 +2353,36 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
     plugins
 }
 
-/// Start `plugins` on `rt` in order. First, 51 §8.2: the owners the registry
-/// must hear from before a private root may open — every lifecycle
-/// participant whose plugin runs here (each plugin honours its own
-/// `<section>.enabled`, default on). Jobs is registry-internal.
-async fn start_plugins(rt: &Runtime, mut plugins: Vec<Box<dyn Plugin>>) -> anyhow::Result<()> {
+/// Start `plugins` on `rt` in order, gated for `env` (design doc 226): every plugin declared
+/// its wire already; a skipped one does not start, a hub-only one starts under
+/// [`subsystems::follow_hub`] once the lease is known. First, 51 §8.2: the owners the registry
+/// must hear from before a private root may open — every lifecycle participant whose plugin
+/// starts here (each plugin honours its own `<section>.enabled`, default on). Jobs is
+/// registry-internal.
+async fn start_plugins(
+    rt: &Runtime,
+    mut plugins: Vec<Box<dyn Plugin>>,
+    env: subsystems::Env,
+) -> anyhow::Result<()> {
     declare_plugins(rt, &mut plugins).await?;
+    let names: Vec<&'static str> = plugins.iter().map(|p| p.name()).collect();
+    let plan = subsystems::plan(&names, &subsystems::overrides(&rt.config), &env);
+    let enabled = |name: &str| {
+        rt.config
+            .extract_inner::<bool>(&format!("{name}.enabled"))
+            .unwrap_or(true)
+    };
+    let disabled: Vec<&str> = names.iter().copied().filter(|n| !enabled(n)).collect();
+    tracing::info!("{}", subsystems::summary(&plan, &disabled, &env));
+    let starts = |name: &str| {
+        plan.iter()
+            .any(|(n, d)| *n == name && *d == subsystems::Decision::Start)
+    };
     let owners: Vec<&'static str> = [
         "artifact", "app", "browser", "computer", "voice", "talk", "routes",
     ]
     .into_iter()
-    .filter(|name| {
-        rt.config
-            .extract_inner::<bool>(&format!("{name}.enabled"))
-            .unwrap_or(true)
-    })
+    .filter(|name| enabled(name) && starts(name))
     .collect();
     let registry_rt = rt.clone();
     tokio::spawn(async move {
@@ -2335,6 +2422,22 @@ async fn start_plugins(rt: &Runtime, mut plugins: Vec<Box<dyn Plugin>>) -> anyho
                 .map_err(|e| e.to_string())
         })
     }));
+    let mut hub_only = Vec::new();
+    let plugins: Vec<_> = plugins
+        .into_iter()
+        .zip(plan)
+        .filter_map(|(plugin, (name, decision))| match decision {
+            // A disabled subsystem still starts: its own disabled path runs (dreaming
+            // switches its routine off).
+            _ if !enabled(name) => Some(plugin),
+            subsystems::Decision::Start => Some(plugin),
+            subsystems::Decision::Skip(_) => None,
+            subsystems::Decision::FollowHub => {
+                hub_only.extend(hub_subsystem(name, env.daemon));
+                None
+            }
+        })
+        .collect();
     let count = plugins.len() as u64;
     for (i, plugin) in plugins.into_iter().enumerate() {
         let name = plugin.name();
@@ -2352,7 +2455,45 @@ async fn start_plugins(rt: &Runtime, mut plugins: Vec<Box<dyn Plugin>>) -> anyho
     // 182: a table still unattached now has no plugin here — its parked changes no
     // longer hold the first sync. Here, so the TUI takeover's `start_engine` gets it too.
     replica::plugins_started();
+    tokio::spawn(subsystems::follow_hub(
+        rt.clone(),
+        hub_only,
+        mesh::hub_watch(),
+        // No lease by then: a running mesh that elected nobody (a lone `hub: never` engine
+        // emits none) is no hub here; without a mesh, `is_hub()` (true) as before.
+        || mesh::has_peers().is_none() && mesh::is_hub(),
+        subsystems::HubTiming::default(),
+    ));
     Ok(())
+}
+
+/// The plugin a hub-only subsystem runs per lease phase (226 §3): dreaming only on the hub;
+/// a channel listens on the hub (in daemon mode) and is control-only elsewhere.
+fn hub_subsystem(name: &'static str, daemon: bool) -> Option<subsystems::HubSubsystem> {
+    let make: subsystems::MakePlugin = match name {
+        "dreaming" => Box::new(|hub| hub.then(|| Box::new(dreaming::DreamingPlugin) as Box<dyn Plugin>)),
+        "signal" => Box::new(move |hub| {
+            Some(Box::new(signal::SignalPlugin {
+                channel: daemon && hub,
+                link: None,
+            }) as Box<dyn Plugin>)
+        }),
+        "slack" => Box::new(move |hub| {
+            Some(Box::new(slack::SlackPlugin {
+                channel: daemon && hub,
+            }) as Box<dyn Plugin>)
+        }),
+        "telegram" => Box::new(move |hub| {
+            Some(Box::new(telegram::TelegramPlugin {
+                channel: daemon && hub,
+            }) as Box<dyn Plugin>)
+        }),
+        other => {
+            tracing::warn!("subsystems: {other} is hub-only but has no hub factory; not started");
+            return None;
+        }
+    };
+    Some(subsystems::HubSubsystem { name, make })
 }
 
 /// `t --update` (39 §3.2): one foreground check, one line on stdout.

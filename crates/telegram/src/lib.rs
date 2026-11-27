@@ -667,6 +667,11 @@ impl runtime::Plugin for TelegramPlugin {
             tracing::error!("telegram: registering {TELEGRAM_ACTOR}: {e}");
             return Ok(());
         }
+        // Hub-only gating (design doc 224): a stopped scope frees the name and the sink.
+        rt.release_on_scope_stop(actor.clone());
+        if run_channel {
+            agent::unregister_sink_on_scope_stop(&rt, "telegram");
+        }
         tokio::spawn(async move {
             // 98 §10.5: hot-start when the token is set later.
             rt.subscribe::<Telegram, secrets::SecretsEvent>(&actor)

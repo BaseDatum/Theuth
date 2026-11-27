@@ -458,6 +458,9 @@ pub struct Net {
     removals: broadcast::Sender<EngineId>,
     hub_pref: Mutex<HubPref>,
     pending: Mutex<Option<Pending>>,
+    /// 224: single-use remote tickets (cloud nodes), each with its own TTL; separate from the
+    /// Settings pairing slot. Pruned when expired.
+    remote: Mutex<Vec<Pending>>,
     paired: Arc<RwLock<HashSet<EndpointId>>>,
     /// 183 R3: inbound connections on the stream ALPNs and gossip, by peer (closed on unpair).
     inbound_conns: Mutex<HashMap<EndpointId, Vec<Connection>>>,
@@ -509,7 +512,7 @@ impl std::fmt::Debug for Net {
 }
 
 /// Every ALPN whose inbound streams are handed out through [`Transport::accept`].
-const STREAM_ALPNS: [&str; 8] = [
+const STREAM_ALPNS: [&str; 10] = [
     replica::ALPN_RECORDS,
     replica::ALPN_ACP,
     replica::ALPN_SESSIONS,
@@ -518,6 +521,8 @@ const STREAM_ALPNS: [&str; 8] = [
     replica::ALPN_ARTIFACTS,
     replica::ALPN_DOCS,
     replica::ALPN_DOUBLE,
+    replica::ALPN_PTY,
+    replica::ALPN_DESKTOP,
 ];
 
 impl Net {
@@ -614,6 +619,7 @@ impl Net {
                 removals: broadcast::channel(64).0,
                 hub_pref: Mutex::new(hub_pref),
                 pending: Mutex::new(None),
+                remote: Mutex::new(Vec::new()),
                 paired: Arc::new(RwLock::new(paired)),
                 inbound_conns: Mutex::new(HashMap::new()),
                 refreshing: tokio::sync::Mutex::new(()),
@@ -1193,6 +1199,30 @@ impl Net {
         })
     }
 
+    /// 224: a key-less single-use ticket that lives `ttl_ms` (capped at
+    /// [`pairing::REMOTE_TTL_MAX_MS`]), minted for a cloud node that dials in after installing.
+    /// Independent of [`Net::pairing_string`]'s slot: neither replaces the other.
+    pub async fn remote_ticket(&self, ttl_ms: u64) -> String {
+        let p = Pending::fresh_for(ttl_ms.min(pairing::REMOTE_TTL_MAX_MS));
+        let token = p.token.clone();
+        {
+            let mut remote = Self::lock(&self.remote);
+            remote.retain(Pending::live);
+            remote.push(p);
+        }
+        self.join_network().await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), self.endpoint.online()).await;
+        pairing::build(&Payload {
+            id: self.endpoint.id(),
+            name: self.name(),
+            relay: self.relay.clone(),
+            addrs: self.endpoint.addr().addrs.into_iter().collect(),
+            token,
+            vault_key: None,
+            vault_key_id: None,
+        })
+    }
+
     /// This engine's standing for [`pairing::key_owner`], before the new peer is learned.
     fn rank(&self) -> Rank {
         Rank {
@@ -1301,6 +1331,7 @@ impl Net {
                 crate::keys::after_pairing(self, theirs.as_ref(), &their_keyring);
             }
         }
+        vault_paired(&entry.id.0);
         let net = self.clone();
         tokio::spawn(async move { net.drive(conn).await });
         Ok(self.peer_of(&entry))
@@ -1832,8 +1863,9 @@ impl Net {
                 *pending = None;
             }
             // 183 §6.8: or the token a Nearby ceremony with this very endpoint minted once both
-            // sides pressed Pair.
-            live || crate::nearby::take_token(self, &token, &peer)
+            // sides pressed Pair. 224: or a remote ticket (consumed on use).
+            live || pairing::take_remote(&mut Self::lock(&self.remote), &token)
+                || crate::nearby::take_token(self, &token, &peer)
         };
         if !ok {
             let _ = write_msg(
@@ -1883,6 +1915,7 @@ impl Net {
             crate::keys::after_pairing(self, rank.as_ref(), &keyring);
         }
         write_msg(&mut send, &reply).await.map_err(user_err)?;
+        vault_paired(&peer.to_string());
         let _ = send.finish();
         tracing::info!("mesh: paired with {}", peer.fmt_short());
         self.drive(conn).await;
@@ -2271,6 +2304,14 @@ fn path_of(conn: &Connection) -> (crate::PeerPath, Option<u32>) {
 /// An application error as the router reports it.
 fn user_err(e: anyhow::Error) -> AcceptError {
     AcceptError::from_boxed(e.into())
+}
+
+/// 225: tell the seal gate a pairing with `id` just completed: an `enroll` from it is
+/// pre-approved for a while, and an engine without a keychain asks it to become an unlock device.
+fn vault_paired(id: &str) {
+    if let Some(g) = secrets::seal::installed() {
+        g.after_pairing(id);
+    }
 }
 
 pub(crate) async fn write_msg(send: &mut SendStream, msg: &Msg) -> anyhow::Result<()> {

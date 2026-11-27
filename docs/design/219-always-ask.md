@@ -184,7 +184,9 @@ async fn set_always_ask(&self, session: Option<SessionId>, tool: String, on: boo
 - **`protected_write`** reads a fixed list of argument names (plain paths and text refs) from `Mutating`-or-above native calls.
 - **Loop-local** names are refused only on add; removing one (hand-edited into `config.yaml`) works.
 - **TS type.** `ApprovalRequested.always_ask` is non-optional in the generated TS type.
-- **Desktop count** (`Always ask: N tools`) counts distinct names across global, chat and inherited.
+- **Desktop summary** (2026-11-26, owner report: "Always ask: 5 tools" while every built-in read off, and `shell` kept asking): the shield, the ⋯ menu row and Settings › Approvals name the entries instead of counting them, a connection's `secret:` keys folded into one item (`vw (Bitwarden): read, write, send, delete; secret_delete`), with where they are set. The `shell` prompts came from `env.DIGITALOCEAN_TOKEN = {{secret:bw/vw/…}}` matching the seeded `secret:bw/vw:read` entry (221 D10); the card showed only `command`.
+- **`always_ask_why`** (`AlwaysAskWhy`: `entries` with the matching keys, `config_write`, `mcp_admin`, `unreadable`) rides on `ApprovalRequested` beside `always_ask`; `RequestApproval.always_ask` is the `Option` itself. Cards (desktop, Slack, Telegram, Signal) say why; the desktop shell card also lists `cwd` and `env`.
+- **`BuiltinTool.action` / `secret_asks`**: `list_builtins` reports each builtin's effective action for the chat (harness-wide in Settings: approvals off reads `allow`) and the marked `secret:` entries that still make a secret-consuming tool ask (`:read` only for placeholder consumers). The Builtins rows print both.
 - **Tool-row `always`** (harness-wide) keeps an existing chat entry.
 - **TUI** hides the double chip on an always-ask card.
 - **Names are trimmed** once in the RPC handler (forward, human check and registry see the same name) and in the registry, including `tools.always_ask` at load.

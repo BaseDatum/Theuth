@@ -10,8 +10,8 @@ export const general: SettingsCategory = {
   label: 'General',
   icon: Settings2,
   tabs: [
-    { id: 'appearance', label: 'Appearance', icon: Palette, Component: Appearance },
-    { required: {"methods":["documents_status","update_status"],"topics":[]}, id: 'app', label: 'App', icon: AppWindow, Component: App },
-    { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard, Component: Shortcuts },
+    { id: 'appearance', scope: 'device', copyable: false, label: 'Appearance', icon: Palette, Component: Appearance },
+    { required: {"methods":["documents_status","update_status"],"topics":[]}, id: 'app', scope: 'machine', copyable: false, copyNote: "Shows this install's status.", label: 'App', icon: AppWindow, Component: App },
+    { id: 'shortcuts', scope: 'device', copyable: false, label: 'Shortcuts', icon: Keyboard, Component: Shortcuts },
   ],
 }

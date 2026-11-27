@@ -16472,6 +16472,947 @@
           }
         ]
       },
+      "event.cloudnodes_2eevents.output.CloudEvent": {
+        "description": "Bus events on `cloudnodes.events` (variant tags unique across topics).",
+        "oneOf": [
+          {
+            "description": "The whole row, after any change.",
+            "properties": {
+              "node": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.CloudNode"
+                  }
+                ],
+                "description": "The row."
+              },
+              "type": {
+                "const": "CloudNodeChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "node"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One step of a long job (create, resize, destroy): the stage it belongs to and a line.",
+            "properties": {
+              "eta_secs": {
+                "description": "Seconds left, the create job's estimate (\"About 2 minutes left\").",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "What happens now.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Node name.",
+                "type": "string"
+              },
+              "pct": {
+                "description": "0-100, the create job's estimate.",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.Stage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The create job's stage (`None` for other jobs)."
+              },
+              "type": {
+                "const": "CloudNodeProgress",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "stage",
+              "line",
+              "pct",
+              "eta_secs"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A node's record is gone (destroyed).",
+            "properties": {
+              "name": {
+                "description": "Node name.",
+                "type": "string"
+              },
+              "type": {
+                "const": "CloudNodeRemoved",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A credential was stored or removed, or an OAuth sign-in finished (`error` when it failed).",
+            "properties": {
+              "connected": {
+                "description": "A credential is stored now.",
+                "type": "boolean"
+              },
+              "error": {
+                "description": "Why a sign-in failed.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.ProviderKind"
+                  }
+                ],
+                "description": "Which provider."
+              },
+              "type": {
+                "const": "CloudCredentialChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "provider",
+              "connected",
+              "error"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.output.CloudNode": {
+        "description": "One cloud node (a row in Settings › Machines).",
+        "properties": {
+          "auto_update": {
+            "description": "Follows stable releases (always true for nodes this builds).",
+            "type": "boolean"
+          },
+          "created_ms": {
+            "description": "When this engine created it (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "desktop": {
+            "description": "Created with a watchable desktop (`cloud_desktop`).",
+            "type": "boolean"
+          },
+          "error": {
+            "description": "Why the create job or the last operation failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ip": {
+            "description": "Public IPv4 (no port is open on it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "k8s": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.K8sOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Kubernetes: where it runs."
+          },
+          "memory_gb": {
+            "description": "2, 4 or 8.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "monthly_usd": {
+            "description": "Server + disk per month from the provider's live prices (a kept disk alone); `None` when\nunknown, and always in events.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Node name (also its mesh name).",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.MeshPath"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the mesh reaches it."
+          },
+          "peer_id": {
+            "description": "Its mesh endpoint id once joined.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.ProviderKind"
+              }
+            ],
+            "description": "Where it runs."
+          },
+          "provider_state": {
+            "description": "The provider's own word (`active`, `off`, `started`, `Running`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reachable": {
+            "description": "A mesh connection is up.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "region": {
+            "description": "Region slug (`None` for Kubernetes).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region_label": {
+            "description": "\"London\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_slug": {
+            "description": "The provider's size slug.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.Stage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While `Creating`: the current stage."
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.NodeState"
+              }
+            ],
+            "description": "Lifecycle."
+          },
+          "version": {
+            "description": "`t --version` on the node, when it answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "volume_gb": {
+            "description": "The `/data` disk.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "provider",
+          "region",
+          "region_label",
+          "memory_gb",
+          "size_slug",
+          "volume_gb",
+          "monthly_usd",
+          "state",
+          "stage",
+          "error",
+          "provider_state",
+          "ip",
+          "peer_id",
+          "reachable",
+          "path",
+          "version",
+          "auto_update",
+          "desktop",
+          "created_ms",
+          "k8s"
+        ],
+        "type": "object"
+      },
+      "event.cloudnodes_2eevents.output.K8sOptions": {
+        "description": "Kubernetes-only options (wizard step 2, Kubernetes variant).",
+        "properties": {
+          "context": {
+            "description": "kubeconfig context (default: the current one).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "create_namespace": {
+            "default": false,
+            "description": "Create `namespace` when it does not exist.",
+            "type": "boolean"
+          },
+          "deny_cluster_network": {
+            "default": false,
+            "description": "Add a NetworkPolicy: no ingress; egress to DNS and the internet, not the cluster.",
+            "type": "boolean"
+          },
+          "namespace": {
+            "description": "Namespace (default: the context's).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "storage_class": {
+            "description": "StorageClass of the volumes (default: the cluster's default).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "context",
+          "namespace",
+          "create_namespace",
+          "storage_class",
+          "deny_cluster_network"
+        ],
+        "type": "object"
+      },
+      "event.cloudnodes_2eevents.output.MeshPath": {
+        "description": "Mesh path to the node (from `mesh_status`).",
+        "oneOf": [
+          {
+            "const": "direct",
+            "description": "A direct connection (the node keeps its public IPv4 for this).",
+            "type": "string"
+          },
+          {
+            "const": "relay",
+            "description": "Through the iroh relay.",
+            "type": "string"
+          },
+          {
+            "const": "offline",
+            "description": "Not connected.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.output.NodeState": {
+        "description": "Lifecycle of a node record.",
+        "oneOf": [
+          {
+            "const": "creating",
+            "description": "The create job runs (see `stage`).",
+            "type": "string"
+          },
+          {
+            "const": "ready",
+            "description": "Joined; a mesh peer.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The create job stopped (see `error`); destroy cleans up.",
+            "type": "string"
+          },
+          {
+            "const": "busy",
+            "description": "A restart / resize / update is in progress.",
+            "type": "string"
+          },
+          {
+            "const": "destroying",
+            "description": "Destroy in progress.",
+            "type": "string"
+          },
+          {
+            "const": "orphan",
+            "description": "Found at the provider by its tags, with no record on this engine (made elsewhere, or the\nrecord was lost). Destroy works on it.",
+            "type": "string"
+          },
+          {
+            "const": "volume_kept",
+            "description": "Destroyed with its disk kept (provider still bills the disk).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.output.ProviderKind": {
+        "description": "A provider this build knows.",
+        "oneOf": [
+          {
+            "const": "digitalocean",
+            "description": "Droplet + Block Storage volume + Cloud Firewall; native install under systemd.",
+            "type": "string"
+          },
+          {
+            "const": "fly",
+            "description": "App + Volume + Machine (Machines API); the engine image. Beta: never live-tested.",
+            "type": "string"
+          },
+          {
+            "const": "kubernetes",
+            "description": "A one-replica Deployment via kubectl (`sandbox::k8s`). Desktop only.",
+            "type": "string"
+          },
+          {
+            "const": "lightsail",
+            "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.output.Stage": {
+        "description": "The create job's stages, in order (wizard step ④).",
+        "oneOf": [
+          {
+            "const": "server",
+            "description": "Server (Droplet / Machine / Deployment) created and running.",
+            "type": "string"
+          },
+          {
+            "const": "storage",
+            "description": "The `/data` volume attached.",
+            "type": "string"
+          },
+          {
+            "const": "install",
+            "description": "Installing the newest signed theuth release (ends when the node dials the mesh).",
+            "type": "string"
+          },
+          {
+            "const": "join",
+            "description": "The node presented its ticket; waiting until it is reachable.",
+            "type": "string"
+          },
+          {
+            "const": "ready",
+            "description": "A reachable mesh peer.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.receiver.CloudEvent": {
+        "description": "Bus events on `cloudnodes.events` (variant tags unique across topics).",
+        "oneOf": [
+          {
+            "description": "The whole row, after any change.",
+            "properties": {
+              "node": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.CloudNode"
+                  }
+                ],
+                "description": "The row."
+              },
+              "type": {
+                "const": "CloudNodeChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "node"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One step of a long job (create, resize, destroy): the stage it belongs to and a line.",
+            "properties": {
+              "eta_secs": {
+                "description": "Seconds left, the create job's estimate (\"About 2 minutes left\").",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "What happens now.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Node name.",
+                "type": "string"
+              },
+              "pct": {
+                "description": "0-100, the create job's estimate.",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.Stage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The create job's stage (`None` for other jobs)."
+              },
+              "type": {
+                "const": "CloudNodeProgress",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "line"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A node's record is gone (destroyed).",
+            "properties": {
+              "name": {
+                "description": "Node name.",
+                "type": "string"
+              },
+              "type": {
+                "const": "CloudNodeRemoved",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A credential was stored or removed, or an OAuth sign-in finished (`error` when it failed).",
+            "properties": {
+              "connected": {
+                "description": "A credential is stored now.",
+                "type": "boolean"
+              },
+              "error": {
+                "description": "Why a sign-in failed.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.ProviderKind"
+                  }
+                ],
+                "description": "Which provider."
+              },
+              "type": {
+                "const": "CloudCredentialChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "provider",
+              "connected"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.receiver.CloudNode": {
+        "description": "One cloud node (a row in Settings › Machines).",
+        "properties": {
+          "auto_update": {
+            "description": "Follows stable releases (always true for nodes this builds).",
+            "type": "boolean"
+          },
+          "created_ms": {
+            "description": "When this engine created it (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "desktop": {
+            "description": "Created with a watchable desktop (`cloud_desktop`).",
+            "type": "boolean"
+          },
+          "error": {
+            "description": "Why the create job or the last operation failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ip": {
+            "description": "Public IPv4 (no port is open on it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "k8s": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.K8sOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Kubernetes: where it runs."
+          },
+          "memory_gb": {
+            "description": "2, 4 or 8.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "monthly_usd": {
+            "description": "Server + disk per month from the provider's live prices (a kept disk alone); `None` when\nunknown, and always in events.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Node name (also its mesh name).",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.MeshPath"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the mesh reaches it."
+          },
+          "peer_id": {
+            "description": "Its mesh endpoint id once joined.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.ProviderKind"
+              }
+            ],
+            "description": "Where it runs."
+          },
+          "provider_state": {
+            "description": "The provider's own word (`active`, `off`, `started`, `Running`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reachable": {
+            "description": "A mesh connection is up.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "region": {
+            "description": "Region slug (`None` for Kubernetes).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region_label": {
+            "description": "\"London\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_slug": {
+            "description": "The provider's size slug.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.Stage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While `Creating`: the current stage."
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.NodeState"
+              }
+            ],
+            "description": "Lifecycle."
+          },
+          "version": {
+            "description": "`t --version` on the node, when it answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "volume_gb": {
+            "description": "The `/data` disk.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "provider",
+          "state",
+          "auto_update",
+          "desktop"
+        ],
+        "type": "object"
+      },
+      "event.cloudnodes_2eevents.receiver.K8sOptions": {
+        "description": "Kubernetes-only options (wizard step 2, Kubernetes variant).",
+        "properties": {
+          "context": {
+            "description": "kubeconfig context (default: the current one).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "create_namespace": {
+            "default": false,
+            "description": "Create `namespace` when it does not exist.",
+            "type": "boolean"
+          },
+          "deny_cluster_network": {
+            "default": false,
+            "description": "Add a NetworkPolicy: no ingress; egress to DNS and the internet, not the cluster.",
+            "type": "boolean"
+          },
+          "namespace": {
+            "description": "Namespace (default: the context's).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "storage_class": {
+            "description": "StorageClass of the volumes (default: the cluster's default).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "event.cloudnodes_2eevents.receiver.MeshPath": {
+        "description": "Mesh path to the node (from `mesh_status`).",
+        "oneOf": [
+          {
+            "const": "direct",
+            "description": "A direct connection (the node keeps its public IPv4 for this).",
+            "type": "string"
+          },
+          {
+            "const": "relay",
+            "description": "Through the iroh relay.",
+            "type": "string"
+          },
+          {
+            "const": "offline",
+            "description": "Not connected.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.receiver.NodeState": {
+        "description": "Lifecycle of a node record.",
+        "oneOf": [
+          {
+            "const": "creating",
+            "description": "The create job runs (see `stage`).",
+            "type": "string"
+          },
+          {
+            "const": "ready",
+            "description": "Joined; a mesh peer.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The create job stopped (see `error`); destroy cleans up.",
+            "type": "string"
+          },
+          {
+            "const": "busy",
+            "description": "A restart / resize / update is in progress.",
+            "type": "string"
+          },
+          {
+            "const": "destroying",
+            "description": "Destroy in progress.",
+            "type": "string"
+          },
+          {
+            "const": "orphan",
+            "description": "Found at the provider by its tags, with no record on this engine (made elsewhere, or the\nrecord was lost). Destroy works on it.",
+            "type": "string"
+          },
+          {
+            "const": "volume_kept",
+            "description": "Destroyed with its disk kept (provider still bills the disk).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.receiver.ProviderKind": {
+        "description": "A provider this build knows.",
+        "oneOf": [
+          {
+            "const": "digitalocean",
+            "description": "Droplet + Block Storage volume + Cloud Firewall; native install under systemd.",
+            "type": "string"
+          },
+          {
+            "const": "fly",
+            "description": "App + Volume + Machine (Machines API); the engine image. Beta: never live-tested.",
+            "type": "string"
+          },
+          {
+            "const": "kubernetes",
+            "description": "A one-replica Deployment via kubectl (`sandbox::k8s`). Desktop only.",
+            "type": "string"
+          },
+          {
+            "const": "lightsail",
+            "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.cloudnodes_2eevents.receiver.Stage": {
+        "description": "The create job's stages, in order (wizard step ④).",
+        "oneOf": [
+          {
+            "const": "server",
+            "description": "Server (Droplet / Machine / Deployment) created and running.",
+            "type": "string"
+          },
+          {
+            "const": "storage",
+            "description": "The `/data` volume attached.",
+            "type": "string"
+          },
+          {
+            "const": "install",
+            "description": "Installing the newest signed theuth release (ends when the node dials the mesh).",
+            "type": "string"
+          },
+          {
+            "const": "join",
+            "description": "The node presented its ticket; waiting until it is reachable.",
+            "type": "string"
+          },
+          {
+            "const": "ready",
+            "description": "A reachable mesh peer.",
+            "type": "string"
+          }
+        ]
+      },
       "event.codeindex_2eevents.output.CodeToolSummary": {
         "description": "`CodeToolRan.summary`: the envelope's freshness fields plus the one thing\nthe call was about (73 §5.1).",
         "properties": {
@@ -26826,6 +27767,71 @@
         "description": "Task id: uuidv7 as text.",
         "type": "string"
       },
+      "event.rpc_2estream.output.AlwaysAskWhy": {
+        "description": "Why a call is always ask (219 §2.2, 221 D10): it raises a card even with approvals off,\nand only a human may answer it.",
+        "oneOf": [
+          {
+            "description": "Always-ask entries (`tools.always_ask` or a chat's list) that name the tool, its MCP\nserver (`mcp:<server>`), or an external secret connection the call reads or writes\n(`secret:<backend>/<conn>:<direction>`). Sorted. Removing them stops the prompt.",
+            "properties": {
+              "entries": {
+                "description": "The matching entries.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "entries",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "entries"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The call writes theuth's own `config.yaml` or `mcp/config.yaml` (219 §2.4). Mandatory.",
+            "properties": {
+              "kind": {
+                "const": "config_write",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An MCP-admin tool while any always-ask entry applies, so re-registering a server cannot\nshed its marks (219 §2.4). Mandatory while entries exist.",
+            "properties": {
+              "kind": {
+                "const": "mcp_admin",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The chat's stored always-ask list could not be read, so every `Mutating` or riskier\ncall asks until it is (219 §3.2). Mandatory.",
+            "properties": {
+              "kind": {
+                "const": "unreadable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "event.rpc_2estream.output.ApprovalId": {
         "description": "Correlates a request with its resolution.",
         "format": "uuid",
@@ -26837,6 +27843,17 @@
           "always_ask": {
             "description": "219 §2.3: the tool is marked always ask: a human must answer, even with approvals\noff. [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused and the double\nskips the card. Unlike `human_only`, any human surface may answer.",
             "type": "boolean"
+          },
+          "always_ask_why": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.rpc_2estream.output.AlwaysAskWhy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the call is always ask (set exactly when `always_ask` is): the marked entries that\nmatched, or the mandatory gate. Cards name it so an always-ask prompt with approvals\noff is never unexplained (a `shell` reading a Bitwarden secret asks because of\n`secret:bw/<conn>:read`, not because `shell` is marked)."
           },
           "args": {
             "description": "Raw arguments; UIs format these per tool (shell: `command`)."
@@ -27855,6 +28872,71 @@
         ],
         "description": "Always-delivered per-subscription controls, never published on the bus."
       },
+      "event.rpc_2estream.receiver.AlwaysAskWhy": {
+        "description": "Why a call is always ask (219 §2.2, 221 D10): it raises a card even with approvals off,\nand only a human may answer it.",
+        "oneOf": [
+          {
+            "description": "Always-ask entries (`tools.always_ask` or a chat's list) that name the tool, its MCP\nserver (`mcp:<server>`), or an external secret connection the call reads or writes\n(`secret:<backend>/<conn>:<direction>`). Sorted. Removing them stops the prompt.",
+            "properties": {
+              "entries": {
+                "description": "The matching entries.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "entries",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "entries"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The call writes theuth's own `config.yaml` or `mcp/config.yaml` (219 §2.4). Mandatory.",
+            "properties": {
+              "kind": {
+                "const": "config_write",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An MCP-admin tool while any always-ask entry applies, so re-registering a server cannot\nshed its marks (219 §2.4). Mandatory while entries exist.",
+            "properties": {
+              "kind": {
+                "const": "mcp_admin",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The chat's stored always-ask list could not be read, so every `Mutating` or riskier\ncall asks until it is (219 §3.2). Mandatory.",
+            "properties": {
+              "kind": {
+                "const": "unreadable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "event.rpc_2estream.receiver.ApprovalId": {
         "description": "Correlates a request with its resolution.",
         "format": "uuid",
@@ -27866,6 +28948,17 @@
           "always_ask": {
             "description": "219 §2.3: the tool is marked always ask: a human must answer, even with approvals\noff. [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused and the double\nskips the card. Unlike `human_only`, any human surface may answer.",
             "type": "boolean"
+          },
+          "always_ask_why": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.rpc_2estream.receiver.AlwaysAskWhy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the call is always ask (set exactly when `always_ask` is): the marked entries that\nmatched, or the mandatory gate. Cards name it so an always-ask prompt with approvals\noff is never unexplained (a `shell` reading a Bitwarden secret asks because of\n`secret:bw/<conn>:read`, not because `shell` is marked)."
           },
           "args": {
             "description": "Raw arguments; UIs format these per tool (shell: `command`)."
@@ -35684,6 +36777,71 @@
           }
         ]
       },
+      "event.tools_2eapproval_2drequested.output.AlwaysAskWhy": {
+        "description": "Why a call is always ask (219 §2.2, 221 D10): it raises a card even with approvals off,\nand only a human may answer it.",
+        "oneOf": [
+          {
+            "description": "Always-ask entries (`tools.always_ask` or a chat's list) that name the tool, its MCP\nserver (`mcp:<server>`), or an external secret connection the call reads or writes\n(`secret:<backend>/<conn>:<direction>`). Sorted. Removing them stops the prompt.",
+            "properties": {
+              "entries": {
+                "description": "The matching entries.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "entries",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "entries"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The call writes theuth's own `config.yaml` or `mcp/config.yaml` (219 §2.4). Mandatory.",
+            "properties": {
+              "kind": {
+                "const": "config_write",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An MCP-admin tool while any always-ask entry applies, so re-registering a server cannot\nshed its marks (219 §2.4). Mandatory while entries exist.",
+            "properties": {
+              "kind": {
+                "const": "mcp_admin",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The chat's stored always-ask list could not be read, so every `Mutating` or riskier\ncall asks until it is (219 §3.2). Mandatory.",
+            "properties": {
+              "kind": {
+                "const": "unreadable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "event.tools_2eapproval_2drequested.output.ApprovalId": {
         "description": "Correlates a request with its resolution.",
         "format": "uuid",
@@ -35695,6 +36853,17 @@
           "always_ask": {
             "description": "219 §2.3: the tool is marked always ask: a human must answer, even with approvals\noff. [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused and the double\nskips the card. Unlike `human_only`, any human surface may answer.",
             "type": "boolean"
+          },
+          "always_ask_why": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.tools_2eapproval_2drequested.output.AlwaysAskWhy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the call is always ask (set exactly when `always_ask` is): the marked entries that\nmatched, or the mandatory gate. Cards name it so an always-ask prompt with approvals\noff is never unexplained (a `shell` reading a Bitwarden secret asks because of\n`secret:bw/<conn>:read`, not because `shell` is marked)."
           },
           "args": {
             "description": "Raw arguments; UIs format these per tool (shell: `command`)."
@@ -35773,6 +36942,71 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.tools_2eapproval_2drequested.receiver.AlwaysAskWhy": {
+        "description": "Why a call is always ask (219 §2.2, 221 D10): it raises a card even with approvals off,\nand only a human may answer it.",
+        "oneOf": [
+          {
+            "description": "Always-ask entries (`tools.always_ask` or a chat's list) that name the tool, its MCP\nserver (`mcp:<server>`), or an external secret connection the call reads or writes\n(`secret:<backend>/<conn>:<direction>`). Sorted. Removing them stops the prompt.",
+            "properties": {
+              "entries": {
+                "description": "The matching entries.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "entries",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "entries"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The call writes theuth's own `config.yaml` or `mcp/config.yaml` (219 §2.4). Mandatory.",
+            "properties": {
+              "kind": {
+                "const": "config_write",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An MCP-admin tool while any always-ask entry applies, so re-registering a server cannot\nshed its marks (219 §2.4). Mandatory while entries exist.",
+            "properties": {
+              "kind": {
+                "const": "mcp_admin",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The chat's stored always-ask list could not be read, so every `Mutating` or riskier\ncall asks until it is (219 §3.2). Mandatory.",
+            "properties": {
+              "kind": {
+                "const": "unreadable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "event.tools_2eapproval_2drequested.receiver.ApprovalId": {
         "description": "Correlates a request with its resolution.",
         "format": "uuid",
@@ -35784,6 +37018,17 @@
           "always_ask": {
             "description": "219 §2.3: the tool is marked always ask: a human must answer, even with approvals\noff. [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused and the double\nskips the card. Unlike `human_only`, any human surface may answer.",
             "type": "boolean"
+          },
+          "always_ask_why": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.tools_2eapproval_2drequested.receiver.AlwaysAskWhy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the call is always ask (set exactly when `always_ask` is): the marked entries that\nmatched, or the mandatory gate. Cards name it so an always-ask prompt with approvals\noff is never unexplained (a `shell` reading a Bitwarden secret asks because of\n`secret:bw/<conn>:read`, not because `shell` is marked)."
           },
           "args": {
             "description": "Raw arguments; UIs format these per tool (shell: `command`)."
@@ -43733,6 +44978,17 @@
       "method.agent.output.BuiltinTool": {
         "description": "One registered builtin tool as an app shows it.",
         "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.PolicyAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What a call with no secret in its args does for `session` (harness-wide when none):\n`allow` runs without asking (approvals off, or the policy allows the risk), `ask`\nraises a card (approvals on, or the tool is marked always ask), `deny` refuses (the\npolicy or a subagent cap). Absent from an engine that predates it."
+          },
           "description": {
             "description": "What the model sees.",
             "type": "string"
@@ -43760,6 +45016,13 @@
               }
             ],
             "description": "Risk class."
+          },
+          "secret_asks": {
+            "description": "221 D10: the `secret:<backend>/<conn>:<dir>` always-ask entries that still make this\ntool's calls ask when they go through that connection (`shell` with a `{{secret:bw/…}}`\nplaceholder reads it), whatever `action` says. Sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -46593,6 +47856,92 @@
           "cache_write_tokens",
           "output_tokens",
           "usd_estimate"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.EngineDesktop": {
+        "description": "A noVNC target: connect to `ws_url` (websockify) with VNC `password`.",
+        "properties": {
+          "engine": {
+            "description": "Mesh id of the engine whose desktop this is.",
+            "type": "string"
+          },
+          "geometry": {
+            "description": "`WIDTHxHEIGHT` of the desktop, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password": {
+            "description": "The VNC password.",
+            "type": "string"
+          },
+          "ws_url": {
+            "description": "`ws://127.0.0.1:<port>/websockify` on the engine answering: the\ndesktop's own websockify, or a mesh tunnel to a peer's.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ws_url",
+          "password",
+          "geometry",
+          "engine"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.EngineLogs": {
+        "description": "The tail of an engine's own log.",
+        "properties": {
+          "lines": {
+            "description": "Oldest first, secrets redacted, control characters escaped.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "path": {
+            "description": "The file read on that engine; `None` when it has no log yet.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lines",
+          "path"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.EngineTerminal": {
+        "description": "An interactive shell on an engine: attach with `subscribe_pty(session,\njob, rows, cols, engine)`, type with `pty_input(…, engine)`.",
+        "properties": {
+          "engine": {
+            "description": "Mesh id of the engine running it (pass it back as `engine`).",
+            "type": "string"
+          },
+          "job": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.JobId"
+              }
+            ],
+            "description": "The PTY job."
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.SessionId"
+              }
+            ],
+            "description": "The engine's owner root session holding the job."
+          }
+        },
+        "required": [
+          "session",
+          "job",
+          "engine"
         ],
         "type": "object"
       },
@@ -49786,6 +51135,26 @@
           "fires_at"
         ],
         "type": "object"
+      },
+      "method.agent.output.PolicyAction": {
+        "description": "What the gate does for a risk class. Ordered `Allow < Ask < Deny` so a\ncaller can only ever raise it (`action.max(Ask)`, 37 §0.4).",
+        "oneOf": [
+          {
+            "const": "allow",
+            "description": "Run without asking.",
+            "type": "string"
+          },
+          {
+            "const": "ask",
+            "description": "Publish [`ApprovalRequested`] and wait for [`Resolve`].",
+            "type": "string"
+          },
+          {
+            "const": "deny",
+            "description": "Refuse; the model sees an error output.",
+            "type": "string"
+          }
+        ]
       },
       "method.agent.output.Project": {
         "description": "One project as `projects_list` shows it.",
@@ -55020,6 +56389,17 @@
       "method.agent.receiver.BuiltinTool": {
         "description": "One registered builtin tool as an app shows it.",
         "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.PolicyAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What a call with no secret in its args does for `session` (harness-wide when none):\n`allow` runs without asking (approvals off, or the policy allows the risk), `ask`\nraises a card (approvals on, or the tool is marked always ask), `deny` refuses (the\npolicy or a subagent cap). Absent from an engine that predates it."
+          },
           "description": {
             "description": "What the model sees.",
             "type": "string"
@@ -55047,6 +56427,13 @@
               }
             ],
             "description": "Risk class."
+          },
+          "secret_asks": {
+            "description": "221 D10: the `secret:<backend>/<conn>:<dir>` always-ask entries that still make this\ntool's calls ask when they go through that connection (`shell` with a `{{secret:bw/…}}`\nplaceholder reads it), whatever `action` says. Sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -57810,6 +59197,90 @@
           "cache_write_tokens",
           "output_tokens",
           "usd_estimate"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.EngineDesktop": {
+        "description": "A noVNC target: connect to `ws_url` (websockify) with VNC `password`.",
+        "properties": {
+          "engine": {
+            "description": "Mesh id of the engine whose desktop this is.",
+            "type": "string"
+          },
+          "geometry": {
+            "description": "`WIDTHxHEIGHT` of the desktop, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password": {
+            "description": "The VNC password.",
+            "type": "string"
+          },
+          "ws_url": {
+            "description": "`ws://127.0.0.1:<port>/websockify` on the engine answering: the\ndesktop's own websockify, or a mesh tunnel to a peer's.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ws_url",
+          "password",
+          "engine"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.EngineLogs": {
+        "description": "The tail of an engine's own log.",
+        "properties": {
+          "lines": {
+            "description": "Oldest first, secrets redacted, control characters escaped.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "path": {
+            "description": "The file read on that engine; `None` when it has no log yet.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.EngineTerminal": {
+        "description": "An interactive shell on an engine: attach with `subscribe_pty(session,\njob, rows, cols, engine)`, type with `pty_input(…, engine)`.",
+        "properties": {
+          "engine": {
+            "description": "Mesh id of the engine running it (pass it back as `engine`).",
+            "type": "string"
+          },
+          "job": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.JobId"
+              }
+            ],
+            "description": "The PTY job."
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.SessionId"
+              }
+            ],
+            "description": "The engine's owner root session holding the job."
+          }
+        },
+        "required": [
+          "session",
+          "job",
+          "engine"
         ],
         "type": "object"
       },
@@ -60912,6 +62383,26 @@
           "fires_at"
         ],
         "type": "object"
+      },
+      "method.agent.receiver.PolicyAction": {
+        "description": "What the gate does for a risk class. Ordered `Allow < Ask < Deny` so a\ncaller can only ever raise it (`action.max(Ask)`, 37 §0.4).",
+        "oneOf": [
+          {
+            "const": "allow",
+            "description": "Run without asking.",
+            "type": "string"
+          },
+          {
+            "const": "ask",
+            "description": "Publish [`ApprovalRequested`] and wait for [`Resolve`].",
+            "type": "string"
+          },
+          {
+            "const": "deny",
+            "description": "Refuse; the model sees an error output.",
+            "type": "string"
+          }
+        ]
       },
       "method.agent.receiver.Project": {
         "description": "One project as `projects_list` shows it.",
@@ -83702,6 +85193,1802 @@
         "required": [
           "cells",
           "kernels"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.input.K8sOptions": {
+        "description": "Kubernetes-only options (wizard step 2, Kubernetes variant).",
+        "properties": {
+          "context": {
+            "description": "kubeconfig context (default: the current one).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "create_namespace": {
+            "default": false,
+            "description": "Create `namespace` when it does not exist.",
+            "type": "boolean"
+          },
+          "deny_cluster_network": {
+            "default": false,
+            "description": "Add a NetworkPolicy: no ingress; egress to DNS and the internet, not the cluster.",
+            "type": "boolean"
+          },
+          "namespace": {
+            "description": "Namespace (default: the context's).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "storage_class": {
+            "description": "StorageClass of the volumes (default: the cluster's default).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "method.cloudnodes.input.NodeSpec": {
+        "description": "What the user asked for (wizard step 2).",
+        "properties": {
+          "desktop": {
+            "default": null,
+            "description": "A watchable desktop on the node (Xvfb + noVNC behind loopback; watched over the mesh).\n`None` = on (the default).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "k8s": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.input.K8sOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Kubernetes only."
+          },
+          "memory_gb": {
+            "description": "2, 4 or 8.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "1-40 of `[a-z0-9-]`, starting with a letter, not ending in `-` (also the mesh name).",
+            "type": "string"
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.input.ProviderKind"
+              }
+            ],
+            "description": "Where it runs."
+          },
+          "region": {
+            "description": "Provider region slug; ignored for Kubernetes.",
+            "type": "string"
+          },
+          "volume_gb": {
+            "description": "Default [`DEFAULT_VOLUME_GB`].",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "name",
+          "region",
+          "memory_gb"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.input.ProviderKind": {
+        "description": "A provider this build knows.",
+        "oneOf": [
+          {
+            "const": "digitalocean",
+            "description": "Droplet + Block Storage volume + Cloud Firewall; native install under systemd.",
+            "type": "string"
+          },
+          {
+            "const": "fly",
+            "description": "App + Volume + Machine (Machines API); the engine image. Beta: never live-tested.",
+            "type": "string"
+          },
+          {
+            "const": "kubernetes",
+            "description": "A one-replica Deployment via kubectl (`sandbox::k8s`). Desktop only.",
+            "type": "string"
+          },
+          {
+            "const": "lightsail",
+            "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.output.CloudList": {
+        "description": "`cloud_list`: every node from local records and every connected provider's tagged\nresources; a provider that fails is reported in `errors`, not fatal.",
+        "properties": {
+          "errors": {
+            "description": "Providers that could not be listed.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.output.ProviderError"
+            },
+            "type": "array"
+          },
+          "nodes": {
+            "description": "Every node.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.output.CloudNode"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodes",
+          "errors"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.CloudNode": {
+        "description": "One cloud node (a row in Settings › Machines).",
+        "properties": {
+          "auto_update": {
+            "description": "Follows stable releases (always true for nodes this builds).",
+            "type": "boolean"
+          },
+          "created_ms": {
+            "description": "When this engine created it (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "desktop": {
+            "description": "Created with a watchable desktop (`cloud_desktop`).",
+            "type": "boolean"
+          },
+          "error": {
+            "description": "Why the create job or the last operation failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ip": {
+            "description": "Public IPv4 (no port is open on it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "k8s": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.K8sOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Kubernetes: where it runs."
+          },
+          "memory_gb": {
+            "description": "2, 4 or 8.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "monthly_usd": {
+            "description": "Server + disk per month from the provider's live prices (a kept disk alone); `None` when\nunknown, and always in events.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Node name (also its mesh name).",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.MeshPath"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the mesh reaches it."
+          },
+          "peer_id": {
+            "description": "Its mesh endpoint id once joined.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.ProviderKind"
+              }
+            ],
+            "description": "Where it runs."
+          },
+          "provider_state": {
+            "description": "The provider's own word (`active`, `off`, `started`, `Running`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reachable": {
+            "description": "A mesh connection is up.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "region": {
+            "description": "Region slug (`None` for Kubernetes).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region_label": {
+            "description": "\"London\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_slug": {
+            "description": "The provider's size slug.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.Stage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While `Creating`: the current stage."
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.NodeState"
+              }
+            ],
+            "description": "Lifecycle."
+          },
+          "version": {
+            "description": "`t --version` on the node, when it answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "volume_gb": {
+            "description": "The `/data` disk.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "provider",
+          "region",
+          "region_label",
+          "memory_gb",
+          "size_slug",
+          "volume_gb",
+          "monthly_usd",
+          "state",
+          "stage",
+          "error",
+          "provider_state",
+          "ip",
+          "peer_id",
+          "reachable",
+          "path",
+          "version",
+          "auto_update",
+          "desktop",
+          "created_ms",
+          "k8s"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.CredentialSource": {
+        "description": "Where the credential the engine would use comes from.",
+        "oneOf": [
+          {
+            "const": "oauth",
+            "description": "`Sign in with DigitalOcean` (tokens from the relay's code exchange; refreshable).",
+            "type": "string"
+          },
+          {
+            "const": "pasted",
+            "description": "Pasted by the user.",
+            "type": "string"
+          },
+          {
+            "const": "imported",
+            "description": "Copied from a discovered CLI login on the user's press.",
+            "type": "string"
+          },
+          {
+            "const": "kubeconfig",
+            "description": "Kubernetes: kubectl and the user's kubeconfig (nothing stored).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.output.DesktopOpen": {
+        "description": "`cloud_desktop`: a noVNC endpoint on this engine that tunnels over the mesh to the node's\nloopback websockify, and its password. An owner-only RPC answer, never in an event (as\n`sandbox_desktop_access`).",
+        "properties": {
+          "engine": {
+            "description": "The node's mesh endpoint id.",
+            "type": "string"
+          },
+          "geometry": {
+            "description": "`1280x800`, when the node says.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password": {
+            "description": "The VNC password (RPC answer only).",
+            "type": "string"
+          },
+          "ws_url": {
+            "description": "`ws://127.0.0.1:<port>/…` on the viewing engine.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ws_url",
+          "password",
+          "geometry",
+          "engine"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.Discovered": {
+        "description": "A credential found on this machine (read-only discovery; nothing is copied until the user\npresses \"Use it\" → `cloud_import_credential`). Never carries the secret itself.",
+        "properties": {
+          "detail": {
+            "description": "More: `context \"default\"`, `org personal`, `3 contexts`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Stable id to pass back to `cloud_import_credential` (`doctl:default`, `flyctl`, `kube:<context>`).",
+            "type": "string"
+          },
+          "label": {
+            "description": "What the UI says: \"doctl login\", \"flyctl login\", \"kubeconfig context rwx-dev\".",
+            "type": "string"
+          },
+          "path": {
+            "description": "The file it was read from (`~/.config/doctl/config.yaml`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "detail",
+          "path"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.K8sInfo": {
+        "description": "`cloud_k8s_info`: what the Kubernetes variant of step 2 needs.",
+        "properties": {
+          "cni": {
+            "description": "The CNI detected from kube-system pods/daemonsets (`flannel`, `calico`, `cilium`, …).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contexts": {
+            "description": "Contexts in the kubeconfig.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "current_context": {
+            "description": "The kubeconfig's current context.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enforces_network_policy": {
+            "description": "`false` for a CNI known not to enforce NetworkPolicy (flannel); `None` when unknown.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "namespaces": {
+            "description": "Namespaces in the chosen context (empty when the user may not list them).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "no_default_class": {
+            "description": "No class is marked default (a PVC without a class stays Pending).",
+            "type": "boolean"
+          },
+          "storage_classes": {
+            "description": "`(name, provisioner, is_default)`.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.output.StorageClass"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "contexts",
+          "current_context",
+          "namespaces",
+          "storage_classes",
+          "no_default_class",
+          "cni",
+          "enforces_network_policy"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.K8sOptions": {
+        "description": "Kubernetes-only options (wizard step 2, Kubernetes variant).",
+        "properties": {
+          "context": {
+            "description": "kubeconfig context (default: the current one).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "create_namespace": {
+            "default": false,
+            "description": "Create `namespace` when it does not exist.",
+            "type": "boolean"
+          },
+          "deny_cluster_network": {
+            "default": false,
+            "description": "Add a NetworkPolicy: no ingress; egress to DNS and the internet, not the cluster.",
+            "type": "boolean"
+          },
+          "namespace": {
+            "description": "Namespace (default: the context's).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "storage_class": {
+            "description": "StorageClass of the volumes (default: the cluster's default).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "context",
+          "namespace",
+          "create_namespace",
+          "storage_class",
+          "deny_cluster_network"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.MeshPath": {
+        "description": "Mesh path to the node (from `mesh_status`).",
+        "oneOf": [
+          {
+            "const": "direct",
+            "description": "A direct connection (the node keeps its public IPv4 for this).",
+            "type": "string"
+          },
+          {
+            "const": "relay",
+            "description": "Through the iroh relay.",
+            "type": "string"
+          },
+          {
+            "const": "offline",
+            "description": "Not connected.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.output.NodeLogs": {
+        "description": "`cloud_logs`: the tail of the node engine's own log, read over the mesh.",
+        "properties": {
+          "lines": {
+            "description": "Oldest first, redacted by the node.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Node name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.NodeState": {
+        "description": "Lifecycle of a node record.",
+        "oneOf": [
+          {
+            "const": "creating",
+            "description": "The create job runs (see `stage`).",
+            "type": "string"
+          },
+          {
+            "const": "ready",
+            "description": "Joined; a mesh peer.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The create job stopped (see `error`); destroy cleans up.",
+            "type": "string"
+          },
+          {
+            "const": "busy",
+            "description": "A restart / resize / update is in progress.",
+            "type": "string"
+          },
+          {
+            "const": "destroying",
+            "description": "Destroy in progress.",
+            "type": "string"
+          },
+          {
+            "const": "orphan",
+            "description": "Found at the provider by its tags, with no record on this engine (made elsewhere, or the\nrecord was lost). Destroy works on it.",
+            "type": "string"
+          },
+          {
+            "const": "volume_kept",
+            "description": "Destroyed with its disk kept (provider still bills the disk).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.output.OauthStart": {
+        "description": "`cloud_oauth_start`: open `url` in the system browser; completion arrives as\n[`CloudEvent::CloudCredentialChanged`].",
+        "properties": {
+          "url": {
+            "description": "theuth-relay's start URL (no secret in it).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.ProviderError": {
+        "description": "A provider `cloud_list` could not ask.",
+        "properties": {
+          "message": {
+            "description": "What went wrong.",
+            "type": "string"
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.ProviderKind"
+              }
+            ],
+            "description": "Which provider."
+          }
+        },
+        "required": [
+          "provider",
+          "message"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.ProviderInfo": {
+        "description": "One provider as the wizard shows it.",
+        "properties": {
+          "available": {
+            "description": "Can create nodes in this build (Lightsail: false).",
+            "type": "boolean"
+          },
+          "beta": {
+            "description": "Never live-tested (Fly.io).",
+            "type": "boolean"
+          },
+          "connected": {
+            "description": "A usable credential is in the vault (or, for Kubernetes, kubectl has contexts).",
+            "type": "boolean"
+          },
+          "desktop_only": {
+            "description": "Only offered where kubectl runs (desktop engines).",
+            "type": "boolean"
+          },
+          "discovered": {
+            "description": "Credentials found on this machine, offered first on desktop.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.output.Discovered"
+            },
+            "type": "array"
+          },
+          "label": {
+            "description": "\"DigitalOcean\".",
+            "type": "string"
+          },
+          "oauth": {
+            "description": "\"Sign in with DigitalOcean\" works (the relay is reachable and this provider has OAuth).",
+            "type": "boolean"
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.ProviderKind"
+              }
+            ],
+            "description": "Which provider."
+          },
+          "regions": {
+            "description": "Regions offered.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.output.Region"
+            },
+            "type": "array"
+          },
+          "sizes": {
+            "description": "2/4/8 GB, unpriced (`cloud_sizes` prices them live).",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.output.SizeOption"
+            },
+            "type": "array"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.CredentialSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the stored credential came from."
+          },
+          "volume_usd_per_gb": {
+            "description": "Disk price per GB-month (`None` for Kubernetes).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "label",
+          "available",
+          "beta",
+          "desktop_only",
+          "connected",
+          "source",
+          "discovered",
+          "oauth",
+          "sizes",
+          "regions",
+          "volume_usd_per_gb"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.ProviderKind": {
+        "description": "A provider this build knows.",
+        "oneOf": [
+          {
+            "const": "digitalocean",
+            "description": "Droplet + Block Storage volume + Cloud Firewall; native install under systemd.",
+            "type": "string"
+          },
+          {
+            "const": "fly",
+            "description": "App + Volume + Machine (Machines API); the engine image. Beta: never live-tested.",
+            "type": "string"
+          },
+          {
+            "const": "kubernetes",
+            "description": "A one-replica Deployment via kubectl (`sandbox::k8s`). Desktop only.",
+            "type": "string"
+          },
+          {
+            "const": "lightsail",
+            "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.output.Quote": {
+        "description": "The monthly cost the create button names (owner: the press on \"Create node · $13/mo\" is the\napproval).",
+        "properties": {
+          "disk_usd": {
+            "description": "Disk per month; `None` for Kubernetes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.output.ProviderKind"
+              }
+            ],
+            "description": "Which provider."
+          },
+          "server_usd": {
+            "description": "Server per month, live from the provider; `None` when unknown.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "size_slug": {
+            "description": "The size quoted.",
+            "type": "string"
+          },
+          "total_usd": {
+            "description": "`server + disk`, rounded to cents; `None` for Kubernetes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "size_slug",
+          "server_usd",
+          "disk_usd",
+          "total_usd"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.Region": {
+        "description": "One region.",
+        "properties": {
+          "country": {
+            "description": "ISO country code, for the flag (`GB`).",
+            "type": "string"
+          },
+          "id": {
+            "description": "The provider's slug (`lon1`, `lhr`).",
+            "type": "string"
+          },
+          "label": {
+            "description": "\"London\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "country"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.SizeList": {
+        "description": "`cloud_sizes`: the sizes of one provider (and region), priced live from the provider's API\non every call (no cache, no price list in the app).",
+        "properties": {
+          "error": {
+            "description": "Why they did not (no credential, the API failed); `None` when priced or not priceable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priced": {
+            "description": "The prices came from the provider just now.",
+            "type": "boolean"
+          },
+          "sizes": {
+            "description": "2, 4 and 8 GB; `monthly_usd` set only when `priced`.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.output.SizeOption"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sizes",
+          "priced",
+          "error"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.SizeOption": {
+        "description": "One size a provider offers for a node.",
+        "properties": {
+          "memory_gb": {
+            "description": "2, 4 or 8.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "monthly_usd": {
+            "description": "Server only; `None` for Kubernetes (the cluster's cost).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "slug": {
+            "description": "The provider's slug (`s-1vcpu-2gb`, `shared-cpu-1x`, …); for Kubernetes `2Gi`.",
+            "type": "string"
+          },
+          "vcpus": {
+            "description": "Virtual CPUs.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "memory_gb",
+          "vcpus",
+          "slug",
+          "monthly_usd"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.Stage": {
+        "description": "The create job's stages, in order (wizard step ④).",
+        "oneOf": [
+          {
+            "const": "server",
+            "description": "Server (Droplet / Machine / Deployment) created and running.",
+            "type": "string"
+          },
+          {
+            "const": "storage",
+            "description": "The `/data` volume attached.",
+            "type": "string"
+          },
+          {
+            "const": "install",
+            "description": "Installing the newest signed theuth release (ends when the node dials the mesh).",
+            "type": "string"
+          },
+          {
+            "const": "join",
+            "description": "The node presented its ticket; waiting until it is reachable.",
+            "type": "string"
+          },
+          {
+            "const": "ready",
+            "description": "A reachable mesh peer.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.output.StorageClass": {
+        "description": "A StorageClass of the cluster.",
+        "properties": {
+          "default": {
+            "description": "Marked as the cluster's default.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "provisioner": {
+            "description": "`provisioner`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "provisioner",
+          "default"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.output.TerminalOpen": {
+        "description": "`cloud_terminal`: a PTY job on the node's engine; attach with `subscribe_pty(session, job)`.",
+        "properties": {
+          "engine": {
+            "description": "The node's mesh endpoint id (where the PTY runs).",
+            "type": "string"
+          },
+          "job": {
+            "description": "The PTY job.",
+            "type": "string"
+          },
+          "session": {
+            "description": "The owner root session the PTY job belongs to, on the node.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "job",
+          "engine"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.CloudList": {
+        "description": "`cloud_list`: every node from local records and every connected provider's tagged\nresources; a provider that fails is reported in `errors`, not fatal.",
+        "properties": {
+          "errors": {
+            "description": "Providers that could not be listed.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.receiver.ProviderError"
+            },
+            "type": "array"
+          },
+          "nodes": {
+            "description": "Every node.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.receiver.CloudNode"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodes",
+          "errors"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.CloudNode": {
+        "description": "One cloud node (a row in Settings › Machines).",
+        "properties": {
+          "auto_update": {
+            "description": "Follows stable releases (always true for nodes this builds).",
+            "type": "boolean"
+          },
+          "created_ms": {
+            "description": "When this engine created it (Unix ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "desktop": {
+            "description": "Created with a watchable desktop (`cloud_desktop`).",
+            "type": "boolean"
+          },
+          "error": {
+            "description": "Why the create job or the last operation failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ip": {
+            "description": "Public IPv4 (no port is open on it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "k8s": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.K8sOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Kubernetes: where it runs."
+          },
+          "memory_gb": {
+            "description": "2, 4 or 8.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "monthly_usd": {
+            "description": "Server + disk per month from the provider's live prices (a kept disk alone); `None` when\nunknown, and always in events.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Node name (also its mesh name).",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.MeshPath"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the mesh reaches it."
+          },
+          "peer_id": {
+            "description": "Its mesh endpoint id once joined.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.ProviderKind"
+              }
+            ],
+            "description": "Where it runs."
+          },
+          "provider_state": {
+            "description": "The provider's own word (`active`, `off`, `started`, `Running`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reachable": {
+            "description": "A mesh connection is up.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "region": {
+            "description": "Region slug (`None` for Kubernetes).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region_label": {
+            "description": "\"London\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_slug": {
+            "description": "The provider's size slug.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.Stage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While `Creating`: the current stage."
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.NodeState"
+              }
+            ],
+            "description": "Lifecycle."
+          },
+          "version": {
+            "description": "`t --version` on the node, when it answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "volume_gb": {
+            "description": "The `/data` disk.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "provider",
+          "state",
+          "auto_update",
+          "desktop"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.CredentialSource": {
+        "description": "Where the credential the engine would use comes from.",
+        "oneOf": [
+          {
+            "const": "oauth",
+            "description": "`Sign in with DigitalOcean` (tokens from the relay's code exchange; refreshable).",
+            "type": "string"
+          },
+          {
+            "const": "pasted",
+            "description": "Pasted by the user.",
+            "type": "string"
+          },
+          {
+            "const": "imported",
+            "description": "Copied from a discovered CLI login on the user's press.",
+            "type": "string"
+          },
+          {
+            "const": "kubeconfig",
+            "description": "Kubernetes: kubectl and the user's kubeconfig (nothing stored).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.receiver.DesktopOpen": {
+        "description": "`cloud_desktop`: a noVNC endpoint on this engine that tunnels over the mesh to the node's\nloopback websockify, and its password. An owner-only RPC answer, never in an event (as\n`sandbox_desktop_access`).",
+        "properties": {
+          "engine": {
+            "description": "The node's mesh endpoint id.",
+            "type": "string"
+          },
+          "geometry": {
+            "description": "`1280x800`, when the node says.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password": {
+            "description": "The VNC password (RPC answer only).",
+            "type": "string"
+          },
+          "ws_url": {
+            "description": "`ws://127.0.0.1:<port>/…` on the viewing engine.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ws_url",
+          "password",
+          "engine"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.Discovered": {
+        "description": "A credential found on this machine (read-only discovery; nothing is copied until the user\npresses \"Use it\" → `cloud_import_credential`). Never carries the secret itself.",
+        "properties": {
+          "detail": {
+            "description": "More: `context \"default\"`, `org personal`, `3 contexts`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Stable id to pass back to `cloud_import_credential` (`doctl:default`, `flyctl`, `kube:<context>`).",
+            "type": "string"
+          },
+          "label": {
+            "description": "What the UI says: \"doctl login\", \"flyctl login\", \"kubeconfig context rwx-dev\".",
+            "type": "string"
+          },
+          "path": {
+            "description": "The file it was read from (`~/.config/doctl/config.yaml`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "path"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.K8sInfo": {
+        "description": "`cloud_k8s_info`: what the Kubernetes variant of step 2 needs.",
+        "properties": {
+          "cni": {
+            "description": "The CNI detected from kube-system pods/daemonsets (`flannel`, `calico`, `cilium`, …).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contexts": {
+            "description": "Contexts in the kubeconfig.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "current_context": {
+            "description": "The kubeconfig's current context.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enforces_network_policy": {
+            "description": "`false` for a CNI known not to enforce NetworkPolicy (flannel); `None` when unknown.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "namespaces": {
+            "description": "Namespaces in the chosen context (empty when the user may not list them).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "no_default_class": {
+            "description": "No class is marked default (a PVC without a class stays Pending).",
+            "type": "boolean"
+          },
+          "storage_classes": {
+            "description": "`(name, provisioner, is_default)`.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.receiver.StorageClass"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "contexts",
+          "namespaces",
+          "storage_classes",
+          "no_default_class"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.K8sOptions": {
+        "description": "Kubernetes-only options (wizard step 2, Kubernetes variant).",
+        "properties": {
+          "context": {
+            "description": "kubeconfig context (default: the current one).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "create_namespace": {
+            "default": false,
+            "description": "Create `namespace` when it does not exist.",
+            "type": "boolean"
+          },
+          "deny_cluster_network": {
+            "default": false,
+            "description": "Add a NetworkPolicy: no ingress; egress to DNS and the internet, not the cluster.",
+            "type": "boolean"
+          },
+          "namespace": {
+            "description": "Namespace (default: the context's).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "storage_class": {
+            "description": "StorageClass of the volumes (default: the cluster's default).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.MeshPath": {
+        "description": "Mesh path to the node (from `mesh_status`).",
+        "oneOf": [
+          {
+            "const": "direct",
+            "description": "A direct connection (the node keeps its public IPv4 for this).",
+            "type": "string"
+          },
+          {
+            "const": "relay",
+            "description": "Through the iroh relay.",
+            "type": "string"
+          },
+          {
+            "const": "offline",
+            "description": "Not connected.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.receiver.NodeLogs": {
+        "description": "`cloud_logs`: the tail of the node engine's own log, read over the mesh.",
+        "properties": {
+          "lines": {
+            "description": "Oldest first, redacted by the node.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Node name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.NodeState": {
+        "description": "Lifecycle of a node record.",
+        "oneOf": [
+          {
+            "const": "creating",
+            "description": "The create job runs (see `stage`).",
+            "type": "string"
+          },
+          {
+            "const": "ready",
+            "description": "Joined; a mesh peer.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The create job stopped (see `error`); destroy cleans up.",
+            "type": "string"
+          },
+          {
+            "const": "busy",
+            "description": "A restart / resize / update is in progress.",
+            "type": "string"
+          },
+          {
+            "const": "destroying",
+            "description": "Destroy in progress.",
+            "type": "string"
+          },
+          {
+            "const": "orphan",
+            "description": "Found at the provider by its tags, with no record on this engine (made elsewhere, or the\nrecord was lost). Destroy works on it.",
+            "type": "string"
+          },
+          {
+            "const": "volume_kept",
+            "description": "Destroyed with its disk kept (provider still bills the disk).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.receiver.OauthStart": {
+        "description": "`cloud_oauth_start`: open `url` in the system browser; completion arrives as\n[`CloudEvent::CloudCredentialChanged`].",
+        "properties": {
+          "url": {
+            "description": "theuth-relay's start URL (no secret in it).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.ProviderError": {
+        "description": "A provider `cloud_list` could not ask.",
+        "properties": {
+          "message": {
+            "description": "What went wrong.",
+            "type": "string"
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.ProviderKind"
+              }
+            ],
+            "description": "Which provider."
+          }
+        },
+        "required": [
+          "provider",
+          "message"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.ProviderInfo": {
+        "description": "One provider as the wizard shows it.",
+        "properties": {
+          "available": {
+            "description": "Can create nodes in this build (Lightsail: false).",
+            "type": "boolean"
+          },
+          "beta": {
+            "description": "Never live-tested (Fly.io).",
+            "type": "boolean"
+          },
+          "connected": {
+            "description": "A usable credential is in the vault (or, for Kubernetes, kubectl has contexts).",
+            "type": "boolean"
+          },
+          "desktop_only": {
+            "description": "Only offered where kubectl runs (desktop engines).",
+            "type": "boolean"
+          },
+          "discovered": {
+            "description": "Credentials found on this machine, offered first on desktop.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.receiver.Discovered"
+            },
+            "type": "array"
+          },
+          "label": {
+            "description": "\"DigitalOcean\".",
+            "type": "string"
+          },
+          "oauth": {
+            "description": "\"Sign in with DigitalOcean\" works (the relay is reachable and this provider has OAuth).",
+            "type": "boolean"
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.ProviderKind"
+              }
+            ],
+            "description": "Which provider."
+          },
+          "regions": {
+            "description": "Regions offered.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.receiver.Region"
+            },
+            "type": "array"
+          },
+          "sizes": {
+            "description": "2/4/8 GB, unpriced (`cloud_sizes` prices them live).",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.receiver.SizeOption"
+            },
+            "type": "array"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.CredentialSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the stored credential came from."
+          },
+          "volume_usd_per_gb": {
+            "description": "Disk price per GB-month (`None` for Kubernetes).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "label",
+          "available",
+          "beta",
+          "desktop_only",
+          "connected",
+          "discovered",
+          "oauth",
+          "sizes",
+          "regions"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.ProviderKind": {
+        "description": "A provider this build knows.",
+        "oneOf": [
+          {
+            "const": "digitalocean",
+            "description": "Droplet + Block Storage volume + Cloud Firewall; native install under systemd.",
+            "type": "string"
+          },
+          {
+            "const": "fly",
+            "description": "App + Volume + Machine (Machines API); the engine image. Beta: never live-tested.",
+            "type": "string"
+          },
+          {
+            "const": "kubernetes",
+            "description": "A one-replica Deployment via kubectl (`sandbox::k8s`). Desktop only.",
+            "type": "string"
+          },
+          {
+            "const": "lightsail",
+            "description": "Lightsail instance + disk. Coming soon: listed, not creatable.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.receiver.Quote": {
+        "description": "The monthly cost the create button names (owner: the press on \"Create node · $13/mo\" is the\napproval).",
+        "properties": {
+          "disk_usd": {
+            "description": "Disk per month; `None` for Kubernetes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.cloudnodes.receiver.ProviderKind"
+              }
+            ],
+            "description": "Which provider."
+          },
+          "server_usd": {
+            "description": "Server per month, live from the provider; `None` when unknown.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "size_slug": {
+            "description": "The size quoted.",
+            "type": "string"
+          },
+          "total_usd": {
+            "description": "`server + disk`, rounded to cents; `None` for Kubernetes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "size_slug"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.Region": {
+        "description": "One region.",
+        "properties": {
+          "country": {
+            "description": "ISO country code, for the flag (`GB`).",
+            "type": "string"
+          },
+          "id": {
+            "description": "The provider's slug (`lon1`, `lhr`).",
+            "type": "string"
+          },
+          "label": {
+            "description": "\"London\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "country"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.SizeList": {
+        "description": "`cloud_sizes`: the sizes of one provider (and region), priced live from the provider's API\non every call (no cache, no price list in the app).",
+        "properties": {
+          "error": {
+            "description": "Why they did not (no credential, the API failed); `None` when priced or not priceable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priced": {
+            "description": "The prices came from the provider just now.",
+            "type": "boolean"
+          },
+          "sizes": {
+            "description": "2, 4 and 8 GB; `monthly_usd` set only when `priced`.",
+            "items": {
+              "$ref": "#/components/schemas/method.cloudnodes.receiver.SizeOption"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sizes",
+          "priced"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.SizeOption": {
+        "description": "One size a provider offers for a node.",
+        "properties": {
+          "memory_gb": {
+            "description": "2, 4 or 8.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "monthly_usd": {
+            "description": "Server only; `None` for Kubernetes (the cluster's cost).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "slug": {
+            "description": "The provider's slug (`s-1vcpu-2gb`, `shared-cpu-1x`, …); for Kubernetes `2Gi`.",
+            "type": "string"
+          },
+          "vcpus": {
+            "description": "Virtual CPUs.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "memory_gb",
+          "vcpus",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.Stage": {
+        "description": "The create job's stages, in order (wizard step ④).",
+        "oneOf": [
+          {
+            "const": "server",
+            "description": "Server (Droplet / Machine / Deployment) created and running.",
+            "type": "string"
+          },
+          {
+            "const": "storage",
+            "description": "The `/data` volume attached.",
+            "type": "string"
+          },
+          {
+            "const": "install",
+            "description": "Installing the newest signed theuth release (ends when the node dials the mesh).",
+            "type": "string"
+          },
+          {
+            "const": "join",
+            "description": "The node presented its ticket; waiting until it is reachable.",
+            "type": "string"
+          },
+          {
+            "const": "ready",
+            "description": "A reachable mesh peer.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.cloudnodes.receiver.StorageClass": {
+        "description": "A StorageClass of the cluster.",
+        "properties": {
+          "default": {
+            "description": "Marked as the cluster's default.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "provisioner": {
+            "description": "`provisioner`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "provisioner",
+          "default"
+        ],
+        "type": "object"
+      },
+      "method.cloudnodes.receiver.TerminalOpen": {
+        "description": "`cloud_terminal`: a PTY job on the node's engine; attach with `subscribe_pty(session, job)`.",
+        "properties": {
+          "engine": {
+            "description": "The node's mesh endpoint id (where the PTY runs).",
+            "type": "string"
+          },
+          "job": {
+            "description": "The PTY job.",
+            "type": "string"
+          },
+          "session": {
+            "description": "The owner root session the PTY job belongs to, on the node.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "job",
+          "engine"
         ],
         "type": "object"
       },
@@ -128057,6 +131344,34 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.AskReply": {
+        "description": "What `vault_peer_ask` answers.",
+        "properties": {
+          "key": {
+            "description": "base64 K_dev, when approved at once.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The owner's name (labels the node's device method).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "default": false,
+            "description": "A prompt is showing on the owner.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pending"
+        ],
+        "type": "object"
+      },
       "method.secrets.output.AwsFormat": {
         "description": "AWS value shape for a `secret_request` destination.",
         "oneOf": [
@@ -128647,6 +131962,31 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.Kind": {
+        "description": "An unlock method's kind.",
+        "oneOf": [
+          {
+            "const": "keychain",
+            "description": "OS keychain (desktops).",
+            "type": "string"
+          },
+          {
+            "const": "password",
+            "description": "Master password (Argon2id).",
+            "type": "string"
+          },
+          {
+            "const": "device",
+            "description": "A paired owner engine releases the KEK over the mesh.",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "Legacy plaintext `secrets.key` (migrated Linux engines); unprotected.",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.output.ListPage": {
         "description": "One page of [`ExternalBackend::list`].",
         "properties": {
@@ -128722,6 +132062,40 @@
             "type": "object"
           }
         ]
+      },
+      "method.secrets.output.MethodView": {
+        "description": "One unlock method, as lists show it. Never key material.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`keychain` | `password` | `file` | the owner endpoint id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.output.Kind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "label": {
+            "description": "Human text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label",
+          "created_ms"
+        ],
+        "type": "object"
       },
       "method.secrets.output.RequestId": {
         "description": "Correlates a [`SecretsEvent::Requested`] with its [`Answer`].",
@@ -129102,6 +132476,36 @@
         ],
         "type": "object"
       },
+      "method.secrets.output.UnlockDevice": {
+        "description": "A node this engine unlocks.",
+        "properties": {
+          "auto": {
+            "description": "Approve its unlock requests without a prompt.",
+            "type": "boolean"
+          },
+          "enrolled_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "node": {
+            "description": "Its endpoint id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "name",
+          "auto",
+          "enrolled_ms"
+        ],
+        "type": "object"
+      },
       "method.secrets.output.UnlockRequestView": {
         "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
         "properties": {
@@ -129136,6 +132540,115 @@
           "backend",
           "account",
           "reason"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.UnsealRequestView": {
+        "description": "A prompt waiting on this (owner) engine.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Prompt id.",
+            "type": "string"
+          },
+          "node": {
+            "description": "The asking node's endpoint id.",
+            "type": "string"
+          },
+          "node_name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "purpose": {
+            "description": "`unlock` | `enroll`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "node",
+          "node_name",
+          "purpose",
+          "created_ms"
+        ],
+        "type": "object"
+      },
+      "method.secrets.output.VaultStatus": {
+        "description": "`vault_status`.",
+        "properties": {
+          "asking": {
+            "description": "Owner engines a sealed engine is asking right now.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "engine": {
+            "description": "This engine's mesh id, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Why it is sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "description": "Every method.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.output.MethodView"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "This engine's name, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password_set": {
+            "description": "A `password` method exists.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "`unsealed` | `sealed`.",
+            "type": "string"
+          },
+          "unsealed_by": {
+            "description": "`keychain` | `file` | `password` | `device` | `memory`; `None` while sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warning": {
+            "description": "Loud text when the key is not protected.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "engine",
+          "name",
+          "state",
+          "unsealed_by",
+          "methods",
+          "password_set",
+          "warning",
+          "asking",
+          "error"
         ],
         "type": "object"
       },
@@ -129207,6 +132720,31 @@
           "write",
           "delete"
         ],
+        "type": "object"
+      },
+      "method.secrets.receiver.AskReply": {
+        "description": "What `vault_peer_ask` answers.",
+        "properties": {
+          "key": {
+            "description": "base64 K_dev, when approved at once.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The owner's name (labels the node's device method).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "default": false,
+            "description": "A prompt is showing on the owner.",
+            "type": "boolean"
+          }
+        },
         "type": "object"
       },
       "method.secrets.receiver.AwsFormat": {
@@ -129761,6 +133299,31 @@
         },
         "type": "object"
       },
+      "method.secrets.receiver.Kind": {
+        "description": "An unlock method's kind.",
+        "oneOf": [
+          {
+            "const": "keychain",
+            "description": "OS keychain (desktops).",
+            "type": "string"
+          },
+          {
+            "const": "password",
+            "description": "Master password (Argon2id).",
+            "type": "string"
+          },
+          {
+            "const": "device",
+            "description": "A paired owner engine releases the KEK over the mesh.",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "Legacy plaintext `secrets.key` (migrated Linux engines); unprotected.",
+            "type": "string"
+          }
+        ]
+      },
       "method.secrets.receiver.ListPage": {
         "description": "One page of [`ExternalBackend::list`].",
         "properties": {
@@ -129835,6 +133398,40 @@
             "type": "object"
           }
         ]
+      },
+      "method.secrets.receiver.MethodView": {
+        "description": "One unlock method, as lists show it. Never key material.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`keychain` | `password` | `file` | the owner endpoint id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.secrets.receiver.Kind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "label": {
+            "description": "Human text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label",
+          "created_ms"
+        ],
+        "type": "object"
       },
       "method.secrets.receiver.RequestId": {
         "description": "Correlates a [`SecretsEvent::Requested`] with its [`Answer`].",
@@ -130203,6 +133800,36 @@
         ],
         "type": "object"
       },
+      "method.secrets.receiver.UnlockDevice": {
+        "description": "A node this engine unlocks.",
+        "properties": {
+          "auto": {
+            "description": "Approve its unlock requests without a prompt.",
+            "type": "boolean"
+          },
+          "enrolled_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "node": {
+            "description": "Its endpoint id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "name",
+          "auto",
+          "enrolled_ms"
+        ],
+        "type": "object"
+      },
       "method.secrets.receiver.UnlockRequestView": {
         "description": "An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.",
         "properties": {
@@ -130237,6 +133864,110 @@
           "backend",
           "account",
           "reason"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.UnsealRequestView": {
+        "description": "A prompt waiting on this (owner) engine.",
+        "properties": {
+          "created_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Prompt id.",
+            "type": "string"
+          },
+          "node": {
+            "description": "The asking node's endpoint id.",
+            "type": "string"
+          },
+          "node_name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "purpose": {
+            "description": "`unlock` | `enroll`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "node",
+          "node_name",
+          "purpose",
+          "created_ms"
+        ],
+        "type": "object"
+      },
+      "method.secrets.receiver.VaultStatus": {
+        "description": "`vault_status`.",
+        "properties": {
+          "asking": {
+            "description": "Owner engines a sealed engine is asking right now.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "engine": {
+            "description": "This engine's mesh id, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Why it is sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "description": "Every method.",
+            "items": {
+              "$ref": "#/components/schemas/method.secrets.receiver.MethodView"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "This engine's name, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password_set": {
+            "description": "A `password` method exists.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "`unsealed` | `sealed`.",
+            "type": "string"
+          },
+          "unsealed_by": {
+            "description": "`keychain` | `file` | `password` | `device` | `memory`; `None` while sealed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warning": {
+            "description": "Loud text when the key is not protected.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "methods",
+          "password_set",
+          "asking"
         ],
         "type": "object"
       },
@@ -143705,6 +147436,563 @@
       "x-theuth-owner": "rpc"
     },
     {
+      "name": "cloud_create",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "spec",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.cloudnodes.input.NodeSpec"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.CloudNode"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.CloudNode"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_desktop",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.DesktopOpen"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.DesktopOpen"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_destroy",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "keep_volume",
+          "required": false,
+          "schema": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "keepVolume"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_forget_credential",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.cloudnodes.input.ProviderKind"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_import_credential",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.cloudnodes.input.ProviderKind"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.ProviderInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.ProviderInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_k8s_info",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "context",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.K8sInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.K8sInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_list",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.CloudList"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.CloudList"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_logs",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "tail",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.NodeLogs"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.NodeLogs"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_oauth_cancel",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.cloudnodes.input.ProviderKind"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_oauth_start",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.cloudnodes.input.ProviderKind"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.OauthStart"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.OauthStart"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_providers",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.cloudnodes.output.ProviderInfo"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.cloudnodes.receiver.ProviderInfo"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_quote",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "spec",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.cloudnodes.input.NodeSpec"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.Quote"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.Quote"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_resize",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "memory_gb",
+          "required": true,
+          "schema": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": [
+            "memoryGb"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.CloudNode"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.CloudNode"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_restart",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.CloudNode"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.CloudNode"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_set_token",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.cloudnodes.input.ProviderKind"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "token",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.ProviderInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.ProviderInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_sizes",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.cloudnodes.input.ProviderKind"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "region",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.SizeList"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.SizeList"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_status",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.CloudNode"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.CloudNode"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_terminal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.TerminalOpen"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.TerminalOpen"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
+      "name": "cloud_update",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.cloudnodes.output.CloudNode"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.cloudnodes.receiver.CloudNode"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "cloudnodes"
+    },
+    {
       "name": "code_locate",
       "paramStructure": "by-position",
       "params": [
@@ -148290,6 +152578,106 @@
       "x-theuth-owner": "roster"
     },
     {
+      "name": "engine_desktop",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.EngineDesktop"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.EngineDesktop"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "engine_logs",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "tail",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.EngineLogs"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.EngineLogs"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "engine_terminal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.EngineTerminal"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.EngineTerminal"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "escalate_effort",
       "paramStructure": "by-position",
       "params": [],
@@ -150997,6 +155385,17 @@
           "schema": {
             "type": [
               "boolean",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -155314,6 +159713,17 @@
             ]
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -155368,6 +159778,17 @@
             "maximum": 65535,
             "minimum": 0,
             "type": "integer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "x-theuth-aliases": []
         }
@@ -155427,6 +159848,17 @@
           "x-theuth-aliases": [
             "ifRevision"
           ]
+        },
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -162048,6 +166480,17 @@
             ]
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -163531,6 +167974,322 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "vault_add_device",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "owner",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_add_password",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "password",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_answer_unseal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "approve",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "always",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_change_password",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "old",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "new",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_forget_node",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "node",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_peer_ask",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "nonce",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "purpose",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.AskReply"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.AskReply"
+        }
+      },
+      "x-theuth-audience": "mesh",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_peer_grant",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "nonce",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "purpose",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "mesh",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_remove_method",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
       "name": "vault_rotate",
       "paramStructure": "by-position",
       "params": [],
@@ -163577,6 +168336,181 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "nodes"
+    },
+    {
+      "name": "vault_seal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_set_auto_unlock",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "node",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "auto",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_status",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_unlock_devices",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.output.UnlockDevice"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.receiver.UnlockDevice"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_unseal",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "password",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.secrets.output.VaultStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.secrets.receiver.VaultStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
+    },
+    {
+      "name": "vault_unseal_requests",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.output.UnsealRequestView"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.secrets.receiver.UnsealRequestView"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "secrets"
     },
     {
       "name": "vision_effort",
@@ -164792,6 +169726,17 @@
       {
         "exposure": "public",
         "receiverSchema": {
+          "$ref": "#/components/schemas/event.cloudnodes_2eevents.receiver.CloudEvent"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.cloudnodes_2eevents.output.CloudEvent"
+        },
+        "topic": "cloudnodes.events",
+        "version": 1
+      },
+      {
+        "exposure": "public",
+        "receiverSchema": {
           "$ref": "#/components/schemas/event.codeindex_2eevents.receiver.CodeindexEvent"
         },
         "schema": {
@@ -165304,6 +170249,7 @@
       "autoresearch",
       "browser",
       "cells",
+      "cloudnodes",
       "codeindex",
       "computer",
       "decision",
@@ -165505,6 +170451,17 @@
               "minimum": 0,
               "type": [
                 "integer",
+                "null"
+              ]
+            },
+            "x-theuth-aliases": []
+          },
+          {
+            "name": "engine",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
                 "null"
               ]
             },

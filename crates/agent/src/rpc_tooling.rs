@@ -450,7 +450,7 @@ async fn confirm_removal(
         args: serde_json::json!({ "tool": tool, "scope": scope }),
         risk: tools::Risk::Destructive,
         call_id: None,
-        always_ask: false,
+        always_ask: None,
     };
     match tools::ask_human_only(req).await {
         Ok(_) => Ok(()),

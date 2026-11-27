@@ -139,6 +139,7 @@ async fn attention_list_masks_alerts_per_connection() {
             risk: tools::Risk::Destructive,
             human_only: false,
             always_ask: false,
+            always_ask_why: None,
         })
         .await
         .unwrap();

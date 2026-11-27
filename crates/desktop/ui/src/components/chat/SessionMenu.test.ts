@@ -98,10 +98,11 @@ test('183 R1 (S7): an owner from before 183 greys the approvals row and says it 
   expect(row).toMatchObject({ disabled: true, note: 'old-box needs an update' })
 })
 
-test('219 §6.1: tools that always ask add one row under Approvals; none adds no row', () => {
-  const rows = (alwaysAsk: number) => settingsRows({ self: 'mac', offline: false, approvals: { global: false }, alwaysAsk, model: 'm' }).map((r) => r.id)
-  expect(rows(0)).toEqual(['approvals', 'messaging', 'model', 'separator', 'continue', 'move'])
-  expect(rows(3)).toEqual(['approvals', 'always-ask', 'messaging', 'model', 'separator', 'continue', 'move'])
-  expect(settingsRows({ self: 'mac', offline: false, alwaysAsk: 3, model: 'm' }).find((r) => r.id === 'always-ask')?.label).toBe('Always ask: 3 tools')
-  expect(settingsRows({ self: 'mac', offline: false, alwaysAsk: 1, model: 'm' }).find((r) => r.id === 'always-ask')?.label).toBe('Always ask: 1 tool')
+test('219 §6.1: entries that always ask add one row under Approvals naming them; none adds no row', () => {
+  const rows = (alwaysAsk: string[]) => settingsRows({ self: 'mac', offline: false, approvals: { global: false }, alwaysAsk, model: 'm' }).map((r) => r.id)
+  expect(rows([])).toEqual(['approvals', 'messaging', 'model', 'separator', 'continue', 'move'])
+  expect(rows(['shell'])).toEqual(['approvals', 'always-ask', 'messaging', 'model', 'separator', 'continue', 'move'])
+  const label = (alwaysAsk: string[]) => settingsRows({ self: 'mac', offline: false, alwaysAsk, model: 'm' }).find((r) => r.id === 'always-ask')?.label
+  expect(label(['secret:bw/vw:read', 'secret:bw/vw:delete', 'secret_delete'])).toBe('Always ask: vw (Bitwarden): read, delete; secret_delete')
+  expect(label(['mcp:k8s'])).toBe('Always ask: MCP server k8s')
 })

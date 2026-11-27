@@ -52,6 +52,7 @@ schedule = { path = "crates/schedule" }
 replica = { path = "crates/replica" }  # small-record replication: HLC, change feed, Transport trait (67 §5.1)
 sessionsync = { path = "crates/sessionsync" }  # transcript replication with transferable ownership (68)
 mesh = { path = "crates/mesh" }  # engine mesh: iroh endpoint, pairing, hub lease, engine stats (67 §4)
+cloudnodes = { path = "crates/cloudnodes" }  # cloud nodes: always-on engines on the user's DO / Fly / k8s account (224)
 tasks = { path = "crates/tasks" }  # task records, wakes, checkout, disposition (67 §7)
 roster = { path = "crates/roster" }  # agents as files, desks, episodes, budgets, proposals (67 §6)
 webprofile = { path = "crates/webprofile" }  # one sealed, mesh-replicated browser profile for the tile and obscura (209)
@@ -453,6 +454,7 @@ chacha20poly1305 = "0.11"  # secrets vault (37)
 zeroize = "1"  # secrets vault (37)
 aho-corasick = "1"  # secrets vault (37)
 rpassword = "7"  # secrets vault (37)
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }  # 225: master-password KEK (Argon2id)
 
 [workspace.lints.rust]
 missing_docs = "warn"
