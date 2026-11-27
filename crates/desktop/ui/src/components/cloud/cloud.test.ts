@@ -15,8 +15,6 @@ import { DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, Price
 import type { CloudList, CloudNode, K8sInfo, ProviderInfo, Region, SizeList } from './types'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
-// noVNC reads `window` at import; the viewer test never connects.
-vi.mock('@novnc/novnc', () => ({ default: class {} }))
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<typeof Router>()), useNavigate: () => () => undefined }))
 
 const regions = (rows: [string, string, string][]): Region[] => rows.map(([id, label, country]) => ({ id, label, country }))
@@ -200,7 +198,7 @@ test('AWS Lightsail is listed but disabled as coming soon; Kubernetes only on de
 
 test('the flannel warning shows only when the cluster is known not to enforce NetworkPolicies', () => {
   const info: K8sInfo = { contexts: ['rwx-dev'], current_context: 'rwx-dev', namespaces: ['default'], storage_classes: [{ name: 'nfs-csi', provisioner: 'nfs', default: false }], no_default_class: true, cni: 'flannel', enforces_network_policy: false }
-  const render = (i: K8sInfo) => html(createElement(K8sConfigure, { info: i, sizes: K8S.sizes, k8s: { context: 'rwx-dev', namespace: 'theuth-nodes', storage_class: 'nfs-csi' }, memory_gb: 2, busy: false, onChange: () => {}, onMemory: () => {}, onDeploy: () => {} }))
+  const render = (i: K8sInfo) => html(createElement(K8sConfigure, { info: i, sizes: K8S.sizes, k8s: { context: 'rwx-dev', namespace: 'theuth-nodes', storage_class: 'nfs-csi', create_namespace: true, deny_cluster_network: false }, memory_gb: 2, busy: false, onChange: () => {}, onMemory: () => {}, onDeploy: () => {} }))
   const off = render(info)
   // Rendered HTML escapes the apostrophe.
   const warning = FLANNEL_WARNING.replace("'", '&#x27;')
@@ -248,6 +246,10 @@ test('progress: events fold into the list and the progress entry; the stage rows
   const failed = stageRows({ node: qc.getQueryData<CloudList>(cloudKeys.list)?.nodes[0] ?? null, progress: progress as never, version: null })
   expect(failed.map((r) => r.status)).toEqual(['done', 'done', 'failed', 'waiting', 'waiting'])
 
+  applyCloudEvent(qc, { type: 'CloudNodeChanged', node: node() })
+  // A Changed event carries no price: the row keeps the one `cloud_list` gave.
+  applyCloudEvent(qc, { type: 'CloudNodeChanged', node: node({ state: 'busy', monthly_usd: null }) })
+  expect(qc.getQueryData<CloudList>(cloudKeys.list)?.nodes[0]).toMatchObject({ state: 'busy', monthly_usd: 13 })
   applyCloudEvent(qc, { type: 'CloudNodeChanged', node: node() })
   expect(stageRows({ node: qc.getQueryData<CloudList>(cloudKeys.list)?.nodes[0] ?? null, progress: undefined, version: null }).every((r) => r.status === 'done')).toBe(true)
 

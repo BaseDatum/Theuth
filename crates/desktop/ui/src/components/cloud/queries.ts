@@ -59,7 +59,9 @@ export function applyCloudEvent(qc: QueryClient, e: CloudEvent): void {
   switch (e.type) {
     case 'CloudNodeChanged': {
       const before = qc.getQueryData<CloudList>(cloudKeys.list)?.nodes.find((n) => n.name === e.node.name)
-      qc.setQueryData<CloudList>(cloudKeys.list, (list) => upsertNode(list, e.node))
+      // The event never carries a price (only `cloud_list` / `cloud_status` ask the provider): keep the row's.
+      const node = e.node.monthly_usd === null && before ? { ...e.node, monthly_usd: before.monthly_usd } : e.node
+      qc.setQueryData<CloudList>(cloudKeys.list, (list) => upsertNode(list, node))
       if (before?.state === 'creating' && e.node.state === 'ready') notify.success(`${e.node.name} is ready`, { id: `cloud-${e.node.name}` })
       if (before?.state === 'creating' && e.node.state === 'failed') notify.error(`${e.node.name} could not be created`, { id: `cloud-${e.node.name}`, description: e.node.error ?? undefined })
       return

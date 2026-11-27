@@ -42,7 +42,7 @@ export type WizardStep = 'choose' | 'provider' | 'configure' | 'progress' | 'don
 /** Where the wizard opens (the fixture opens any screen; a real entry passes nothing). */
 export type WizardInitial = {
   step?: WizardStep
-  spec?: Partial<NodeSpec>
+  spec?: Partial<Omit<NodeSpec, 'k8s'>> & { k8s?: K8sOptions | null }
   /** The node a `progress` / `done` screen follows. */
   node?: string
   connect?: Partial<Connect>

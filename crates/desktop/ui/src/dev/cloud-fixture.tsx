@@ -147,7 +147,7 @@ const NODES: CloudNode[] =
             SKY,
             node({ name: 'lab-fly', provider: 'fly', state: 'ready', region: 'lhr', region_label: 'London', size_slug: 'shared-cpu-1x', monthly_usd: 12.19, reachable: true, path: 'relay', version: '2.31.2' }),
             node({ name: 'vault-box', provider: 'digitalocean', state: 'ready', region: 'fra1', region_label: 'Frankfurt', size_slug: 's-2vcpu-4gb', memory_gb: 4, monthly_usd: 25, reachable: true, path: 'direct', version: '2.31.2', sealed: true }),
-            node({ name: 'night-runner', provider: 'kubernetes', state: 'creating', stage: 'join', size_slug: '2Gi', k8s: { context: 'rwx-dev', namespace: 'theuth-nodes', storage_class: 'nfs-csi' } }),
+            node({ name: 'night-runner', provider: 'kubernetes', state: 'creating', stage: 'join', size_slug: '2Gi', k8s: { context: 'rwx-dev', namespace: 'theuth-nodes', storage_class: 'nfs-csi', create_namespace: true, deny_cluster_network: false } }),
             node({ name: 'theuth-test', provider: 'digitalocean', state: 'orphan', region: 'nyc3', region_label: null, size_slug: 's-1vcpu-2gb', monthly_usd: 13, version: '2.31.2' }),
           ]
 const LIST: CloudList = { nodes: NODES, errors: state === 'settings-machines' ? [{ provider: 'fly', message: 'token rejected (401); sign in again' }] : [] }
@@ -188,9 +188,9 @@ const cloud: CloudApi = {
   cloud_create: (spec) => ok(node({ name: spec.name, provider: spec.provider, state: 'creating', region: spec.region, region_label: info(spec.provider).regions.find((r) => r.id === spec.region)?.label ?? null, stage: 'server' })),
   cloud_list: () => ok(LIST),
   cloud_status: (name) => ok(NODES.find((n) => n.name === name) as CloudNode),
-  cloud_restart: () => ok(null),
-  cloud_resize: () => ok(null),
-  cloud_update: () => ok(null),
+  cloud_restart: (name) => ok(NODES.find((n) => n.name === name) ?? SKY),
+  cloud_resize: (name, memory_gb) => ok({ ...(NODES.find((n) => n.name === name) ?? SKY), state: 'busy' as const, memory_gb }),
+  cloud_update: (name) => ok(NODES.find((n) => n.name === name) ?? SKY),
   cloud_destroy: () => ok(['droplet 4821', 'firewall theuth-sky-cloud']),
   cloud_terminal: (name) => ok({ session: 'fixture', job: `pty-${name}`, engine: 'e1f2' }),
   cloud_logs: (name) => ok({ name, lines: LOGS }),

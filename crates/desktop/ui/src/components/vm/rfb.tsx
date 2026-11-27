@@ -1,7 +1,7 @@
 // The noVNC session shared by the sandbox VM desktop (`VmDesktop`) and a cloud node's watchable desktop
 // (`cloud/NodeDesktop`): one RFB on a canvas per access grant and attempt, reconnect with backoff, and the send-keys menu.
 // Who may type (view-only) and what Take over means beyond that stay with each caller.
-import RFB from '@novnc/novnc'
+import type RFB from '@novnc/novnc'
 import { Keyboard } from 'lucide-react'
 import { type RefObject, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
@@ -53,46 +53,54 @@ export function useRfb(access: RfbAccess | null | undefined, viewOnly: boolean, 
   const [reason, setReason] = useState<string | null>(null)
   const [geometry, setGeometry] = useState('')
   const [desktopName, setDesktopName] = useState('')
+  // The latest `viewOnly` / `fit`, for a session that connects after noVNC loads.
+  const latest = useRef({ viewOnly, fit })
+  latest.current = { viewOnly, fit }
 
   useEffect(() => {
     const target = box.current
     if (!target || !access) return
     setConn(attempt === 0 ? 'connecting' : 'reconnecting')
-    const r = new RFB(target, access.ws_url, { credentials: { password: access.password } })
-    r.scaleViewport = false
-    r.clipViewport = false
-    r.resizeSession = fit
-    r.viewOnly = viewOnly
-    r.background = 'transparent'
+    let r: RFB | null = null
+    let ro: ResizeObserver | null = null
     let timer: number | undefined
     let dead = false
-    r.addEventListener('connect', () => {
-      setConn('connected')
-      setReason(null)
-    })
-    r.addEventListener('securityfailure', (e) => setReason(e.detail.reason ?? `security failure ${e.detail.status}`))
-    r.addEventListener('desktopname', (e) => setDesktopName(e.detail.name))
-    r.addEventListener('disconnect', () => {
+    // noVNC is loaded on first use: it reads `window` at import, and most screens that can open a desktop never do.
+    void import('@novnc/novnc').then(({ default: Rfb }) => {
       if (dead) return
-      setConn('reconnecting')
-      timer = window.setTimeout(() => setAttempt((n) => n + 1), RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)])
+      const s = new Rfb(target, access.ws_url, { credentials: { password: access.password } })
+      r = s
+      s.scaleViewport = false
+      s.clipViewport = false
+      s.resizeSession = latest.current.fit
+      s.viewOnly = latest.current.viewOnly
+      s.background = 'transparent'
+      s.addEventListener('connect', () => {
+        setConn('connected')
+        setReason(null)
+      })
+      s.addEventListener('securityfailure', (e) => setReason(e.detail.reason ?? `security failure ${e.detail.status}`))
+      s.addEventListener('desktopname', (e) => setDesktopName(e.detail.name))
+      s.addEventListener('disconnect', () => {
+        if (dead) return
+        setConn('reconnecting')
+        timer = window.setTimeout(() => setAttempt((n) => n + 1), RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)])
+      })
+      rfb.current = s
+      // The framebuffer size is the canvas's own size (unscaled): watch it for the geometry readout.
+      const canvas = target.querySelector('canvas')
+      ro = new ResizeObserver(() => {
+        if (canvas && canvas.width > 0) setGeometry(`${canvas.width}×${canvas.height}`)
+      })
+      if (canvas) ro.observe(canvas)
     })
-    rfb.current = r
-    // The framebuffer size is the canvas's own size (unscaled): watch it for the geometry readout.
-    const canvas = target.querySelector('canvas')
-    const ro = new ResizeObserver(() => {
-      if (canvas && canvas.width > 0) setGeometry(`${canvas.width}×${canvas.height}`)
-    })
-    if (canvas) ro.observe(canvas)
     return () => {
       dead = true
       clearTimeout(timer)
-      ro.disconnect()
+      ro?.disconnect()
       rfb.current = null
-      r.disconnect()
+      r?.disconnect()
     }
-    // `fit` and `viewOnly` are pushed below without a reconnect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [access, attempt])
   useEffect(() => {
     if (rfb.current) rfb.current.viewOnly = viewOnly
