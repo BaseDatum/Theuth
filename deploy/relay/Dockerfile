@@ -46,7 +46,7 @@ RUN bun run build
 FROM rust:1-alpine AS build
 ARG TARGETPLATFORM
 # build-base/cmake/perl/linux-headers: aws-lc-sys (rustls' provider) compiles C.
-RUN apk add --no-cache build-base cmake perl linux-headers
+RUN apk add --no-cache build-base cmake perl linux-headers ca-certificates
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/relay ./crates/relay
@@ -65,6 +65,10 @@ RUN --mount=type=cache,id=theuth-relay-cargo-registry-${TARGETPLATFORM},target=/
 # ── runtime ───────────────────────────────────────────────────────────────────
 FROM scratch
 COPY --from=build /theuth-relay /theuth-relay
+# TLS client (DigitalOcean OAuth) needs a CA bundle; scratch has none.
+# reqwest panics at startup without one: "No CA certificates were loaded from the system".
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 COPY --from=web --chown=65532:65532 /src/crates/desktop/ui/dist /web
 COPY --from=site --chown=65532:65532 /src/site/dist /site
 USER 65532
