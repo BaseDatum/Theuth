@@ -3,6 +3,7 @@
 // from the provider at runtime (`cloud_sizes`, `cloud_list`'s `monthly_usd`, `ProviderInfo.volume_usd_per_gb`).
 
 import { MIN_PASSWORD } from '@/components/vault/strength'
+import { BOOTSTRAPPING_HINT, BOOTSTRAPPING_LABEL } from '@/lib/peer-sync'
 import { type CloudNode, DEFAULT_VOLUME_GB, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type Quote, type SizeList, type SizeOption, STAGES, type Stage } from './types'
 
 /** The provider badges of the mockup: the brands' own colours (the only hard-coded colours of the cloud UI). */
@@ -208,17 +209,21 @@ export function progressPct(rows: readonly StageRow[], progress: CloudProgress |
 
 // ---- rows ----
 
-export type Tone = 'ok' | 'warn' | 'bad' | 'muted' | 'busy'
+export type Tone = 'ok' | 'warn' | 'bad' | 'muted' | 'busy' | 'sync'
 
 /** The row's word for the create job's current stage (`creating · installing`). */
 const STAGE_WORD: Record<Stage, string> = { server: 'server', storage: 'storage', install: 'installing', join: 'joining', vault: 'protecting the vault', ready: 'ready' }
 
-/** Settings › Machines status: `online · direct`, `offline`, `creating · installing`, `not on this engine`. */
-export function statusOf(n: Pick<CloudNode, 'state' | 'stage' | 'reachable' | 'path' | 'sealed'>): { text: string; tone: Tone; hint?: string } {
+/** Settings › Machines status: `online · direct`, `Syncing mesh history…`, `offline`, `creating · installing`, `not on this engine`. */
+export function statusOf(
+  n: Pick<CloudNode, 'state' | 'stage' | 'reachable' | 'path' | 'sealed'>,
+  bootstrapping = false,
+): { text: string; tone: Tone; hint?: string } {
   switch (n.state) {
     case 'ready':
       if (n.reachable === false || n.path === 'offline') return { text: 'offline', tone: 'bad' }
       if (n.sealed) return { text: 'sealed', tone: 'warn', hint: 'Vault locked: unlock it from one of your devices or with the master password' }
+      if (bootstrapping) return { text: BOOTSTRAPPING_LABEL, tone: 'sync', hint: BOOTSTRAPPING_HINT }
       return { text: n.path ? `online · ${n.path}` : 'online', tone: 'ok' }
     case 'creating':
       return { text: n.stage ? `creating · ${STAGE_WORD[n.stage]}` : 'creating', tone: 'busy' }

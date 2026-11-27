@@ -18,6 +18,8 @@ import type { RotationState } from "@/rpc/bindings/method.nodes.output"
 import type { UnpairPreview } from "@/rpc/bindings/method.link.output"
 import type { ConfigFlag } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import type { ConfigFlagKey } from '@/rpc/bindings/method.rpc_2dcompose.input'
+import type { PeerSync } from '@/rpc/bindings/method.sessionsync.receiver'
+import { MachineRow, machineTag, presenceOf } from './MachineRow'
 import { MachineTab, MachinesTab, pathChip, relayChip } from './Network'
 import { PairBody, type PairView, pairView, usePairFlow } from './PairDialog'
 import { RotationProgress, UnpairBody, UnpairDialog, useRotation } from './UnpairDialog'
@@ -123,6 +125,7 @@ const api = {
   }),
   mesh_set_hub: vi.fn(async () => null),
   sessions_status: vi.fn(async () => ({ here: 3, elsewhere: 5, log_seq: 9, last_snapshot: null })),
+  sessions_sync: vi.fn(async (): Promise<PeerSync[]> => []),
   list_nodes: vi.fn(async () => []),
   mesh_pair_nearby: vi.fn(async (_id: string) => CEREMONY),
   mesh_pair_answer: vi.fn(async (_id: string, _accept: boolean) => null),
@@ -265,6 +268,37 @@ test('path and relay words', () => {
   expect(pathChip({ reachable: false, path: 'lan', rtt_ms: 3, last_seen_ms: 0 }, NOW)).toEqual({ text: 'offline', dot: 'off' })
   expect(relayChip({ url: 'https://r.example', connected: false, rtt_ms: null, error: 'dns failed' })).toEqual({ text: 'Relay · r.example · dns failed', ok: false })
   expect(relayChip(undefined).ok).toBe(false)
+})
+
+test('bootstrapping peer shows Syncing mesh history in pathChip, MachinesTab, and MachineRow until acked > 0', async () => {
+  const peer = { reachable: true, path: 'relay' as const, rtt_ms: 41, last_seen_ms: NOW }
+  const syncing: PeerSync = { peer: 'cloud', up: true, head: 1000, acked: 0, behind_out: 1000, held: false, held_by_peer: false, last_error: null }
+  expect(pathChip(peer, NOW, syncing)).toEqual({ text: 'Syncing mesh history…', dot: 'sync' })
+  expect(pathChip({ ...peer, reachable: false }, NOW, syncing).dot).toBe('off')
+  expect(pathChip(peer, NOW, { ...syncing, held: true })).toEqual({ text: 'Relay 41 ms', dot: 'relay' })
+  expect(pathChip(peer, NOW, { ...syncing, acked: 1000, behind_out: 0 })).toEqual({ text: 'Relay 41 ms', dot: 'relay' })
+
+  // MachinesTab reflects bootstrapping state from sessions_sync and flips back once acked > 0.
+  api.sessions_sync.mockResolvedValueOnce([syncing])
+  const syncingView = await render(createElement(MachinesTab))
+  expect(syncingView.html).toContain('Syncing mesh history…')
+  expect(syncingView.html).not.toContain('Relay 41 ms')
+  expect(syncingView.html).toContain('LAN 2 ms')
+
+  api.sessions_sync.mockResolvedValueOnce([{ ...syncing, acked: 1000, behind_out: 0 }])
+  const readyView = await render(createElement(MachinesTab))
+  expect(readyView.html).not.toContain('Syncing mesh history…')
+  expect(readyView.html).toContain('Relay 41 ms')
+
+  // MachineRow supports optional syncing presence without breaking online/offline/sealed defaults.
+  const machine = { id: 'cloud', name: 'cloud-1', kind: 'cloud' as const, client: 'local', forwarded: true, online: true, sealed: false, hub: false, connected: false, path: 'relay' as const }
+  expect(presenceOf(machine, true)).toBe('syncing')
+  expect(machineTag(machine, true)).toBe('Syncing mesh history…')
+  expect(presenceOf({ ...machine, online: false }, true)).toBe('offline')
+  expect(presenceOf({ ...machine, sealed: true }, true)).toBe('sealed')
+  const rowHtml = renderToStaticMarkup(createElement(MachineRow, { machine, syncing: true }))
+  expect(rowHtml).toContain('data-presence="syncing"')
+  expect(rowHtml).toContain('Syncing mesh history…')
 })
 
 const CEREMONY: PairCeremony = { id: 'c1', peer: 'xeus2', name: 'xeus-2', os_name: 'Arch Linux', code: '482913', state: 'waiting', expires_ms: NOW + 120_000, addr: '192.168.8.140:4433' }

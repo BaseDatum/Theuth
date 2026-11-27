@@ -760,12 +760,37 @@ export function doneText(entry: WizardEntry, name: string): string {
     : `${name} joined your mesh. Chats and routines can run on it, so they keep going when this device sleeps.`
 }
 
-export function DoneView({ name, entry, onModel, onLaptop }: { name: string; entry: WizardEntry; onModel: () => void; onLaptop: () => void }) {
+export function DoneView({
+  name,
+  entry,
+  bootstrapping = false,
+  onModel,
+  onLaptop,
+}: {
+  name: string
+  entry: WizardEntry
+  bootstrapping?: boolean
+  onModel: () => void
+  onLaptop: () => void
+}) {
   return (
     <>
       <div className="mt-5 text-center text-[40px] leading-none">☁︎</div>
-      <Title className="text-center">{name} is ready</Title>
+      <Title className="text-center">{bootstrapping ? `${name} joined your mesh` : `${name} is ready`}</Title>
       <Muted className="text-center text-[13px]">{doneText(entry, name)}</Muted>
+      {bootstrapping ? (
+        <Card className="flex items-center gap-2.5 border-warning-border/40 bg-warning-bg/40">
+          <Loader2 className="size-4 shrink-0 animate-spin text-warning" aria-hidden="true" />
+          <div role="status" className="min-w-0 text-xs leading-snug text-foreground">
+            Syncing mesh history — {name} will be ready for chats once initial sync finishes
+          </div>
+        </Card>
+      ) : (
+        <div role="status" className="flex items-center justify-center gap-1.5 text-xs font-medium text-success">
+          <span className="inline-block size-1.5 shrink-0 rounded-full bg-success" aria-hidden="true" />
+          Ready
+        </div>
+      )}
       <Card>
         <div className="text-sm font-semibold">Next: connect a model</div>
         <Muted>Sign in with Claude, ChatGPT or Gemini. The key lives on your node, encrypted.</Muted>

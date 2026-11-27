@@ -2,7 +2,7 @@ import { Capability, Unavailable, useSupported, useQuerySupport } from '@/rpc/ca
 import { privateRequirements, endlessRequirements } from './requirements'
 import { useQuery } from '@tanstack/react-query'
 import { type UseNavigateResult, useNavigate } from '@tanstack/react-router'
-import { Check, ChevronDown, ChevronRight, Folder, HatGlasses } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Folder, HatGlasses, Loader2 } from 'lucide-react'
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { Composer, type DraftCreate } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
@@ -21,6 +21,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { draftProject, newDraft, usePanes } from '@/lib/panes'
+import { BOOTSTRAPPING_HINT, bootstrappingLabel, isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
 import { promoteDraft } from '@/lib/tiles'
 import { useCompactorLabel } from '@/lib/endless'
 import { newChatPopout } from '@/lib/popout'
@@ -31,19 +32,24 @@ import { type Engine, LOCAL, useEngines } from '@/link/engines'
 import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
 import type { EngineClass } from "@/rpc/bindings/method.nodes.output"
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
+import type { PeerSync } from '@/rpc/bindings/method.sessionsync.receiver'
 import { tilde } from './HarnessCards'
 
 /** 183 §12.5 / mock panel 5: one machine a new chat can start on; `id` `null` is this machine (the default). */
-export type MachineRow = { id: string | null; name: string; detail: string; status: string; online: boolean; repos: string[] }
+export type MachineRow = { id: string | null; name: string; detail: string; status: string; online: boolean; syncing?: boolean; repos: string[] }
 
 /** Machine class words (`EngineStats.class`) for `os_name · class` lines here and in Settings › Network. */
 export const CLASS: Record<EngineClass, string> = { laptop: 'laptop', desktop: 'desktop', server: 'server', container: 'container', vm: 'VM' }
 
 /** This machine first, then every paired engine: `os_name · class` from its replicated stats; `LAN` / `via relay` /
- * `offline 3h` (an offline one cannot be picked). No peers, no rows: a lone engine shows no picker. A stats row with
- * empty columns says nothing about the peer's version (a column can be late to replicate): it is pickable, its line
- * shows what is known. */
-export function machineRows(mesh: Pick<MeshStatus, 'self_id' | 'self_name' | 'peers' | 'stats'> | undefined, now = Date.now()): MachineRow[] {
+ * `offline 3h` (an offline one cannot be picked) / `Syncing mesh history…` while a freshly joined peer applies its
+ * bootstrap snapshot. No peers, no rows: a lone engine shows no picker. A stats row with empty columns says nothing
+ * about the peer's version (a column can be late to replicate): it is pickable, its line shows what is known. */
+export function machineRows(
+  mesh: Pick<MeshStatus, 'self_id' | 'self_name' | 'peers' | 'stats'> | undefined,
+  now = Date.now(),
+  peerSync?: ReadonlyMap<string, PeerSync>,
+): MachineRow[] {
   if (!mesh?.peers.some((p) => p.id !== mesh.self_id)) return []
   const facts = (id: string) => {
     const s = mesh.stats.find((x) => x.id === id)
@@ -53,14 +59,36 @@ export function machineRows(mesh: Pick<MeshStatus, 'self_id' | 'self_name' | 'pe
     { id: null, name: mesh.self_name || 'This machine', status: 'this machine', online: true, ...facts(mesh.self_id) },
     ...mesh.peers
       .filter((p) => p.id !== mesh.self_id)
-      .map((p) => ({
-        id: p.id,
-        name: p.name || p.id.slice(0, 8),
-        online: p.reachable,
-        status: !p.reachable ? (p.last_seen_ms > 0 ? `offline ${age(p.last_seen_ms, now)}` : 'offline') : p.path === 'relay' ? 'via relay' : p.path === 'lan' ? 'LAN' : '',
-        ...facts(p.id),
-      })),
+      .map((p): MachineRow => {
+        const sync = p.reachable ? peerSync?.get(p.id) : undefined
+        const syncing = isPeerBootstrapping(sync)
+        return {
+          id: p.id,
+          name: p.name || p.id.slice(0, 8),
+          online: syncing ? false : p.reachable,
+          ...(syncing ? { syncing: true } : {}),
+          status: syncing
+            ? bootstrappingLabel(sync)
+            : !p.reachable
+              ? p.last_seen_ms > 0
+                ? `offline ${age(p.last_seen_ms, now)}`
+                : 'offline'
+              : p.path === 'relay'
+                ? 'via relay'
+                : p.path === 'lan'
+                  ? 'LAN'
+                  : '',
+          ...facts(p.id),
+        }
+      }),
   ]
+}
+
+/** Inline waiting note when the draft's target machine is still applying its initial mesh snapshot. */
+export function syncingTargetNote(rows: readonly MachineRow[], engine: string | null, priv = false): string | null {
+  if (priv || engine === null) return null
+  const target = rows.find((r) => r.id === engine && r.syncing)
+  return target ? `Waiting for ${target.name} to finish syncing mesh history…` : null
 }
 
 const COMPLETE_DEBOUNCE_MS = 250
@@ -148,7 +176,8 @@ function BrowseDialog({ machine, open, onOpenChange, onPick }: { machine: Machin
  */
 export function MachineBar({ priv }: { priv: boolean }) {
   const { data: mesh } = useMesh()
-  const rows = machineRows(mesh)
+  const { byPeer } = usePeerSync()
+  const rows = machineRows(mesh, undefined, byPeer)
   const { engine, cwd, set } = useDraftTarget()
   const [browse, setBrowse] = useState(false)
   const nid = useId()
@@ -167,25 +196,56 @@ export function MachineBar({ priv }: { priv: boolean }) {
       </Label>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button id={nid} variant="outline" size="sm" disabled={priv} title={priv ? 'A private chat runs on this machine' : undefined} aria-label={`Machine: ${chosen.name}`}>
+          <Button
+            id={nid}
+            variant="outline"
+            size="sm"
+            disabled={priv}
+            title={priv ? 'A private chat runs on this machine' : chosen.syncing ? BOOTSTRAPPING_HINT : undefined}
+            aria-label={`Machine: ${chosen.name}`}
+          >
+            {chosen.syncing && <Loader2 className="size-3.5 animate-spin text-warning" aria-hidden="true" />}
             {chosen.name}
             <ChevronDown className="size-4" aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-[min(21rem,calc(100vw-2rem))]">
-          {rows.map((r) => (
-            <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online} onSelect={() => pickMachine(r.id)} className="items-start gap-2.5">
-              <span className={cn('mt-1.5 size-1.5 shrink-0 rounded-full', r.online ? 'bg-success' : 'ring-1 ring-fg-tertiary ring-inset')} aria-hidden="true" />
-              <span className="min-w-0 flex-1">
-                <span className="block font-medium">{r.name}</span>
-                {r.detail && <span className="block text-xs text-fg-secondary">{r.detail}</span>}
-              </span>
-              <span className={cn('flex shrink-0 items-center gap-1 text-xs text-fg-tertiary', r.status === 'via relay' && 'rounded-full border border-border px-2')}>
-                {r.status}
-                {r === chosen && <Check className="size-3.5" aria-hidden="true" />}
-              </span>
-            </DropdownMenuItem>
-          ))}
+          {rows.map((r) => {
+            const item = (
+              <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online} onSelect={() => pickMachine(r.id)} className="items-start gap-2.5">
+                {r.syncing ? (
+                  <Loader2 className="mt-1 size-3 shrink-0 animate-spin text-warning" aria-hidden="true" />
+                ) : (
+                  <span className={cn('mt-1.5 size-1.5 shrink-0 rounded-full', r.online ? 'bg-success' : 'ring-1 ring-fg-tertiary ring-inset')} aria-hidden="true" />
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{r.name}</span>
+                  {r.detail && <span className="block text-xs text-fg-secondary">{r.detail}</span>}
+                </span>
+                <span
+                  className={cn(
+                    'flex shrink-0 items-center gap-1 text-xs text-fg-tertiary',
+                    r.status === 'via relay' && 'rounded-full border border-border px-2',
+                    r.syncing && 'text-warning',
+                  )}
+                >
+                  {r.status}
+                  {r === chosen && <Check className="size-3.5" aria-hidden="true" />}
+                </span>
+              </DropdownMenuItem>
+            )
+            if (!r.syncing) return item
+            return (
+              <Tooltip key={r.id ?? 'self'}>
+                <TooltipTrigger asChild>
+                  <span className="block" title={BOOTSTRAPPING_HINT}>
+                    {item}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="right">{BOOTSTRAPPING_HINT}</TooltipContent>
+              </Tooltip>
+            )
+          })}
         </DropdownMenuContent>
       </DropdownMenu>
       </div>
@@ -343,6 +403,10 @@ export function NewChat({
   const rawMeshId = create?.mesh_id
   const meshId = active === LOCAL && !priv && pairedMeshes.length > 1 ? rawMeshId : undefined
   const needsMeshChoice = meshChoiceRequired(active, engines, priv, rawMeshId)
+  const { data: mesh } = useMesh()
+  const { byPeer } = usePeerSync()
+  const targetEngine = useDraftTarget((s) => s.engine)
+  const syncingNote = syncingTargetNote(machineRows(mesh, undefined, byPeer), targetEngine, priv)
   const lastPreset = useRef(preset)
   useEffect(() => {
     if (preset !== undefined && (lastPreset.current !== preset || useDrafts.getState().settings.create?.project === undefined))
@@ -357,6 +421,7 @@ export function NewChat({
     endless: endlessOn,
     ...(meshId !== undefined ? { meshId } : {}),
     ...(needsMeshChoice ? { needsMeshChoice: true } : {}),
+    ...(syncingNote ? { waitingReason: syncingNote } : {}),
   }
   return (
     <>
@@ -379,6 +444,7 @@ export function NewChat({
           endless={endlessOn}
           onEndless={(on) => setCreate({ memory: on ? 'endless' : 'epochs' })}
           settings={endlessSettings.data}
+          syncingNote={syncingNote}
           target={
             <>
               <MachineBar priv={priv} />
@@ -418,7 +484,8 @@ export function openNewChatOn(navigate: UseNavigateResult<string>, engine: strin
 /** 183 §12.5: the sidebar Chat row's ▸ — "New chat on" each machine; only with paired peers, like `MachineBar`. */
 export function NewChatOnMenu() {
   const navigate = useNavigate()
-  const rows = machineRows(useMesh().data)
+  const { byPeer } = usePeerSync()
+  const rows = machineRows(useMesh().data, undefined, byPeer)
   if (rows.length === 0) return null
   return (
     <DropdownMenu>
@@ -430,9 +497,10 @@ export function NewChatOnMenu() {
       <DropdownMenuContent side="right" align="start" className="w-[min(18rem,calc(100vw-2rem))]">
         <DropdownMenuLabel>New chat on</DropdownMenuLabel>
         {rows.map((r) => (
-          <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online} onSelect={() => openNewChatOn(navigate, r.id)}>
+          <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online} title={r.syncing ? BOOTSTRAPPING_HINT : undefined} onSelect={() => openNewChatOn(navigate, r.id)}>
+            {r.syncing && <Loader2 className="size-3 shrink-0 animate-spin text-warning" aria-hidden="true" />}
             <span className="min-w-0 flex-1 truncate">{r.name}</span>
-            <span className="text-xs text-fg-tertiary">{r.status}</span>
+            <span className={cn('text-xs text-fg-tertiary', r.syncing && 'text-warning')}>{r.status}</span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -481,6 +549,7 @@ export function CreateOptions({
   endless,
   onEndless,
   settings,
+  syncingNote,
   target,
 }: {
   priv: boolean
@@ -490,6 +559,7 @@ export function CreateOptions({
   endless: boolean
   onEndless(v: boolean): void
   settings: EndlessConfig | undefined
+  syncingNote?: string | null
   target?: ReactNode
 }) {
   const acknowledged = usePrivate((s) => s.acknowledged)
@@ -531,6 +601,12 @@ export function CreateOptions({
         </div>
         {target}
       </div>
+      {syncingNote && (
+        <div role="status" className="mt-3 flex items-center gap-2 rounded-xl border border-warning-border/40 bg-warning-bg/60 px-3 py-2 text-xs text-fg-secondary">
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-warning" aria-hidden="true" />
+          <span>{syncingNote}</span>
+        </div>
+      )}
       {endless && (
         <div className="mt-3 rounded-xl border border-border-subtle bg-muted/40 p-3">
           <p className="font-medium">Fractal context</p>

@@ -11,6 +11,7 @@ import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { useApi } from '@/lib/rpc'
+import { isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
 import { isIos, openExternal } from '@/lib/platform'
 import { closeAuthBrowser, onAuthBrowserDismissed, openAuthBrowser } from '@/lib/tauri'
 import { LOCAL, useEngines } from '@/link/engines'
@@ -70,6 +71,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const info = useConnection((s) => s.info)
   const providersQ = useCloudProviders()
   const list = useCloudList()
+  const { byPeer } = usePeerSync()
   const actions = useCloudActions()
   const providers = useMemo(() => offered(providersQ.data ?? [], phone), [providersQ.data, phone])
 
@@ -293,6 +295,8 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     </>
   )
   const linkState = phoneLink.state
+  const nodePeerId = node?.peer_id ?? node?.link?.engine ?? null
+  const nodeBootstrapping = !!nodePeerId && isPeerBootstrapping(byPeer.get(nodePeerId))
   const doneView =
     node?.link && !node.link.paired && linkState.phase !== 'paired' ? (
       <div data-cloud-link={linkState.phase} className="flex flex-col gap-2 text-sm">
@@ -310,7 +314,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
       </div>
     ) : (
       <>
-        <DoneView name={created ?? nodeName} entry={entry} onModel={() => finish('providers')} onLaptop={() => finish('machines')} />
+        <DoneView name={created ?? nodeName} entry={entry} bootstrapping={nodeBootstrapping} onModel={() => finish('providers')} onLaptop={() => finish('machines')} />
         {linkState.phase === 'paired' && linkState.vault === 'unsupported' && <p className="text-[13px] text-fg-tertiary">{VAULT_LATER}</p>}
         {linkState.phase === 'paired' && linkState.vault === 'failed' && <p className="text-[13px] text-danger">{VAULT_FAILED}</p>}
       </>

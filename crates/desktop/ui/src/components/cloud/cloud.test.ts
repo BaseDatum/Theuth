@@ -6,13 +6,15 @@ import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { AlertDialog } from '@/components/ui/alert-dialog'
 import { CloudNodeWizard } from './CloudNodeWizard'
-import { DestroyBody } from './CloudNodesSettings'
+import { CloudNodesSection, DestroyBody } from './CloudNodesSettings'
 import { DESKTOP_NOTE, checkName, createLabel, defaultMemory, defaultName, desktopBlocked, destroySaving, etaText, fromPrice, localQuote, sizesOf, stageRows, statusOf, userOf } from './format'
 import { NodeDesktopView } from './NodeDesktop'
 import { applyCloudEvent, cloudKeys } from './queries'
 import { nearestRegion } from './region'
 import { DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PriceNote, ProviderCards, VAULT_LABEL } from './steps'
 import type { CloudList, CloudNode, K8sInfo, ProviderInfo, Region, SizeList } from './types'
+import { peerSyncQueryKey } from '@/lib/peer-sync'
+import type { PeerSync } from '@/rpc/bindings/method.sessionsync.receiver'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<typeof Router>()), useNavigate: () => () => undefined }))
@@ -292,3 +294,49 @@ test('node names follow check_name; the default is <user>-cloud, numbered past t
   expect(defaultName(null)).toBe('my-cloud')
   expect(defaultName('42')).toBe('n42-cloud')
 })
+
+test('bootstrapping cloud node: statusOf, NodeRow, and CloudNodeWizard done step show syncing until acked > 0', () => {
+  expect(statusOf(node(), true)).toMatchObject({ text: 'Syncing mesh history…', tone: 'sync' })
+  expect(statusOf(node(), false)).toMatchObject({ text: 'online · direct', tone: 'ok' })
+  expect(statusOf(node({ reachable: false }), true)).toMatchObject({ text: 'offline', tone: 'bad' })
+  expect(statusOf(node({ sealed: true }), true)).toMatchObject({ text: 'sealed', tone: 'warn' })
+
+  const syncingPeer: PeerSync = { peer: 'peer-cloud-1', up: true, head: 1000, acked: 0, behind_out: 1000, held: false, held_by_peer: false }
+  const syncedPeer: PeerSync = { ...syncingPeer, acked: 1000, behind_out: 0 }
+  const readyNode = node({ peer_id: 'peer-cloud-1', state: 'ready', reachable: true, path: 'direct' })
+
+  const renderSection = (rows: PeerSync[]) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+    qc.setQueryData(cloudKeys.providers, PROVIDERS)
+    qc.setQueryData<CloudList>(cloudKeys.list, { nodes: [readyNode], errors: [] })
+    qc.setQueryData(peerSyncQueryKey, rows)
+    return html(createElement(QueryClientProvider, { client: qc }, createElement(CloudNodesSection, {})))
+  }
+
+  const rowSyncing = renderSection([syncingPeer])
+  expect(rowSyncing).toContain('Syncing mesh history…')
+  expect(rowSyncing).toContain('data-syncing=""')
+  expect(rowSyncing).not.toContain('online · direct')
+
+  const rowReady = renderSection([syncedPeer])
+  expect(rowReady).toContain('online · direct')
+  expect(rowReady).not.toContain('Syncing mesh history…')
+
+  const renderWizardDone = (rows: PeerSync[]) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+    qc.setQueryData(cloudKeys.providers, PROVIDERS)
+    qc.setQueryData<CloudList>(cloudKeys.list, { nodes: [readyNode], errors: [] })
+    qc.setQueryData(peerSyncQueryKey, rows)
+    return html(createElement(QueryClientProvider, { client: qc }, createElement(CloudNodeWizard, { entry: 'add-to-mesh', initial: { step: 'done', node: 'sky-cloud' }, onClose: () => undefined })))
+  }
+
+  const doneSyncing = renderWizardDone([syncingPeer])
+  expect(doneSyncing).toContain('Syncing mesh history — sky-cloud will be ready for chats once initial sync finishes')
+  expect(doneSyncing).toContain('sky-cloud joined your mesh')
+
+  const doneReady = renderWizardDone([syncedPeer])
+  expect(doneReady).toContain('sky-cloud is ready')
+  expect(doneReady).toContain('Ready')
+  expect(doneReady).not.toContain('Syncing mesh history —')
+})
+
