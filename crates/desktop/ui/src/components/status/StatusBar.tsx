@@ -7,6 +7,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { motionAllowed } from '@/lib/animations'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
+import { CloudCreatingChip } from '@/components/cloud/CloudStatusChip'
 import { StatusStrip } from '@/components/plugins/StatusStrip'
 import { BUCKETS, formatRate } from '@/store/event-rate'
 import { useNotices } from '@/store/notices'
@@ -41,6 +42,7 @@ function EngineBar({ defaultOpen }: { defaultOpen: boolean }) {
       slot={(open) => <NoticeSlot onOpen={open} after={down ? <Reconnect s={s} /> : null} />}
       right={
         <>
+          <CloudCreatingChip />
           {s.needsYou > 0 && <NeedsYou n={s.needsYou} />}
           {/* 216: plugin status placements (their dots never enter `dotOf`). */}
           <StatusStrip />

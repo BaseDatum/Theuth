@@ -144,19 +144,8 @@ export function flag(country: string): string {
 
 // ---- progress ----
 
-/** One `CloudNodeProgress` folded: the latest stage, estimate and lines of a node's long job. */
-export type CloudProgress = { stage: Stage | null; pct: number | null; eta_secs: number | null; lines: string[] }
-export const LINES_CAP = 200
-
-export function foldProgress(prev: CloudProgress | undefined, e: { stage: Stage | null; line: string; pct: number | null; eta_secs: number | null }): CloudProgress {
-  const lines = [...(prev?.lines ?? []), e.line]
-  return {
-    stage: e.stage ?? prev?.stage ?? null,
-    pct: e.pct ?? prev?.pct ?? null,
-    eta_secs: e.eta_secs ?? prev?.eta_secs ?? null,
-    lines: lines.length > LINES_CAP ? lines.slice(lines.length - LINES_CAP) : lines,
-  }
-}
+import { type CloudProgress, LINES_CAP, foldProgress } from './events'
+export { type CloudProgress, LINES_CAP, foldProgress }
 
 /** `About 2 minutes left`, `Less than a minute left`; `null` with no estimate. */
 export function etaText(secs: number | null | undefined): string | null {

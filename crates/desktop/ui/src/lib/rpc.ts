@@ -12,6 +12,7 @@ import { isPopout, openPopout } from '@/lib/popout'
 import { isIos } from '@/lib/platform'
 import { closeAuthBrowser } from '@/lib/tauri'
 import { applySandboxEvent } from '@/store/sandboxes'
+import { subscribeCloudEvents } from '@/components/cloud/events'
 import { useUnlockRequests } from '@/store/unlock-requests'
 import { endlessFixture } from '@/dev/endless-fixture'
 import { localFixture } from '@/dev/local-fixture'
@@ -418,6 +419,9 @@ export function useInvalidateOn(): void {
       on("sandbox.events@1", 'OpenDesktop', (e) => {
         if (!isPopout()) void openPopout({ kind: 'vm', name: e.name })
       }),
+      // 224: cloud node rows, progress and ready/failed notices stay live even when Settings is closed;
+      // ref-counted with `useCloudEvents()` so mounting a cloud view never double-applies events.
+      subscribeCloudEvents(qc),
       // 67 §4, bridged since 79: the Network page's peers and lease follow the bus instead of the poll alone.
       on("mesh.events@1", 'peer', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
       on("mesh.events@1", 'lease', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),

@@ -3,8 +3,8 @@ import type { ComponentType } from 'react'
 import type { SettingsNeed, SettingsScope } from '@/components/settings/scope'
 import type { Requirements } from '@/rpc/discovery'
 
-/** 188: what every settings tab receives. `focus` is the route's `?focus=` (Memory: `model` | `spend`). */
-export type TabProps = { focus: string | null }
+/** 188: what every settings tab receives. `focus` is the route's `?focus=` (Memory: `model` | `spend`); `progress` is `?progress=` (Machines: cloud node name). */
+export type TabProps = { focus: string | null; progress?: string | null }
 
 /** 188: one tab of a category. Its `id` is its URL (`/settings/<id>`), unique across every category. */
 export type SettingsTab = {

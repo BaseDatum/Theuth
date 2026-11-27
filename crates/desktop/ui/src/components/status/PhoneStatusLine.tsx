@@ -2,6 +2,7 @@
 
 import { X } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { CloudCreatingChip } from '@/components/cloud/CloudStatusChip'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
@@ -36,7 +37,7 @@ function EngineLine({ defaultOpen }: { defaultOpen: boolean }) {
           <Text leaving={leaving && !!notice}>{notice ? notice.text : idle}</Text>
         </>
       }
-      header={
+      header={(close) => (
         <>
           <StatusDot dot={s.dot} />
           <span className="truncate font-medium text-foreground">{s.name}</span>
@@ -46,8 +47,9 @@ function EngineLine({ defaultOpen }: { defaultOpen: boolean }) {
               <span className="font-mono">{s.needsYou}</span> need you
             </span>
           )}
+          <CloudCreatingChip mobile onOpen={close} />
         </>
-      }
+      )}
     />
   )
 }
@@ -60,7 +62,7 @@ function GuestLine({ defaultOpen }: { defaultOpen: boolean }) {
       defaultOpen={defaultOpen}
       notice={notice}
       label={notice && <Text leaving={leaving}>{notice.text}</Text>}
-      header={<span className="font-medium text-foreground">Notices</span>}
+      header={() => <span className="font-medium text-foreground">Notices</span>}
     />
   )
 }
@@ -69,7 +71,7 @@ function Text({ leaving, children }: { leaving: boolean; children: string }) {
   return <span className={cn('max-w-[70vw] truncate transition-opacity duration-200', leaving && 'opacity-0')}>{children}</span>
 }
 
-function Line({ defaultOpen, notice, label, header }: { defaultOpen: boolean; notice: Notice | null; label: ReactNode; header: ReactNode }) {
+function Line({ defaultOpen, notice, label, header }: { defaultOpen: boolean; notice: Notice | null; label: ReactNode; header: (close: () => void) => ReactNode }) {
   const [open, setOpen] = useState(defaultOpen)
   useMarkReadWhile(open)
   return (
@@ -91,9 +93,9 @@ function Line({ defaultOpen, notice, label, header }: { defaultOpen: boolean; no
       </div>
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent side="bottom" className="max-h-[60vh] gap-0 rounded-t-xl" data-notice-popover onOpenAutoFocus={(e) => e.preventDefault()}>
-          <div className="flex shrink-0 items-center gap-2 px-4 pt-4 pb-2 pr-12 text-sm">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 px-4 pt-4 pb-2 pr-12 text-sm">
             <SheetTitle className="sr-only">Status</SheetTitle>
-            {header}
+            {header(() => setOpen(false))}
           </div>
           <NoticeList className="min-h-0 flex-1" />
         </SheetContent>
