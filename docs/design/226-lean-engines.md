@@ -1,4 +1,4 @@
-# 224 — Lean engines: subsystems start for the engine's role
+# 226 — Lean engines: subsystems start for the engine's role
 
 Status: built on `feat/node-slim`. Owner report 2026-11-27: a fresh 1 GB cloud node (`t --headless --data-dir /data`,
 2.31.2, 70 min after joining) sat at 415 MB RSS (318 MB anon), 79 threads, 371 MB swapped. Every engine started every
