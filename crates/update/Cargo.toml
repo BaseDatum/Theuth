@@ -33,8 +33,10 @@ ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "test-util"] }
 serde_yaml = { workspace = true }
+figment = { workspace = true }
+chrono = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "agent/ts"]

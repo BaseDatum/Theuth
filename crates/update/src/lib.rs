@@ -16,7 +16,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     ]).expect("update RPC composition")
 }
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,10 +59,15 @@ pub const PUBKEY: &str = include_str!("../pubkey.txt");
 
 /// Delay before the first check after start (39 §9).
 const FIRST_CHECK: Duration = Duration::from_secs(60);
-/// Interval between checks (39 §9).
-const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// Default interval between manifest checks (39 §9).
+const EVERY: Duration = Duration::from_secs(30 * 60);
 /// Upper bound of the per-tick jitter added to [`EVERY`] (39 §9).
-const JITTER_SECS: u64 = 5 * 60;
+const JITTER_SECS: u64 = 120;
+/// Safe lower bound for `update.interval_secs`.
+const MIN_INTERVAL_SECS: u64 = 60;
+/// Cadence for checking restart readiness once an update is applied on disk on
+/// a managed daemon (39 §3.4), without re-fetching the network manifest.
+const IDLE_POLL: Duration = Duration::from_secs(30);
 /// Connect and read timeout on every request (39 §3.2 step 1).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// A service daemon exits for restart only after this long without a turn (39 §3.4).
@@ -81,6 +86,10 @@ pub struct UpdateConfig {
     /// Optional single manifest URL override (e.g. a scratch bucket or local mock).
     /// When unset (`None` or blank), [`DEFAULT_URLS`] are tried in order.
     pub url: Option<String>,
+    /// Optional override for the manifest check interval in seconds.
+    /// Defaults to [`EVERY`] (30 min); clamped to a minimum of 60 s.
+    #[serde(default)]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for UpdateConfig {
@@ -88,6 +97,7 @@ impl Default for UpdateConfig {
         Self {
             enabled: true,
             url: None,
+            interval_secs: None,
         }
     }
 }
@@ -102,6 +112,15 @@ impl UpdateConfig {
         match self.url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             Some(url) => vec![url],
             None => DEFAULT_URLS.to_vec(),
+        }
+    }
+
+    /// Interval between manifest checks: `interval_secs` clamped to at least
+    /// 60 s, or [`EVERY`] (30 min) when unset.
+    pub fn check_interval(&self) -> Duration {
+        match self.interval_secs {
+            Some(secs) => Duration::from_secs(secs.max(MIN_INTERVAL_SECS)),
+            None => EVERY,
         }
     }
 }
@@ -138,11 +157,40 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Status;
 
+/// Outcome of asking [`UpdateActor`] whether a managed daemon should exit for
+/// restart now or keep polling on [`IDLE_POLL`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, kameo::Reply)]
+enum RestartDecision {
+    /// Ready to drain and exit with [`EXIT_RESTART`].
+    Restart,
+    /// Applied update is pending on a managed daemon, waiting for the
+    /// idle/unattached window.
+    WaitIdle,
+    /// Nothing applied, or not under a service manager.
+    None,
+}
 
-/// `ask` (internal, from the tick task) → `true` when the process should exit
-/// for restart (39 §3.4). Carries what this tick found; the actor publishes
-/// it when it is news.
+/// Deduplication key for the `INFO` log emitted while a managed daemon waits
+/// for the restart window (changes only on version or state transition, never
+/// on the ticking idle countdown).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WaitReason {
+    UnknownAttached,
+    Blocked {
+        attached: usize,
+        active_turns: usize,
+        idle_pending: bool,
+    },
+}
+
+/// `ask` (internal, from the tick task) → [`RestartDecision`]: carries what a
+/// manifest check found; the actor publishes it when it is news, then checks
+/// restart readiness (39 §3.4).
 struct Landed(Option<UpdateReady>);
+
+/// `ask` (internal, from the tick task on [`IDLE_POLL`]) → [`RestartDecision`]:
+/// re-checks restart readiness without touching the network.
+struct ShouldRestart;
 
 /// The [`UPDATE_ACTOR`] actor.
 #[derive(kameo::Actor)]
@@ -150,9 +198,62 @@ pub struct UpdateActor {
     rt: Runtime,
     ready: Option<UpdateReady>,
     attached: Option<Arc<dyn Fn() -> usize + Send + Sync>>,
-    /// When the last turn started; `now` at spawn so a fresh daemon never
-    /// exits inside its first [`IDLE_BEFORE_EXIT`].
+    managed: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// When the last turn started or ended; `now` at spawn so a fresh daemon
+    /// never exits inside its first [`IDLE_BEFORE_EXIT`].
     last_turn: Instant,
+    /// In-flight turns keyed by `(session, turn)`.
+    active_turns: HashSet<(runtime::SessionId, runtime::TurnId)>,
+    /// Last `(version, reason)` logged at `INFO` while waiting to restart.
+    waiting_logged: Option<(String, WaitReason)>,
+}
+
+impl UpdateActor {
+    fn evaluate_restart(&mut self) -> RestartDecision {
+        // 39 §3.4: (a) under a service manager, (b) nobody attached,
+        // (c) no turn in flight and idle for IDLE_BEFORE_EXIT.
+        let Some(ready) = self.ready.as_ref().filter(|r| r.applied) else {
+            self.waiting_logged = None;
+            return RestartDecision::None;
+        };
+        if !(self.managed)() {
+            self.waiting_logged = None;
+            return RestartDecision::None;
+        }
+        let attached = self.attached.as_ref().map(|f| f());
+        let active_turns = self.active_turns.len();
+        let idle_remaining = IDLE_BEFORE_EXIT.saturating_sub(self.last_turn.elapsed());
+        if attached == Some(0) && active_turns == 0 && idle_remaining.is_zero() {
+            self.waiting_logged = None;
+            tracing::info!("update: {} in place, exiting for restart", ready.version);
+            return RestartDecision::Restart;
+        }
+        let reason = match attached {
+            Some(attached) => WaitReason::Blocked {
+                attached,
+                active_turns,
+                idle_pending: !idle_remaining.is_zero(),
+            },
+            None => WaitReason::UnknownAttached,
+        };
+        let key = (ready.version.clone(), reason);
+        if self.waiting_logged.as_ref() != Some(&key) {
+            match attached {
+                Some(count) => tracing::info!(
+                    "update: {} applied, waiting for restart window (attached={count}, active_turns={active_turns}, idle_remaining={}s)",
+                    ready.version,
+                    idle_remaining.as_secs(),
+                ),
+                None => tracing::info!(
+                    "update: {} applied, waiting for restart window (attached=unknown, active_turns={active_turns}, idle_remaining={}s)",
+                    ready.version,
+                    idle_remaining.as_secs(),
+                ),
+            }
+            self.waiting_logged = Some(key);
+        }
+        RestartDecision::WaitIdle
+    }
 }
 
 impl Message<Status> for UpdateActor {
@@ -162,18 +263,40 @@ impl Message<Status> for UpdateActor {
     }
 }
 
-
 impl Message<agent::AgentEvent> for UpdateActor {
     type Reply = ();
     async fn handle(&mut self, ev: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
-        if matches!(ev, agent::AgentEvent::TurnStarted { .. }) {
-            self.last_turn = Instant::now();
+        match ev {
+            agent::AgentEvent::TurnStarted { session, turn, .. }
+            | agent::AgentEvent::TurnResumed { session, turn, .. } => {
+                self.active_turns.insert((session, turn));
+                self.last_turn = Instant::now();
+            }
+            agent::AgentEvent::TurnFinished { session, turn, .. }
+            | agent::AgentEvent::TurnSuspended { session, turn, .. } => {
+                self.active_turns.remove(&(session, turn));
+                self.last_turn = Instant::now();
+            }
+            agent::AgentEvent::SessionDeleted { session }
+            | agent::AgentEvent::SessionClosing { session, .. }
+            | agent::AgentEvent::SessionOwnerChanged {
+                session,
+                here: false,
+                ..
+            } => {
+                let before = self.active_turns.len();
+                self.active_turns.retain(|(s, _)| *s != session);
+                if self.active_turns.len() != before {
+                    self.last_turn = Instant::now();
+                }
+            }
+            _ => {}
         }
     }
 }
 
 impl Message<Landed> for UpdateActor {
-    type Reply = bool;
+    type Reply = RestartDecision;
     async fn handle(&mut self, m: Landed, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Some(ready) = m.0
             && self.ready.as_ref() != Some(&ready)
@@ -181,17 +304,14 @@ impl Message<Landed> for UpdateActor {
             self.rt.publish(ready.clone()).await;
             self.ready = Some(ready);
         }
-        // 39 §3.4: (a) under a service manager, (b) nobody attached, (c) idle.
-        let Some(ready) = self.ready.as_ref().filter(|r| r.applied) else {
-            return false;
-        };
-        let managed = platform::service::managed();
-        let alone = self.attached.as_ref().is_some_and(|f| f() == 0);
-        if managed && alone && self.last_turn.elapsed() >= IDLE_BEFORE_EXIT {
-            tracing::info!("update: {} in place, exiting for restart", ready.version);
-            return true;
-        }
-        false
+        self.evaluate_restart()
+    }
+}
+
+impl Message<ShouldRestart> for UpdateActor {
+    type Reply = RestartDecision;
+    async fn handle(&mut self, _: ShouldRestart, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.evaluate_restart()
     }
 }
 
@@ -376,6 +496,7 @@ async fn check_and_apply_with(
         // Step H: the package manager's file is the package manager's.
         if homebrew {
             brew_upgrade(&version).await?;
+            tracing::info!("update: applied {current} -> {version}");
             return Ok(done);
         }
 
@@ -417,6 +538,7 @@ async fn check_and_apply_with(
                 let result = install(&tarball, exe).await;
                 let _ = std::fs::remove_file(&tarball);
                 result?;
+                tracing::info!("update: applied {current} -> {version}");
                 return Ok(done);
             }
             Err(DownloadError::Transport(e)) => {
@@ -774,7 +896,10 @@ impl runtime::Plugin for UpdatePlugin {
                 rt: rt.clone(),
                 ready: None,
                 attached: Some(Arc::new(move || feed_rt.wire_external_stream_count())),
+                managed: Arc::new(platform::service::managed),
                 last_turn: Instant::now(),
+                active_turns: HashSet::new(),
+                waiting_logged: None,
             },
             runtime::subscriber_mailbox(),
         );
@@ -805,15 +930,38 @@ impl runtime::Plugin for UpdatePlugin {
     }
 }
 
-/// The tick loop (39 §3.2): network in the task, state in the actor.
-fn spawn_ticks(rt: Runtime, me: ActorRef<UpdateActor>, cfg: UpdateConfig, current: Version) {
-    tokio::spawn(async move {
-        let mut wait = FIRST_CHECK;
-        loop {
-            tokio::select! {
-                () = rt.shutdown.cancelled() => break,
-                () = tokio::time::sleep(wait) => {}
-            }
+/// Core tick loop (39 §3.2, §3.4): checks the manifest at [`FIRST_CHECK`], then
+/// every `interval + rand(0..jitter_secs)`. Once an applied update is pending
+/// on a managed daemon (`RestartDecision::WaitIdle`), polls [`ShouldRestart`]
+/// every [`IDLE_POLL`] without re-fetching the network manifest until
+/// `next_manifest_check` arrives or the daemon becomes ready to restart.
+///
+/// Returns `true` when the daemon should drain and exit with [`EXIT_RESTART`],
+/// or `false` if shutdown was signalled or the actor stopped.
+async fn run_tick_loop<F, Fut>(
+    rt: Runtime,
+    me: ActorRef<UpdateActor>,
+    interval: Duration,
+    jitter_secs: u64,
+    mut check: F,
+) -> bool
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Outcome>>,
+{
+    let mut next_manifest_check = Instant::now() + FIRST_CHECK;
+    let mut decision = RestartDecision::None;
+    loop {
+        let next_wake = if decision == RestartDecision::WaitIdle {
+            next_manifest_check.min(Instant::now() + IDLE_POLL)
+        } else {
+            next_manifest_check
+        };
+        tokio::select! {
+            () = rt.shutdown.cancelled() => return false,
+            () = tokio::time::sleep_until(next_wake) => {}
+        }
+        let next = if Instant::now() >= next_manifest_check {
             let applied = me
                 .ask(Status)
                 .await
@@ -821,27 +969,51 @@ fn spawn_ticks(rt: Runtime, me: ActorRef<UpdateActor>, cfg: UpdateConfig, curren
                 .flatten()
                 .filter(|r| r.applied)
                 .map(|r| r.version);
-            let found =
-                match check_and_apply(&cfg, &rt.data_dir, &current, applied.as_deref()).await {
-                    Ok(outcome) => outcome.ready(),
-                    Err(e) => {
-                        tracing::debug!("update: {e:#}");
-                        None
-                    }
-                };
-            match me.ask(Landed(found)).await {
-                Ok(true) => {
-                    // 109 §9.3: a drain precedes the swap; the token then
-                    // lets the jobs actor kill its groups as on any exit.
-                    agent::supervisor::drain_engine(&rt, "update").await;
-                    rt.shutdown.cancel();
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    std::process::exit(EXIT_RESTART)
+            let found = match check(applied).await {
+                Ok(outcome) => outcome.ready(),
+                Err(e) => {
+                    tracing::warn!("update: {e:#}");
+                    None
                 }
-                Ok(false) => {}
-                Err(_) => break,
-            }
-            wait = EVERY + Duration::from_secs(rand::random_range(0..JITTER_SECS));
+            };
+            let jitter = if jitter_secs > 0 {
+                Duration::from_secs(rand::random_range(0..jitter_secs))
+            } else {
+                Duration::ZERO
+            };
+            next_manifest_check = Instant::now() + interval + jitter;
+            me.ask(Landed(found)).await.ok()
+        } else {
+            me.ask(ShouldRestart).await.ok()
+        };
+        match next {
+            Some(RestartDecision::Restart) => return true,
+            Some(d) => decision = d,
+            None => return false,
+        }
+    }
+}
+
+/// The tick loop (39 §3.2): network in the task, state in the actor.
+fn spawn_ticks(rt: Runtime, me: ActorRef<UpdateActor>, cfg: UpdateConfig, current: Version) {
+    let interval = cfg.check_interval();
+    tokio::spawn(async move {
+        let rt_for_check = rt.clone();
+        let rt_for_restart = rt.clone();
+        let should_restart = run_tick_loop(rt, me, interval, JITTER_SECS, move |applied| {
+            let cfg = cfg.clone();
+            let data_dir = rt_for_check.data_dir.clone();
+            let current = current.clone();
+            async move { check_and_apply(&cfg, &data_dir, &current, applied.as_deref()).await }
+        })
+        .await;
+        if should_restart {
+            // 109 §9.3: a drain precedes the swap; the token then
+            // lets the jobs actor kill its groups as on any exit.
+            agent::supervisor::drain_engine(&rt_for_restart, "update").await;
+            rt_for_restart.shutdown.cancel();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            std::process::exit(EXIT_RESTART)
         }
     });
 }
@@ -1632,6 +1804,7 @@ mod tests {
         let cfg = UpdateConfig {
             enabled: true,
             url: Some(custom.url("/latest.json")),
+            interval_secs: None,
         };
         let endpoints = cfg.endpoints();
         assert_eq!(endpoints.len(), 1);
@@ -1750,5 +1923,354 @@ mod tests {
         assert_eq!(std::fs::read(&exe).unwrap(), b"old");
         assert!(names(&data_dir.path().join("updates")).is_empty());
         drop(dir);
+    }
+
+    #[test]
+    fn update_config_check_interval_defaults_custom_and_clamps() {
+        assert_eq!(EVERY, Duration::from_secs(30 * 60));
+        assert_eq!(JITTER_SECS, 120);
+
+        let def = UpdateConfig::default();
+        assert_eq!(def.interval_secs, None);
+        assert_eq!(def.check_interval(), Duration::from_secs(30 * 60));
+
+        let custom = UpdateConfig {
+            interval_secs: Some(600),
+            ..UpdateConfig::default()
+        };
+        assert_eq!(custom.check_interval(), Duration::from_secs(600));
+
+        let exact_min = UpdateConfig {
+            interval_secs: Some(60),
+            ..UpdateConfig::default()
+        };
+        assert_eq!(exact_min.check_interval(), Duration::from_secs(60));
+
+        for too_low in [0, 1, 59] {
+            let clamped = UpdateConfig {
+                interval_secs: Some(too_low),
+                ..UpdateConfig::default()
+            };
+            assert_eq!(
+                clamped.check_interval(),
+                Duration::from_secs(60),
+                "interval_secs={too_low} must clamp to 60s"
+            );
+        }
+
+        let from_empty: UpdateConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(from_empty.check_interval(), Duration::from_secs(30 * 60));
+
+        let from_null: UpdateConfig = serde_yaml::from_str("interval_secs: ~\n").unwrap();
+        assert_eq!(from_null.check_interval(), Duration::from_secs(30 * 60));
+
+        let from_custom: UpdateConfig = serde_yaml::from_str("interval_secs: 900\n").unwrap();
+        assert_eq!(from_custom.check_interval(), Duration::from_secs(900));
+
+        let from_clamped: UpdateConfig = serde_yaml::from_str("interval_secs: 15\n").unwrap();
+        assert_eq!(from_clamped.check_interval(), Duration::from_secs(60));
+    }
+
+    async fn spawn_test_actor(
+        managed: bool,
+        attached: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> (Runtime, ActorRef<UpdateActor>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let actor = UpdateActor::spawn_with_mailbox(
+            UpdateActor {
+                rt: rt.clone(),
+                ready: None,
+                attached: Some(Arc::new(move || {
+                    attached.load(std::sync::atomic::Ordering::SeqCst)
+                })),
+                managed: Arc::new(move || managed),
+                last_turn: Instant::now(),
+                active_turns: HashSet::new(),
+                waiting_logged: None,
+            },
+            runtime::subscriber_mailbox(),
+        );
+        rt.subscribe::<UpdateActor, agent::AgentEvent>(&actor).await;
+        (rt, actor, dir)
+    }
+
+    async fn settle() {
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn turn_started_event(session: runtime::SessionId, turn: runtime::TurnId) -> agent::AgentEvent {
+        agent::AgentEvent::TurnStarted {
+            session,
+            turn,
+            text: "hi".into(),
+            model: "test".into(),
+            turn_seq: 1,
+            channel: None,
+        }
+    }
+
+    fn turn_finished_event(
+        session: runtime::SessionId,
+        turn: runtime::TurnId,
+        stop_reason: &str,
+    ) -> agent::AgentEvent {
+        agent::AgentEvent::TurnFinished {
+            session,
+            turn,
+            stop_reason: stop_reason.into(),
+            usage: agent::Usage::default(),
+            context: 0,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn managed_daemon_restarts_after_idle_without_waiting_for_every() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attached = Arc::new(AtomicUsize::new(0));
+        let (rt, actor, _dir) = spawn_test_actor(true, Arc::clone(&attached)).await;
+        let checks = Arc::new(AtomicUsize::new(0));
+        let checks_bg = Arc::clone(&checks);
+
+        let task = tokio::spawn(run_tick_loop(
+            rt.clone(),
+            actor.clone(),
+            EVERY,
+            0,
+            move |_applied| {
+                checks_bg.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Ok(Outcome::Applied {
+                        from: "2.31.2".into(),
+                        to: "2.32.0".into(),
+                    })
+                }
+            },
+        ));
+        settle().await;
+
+        // First check runs at FIRST_CHECK (60 s); daemon is only 60 s old (< 10 min idle).
+        tokio::time::advance(FIRST_CHECK).await;
+        settle().await;
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        assert!(!task.is_finished(), "must wait for IDLE_BEFORE_EXIT");
+
+        // Advance one IDLE_POLL at a time up to just before IDLE_BEFORE_EXIT (9m30s total):
+        // still waiting, and no extra manifest fetch occurs.
+        let polls_before_ready = (IDLE_BEFORE_EXIT - FIRST_CHECK).as_secs() / IDLE_POLL.as_secs() - 1;
+        for _ in 0..polls_before_ready {
+            tokio::time::advance(IDLE_POLL).await;
+            settle().await;
+            assert!(!task.is_finished(), "must not restart before IDLE_BEFORE_EXIT");
+        }
+        assert_eq!(
+            checks.load(Ordering::SeqCst),
+            1,
+            "idle polls must not re-fetch the network manifest"
+        );
+
+        // One more IDLE_POLL crosses IDLE_BEFORE_EXIT (10 min << EVERY 30 min): restarts now.
+        tokio::time::advance(IDLE_POLL).await;
+        settle().await;
+        assert!(task.is_finished(), "must restart once IDLE_BEFORE_EXIT elapses");
+        assert!(task.await.unwrap());
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn active_turn_blocks_restart_until_finished_and_idle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attached = Arc::new(AtomicUsize::new(0));
+        let (rt, actor, _dir) = spawn_test_actor(true, Arc::clone(&attached)).await;
+        let checks = Arc::new(AtomicUsize::new(0));
+        let checks_bg = Arc::clone(&checks);
+
+        let s1 = runtime::SessionId::new();
+        let t1 = runtime::TurnId::new();
+        let s2 = runtime::SessionId::new();
+        let t2 = runtime::TurnId::new();
+        let s3 = runtime::SessionId::new();
+        let t3 = runtime::TurnId::new();
+        let s4 = runtime::SessionId::new();
+        let t4 = runtime::TurnId::new();
+
+        // Start four turns via both TurnStarted and TurnResumed.
+        rt.publish(turn_started_event(s1, t1)).await;
+        rt.publish(agent::AgentEvent::TurnResumed {
+            session: s2,
+            turn: t2,
+            kind: agent::durability::ResumeKind::Suspended,
+            interrupted_at: chrono::Utc::now(),
+            resumed_at: chrono::Utc::now(),
+            partial_dropped: false,
+            cause: agent::durability::ResumeCause::Update,
+            from: None,
+        })
+        .await;
+        rt.publish(turn_started_event(s3, t3)).await;
+        rt.publish(turn_started_event(s4, t4)).await;
+        settle().await;
+
+        let task = tokio::spawn(run_tick_loop(
+            rt.clone(),
+            actor.clone(),
+            EVERY,
+            0,
+            move |_applied| {
+                checks_bg.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Ok(Outcome::Applied {
+                        from: "2.31.2".into(),
+                        to: "2.32.0".into(),
+                    })
+                }
+            },
+        ));
+        settle().await;
+
+        // First check applies the update at t=60 s.
+        tokio::time::advance(FIRST_CHECK).await;
+        settle().await;
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+
+        // Advance well past IDLE_BEFORE_EXIT (15 min) while turns are still in flight.
+        tokio::time::advance(IDLE_BEFORE_EXIT + Duration::from_secs(5 * 60)).await;
+        settle().await;
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        assert!(
+            !task.is_finished(),
+            "active turns must block restart even past IDLE_BEFORE_EXIT"
+        );
+
+        // End three of the four turns (normal, cancelled, error) — one still active.
+        rt.publish(turn_finished_event(s1, t1, "end_turn")).await;
+        rt.publish(turn_finished_event(s2, t2, "cancelled")).await;
+        rt.publish(turn_finished_event(s3, t3, "error")).await;
+        tokio::time::advance(IDLE_POLL).await;
+        settle().await;
+        assert!(!task.is_finished(), "remaining active turn must still block");
+
+        // End the final turn (suspended): active_turns becomes empty and idle clock resets.
+        rt.publish(agent::AgentEvent::TurnSuspended {
+            session: s4,
+            turn: t4,
+            reason: "transfer".into(),
+        })
+        .await;
+        settle().await;
+
+        // Step IDLE_POLL up to just before IDLE_BEFORE_EXIT after the turn ended: still waiting.
+        let polls_before_ready = IDLE_BEFORE_EXIT.as_secs() / IDLE_POLL.as_secs() - 1;
+        for _ in 0..polls_before_ready {
+            tokio::time::advance(IDLE_POLL).await;
+            settle().await;
+            assert!(
+                !task.is_finished(),
+                "ending a turn must reset the idle window"
+            );
+        }
+
+        // Once IDLE_BEFORE_EXIT elapses after the turn ended: restarts cleanly.
+        tokio::time::advance(IDLE_POLL).await;
+        settle().await;
+        assert!(task.is_finished(), "must restart once idle after turn ends");
+        assert!(task.await.unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attached_client_blocks_restart_until_detached_and_idle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attached = Arc::new(AtomicUsize::new(1));
+        let (rt, actor, _dir) = spawn_test_actor(true, Arc::clone(&attached)).await;
+        let checks = Arc::new(AtomicUsize::new(0));
+        let checks_bg = Arc::clone(&checks);
+
+        let task = tokio::spawn(run_tick_loop(
+            rt.clone(),
+            actor.clone(),
+            EVERY,
+            0,
+            move |_applied| {
+                checks_bg.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Ok(Outcome::Applied {
+                        from: "2.31.2".into(),
+                        to: "2.32.0".into(),
+                    })
+                }
+            },
+        ));
+        settle().await;
+
+        // First check applies the update at t=60 s.
+        tokio::time::advance(FIRST_CHECK).await;
+        settle().await;
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+
+        // Advance past IDLE_BEFORE_EXIT while a client is attached.
+        tokio::time::advance(IDLE_BEFORE_EXIT + Duration::from_secs(60)).await;
+        settle().await;
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        assert!(
+            !task.is_finished(),
+            "attached client must block restart even when idle"
+        );
+
+        // Client disconnects: next IDLE_POLL restarts without waiting for EVERY or re-fetching.
+        attached.store(0, Ordering::SeqCst);
+        tokio::time::advance(IDLE_POLL).await;
+        settle().await;
+        assert!(task.is_finished(), "must restart once client detaches");
+        assert!(task.await.unwrap());
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unmanaged_daemon_does_not_restart() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attached = Arc::new(AtomicUsize::new(0));
+        let (rt, actor, _dir) = spawn_test_actor(false, Arc::clone(&attached)).await;
+        let checks = Arc::new(AtomicUsize::new(0));
+        let checks_bg = Arc::clone(&checks);
+
+        let task = tokio::spawn(run_tick_loop(
+            rt.clone(),
+            actor.clone(),
+            EVERY,
+            0,
+            move |_applied| {
+                checks_bg.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Ok(Outcome::Applied {
+                        from: "2.31.2".into(),
+                        to: "2.32.0".into(),
+                    })
+                }
+            },
+        ));
+        settle().await;
+
+        tokio::time::advance(FIRST_CHECK).await;
+        settle().await;
+        tokio::time::advance(IDLE_BEFORE_EXIT + Duration::from_secs(60)).await;
+        settle().await;
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        assert!(!task.is_finished(), "unmanaged daemon must never self-restart");
+        assert_eq!(
+            actor.ask(Status).await.unwrap(),
+            Some(UpdateReady {
+                version: "2.32.0".into(),
+                applied: true,
+            })
+        );
+
+        rt.shutdown.cancel();
+        assert!(!task.await.unwrap());
     }
 }
