@@ -113,6 +113,15 @@ UnlockDevice { node, name, auto: boolean, enrolled_ms }
 No events: the prompt host polls `vault_unseal_requests` every 3 s (a wire-event addition would
 need a schema snapshot regeneration; polling is enough for a prompt that waits minutes).
 
+## 4a. CLI (`crates/theuth/src/vault_cli.rs`)
+
+`t vault status [--json] | seal | unseal | methods | add-password | change-password |
+remove-method <id> | init`, each with `--engine <id>` (a mesh peer, forwarded) and
+`--password-stdin` where a password is read (else a no-echo prompt; new passwords typed twice).
+All but `init` call the running engine's RPC (the `cmd_67` transport); `methods` falls back to
+`vault-keys.json` offline; `init` refuses a running engine or an existing vault. Exit 2 on
+-32041 (sealed).
+
 ## 4. Cloud-node wizard integration points
 
 - **Create:** write `secrets: {key_store: sealed}` into the node's config, then either run

@@ -44,7 +44,7 @@ pub(crate) enum VaultCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Drop the vault key from memory: secrets are unreadable until unsealed.
+    /// Lock secret reads now (needs a password or device method); keys leave memory at restart.
     Seal {
         #[command(flatten)]
         target: Target,
