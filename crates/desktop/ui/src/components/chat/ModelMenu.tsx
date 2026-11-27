@@ -14,7 +14,7 @@ import { touch } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
-import { on, useSessionField } from '@/store/sessions'
+import { on, useSessionField, useSessions } from '@/store/sessions'
 import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useAdvisor, useSetAdvisor } from './advisor'
@@ -174,8 +174,13 @@ function useModel({ session }: Props, done: () => void): Model {
       return useDrafts.getState().setPick({ model: id, effort })
     }
     try {
-      await routed(session, () => api.set_model(session, id, true))
-      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+      await routed(session, async () => {
+        const info = await api.set_model(session, id, true)
+        if (info?.id) {
+          useSessions.getState().applyEvents([{ type: 'ModelChanged', session, model: info.id }])
+        }
+        void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+      })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }
@@ -183,7 +188,10 @@ function useModel({ session }: Props, done: () => void): Model {
   const setEffort = async (level: string | null) => {
     if (!session) return useDrafts.getState().setPick({ effort: level })
     try {
-      await routed(session, () => api.set_effort(session, level, true))
+      await routed(session, async () => {
+        await api.set_effort(session, level, true)
+        useSessions.getState().applyEvents([{ type: 'EffortChanged', session, effort: level }])
+      })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }
