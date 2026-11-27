@@ -1,13 +1,14 @@
 //! Node records: `<data_dir>/cloudnodes/<name>.json`, one per node this engine created (design
 //! doc 224 §13.1). What was asked, what the provider made, where the create job is, the mesh peer
-//! once joined. Never a credential or the pairing ticket.
+//! once joined, how its vault is protected. Never a credential, the pairing ticket or the vault's
+//! master password.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::providers::{CloudError, Created, Result, check_name};
-use crate::types::{NodeSpec, NodeState, Stage};
+use crate::types::{NodeSpec, NodeState, Stage, VaultProtection};
 
 /// One node.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -36,6 +37,9 @@ pub struct Record {
     pub ticket_expires_ms: Option<u64>,
     /// When the record was made (Unix ms).
     pub created_ms: u64,
+    /// How the node's vault is protected (`Pending` while the create job holds a password).
+    #[serde(default)]
+    pub vault: Option<VaultProtection>,
 }
 
 /// The directory of records; every write is a whole-file replace (temp file + rename).

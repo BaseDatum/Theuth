@@ -4,6 +4,43 @@ use crate::providers::http::testing::FakeTransport;
 use crate::providers::{Created, Say};
 use crate::types::MeshPath;
 
+/// This engine's id in the fake mesh.
+const ME: &str = "me";
+
+/// The node's sealed vault as `vault_*` calls over the fake mesh see it.
+#[derive(Default)]
+struct FakeVault {
+    /// `None`: the node's release has no `vault_status` (method not found).
+    methods: Option<Vec<(Kind, String)>>,
+    /// The node enrols [`ME`] as its unlock device after this many `vault_status` reads.
+    enrol_after: Option<u32>,
+    /// `vault_add_password` answers an error.
+    refuse_password: bool,
+}
+
+impl FakeVault {
+    /// A fresh sealed-store vault (no method yet) whose node enrols this engine on the second look.
+    fn sealed() -> Self {
+        FakeVault {
+            methods: Some(Vec::new()),
+            enrol_after: Some(1),
+            refuse_password: false,
+        }
+    }
+}
+
+fn vault_json(methods: &[(Kind, String)]) -> Value {
+    let methods: Vec<Value> = methods
+        .iter()
+        .map(|(k, id)| json!({"kind": k.as_str(), "id": id, "label": id, "created_ms": 1}))
+        .collect();
+    json!({
+        "engine": "node-id", "name": "lab", "state": "unsealed", "unsealed_by": "memory",
+        "password_set": methods.iter().any(|m| m["kind"] == "password"),
+        "methods": methods, "warning": null, "asking": [], "error": null,
+    })
+}
+
 #[derive(Default)]
 struct FakeProvider {
     calls: Mutex<Vec<String>>,
@@ -62,6 +99,7 @@ struct FakeMesh {
     tickets: Mutex<Vec<u64>>,
     removed: Mutex<Vec<String>>,
     calls: Mutex<Vec<(String, String, Value)>>,
+    vault: Mutex<FakeVault>,
 }
 
 #[async_trait]
@@ -87,14 +125,42 @@ impl MeshView for FakeMesh {
         self.peers.lock().retain(|p| p.id != id);
         Ok(())
     }
+    async fn self_id(&self) -> Result<String> {
+        Ok(ME.into())
+    }
     async fn call(
         &self,
         id: &str,
         method: &str,
         params: Value,
         _: Duration,
-    ) -> Result<Option<Value>> {
+    ) -> std::result::Result<Option<Value>, CallError> {
         self.calls.lock().push((id.into(), method.into(), params));
+        if method.starts_with("vault_") {
+            let mut guard = self.vault.lock();
+            let v = &mut *guard;
+            let Some(methods) = v.methods.as_mut() else {
+                return Err(CallError::NoMethod(method.into()));
+            };
+            match method {
+                "vault_status" => match v.enrol_after.as_mut() {
+                    Some(0) => {
+                        methods.push((Kind::Device, ME.into()));
+                        v.enrol_after = None;
+                    }
+                    Some(n) => *n -= 1,
+                    None => {}
+                },
+                "vault_add_password" if v.refuse_password => {
+                    return Err(CallError::Failed(CloudError(
+                        "the vault is sealed on lab".into(),
+                    )));
+                }
+                "vault_add_password" => methods.push((Kind::Password, "password".into())),
+                _ => {}
+            }
+            return Ok(Some(vault_json(methods)));
+        }
         Ok(Some(match method {
             "info" => json!({"version": "2.32.0"}),
             "engine_terminal" => json!({"session": "s1", "job": "j1", "engine": id}),
@@ -211,6 +277,7 @@ fn fast() -> Pacing {
         oauth_every: Duration::ZERO,
         oauth_tries: 3,
         sizes_ttl: Duration::from_secs(3600),
+        vault_wait: Duration::from_millis(50),
     }
 }
 
@@ -241,7 +308,9 @@ async fn settle(cloud: &Cloud, name: &str) -> Record {
 async fn create_runs_the_stages_in_order_and_ends_ready() {
     let r = rig(fast()).await;
     *r.mesh.join_after.lock() = Some((3, peer("node-id", "lab", true)));
-    let node = r.cloud.create(spec("lab")).await.unwrap();
+    *r.mesh.vault.lock() = FakeVault::sealed();
+    let node = r.cloud.create(spec("lab"), pw()).await.unwrap();
+    assert_eq!(node.vault, Some(VaultProtection::Pending));
     assert_eq!(
         (node.state, node.stage),
         (NodeState::Creating, Some(Stage::Server))
@@ -286,6 +355,7 @@ async fn create_runs_the_stages_in_order_and_ends_ready() {
             Stage::Storage,
             Stage::Install,
             Stage::Join,
+            Stage::Vault,
             Stage::Ready
         ]
     );
@@ -297,13 +367,19 @@ async fn create_runs_the_stages_in_order_and_ends_ready() {
     // The ticket is never in an event.
     let all = format!("{:?}", r.events.lock());
     assert!(!all.contains("1.TICKET"));
+    assert_eq!(rec.vault, Some(VaultProtection::Protected));
+    let lines = progress_lines(&r, "lab");
+    assert!(
+        lines.contains(&"Protecting the vault".to_owned()),
+        "{lines:?}"
+    );
 
     // A second node of the same name is refused; so is a machine name already in the mesh.
-    assert!(r.cloud.create(spec("lab")).await.is_err());
+    assert!(r.cloud.create(spec("lab"), None).await.is_err());
     r.mesh.peers.lock().push(peer("other", "desk", true));
     assert!(
         r.cloud
-            .create(spec("desk"))
+            .create(spec("desk"), None)
             .await
             .unwrap_err()
             .0
@@ -314,7 +390,7 @@ async fn create_runs_the_stages_in_order_and_ends_ready() {
 #[tokio::test]
 async fn a_node_that_never_joins_fails_when_its_ticket_expires() {
     let r = rig(fast()).await;
-    let node = r.cloud.create(spec("late")).await.unwrap();
+    let node = r.cloud.create(spec("late"), None).await.unwrap();
     assert_eq!(node.state, NodeState::Creating);
     // Expire the ticket under the running job.
     for _ in 0..200 {
@@ -336,7 +412,7 @@ async fn destroy_deletes_and_unpairs_or_keeps_the_volume_and_the_pairing() {
     let r = rig(fast()).await;
     // `create` reads the peer set once before the job: the node appears on the read after.
     *r.mesh.join_after.lock() = Some((1, peer("n1", "keep", true)));
-    r.cloud.create(spec("keep")).await.unwrap();
+    r.cloud.create(spec("keep"), None).await.unwrap();
     assert_eq!(settle(&r.cloud, "keep").await.state, NodeState::Ready);
     let lines = r.cloud.destroy("keep", true).await.unwrap();
     assert_eq!(lines, ["Deleted droplet keep"]);
@@ -356,7 +432,7 @@ async fn destroy_deletes_and_unpairs_or_keeps_the_volume_and_the_pairing() {
         .iter_mut()
         .for_each(|p| p.reachable = p.id != "n1");
     let rec = {
-        r.cloud.create(spec("keep")).await.unwrap();
+        r.cloud.create(spec("keep"), None).await.unwrap();
         r.mesh
             .peers
             .lock()
@@ -397,7 +473,7 @@ async fn destroy_deletes_and_unpairs_or_keeps_the_volume_and_the_pairing() {
 async fn list_merges_records_orphans_kept_volumes_and_the_mesh() {
     let r = rig(fast()).await;
     *r.mesh.join_after.lock() = Some((1, peer("n1", "mine", true)));
-    r.cloud.create(spec("mine")).await.unwrap();
+    r.cloud.create(spec("mine"), None).await.unwrap();
     settle(&r.cloud, "mine").await;
     r.mesh.peers.lock().push(peer("n2", "stray", false));
     let listed = |name: &str, volume_only: bool| Listed {
@@ -481,7 +557,7 @@ async fn list_merges_records_orphans_kept_volumes_and_the_mesh() {
 async fn restart_and_resize_go_busy_then_back() {
     let r = rig(fast()).await;
     *r.mesh.join_after.lock() = Some((1, peer("n1", "box", true)));
-    r.cloud.create(spec("box")).await.unwrap();
+    r.cloud.create(spec("box"), None).await.unwrap();
     settle(&r.cloud, "box").await;
     let n = r.cloud.resize("box", 8).await.unwrap();
     assert_eq!(n.state, NodeState::Busy);
@@ -649,4 +725,267 @@ async fn a_failed_price_fetch_is_not_cached_and_falls_back_to_the_skeleton() {
         .sizes(ProviderKind::Digitalocean, Some("ams3".into()))
         .await;
     assert!(!none.priced && none.error.unwrap().contains("not connected"));
+}
+
+// ---- the vault stage (design doc 225) ----
+
+const PW: &str = "correct horse battery staple";
+
+fn pw() -> Option<Zeroizing<String>> {
+    Some(Zeroizing::new(PW.into()))
+}
+
+fn progress_lines(r: &Rig, name: &str) -> Vec<String> {
+    r.events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            CloudEvent::CloudNodeProgress { name: n, line, .. } if n == name => Some(line.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The `vault_*` calls over the mesh, in order.
+fn vault_calls(r: &Rig) -> Vec<(String, Value)> {
+    r.mesh
+        .calls
+        .lock()
+        .iter()
+        .filter(|(_, m, _)| m.starts_with("vault_"))
+        .map(|(_, m, p)| (m.clone(), p.clone()))
+        .collect()
+}
+
+/// Every serialized form the password could leak into: the events, the records on disk, and
+/// the `cloud_list` / `cloud_status` answers.
+async fn assert_no_password(r: &Rig, name: &str) {
+    let events = serde_json::to_string(&*r.events.lock()).unwrap();
+    assert!(!events.contains(PW), "an event carries the password");
+    for e in std::fs::read_dir(r.cloud.records.dir()).unwrap() {
+        let text = std::fs::read_to_string(e.unwrap().path()).unwrap();
+        assert!(!text.contains(PW), "a record carries the password");
+    }
+    let list = serde_json::to_string(&r.cloud.list().await).unwrap();
+    assert!(!list.contains(PW), "cloud_list carries the password");
+    let status = serde_json::to_string(&r.cloud.status(name).await.unwrap()).unwrap();
+    assert!(!status.contains(PW), "cloud_status carries the password");
+}
+
+#[tokio::test]
+async fn the_password_goes_to_the_node_once_after_enrolment_and_nowhere_else() {
+    let r = rig(fast()).await;
+    *r.mesh.join_after.lock() = Some((1, peer("node-id", "lab", true)));
+    *r.mesh.vault.lock() = FakeVault::sealed();
+    let node = r.cloud.create(spec("lab"), pw()).await.unwrap();
+    assert!(
+        !serde_json::to_string(&node).unwrap().contains(PW),
+        "the create answer"
+    );
+    let rec = settle(&r.cloud, "lab").await;
+    assert_eq!(
+        (rec.state, rec.vault),
+        (NodeState::Ready, Some(VaultProtection::Protected))
+    );
+    let calls = vault_calls(&r);
+    let sent: Vec<&Value> = calls
+        .iter()
+        .filter(|(m, _)| m == "vault_add_password")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(sent, [&json!([null, PW])], "once, to the node's own vault");
+    assert!(
+        r.mesh
+            .calls
+            .lock()
+            .iter()
+            .all(|(id, m, _)| !m.starts_with("vault_") || id == "node-id"),
+        "every vault call goes to the node"
+    );
+    // The node had not enrolled this engine at the first look: asked once on its behalf, the
+    // password only after the enrolment, and a read-back last.
+    let at = |m: &str| calls.iter().position(|(x, _)| x == m).unwrap();
+    assert_eq!(calls[at("vault_add_device")].1, json!([null, ME]));
+    assert!(at("vault_add_device") < at("vault_add_password"));
+    assert_eq!(calls.last().unwrap().0, "vault_status");
+    assert_no_password(&r, "lab").await;
+}
+
+#[tokio::test]
+async fn a_node_without_the_sealed_vault_skips_the_stage_and_is_still_created() {
+    let r = rig(fast()).await;
+    *r.mesh.join_after.lock() = Some((1, peer("node-id", "lab", true)));
+    // `FakeVault::default()`: the node's release answers method-not-found to `vault_status`.
+    r.cloud.create(spec("lab"), pw()).await.unwrap();
+    let rec = settle(&r.cloud, "lab").await;
+    assert_eq!(
+        (rec.state, rec.error.as_deref(), rec.vault),
+        (NodeState::Ready, None, Some(VaultProtection::Unsupported))
+    );
+    let methods: Vec<String> = vault_calls(&r).into_iter().map(|(m, _)| m).collect();
+    assert_eq!(methods, ["vault_status"], "nothing more is tried");
+    assert!(
+        progress_lines(&r, "lab")
+            .iter()
+            .any(|l| l == "Vault protection arrives with the next theuth release on this node")
+    );
+    assert_no_password(&r, "lab").await;
+}
+
+#[tokio::test]
+async fn a_refused_password_leaves_the_node_ready_and_asking_for_one() {
+    let r = rig(fast()).await;
+    *r.mesh.join_after.lock() = Some((1, peer("node-id", "lab", true)));
+    *r.mesh.vault.lock() = FakeVault {
+        refuse_password: true,
+        ..FakeVault::sealed()
+    };
+    r.cloud.create(spec("lab"), pw()).await.unwrap();
+    let rec = settle(&r.cloud, "lab").await;
+    assert_eq!(
+        (rec.state, rec.error.as_deref(), rec.vault),
+        (NodeState::Ready, None, Some(VaultProtection::NeedsPassword))
+    );
+    assert!(
+        progress_lines(&r, "lab")
+            .iter()
+            .any(|l| l == "Vault: device only — set a master password")
+    );
+    assert_no_password(&r, "lab").await;
+
+    // The user sets one from the row (`vault_add_password` on the node): the next list sees it.
+    r.mesh
+        .vault
+        .lock()
+        .methods
+        .as_mut()
+        .unwrap()
+        .push((Kind::Password, "password".into()));
+    let list = r.cloud.list().await;
+    assert_eq!(list.nodes[0].vault, Some(VaultProtection::Protected));
+    assert_eq!(
+        r.cloud.records.get("lab").unwrap().unwrap().vault,
+        Some(VaultProtection::Protected)
+    );
+}
+
+#[tokio::test]
+async fn an_empty_field_is_device_only_and_a_short_password_is_refused_up_front() {
+    let r = rig(fast()).await;
+    let short = r
+        .cloud
+        .create(spec("lab"), Some(Zeroizing::new("short".into())))
+        .await
+        .unwrap_err();
+    assert!(short.0.contains("12 characters"), "{}", short.0);
+    assert!(
+        r.cloud.records.get("lab").unwrap().is_none(),
+        "nothing was made"
+    );
+
+    *r.mesh.join_after.lock() = Some((1, peer("node-id", "lab", true)));
+    *r.mesh.vault.lock() = FakeVault::sealed();
+    let node = r
+        .cloud
+        .create(spec("lab"), Some(Zeroizing::new(String::new())))
+        .await
+        .unwrap();
+    assert_eq!(node.vault, None);
+    let rec = settle(&r.cloud, "lab").await;
+    assert_eq!(rec.vault, Some(VaultProtection::DeviceOnly));
+    assert!(
+        vault_calls(&r)
+            .iter()
+            .all(|(m, _)| m != "vault_add_password")
+    );
+}
+
+#[tokio::test]
+async fn a_restart_loses_the_password_and_the_node_asks_for_one() {
+    let r = rig(fast()).await;
+    *r.mesh.vault.lock() = FakeVault::sealed();
+    // A create interrupted after the server, as the restarted engine finds it: `Pending`, no job.
+    let rec = Record {
+        spec: spec("lab"),
+        created: Some(Created {
+            server_id: Some("42".into()),
+            volume_id: None,
+            extra: None,
+            ip: None,
+            size_slug: "s-1vcpu-2gb".into(),
+        }),
+        state: NodeState::Creating,
+        stage: Some(Stage::Install),
+        error: None,
+        peer_id: None,
+        peers_before: vec!["laptop".into()],
+        ticket_expires_ms: Some(now_ms() + TICKET_TTL_MS),
+        created_ms: now_ms(),
+        vault: Some(VaultProtection::Pending),
+    };
+    r.cloud.records.put(&rec).unwrap();
+    // One that was past the job when the engine stopped.
+    r.cloud
+        .records
+        .put(&Record {
+            spec: spec("old"),
+            state: NodeState::Ready,
+            stage: Some(Stage::Ready),
+            peer_id: Some("old-id".into()),
+            ..rec.clone()
+        })
+        .unwrap();
+    r.mesh.peers.lock().push(peer("node-id", "lab", true));
+    r.cloud.resume();
+    let rec = settle(&r.cloud, "lab").await;
+    assert_eq!(
+        (rec.state, rec.vault),
+        (NodeState::Ready, Some(VaultProtection::NeedsPassword))
+    );
+    assert!(
+        vault_calls(&r)
+            .iter()
+            .all(|(m, _)| m != "vault_add_password")
+    );
+    assert_eq!(
+        r.cloud.records.get("old").unwrap().unwrap().vault,
+        Some(VaultProtection::NeedsPassword)
+    );
+}
+
+#[test]
+fn classify_names_what_the_vault_has() {
+    let status = |m: &[(Kind, &str)]| -> VaultStatus {
+        let m: Vec<(Kind, String)> = m.iter().map(|(k, id)| (*k, (*id).to_owned())).collect();
+        serde_json::from_value(vault_json(&m)).unwrap()
+    };
+    let both = status(&[(Kind::Device, ME), (Kind::Password, "password")]);
+    assert_eq!(
+        classify(Some(&both), Some(ME), true),
+        VaultProtection::Protected
+    );
+    let pw_only = status(&[(Kind::Password, "password")]);
+    assert_eq!(
+        classify(Some(&pw_only), Some(ME), true),
+        VaultProtection::PasswordOnly
+    );
+    let device = status(&[(Kind::Device, ME)]);
+    assert_eq!(
+        classify(Some(&device), Some(ME), false),
+        VaultProtection::DeviceOnly
+    );
+    assert_eq!(
+        classify(Some(&device), Some(ME), true),
+        VaultProtection::NeedsPassword
+    );
+    // Another engine's device method is not this one's; an unprotected key file asks for a password.
+    let other = status(&[(Kind::Device, "phone"), (Kind::File, "file")]);
+    assert_eq!(
+        classify(Some(&other), Some(ME), false),
+        VaultProtection::NeedsPassword
+    );
+    assert_eq!(
+        classify(None, Some(ME), false),
+        VaultProtection::NeedsPassword
+    );
 }

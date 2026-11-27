@@ -11,12 +11,14 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use secrets::envelope::{Kind, MIN_PASSWORD};
+use secrets::seal::VaultStatus;
 use serde_json::{Value, json};
 use tokio::task::AbortHandle;
 use zeroize::Zeroizing;
 
 use crate::creds::{self, Creds, OauthAttempt, StoredCred};
-use crate::mesh_view::{MeshPeer, MeshView};
+use crate::mesh_view::{CallError, MeshPeer, MeshView};
 use crate::providers::{
     self, CloudError, CreateReq, Listed, Provider, ProviderStatus, Result, Transport, catalog,
     check_name,
@@ -25,12 +27,15 @@ use crate::records::{Record, Records};
 use crate::types::{
     CloudEvent, CloudList, CloudNode, CredentialSource, DEFAULT_VOLUME_GB, DesktopOpen, Discovered,
     K8sInfo, K8sOptions, NodeLogs, NodeSpec, NodeState, OauthStart, ProviderError, ProviderInfo,
-    ProviderKind, Quote, SIZES_GB, SizeList, SizeOption, Stage, TerminalOpen,
+    ProviderKind, Quote, SIZES_GB, SizeList, SizeOption, Stage, TerminalOpen, VaultProtection,
 };
 
 /// A cloud node's pairing ticket lives 15 minutes (a Droplet boots, installs packages and
 /// downloads the release before it dials; the Settings pairing string keeps its 5).
 pub const TICKET_TTL_MS: u64 = 15 * 60_000;
+
+/// How long one `vault_*` call on a node may take (adding a password runs Argon2id there).
+const VAULT_CALL: Duration = Duration::from_secs(30);
 
 /// Where every event goes (the runtime bus in production, a vector in tests).
 pub type Sink = Arc<dyn Fn(CloudEvent) + Send + Sync>;
@@ -147,6 +152,9 @@ pub struct Pacing {
     pub oauth_tries: u32,
     /// How long a provider's price list is reused (owner: 1 h).
     pub sizes_ttl: Duration,
+    /// How long the vault stage waits for the node to enrol this engine as its unlock device
+    /// (the node asks 3, 13, 43 and 133 s after pairing).
+    pub vault_wait: Duration,
 }
 
 impl Default for Pacing {
@@ -158,6 +166,7 @@ impl Default for Pacing {
             oauth_every: Duration::from_secs(2),
             oauth_tries: 300,
             sizes_ttl: Duration::from_secs(3600),
+            vault_wait: Duration::from_secs(150),
         }
     }
 }
@@ -303,6 +312,10 @@ impl Cloud {
         let r = self.update(name, |r| {
             r.state = NodeState::Failed;
             r.error = Some(error.to_owned());
+            // The job that held a vault password is over.
+            if r.vault == Some(VaultProtection::Pending) {
+                r.vault = None;
+            }
         });
         if let Err(e) = r {
             tracing::warn!("cloudnodes: {name}: recording the failure: {e}");
@@ -596,9 +609,25 @@ impl Cloud {
 
     // --- create --------------------------------------------------------------------------
 
-    /// Start the create job; returns at once with the record in `creating`.
-    pub async fn create(self: &Arc<Self>, spec: NodeSpec) -> Result<CloudNode> {
+    /// Start the create job; returns at once with the record in `creating`. `password`: the
+    /// master password for the node's sealed vault (225). The job keeps it in memory only, sends
+    /// it once to the node over the mesh after the join (`vault_add_password`), and drops it then
+    /// or when it ends; it is never in the record, an event or a log.
+    pub async fn create(
+        self: &Arc<Self>,
+        spec: NodeSpec,
+        password: Option<Zeroizing<String>>,
+    ) -> Result<CloudNode> {
         check_name(&spec.name)?;
+        let password = password.filter(|p| !p.is_empty());
+        if password
+            .as_ref()
+            .is_some_and(|p| p.chars().count() < MIN_PASSWORD)
+        {
+            return Err(CloudError(format!(
+                "the master password needs at least {MIN_PASSWORD} characters"
+            )));
+        }
         if !SIZES_GB.contains(&spec.memory_gb) {
             return Err(CloudError(format!(
                 "size {} GB: one of {SIZES_GB:?} GB",
@@ -651,6 +680,7 @@ impl Cloud {
             peers_before: peers.into_iter().map(|p| p.id).collect(),
             ticket_expires_ms: None,
             created_ms: now_ms(),
+            vault: password.as_ref().map(|_| VaultProtection::Pending),
         };
         let name = rec.spec.name.clone();
         {
@@ -662,7 +692,7 @@ impl Cloud {
         let me = self.clone();
         let job_name = name.clone();
         let task = tokio::spawn(async move {
-            if let Err(e) = me.create_job(&job_name, provider).await {
+            if let Err(e) = me.create_job(&job_name, provider, password).await {
                 me.fail(&job_name, &e.0);
             }
             me.jobs.lock().remove(&job_name);
@@ -671,7 +701,12 @@ impl Cloud {
         Ok(node)
     }
 
-    async fn create_job(&self, name: &str, provider: Arc<dyn Provider>) -> Result<()> {
+    async fn create_job(
+        &self,
+        name: &str,
+        provider: Arc<dyn Provider>,
+        password: Option<Zeroizing<String>>,
+    ) -> Result<()> {
         let rec = self
             .records
             .get(name)?
@@ -731,12 +766,12 @@ impl Cloud {
             Some(30),
             Some(install_secs),
         );
-        self.wait_join(name).await
+        self.wait_join(name, password).await
     }
 
-    /// Install → Join → Ready: wait for the node to appear in the mesh (until the ticket's
-    /// deadline), then to be reachable.
-    async fn wait_join(&self, name: &str) -> Result<()> {
+    /// Install → Join → Vault → Ready: wait for the node to appear in the mesh (until the
+    /// ticket's deadline), then to be reachable, then protect its vault ([`Cloud::protect_vault`]).
+    async fn wait_join(&self, name: &str, password: Option<Zeroizing<String>>) -> Result<()> {
         let rec = self
             .records
             .get(name)?
@@ -803,6 +838,7 @@ impl Cloud {
                 .and_then(|ps| ps.into_iter().find(|p| p.id == joined.id))
                 .is_some_and(|p| p.reachable);
         }
+        self.protect_vault(name, &joined.id, password).await?;
         self.update(name, |r| {
             r.state = NodeState::Ready;
             r.stage = Some(Stage::Ready);
@@ -822,18 +858,196 @@ impl Cloud {
         Ok(())
     }
 
+    // --- vault (design doc 225) ----------------------------------------------------------
+
+    /// The node's `vault_status`, forwarded over the mesh. `Ok(None)`: not connected, or an
+    /// answer that does not parse.
+    async fn node_vault(
+        &self,
+        node: &str,
+        wait: Duration,
+    ) -> std::result::Result<Option<VaultStatus>, CallError> {
+        let v = self
+            .mesh
+            .call(node, "vault_status", json!([null]), wait)
+            .await?;
+        Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+    }
+
+    /// Stage `Vault`: confirm the node enrolled this engine as its unlock device, add the
+    /// master password the job holds, and read back what the node's vault has. Never fails the
+    /// create: what it could not do becomes the node's [`VaultProtection`]. `password` is
+    /// dropped (zeroed) once the node took it, or when this returns.
+    async fn protect_vault(
+        &self,
+        name: &str,
+        node: &str,
+        password: Option<Zeroizing<String>>,
+    ) -> Result<()> {
+        // A record still `Pending` without a password: the job that held it was interrupted.
+        let wanted = password.is_some()
+            || self
+                .records
+                .get(name)?
+                .is_some_and(|r| r.vault == Some(VaultProtection::Pending));
+        self.update(name, |r| r.stage = Some(Stage::Vault))?;
+        self.progress(
+            name,
+            Some(Stage::Vault),
+            "Protecting the vault",
+            Some(95),
+            Some(10),
+        );
+        let outcome = self.vault_outcome(name, node, password, wanted).await;
+        self.update(name, |r| r.vault = Some(outcome))?;
+        self.progress(
+            name,
+            Some(Stage::Vault),
+            vault_line(outcome),
+            Some(98),
+            Some(0),
+        );
+        Ok(())
+    }
+
+    async fn vault_outcome(
+        &self,
+        name: &str,
+        node: &str,
+        password: Option<Zeroizing<String>>,
+        wanted: bool,
+    ) -> VaultProtection {
+        let me = match self.mesh.self_id().await {
+            Ok(me) => Some(me),
+            Err(e) => {
+                tracing::warn!("cloudnodes: {name}: this engine's id: {e}");
+                None
+            }
+        };
+        // A node whose release predates the sealed vault: nothing to protect yet.
+        let mut status = match self.node_vault(node, VAULT_CALL).await {
+            Err(CallError::NoMethod(_)) => return VaultProtection::Unsupported,
+            Err(CallError::Failed(e)) => {
+                tracing::warn!("cloudnodes: {name}: vault_status: {e}");
+                None
+            }
+            Ok(s) => s,
+        };
+        // The node asks this engine to become its unlock device right after pairing, approved
+        // without a prompt within 15 minutes of it (225): wait for that, asking once more on
+        // its behalf (`vault_add_device`) when it is not there at the first look.
+        if let Some(me) = me.as_deref() {
+            let until = Instant::now() + self.pace.vault_wait;
+            let mut asked = false;
+            while !status.as_ref().is_some_and(|s| has_device(s, me)) && Instant::now() < until {
+                if !asked && status.is_some() {
+                    asked = true;
+                    let r = self
+                        .mesh
+                        .call(node, "vault_add_device", json!([null, me]), VAULT_CALL)
+                        .await;
+                    if let Err(e) = r {
+                        tracing::info!(
+                            "cloudnodes: {name}: vault_add_device: {}",
+                            CloudError::from(e)
+                        );
+                    }
+                }
+                tokio::time::sleep(self.pace.poll).await;
+                if let Ok(Some(s)) = self.node_vault(node, VAULT_CALL).await {
+                    status = Some(s);
+                }
+            }
+        }
+        if let Some(pw) = password {
+            let r = self
+                .mesh
+                .call(
+                    node,
+                    "vault_add_password",
+                    json!([null, pw.as_str()]),
+                    VAULT_CALL,
+                )
+                .await;
+            match r {
+                Ok(Some(v)) => status = serde_json::from_value(v).ok().or(status),
+                Ok(None) => tracing::warn!("cloudnodes: {name}: vault_add_password: not connected"),
+                // The node's error text could echo its input: never log the password.
+                Err(e) => tracing::warn!(
+                    "cloudnodes: {name}: vault_add_password: {}",
+                    CloudError::from(e).0.replace(pw.as_str(), "…")
+                ),
+            }
+            drop(pw);
+        }
+        // Read back what the node's vault has now.
+        if let Ok(Some(s)) = self.node_vault(node, VAULT_CALL).await {
+            status = Some(s);
+        }
+        classify(status.as_ref(), me.as_deref(), wanted)
+    }
+
+    /// Re-read the vault of reachable nodes whose protection may have changed since (a master
+    /// password set from Settings, a node that updated into the sealed vault), 3 s each in
+    /// parallel, and keep what changed in their records.
+    async fn refresh_vaults(&self, nodes: &mut [CloudNode]) {
+        let stale = |n: &CloudNode| {
+            n.state == NodeState::Ready
+                && n.reachable == Some(true)
+                && n.vault.is_some_and(|v| {
+                    !matches!(v, VaultProtection::Protected | VaultProtection::Pending)
+                })
+        };
+        if !nodes.iter().any(stale) {
+            return;
+        }
+        let me = self.mesh.self_id().await.ok();
+        let calls = nodes.iter().map(|n| async {
+            let was = n.vault.filter(|_| stale(n))?;
+            let id = n.peer_id.as_deref()?;
+            match self.node_vault(id, Duration::from_secs(3)).await {
+                Err(CallError::NoMethod(_)) => Some(VaultProtection::Unsupported),
+                Ok(Some(s)) => Some(classify(
+                    Some(&s),
+                    me.as_deref(),
+                    was == VaultProtection::NeedsPassword,
+                )),
+                _ => None,
+            }
+        });
+        let found = futures::future::join_all(calls).await;
+        for (n, v) in nodes.iter_mut().zip(found) {
+            let Some(v) = v.filter(|v| n.vault != Some(*v)) else {
+                continue;
+            };
+            n.vault = Some(v);
+            // Quietly: the list answer carries the row; an event would lack its mesh facts.
+            let _w = self.write.lock();
+            if let Ok(Some(mut rec)) = self.records.get(&n.name) {
+                rec.vault = Some(v);
+                if let Err(e) = self.records.put(&rec) {
+                    tracing::debug!("cloudnodes: {}: {e}", n.name);
+                }
+            }
+        }
+    }
+
     /// After an engine restart: pick up interrupted jobs. A create that got past the server
     /// waits for the join again (the ticket may still be live); one interrupted earlier fails
-    /// (destroy cleans up whatever was made); an interrupted restart/resize settles.
+    /// (destroy cleans up whatever was made); an interrupted restart/resize settles. A vault
+    /// password a job held is gone with the old process: the vault stage records that.
     pub fn resume(self: &Arc<Self>) {
         for rec in self.records.all() {
             let name = rec.spec.name.clone();
+            if rec.vault == Some(VaultProtection::Pending) && rec.state != NodeState::Creating {
+                let _ = self.update(&name, |r| r.vault = Some(VaultProtection::NeedsPassword));
+            }
             match rec.state {
                 NodeState::Creating if rec.created.is_some() => {
                     let me = self.clone();
                     let job_name = name.clone();
                     let task = tokio::spawn(async move {
-                        if let Err(e) = me.wait_join(&job_name).await {
+                        if let Err(e) = me.wait_join(&job_name, None).await {
                             me.fail(&job_name, &e.0);
                         }
                         me.jobs.lock().remove(&job_name);
@@ -908,6 +1122,7 @@ impl Cloud {
         };
         let mut nodes = merge(&records, &listed, &peers, do_sizes.as_deref());
         self.fill_versions(&mut nodes).await;
+        self.refresh_vaults(&mut nodes).await;
         CloudList { nodes, errors }
     }
 
@@ -942,6 +1157,7 @@ impl Cloud {
             rec.state == NodeState::VolumeKept,
         );
         self.fill_versions(std::slice::from_mut(&mut node)).await;
+        self.refresh_vaults(std::slice::from_mut(&mut node)).await;
         Ok(node)
     }
 
@@ -1269,6 +1485,48 @@ pub fn view(rec: &Record, peer: Option<&MeshPeer>, status: Option<&ProviderStatu
         desktop: rec.spec.desktop.unwrap_or(true),
         created_ms: Some(rec.created_ms),
         k8s: rec.spec.k8s.clone(),
+        vault: rec.vault,
+    }
+}
+
+/// Whether `me` is one of the vault's unlock devices.
+fn has_device(s: &VaultStatus, me: &str) -> bool {
+    s.methods
+        .iter()
+        .any(|m| m.kind == Kind::Device && m.id == me)
+}
+
+/// What a node's `vault_status` says of its protection: `me` = this engine's id (its device
+/// method), `wanted` = a master password was asked for. Anything unconfirmed asks for one.
+pub fn classify(status: Option<&VaultStatus>, me: Option<&str>, wanted: bool) -> VaultProtection {
+    let Some(s) = status else {
+        return VaultProtection::NeedsPassword;
+    };
+    let password = s.methods.iter().any(|m| m.kind == Kind::Password);
+    let device = me.is_some_and(|me| has_device(s, me));
+    match (password, device) {
+        (true, true) => VaultProtection::Protected,
+        (true, false) => VaultProtection::PasswordOnly,
+        (false, true) if !wanted => VaultProtection::DeviceOnly,
+        (false, _) => VaultProtection::NeedsPassword,
+    }
+}
+
+/// The vault stage's last progress line.
+fn vault_line(v: VaultProtection) -> &'static str {
+    match v {
+        VaultProtection::Pending => "Protecting the vault",
+        VaultProtection::Protected => {
+            "Vault protected: your master password and unlock from this device"
+        }
+        VaultProtection::DeviceOnly => "Vault unlocks from this device (no master password)",
+        VaultProtection::NeedsPassword => "Vault: device only — set a master password",
+        VaultProtection::PasswordOnly => {
+            "Vault protected by your master password; unlock from this device is not confirmed"
+        }
+        VaultProtection::Unsupported => {
+            "Vault protection arrives with the next theuth release on this node"
+        }
     }
 }
 
@@ -1356,6 +1614,7 @@ pub fn merge(
             desktop: false,
             created_ms: None,
             k8s: None,
+            vault: None,
         });
     }
     nodes

@@ -171,7 +171,9 @@ pub struct Quote {
 }
 
 /// The create job's stages, in order (wizard step ④).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     /// Server (Droplet / Machine / Deployment) created and running.
@@ -182,8 +184,31 @@ pub enum Stage {
     Install,
     /// The node presented its ticket; waiting until it is reachable.
     Join,
+    /// The node's sealed vault gets the master password and this engine's device unlock
+    /// (design doc 225); skipped where the node's release has no sealed vault yet.
+    Vault,
     /// A reachable mesh peer.
     Ready,
+}
+
+/// How the node's sealed vault is protected (design doc 225), as the create job and the list
+/// last saw it. Never the password itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VaultProtection {
+    /// The create job holds a master password (in memory) to add once the node joined.
+    Pending,
+    /// The master password and unlock from the creating engine, both confirmed on the node.
+    Protected,
+    /// Unlock from the creating engine only: the user chose no master password.
+    DeviceOnly,
+    /// A master password was asked for and is not set (the job was interrupted, this engine
+    /// restarted, the call failed), or no unlock method could be confirmed: set one.
+    NeedsPassword,
+    /// The master password is set; unlock from the creating engine is not confirmed.
+    PasswordOnly,
+    /// The node's theuth release has no sealed vault yet (no `vault_status`).
+    Unsupported,
 }
 
 /// Lifecycle of a node record.
@@ -265,6 +290,8 @@ pub struct CloudNode {
     pub created_ms: Option<u64>,
     /// Kubernetes: where it runs.
     pub k8s: Option<K8sOptions>,
+    /// How its vault is protected; `None` when unknown (older records, orphans).
+    pub vault: Option<VaultProtection>,
 }
 
 /// `cloud_list`: every node from local records and every connected provider's tagged
