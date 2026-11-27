@@ -173,6 +173,14 @@ ts-desktop: ts
     cp -R bindings/typescript/. crates/desktop/ui/src/rpc/bindings/
     cp bindings/surface-catalog* bindings/methods.json crates/desktop/ui/src/rpc/bindings/
 
+# Generate desktop TypeScript bindings directly from the committed wire fixtures (no Rust build).
+ts-desktop-from-fixtures:
+    cd crates/desktop/ui && bun install --frozen-lockfile && bun scripts/generate-wire.mjs ../../../crates/theuth/tests/fixtures/wire/openrpc-v1.json ../../../bindings/typescript
+    rm -rf crates/desktop/ui/src/rpc/bindings
+    mkdir -p crates/desktop/ui/src/rpc/bindings
+    cp -R bindings/typescript/. crates/desktop/ui/src/rpc/bindings/
+    cp crates/theuth/tests/fixtures/wire/surface-catalog* crates/theuth/tests/fixtures/wire/methods.json crates/desktop/ui/src/rpc/bindings/
+
 # Generate the production contract without starting plugins, ports or stores.
 wire-schema:
     cargo test -p theuth --bin t --quiet export_bindings
@@ -180,6 +188,7 @@ wire-schema:
 # Deliberate acceptance after reviewing the classifier; no implicit CI update.
 wire-schema-accept: wire-schema
     cp bindings/openrpc.json crates/theuth/tests/fixtures/wire/openrpc-v1.json
+    cp bindings/methods.json bindings/surface-catalog.json bindings/surface-catalog-compact.txt bindings/client-auxiliary.json crates/theuth/tests/fixtures/wire/
 
 # Desktop app in dev mode against `target/debug/t` (or `$THEUTH_BIN`); `THEUTH_DATA_DIR` overrides ~/.theuth.
 # `TAURI_FRONTEND_PATH`: the UI lives inside the crate (not beside it as Tauri assumes), so the

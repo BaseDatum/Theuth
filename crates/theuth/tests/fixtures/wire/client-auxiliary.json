@@ -1,0 +1,6437 @@
+{
+  "agent": {
+    "oneOf": [
+      {
+        "type": "object",
+        "properties": {
+          "OwnerUnreachable": {
+            "type": "object",
+            "properties": {
+              "owner": {
+                "description": "Owner engine (mesh `EngineId` as text).",
+                "type": "string"
+              },
+              "last_seen": {
+                "description": "Last time this engine heard from the owner (ms since epoch); `null` = never.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "owner",
+              "last_seen"
+            ]
+          }
+        },
+        "required": [
+          "OwnerUnreachable"
+        ],
+        "additionalProperties": false,
+        "description": "The owner engine did not answer (not connected, timed out, refused the take)."
+      },
+      {
+        "type": "object",
+        "properties": {
+          "SessionDraining": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "description": "The draining session.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/SessionId"
+                  }
+                ]
+              },
+              "reason": {
+                "description": "`release` on the ownership path; the drain's reason otherwise.",
+                "type": "string"
+              },
+              "next_owner": {
+                "description": "The taker, when known (`release`).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "session",
+              "reason",
+              "next_owner"
+            ]
+          }
+        },
+        "required": [
+          "SessionDraining"
+        ],
+        "additionalProperties": false,
+        "description": "139 D16: the session is draining for a release (or another reason)\non this engine; retry in a moment. *\"<session> is moving to <taker> —\nretry in a moment\"* / *\"<session> is pausing for <reason> — resumes on\nthe next start\"*."
+      },
+      {
+        "type": "object",
+        "properties": {
+          "NotOwner": {
+            "type": "object",
+            "properties": {
+              "owner": {
+                "description": "The owner as this engine knows it (mesh `EngineId` as text).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "owner"
+            ]
+          }
+        },
+        "required": [
+          "NotOwner"
+        ],
+        "additionalProperties": false,
+        "description": "183 §4.8: this engine does not own the forwarded call's session; the\nreplicated owner change follows."
+      },
+      {
+        "type": "object",
+        "properties": {
+          "RunsElsewhere": {
+            "type": "object",
+            "properties": {
+              "owner": {
+                "description": "The engine running it (mesh `EngineId` as text).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "owner"
+            ]
+          }
+        },
+        "required": [
+          "RunsElsewhere"
+        ],
+        "additionalProperties": false,
+        "description": "183 §4.3: the run or job streams on another engine (live output stays there)."
+      }
+    ],
+    "description": "`data` of a front-door error (external tagging: the variant name wraps its fields).",
+    "title": "FrontDoorError",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionId": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Identifies a conversation; every event carries one."
+      }
+    }
+  },
+  "surface": {
+    "type": "array",
+    "definitions": {
+      "Cell": {
+        "type": "object",
+        "properties": {
+          "lang": {
+            "description": "Language word of the fence.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/Lang"
+              }
+            ]
+          },
+          "header": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/HeaderLine"
+            },
+            "description": "Header lines, raw and in order."
+          },
+          "options": {
+            "description": "The header, typed (§3.2). A value that fails its type leaves the field at its\ndefault; [`validate`] reports it from `header`.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/CellOptions"
+              }
+            ]
+          },
+          "code": {
+            "type": "string",
+            "description": "Everything after the header, LF line ends, one trailing newline removed."
+          },
+          "header_lines": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "description": "Lines before the code (leading blanks, a shebang, header and blank lines between\nheader lines); UI code line 1 is the line after them."
+          }
+        },
+        "required": [
+          "lang",
+          "header",
+          "options",
+          "code",
+          "header_lines"
+        ],
+        "description": "A parsed cell: the header as written and as typed, and the code that runs."
+      },
+      "Lang": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "bash",
+            "description": "`bash`."
+          },
+          {
+            "type": "string",
+            "const": "zsh",
+            "description": "`zsh`."
+          },
+          {
+            "type": "string",
+            "const": "sh",
+            "description": "`sh`."
+          },
+          {
+            "type": "string",
+            "const": "pwsh",
+            "description": "`pwsh` (alias `powershell`)."
+          },
+          {
+            "type": "string",
+            "const": "python",
+            "description": "`python` (alias `py`)."
+          },
+          {
+            "type": "string",
+            "const": "javascript",
+            "description": "`javascript` (alias `js`); header prefix `//|`."
+          },
+          {
+            "type": "string",
+            "const": "typescript",
+            "description": "`typescript` (alias `ts`); header prefix `//|`."
+          }
+        ],
+        "description": "Runnable fence languages (§3.1); every other language is never a cell."
+      },
+      "HeaderLine": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The key (`[a-z]+`, written in any case), or the raw line text when it does not parse\nas one."
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The value, trimmed, one pair of surrounding double quotes removed."
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "description": "One raw header line, in order. `value` is `None` for a bare key (`#| danger`).\n\nA header line whose text is not `key` / `key: value` (`#| not a key!`) still belongs to\nthe header: it is recorded with `key` = its raw trimmed text, `value` = `None`, and the\nsame text lands in [`CellOptions::unknown`]."
+      },
+      "CellOptions": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Folder the cell runs in, as written (absolute, `~/…`, or relative to a note default)."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stable id, slug `[a-z0-9-]{1,48}`."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Run button text; over [`LABEL_MAX`] characters it shows truncated (a warning)."
+          },
+          "danger": {
+            "type": "boolean",
+            "description": "Red outline; never in Run all."
+          },
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Advisory: a press before the named cell's latest run succeeded asks to confirm."
+          },
+          "expect": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Expect"
+            },
+            "description": "Output expectations, one per `expect` line."
+          },
+          "env": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2,
+              "items": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "`KEY=value` pairs, one per `env` line."
+          },
+          "python": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PythonChoice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which interpreter runs a python cell."
+          },
+          "review": {
+            "type": "boolean",
+            "description": "The agent wakes when the run ends."
+          },
+          "private": {
+            "type": "boolean",
+            "description": "The agent gets exit and expect only, never output."
+          },
+          "timeout_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "`timeout` in seconds (`30s`, `10m`, `2h`)."
+          },
+          "on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reserved (wave 3): a sandbox VM or mesh engine."
+          },
+          "unknown": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Unknown keys (and unparsable header lines), in order."
+          }
+        },
+        "required": [
+          "cwd",
+          "name",
+          "label",
+          "danger",
+          "after",
+          "expect",
+          "env",
+          "python",
+          "review",
+          "private",
+          "timeout_secs",
+          "on",
+          "unknown"
+        ],
+        "description": "Typed cell options (§3.2, §15.1). Repeated non-repeatable keys: the last one wins."
+      },
+      "Expect": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "text"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "description": "Literal text."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "regex"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "description": "Regex source, the surrounding slashes stripped."
+          }
+        ],
+        "description": "One `expect` item: text that must appear in the cleaned output, or a `/regex/`."
+      },
+      "PythonChoice": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "monty"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "description": "The built-in Monty sandbox."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "auto"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "description": "Discover per scope (§6.1)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "venv"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "description": "`.venv` beside the cwd."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "uv"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "description": "`uv python find` in the nearest project."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "path"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "description": "An explicit interpreter path (`/…` or `~/…`)."
+          }
+        ],
+        "description": "The `python:` option (§6)."
+      },
+      "NoteDefaults": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Folder relative cell `cwd`s resolve against."
+          },
+          "shell": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The program that runs `bash`/`zsh`/`sh` cells in this note."
+          },
+          "python": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PythonChoice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Default interpreter for python cells."
+          },
+          "unknown": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Unknown keys, in order."
+          }
+        },
+        "required": [
+          "cwd",
+          "shell",
+          "python",
+          "unknown"
+        ],
+        "description": "Note-level defaults from the first ```` ```cells ```` block (§3.3)."
+      },
+      "Spec": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "root": {
+            "type": "string",
+            "description": "Id of the top-level element."
+          },
+          "elements": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/definitions/Element"
+            },
+            "description": "Every element by id; ids are referenced from `root` and `children`."
+          }
+        },
+        "required": [
+          "root",
+          "elements"
+        ],
+        "description": "A fence body: `root` names the top-level element, `elements` holds every element by id."
+      },
+      "Element": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Card"
+              },
+              "props": {
+                "$ref": "#/definitions/CardProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Framed container with an optional title and description."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Stack"
+              },
+              "props": {
+                "$ref": "#/definitions/StackProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Children laid out in one direction."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Grid"
+              },
+              "props": {
+                "$ref": "#/definitions/GridProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Children in `columns` equal-width columns, row by row."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Separator"
+              },
+              "props": {
+                "$ref": "#/definitions/SeparatorProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Horizontal rule."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Heading"
+              },
+              "props": {
+                "$ref": "#/definitions/HeadingProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Heading text at a level."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Text"
+              },
+              "props": {
+                "$ref": "#/definitions/TextProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A paragraph of text."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Badge"
+              },
+              "props": {
+                "$ref": "#/definitions/BadgeProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Short inline label."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Alert"
+              },
+              "props": {
+                "$ref": "#/definitions/AlertProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Callout with a tone."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Table"
+              },
+              "props": {
+                "$ref": "#/definitions/TableProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Column headers and rows of strings."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "KeyValueList"
+              },
+              "props": {
+                "$ref": "#/definitions/KeyValueListProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Key/value pairs."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Metric"
+              },
+              "props": {
+                "$ref": "#/definitions/MetricProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "One labelled figure with an optional trend."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "MetricGrid"
+              },
+              "props": {
+                "$ref": "#/definitions/MetricGridProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Several metrics side by side."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Progress"
+              },
+              "props": {
+                "$ref": "#/definitions/ProgressProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A progress bar."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Bars"
+              },
+              "props": {
+                "$ref": "#/definitions/BarsProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Horizontal bars, one per item."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Timeline"
+              },
+              "props": {
+                "$ref": "#/definitions/TimelineProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Dated steps with a state each."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Checklist"
+              },
+              "props": {
+                "$ref": "#/definitions/ChecklistProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Items that are done or not."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Tabs"
+              },
+              "props": {
+                "$ref": "#/definitions/TabsProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Labelled panes; `children[i]` is the pane for `labels[i]`."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Accordion"
+              },
+              "props": {
+                "$ref": "#/definitions/AccordionProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Titled sections; `children[i]` is the body of `titles[i]`."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Graph"
+              },
+              "props": {
+                "$ref": "#/definitions/GraphProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Typed boxes and arrows: nodes, edges, optional groups (design doc 65)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Sequence"
+              },
+              "props": {
+                "$ref": "#/definitions/SequenceProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Actors exchanging messages over time; every step addressable and optionally bound to code by `ref` (design doc 71 §2.4)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Steps"
+              },
+              "props": {
+                "$ref": "#/definitions/StepsProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Numbered how-to steps."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Callout"
+              },
+              "props": {
+                "$ref": "#/definitions/CalloutProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "An aside with a variant icon: note, tip, question, important (not a severity; that is `Alert`)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Code"
+              },
+              "props": {
+                "$ref": "#/definitions/CodeProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A block of code with a copy button."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Diff"
+              },
+              "props": {
+                "$ref": "#/definitions/DiffProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Before/after text side by side."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Excerpt"
+              },
+              "props": {
+                "$ref": "#/definitions/ExcerptProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A passage of real code pinned to its location: `path`, 1-based `start`, marked rows, the symbol it quotes (design doc 71 §2.5)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Tree"
+              },
+              "props": {
+                "$ref": "#/definitions/TreeProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Nested labels, expandable; nesting by `depth`."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Glossary"
+              },
+              "props": {
+                "$ref": "#/definitions/GlossaryProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Terms and their definitions."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Quote"
+              },
+              "props": {
+                "$ref": "#/definitions/QuoteProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A quotation with its source."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Image"
+              },
+              "props": {
+                "$ref": "#/definitions/ImageProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A picture with alt text and a caption."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "LinkList"
+              },
+              "props": {
+                "$ref": "#/definitions/LinkListProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Links with a note each."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Tags"
+              },
+              "props": {
+                "$ref": "#/definitions/TagsProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Labels with a variant each."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Gauge"
+              },
+              "props": {
+                "$ref": "#/definitions/GaugeProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "One value on an arc between `min` and `max`."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Sparkline"
+              },
+              "props": {
+                "$ref": "#/definitions/SparklineProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A tiny line of values, no axes."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Heatmap"
+              },
+              "props": {
+                "$ref": "#/definitions/HeatmapProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Rows × columns of cells shaded by value."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Person"
+              },
+              "props": {
+                "$ref": "#/definitions/PersonProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A person: name, role, contact, initials avatar."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "FileList"
+              },
+              "props": {
+                "$ref": "#/definitions/FileListProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Files with kind and size."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Kanban"
+              },
+              "props": {
+                "$ref": "#/definitions/KanbanProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Read-only columns of cards."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Calendar"
+              },
+              "props": {
+                "$ref": "#/definitions/CalendarProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A strip of days with a marker each."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "StateMachine"
+              },
+              "props": {
+                "$ref": "#/definitions/StateMachineProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "States and transitions of a lifecycle; `initial`/`final` dots, events on the arrows (design doc 123)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Entities"
+              },
+              "props": {
+                "$ref": "#/definitions/EntitiesProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Entities, tables or classes with their fields and typed relations (ER / class diagram)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Swimlane"
+              },
+              "props": {
+                "$ref": "#/definitions/SwimlaneProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Steps in lanes (teams, systems), edges across lanes: a handoff or cross-functional flow."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "GraphDelta"
+              },
+              "props": {
+                "$ref": "#/definitions/GraphDeltaProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Two graphs, before and after, over one layout; the added/removed/changed ledger is derived by id."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "BarChart"
+              },
+              "props": {
+                "$ref": "#/definitions/BarChartProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Bars per label, one or more series: grouped, stacked, dumbbell or horizontal."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "LineChart"
+              },
+              "props": {
+                "$ref": "#/definitions/LineChartProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Values over ordered labels: line, area, slope, bump or step."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "ScatterChart"
+              },
+              "props": {
+                "$ref": "#/definitions/ScatterChartProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Points on two numeric axes: scatter, bubble (size) or beeswarm (one axis)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "RadarChart"
+              },
+              "props": {
+                "$ref": "#/definitions/RadarChartProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Several criteria compared on spokes: radar, or polar bars for one series."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Waterfall"
+              },
+              "props": {
+                "$ref": "#/definitions/WaterfallProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Deltas that carry a running total from a start level to an end level."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Funnel"
+              },
+              "props": {
+                "$ref": "#/definitions/FunnelProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Stages narrowing from top to bottom (funnel) or widening (pyramid)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Gantt"
+              },
+              "props": {
+                "$ref": "#/definitions/GanttProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Tasks on a date scale with groups, dependencies, progress and a today line."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Quadrant"
+              },
+              "props": {
+                "$ref": "#/definitions/QuadrantProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Items placed in a 2×2 by two 0..1 coordinates (effort/impact, urgency/importance)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Treemap"
+              },
+              "props": {
+                "$ref": "#/definitions/TreemapProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Part-of-whole as nested rectangles sized by value, grouped."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Sankey"
+              },
+              "props": {
+                "$ref": "#/definitions/SankeyProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Flows between staged nodes, ribbons sized by value; no cycles."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Venn"
+              },
+              "props": {
+                "$ref": "#/definitions/VennProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Two or three overlapping sets with labelled overlaps."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Loop"
+              },
+              "props": {
+                "$ref": "#/definitions/LoopProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "A cycle of 2–8 steps drawn clockwise around an optional hub."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Layers"
+              },
+              "props": {
+                "$ref": "#/definitions/LayersProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Stacked horizontal layers (architecture tiers, medallion, a stack)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Journey"
+              },
+              "props": {
+                "$ref": "#/definitions/JourneyProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Stages across, rows down (does / thinks / feels), a mood line and pain points."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "Fishbone"
+              },
+              "props": {
+                "$ref": "#/definitions/FishboneProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Cause-and-effect: an effect with categorised causes on the bones."
+          }
+        ],
+        "description": "One element: a catalog component (`type` + `props` on the wire) and the ids it contains.",
+        "properties": {
+          "children": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Child element ids, in order; only containers may have any."
+          }
+        }
+      },
+      "CardProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title line."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Muted line under the title."
+          }
+        },
+        "required": [
+          "title",
+          "description"
+        ],
+        "description": "`Card` props."
+      },
+      "StackProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Direction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Layout direction; default vertical."
+          },
+          "gap": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Gap"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Space between children."
+          }
+        },
+        "required": [
+          "direction",
+          "gap"
+        ],
+        "description": "`Stack` props."
+      },
+      "Direction": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "vertical",
+            "description": "Top to bottom."
+          },
+          {
+            "type": "string",
+            "const": "horizontal",
+            "description": "Left to right."
+          }
+        ],
+        "description": "`Stack.direction`."
+      },
+      "Gap": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "none",
+            "description": "No space."
+          },
+          {
+            "type": "string",
+            "const": "sm",
+            "description": "Small."
+          },
+          {
+            "type": "string",
+            "const": "md",
+            "description": "Medium."
+          },
+          {
+            "type": "string",
+            "const": "lg",
+            "description": "Large."
+          }
+        ],
+        "description": "`Stack.gap`."
+      },
+      "GridProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 1,
+            "maximum": 6,
+            "description": "Number of columns, 1 to 6."
+          }
+        },
+        "required": [
+          "columns"
+        ],
+        "description": "`Grid` props."
+      },
+      "SeparatorProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "`Separator` props: none."
+      },
+      "HeadingProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Heading text."
+          },
+          "level": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint8",
+            "minimum": 1,
+            "maximum": 4,
+            "description": "Level 1 (largest) to 4; default 2."
+          }
+        },
+        "required": [
+          "text",
+          "level"
+        ],
+        "description": "`Heading` props."
+      },
+      "TextProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The text."
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TextVariant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Typographic variant; default body."
+          }
+        },
+        "required": [
+          "text",
+          "variant"
+        ],
+        "description": "`Text` props."
+      },
+      "TextVariant": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "body",
+            "description": "Plain paragraph."
+          },
+          {
+            "type": "string",
+            "const": "muted",
+            "description": "Dimmed."
+          },
+          {
+            "type": "string",
+            "const": "caption",
+            "description": "Small and dimmed."
+          },
+          {
+            "type": "string",
+            "const": "lead",
+            "description": "Larger intro text."
+          },
+          {
+            "type": "string",
+            "const": "code",
+            "description": "Monospace."
+          }
+        ],
+        "description": "`Text.variant`."
+      },
+      "BadgeProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Badge text."
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BadgeVariant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tone; default `default`."
+          }
+        },
+        "required": [
+          "text",
+          "variant"
+        ],
+        "description": "`Badge` props."
+      },
+      "BadgeVariant": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "default",
+            "description": "Neutral, filled."
+          },
+          {
+            "type": "string",
+            "const": "secondary",
+            "description": "Neutral, subdued."
+          },
+          {
+            "type": "string",
+            "const": "success",
+            "description": "Positive."
+          },
+          {
+            "type": "string",
+            "const": "warning",
+            "description": "Caution."
+          },
+          {
+            "type": "string",
+            "const": "destructive",
+            "description": "Negative."
+          }
+        ],
+        "description": "`Badge.variant`."
+      },
+      "AlertProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bold first line."
+          },
+          "message": {
+            "type": "string",
+            "description": "Body text."
+          },
+          "type": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/AlertType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tone; default info."
+          }
+        },
+        "required": [
+          "title",
+          "message",
+          "type"
+        ],
+        "description": "`Alert` props."
+      },
+      "AlertType": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "info",
+            "description": "Informational."
+          },
+          {
+            "type": "string",
+            "const": "success",
+            "description": "Positive."
+          },
+          {
+            "type": "string",
+            "const": "warning",
+            "description": "Caution."
+          },
+          {
+            "type": "string",
+            "const": "error",
+            "description": "Failure."
+          }
+        ],
+        "description": "`Alert.type`."
+      },
+      "TableProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Header cells."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Body rows."
+          }
+        },
+        "required": [
+          "columns",
+          "rows"
+        ],
+        "description": "`Table` props; every row has exactly `columns.len()` cells."
+      },
+      "KeyValueListProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/KeyValue"
+            },
+            "description": "Pairs, in order."
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "description": "`KeyValueList` props."
+      },
+      "KeyValue": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Left column."
+          },
+          "value": {
+            "type": "string",
+            "description": "Right column."
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "description": "One `KeyValueList` item."
+      },
+      "MetricProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What is measured."
+          },
+          "value": {
+            "type": "string",
+            "description": "The figure, preformatted."
+          },
+          "trend": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Trend"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Direction glyph beside the value."
+          },
+          "delta": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Change text beside the value, e.g. `+3%`."
+          },
+          "spark": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Recent values drawn as a sparkline beside the figure."
+          }
+        },
+        "required": [
+          "label",
+          "value",
+          "trend",
+          "delta",
+          "spark"
+        ],
+        "description": "`Metric` props; also the item shape of `MetricGrid`."
+      },
+      "Trend": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "up",
+            "description": "Rising."
+          },
+          {
+            "type": "string",
+            "const": "down",
+            "description": "Falling."
+          },
+          {
+            "type": "string",
+            "const": "flat",
+            "description": "Unchanged."
+          }
+        ],
+        "description": "`Metric.trend`."
+      },
+      "MetricGridProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/MetricProps"
+            },
+            "description": "Metrics, in order."
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "description": "`MetricGrid` props."
+      },
+      "ProgressProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "type": "number",
+            "format": "double",
+            "description": "Current value."
+          },
+          "max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Full-bar value; default 100."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text before the bar."
+          }
+        },
+        "required": [
+          "value",
+          "max",
+          "label"
+        ],
+        "description": "`Progress` props."
+      },
+      "BarsProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Bar"
+            },
+            "description": "One bar per item."
+          },
+          "max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Full-bar value; default the largest item."
+          }
+        },
+        "required": [
+          "items",
+          "max"
+        ],
+        "description": "`Bars` props."
+      },
+      "Bar": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Row label."
+          },
+          "value": {
+            "type": "number",
+            "format": "double",
+            "description": "Bar length."
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "description": "One `Bars` item."
+      },
+      "TimelineProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/TimelineItem"
+            },
+            "description": "Steps, in order."
+          },
+          "scale": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TimelineScale"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`list` (default) keeps `when` as free text; `time` places items on a date axis and requires ISO `when`/`until`."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the timeline."
+          }
+        },
+        "required": [
+          "items",
+          "scale",
+          "title"
+        ],
+        "description": "`Timeline` props."
+      },
+      "TimelineItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "when": {
+            "type": "string",
+            "description": "Date or phase label."
+          },
+          "title": {
+            "type": "string",
+            "description": "What happens."
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Second line under the title."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TimelineState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Marker state; default pending."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "End of a span (`scale: time`): ISO date or datetime."
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unique id so boards and apps can point at this item."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this item is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "when",
+          "title",
+          "detail",
+          "state",
+          "until",
+          "id",
+          "ref"
+        ],
+        "description": "One `Timeline` step."
+      },
+      "TimelineState": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "done",
+            "description": "Finished."
+          },
+          {
+            "type": "string",
+            "const": "active",
+            "description": "In progress."
+          },
+          {
+            "type": "string",
+            "const": "pending",
+            "description": "Not started."
+          }
+        ],
+        "description": "`Timeline` item state."
+      },
+      "TimelineScale": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "list",
+            "description": "Items in authored order, `when` as written."
+          },
+          {
+            "type": "string",
+            "const": "time",
+            "description": "Items on a date axis; every `when` and `until` is an ISO date or datetime."
+          }
+        ],
+        "description": "`Timeline.scale`."
+      },
+      "ChecklistProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ChecklistItem"
+            },
+            "description": "Items, in order."
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "description": "`Checklist` props."
+      },
+      "ChecklistItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Item text."
+          },
+          "done": {
+            "type": "boolean",
+            "description": "Ticked or not."
+          }
+        },
+        "required": [
+          "text",
+          "done"
+        ],
+        "description": "One `Checklist` item."
+      },
+      "TabsProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One label per child."
+          }
+        },
+        "required": [
+          "labels"
+        ],
+        "description": "`Tabs` props; `labels.len()` must equal the element's `children.len()`."
+      },
+      "AccordionProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "titles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One title per child."
+          }
+        },
+        "required": [
+          "titles"
+        ],
+        "description": "`Accordion` props; `titles.len()` must equal the element's `children.len()`."
+      },
+      "GraphProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/GraphNode"
+            },
+            "description": "Nodes, in authored order."
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/GraphEdge"
+            },
+            "description": "Directed edges between node ids."
+          },
+          "groups": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/definitions/GraphGroup"
+            },
+            "description": "Groups a node may belong to; drawn as a labelled box."
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphDirection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Flow direction; default LR."
+          },
+          "legend": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/definitions/GraphLegendEntry"
+            },
+            "description": "Legend entries, ≤ 5: a label per state, edge style or node kind used."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the graph."
+          }
+        },
+        "required": [
+          "nodes",
+          "edges",
+          "groups",
+          "direction",
+          "legend",
+          "title"
+        ],
+        "description": "`Graph` props (design doc 65 §3.1)."
+      },
+      "GraphNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the graph; referenced by edges."
+          },
+          "label": {
+            "type": "string",
+            "description": "Text inside the shape; ≤ 80 characters."
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Shape hint; default box."
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id of the group this node sits in."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this node explains: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          },
+          "sub": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mono second line, ≤ 40 characters: a port, a version, a capacity."
+          },
+          "tag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Small rectangular tag, ≤ 12 characters: SERVICE, DB, QUEUE."
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphIcon"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Icon drawn before the label; the TUI prints nothing for it."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "group",
+          "state",
+          "ref",
+          "sub",
+          "tag",
+          "icon"
+        ],
+        "description": "One `Graph` node."
+      },
+      "GraphKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "box",
+            "description": "Rectangle."
+          },
+          {
+            "type": "string",
+            "const": "rounded",
+            "description": "Rounded rectangle."
+          },
+          {
+            "type": "string",
+            "const": "pill",
+            "description": "Stadium."
+          },
+          {
+            "type": "string",
+            "const": "diamond",
+            "description": "Decision."
+          },
+          {
+            "type": "string",
+            "const": "cylinder",
+            "description": "Database."
+          },
+          {
+            "type": "string",
+            "const": "actor",
+            "description": "Person or external party."
+          },
+          {
+            "type": "string",
+            "const": "hexagon",
+            "description": "Hexagon: a service or a process."
+          },
+          {
+            "type": "string",
+            "const": "circle",
+            "description": "Circle: a start, an end or a point."
+          },
+          {
+            "type": "string",
+            "const": "note",
+            "description": "Note: a folded-corner annotation."
+          }
+        ],
+        "description": "`GraphNode.kind`."
+      },
+      "GraphState": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "default",
+            "description": "Plain."
+          },
+          {
+            "type": "string",
+            "const": "active",
+            "description": "Highlighted."
+          },
+          {
+            "type": "string",
+            "const": "done",
+            "description": "Finished."
+          },
+          {
+            "type": "string",
+            "const": "muted",
+            "description": "De-emphasised."
+          },
+          {
+            "type": "string",
+            "const": "danger",
+            "description": "Failing or risky."
+          }
+        ],
+        "description": "`GraphNode.state`."
+      },
+      "GraphIcon": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "server",
+            "description": "A server."
+          },
+          {
+            "type": "string",
+            "const": "database",
+            "description": "A database."
+          },
+          {
+            "type": "string",
+            "const": "cloud",
+            "description": "A cloud service."
+          },
+          {
+            "type": "string",
+            "const": "user",
+            "description": "One person."
+          },
+          {
+            "type": "string",
+            "const": "users",
+            "description": "A team."
+          },
+          {
+            "type": "string",
+            "const": "globe",
+            "description": "The internet."
+          },
+          {
+            "type": "string",
+            "const": "lock",
+            "description": "A lock."
+          },
+          {
+            "type": "string",
+            "const": "shield",
+            "description": "A shield."
+          },
+          {
+            "type": "string",
+            "const": "key",
+            "description": "A key."
+          },
+          {
+            "type": "string",
+            "const": "queue",
+            "description": "A queue."
+          },
+          {
+            "type": "string",
+            "const": "cpu",
+            "description": "A processor."
+          },
+          {
+            "type": "string",
+            "const": "box",
+            "description": "A box."
+          },
+          {
+            "type": "string",
+            "const": "package",
+            "description": "A package."
+          },
+          {
+            "type": "string",
+            "const": "file",
+            "description": "A file."
+          },
+          {
+            "type": "string",
+            "const": "folder",
+            "description": "A folder."
+          },
+          {
+            "type": "string",
+            "const": "terminal",
+            "description": "A terminal."
+          },
+          {
+            "type": "string",
+            "const": "laptop",
+            "description": "A laptop."
+          },
+          {
+            "type": "string",
+            "const": "phone",
+            "description": "A phone."
+          },
+          {
+            "type": "string",
+            "const": "mail",
+            "description": "Mail."
+          },
+          {
+            "type": "string",
+            "const": "clock",
+            "description": "A clock."
+          },
+          {
+            "type": "string",
+            "const": "settings",
+            "description": "Settings."
+          },
+          {
+            "type": "string",
+            "const": "code",
+            "description": "Code."
+          },
+          {
+            "type": "string",
+            "const": "git-branch",
+            "description": "A git branch."
+          },
+          {
+            "type": "string",
+            "const": "bot",
+            "description": "A bot."
+          },
+          {
+            "type": "string",
+            "const": "browser",
+            "description": "A browser."
+          }
+        ],
+        "description": "`GraphNode.icon`: a closed set drawn from lucide."
+      },
+      "GraphEdge": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Source node id."
+          },
+          "to": {
+            "type": "string",
+            "description": "Target node id; may equal `from`."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text on the arrow; ≤ 80 characters."
+          },
+          "style": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphEdgeStyle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Line style; default solid."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state of the arrow; default default."
+          },
+          "arrow": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphArrow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Arrowheads; default forward."
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "label",
+          "style",
+          "state",
+          "arrow"
+        ],
+        "description": "One `Graph` edge."
+      },
+      "GraphEdgeStyle": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "solid",
+            "description": "Continuous line."
+          },
+          {
+            "type": "string",
+            "const": "dashed",
+            "description": "Dashed line."
+          }
+        ],
+        "description": "`GraphEdge.style`."
+      },
+      "GraphArrow": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "forward",
+            "description": "Head at `to`."
+          },
+          {
+            "type": "string",
+            "const": "both",
+            "description": "Heads at both ends."
+          },
+          {
+            "type": "string",
+            "const": "none",
+            "description": "A plain line."
+          }
+        ],
+        "description": "`GraphEdge.arrow`."
+      },
+      "GraphGroup": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the graph; referenced by `GraphNode.group`."
+          },
+          "label": {
+            "type": "string",
+            "description": "Title of the box; ≤ 80 characters."
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id of the enclosing group (nested zones); depth ≤ 3."
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphGroupKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Box treatment; default zone. `boundary` draws dashed."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "parent",
+          "kind"
+        ],
+        "description": "One `Graph` group."
+      },
+      "GraphGroupKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "zone",
+            "description": "Solid labelled box."
+          },
+          {
+            "type": "string",
+            "const": "boundary",
+            "description": "Dashed box: a trust or network boundary."
+          },
+          {
+            "type": "string",
+            "const": "cluster",
+            "description": "Light box: a loose cluster."
+          }
+        ],
+        "description": "`GraphGroup.kind`."
+      },
+      "GraphDirection": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "LR",
+            "description": "Left to right."
+          },
+          {
+            "type": "string",
+            "const": "TB",
+            "description": "Top to bottom."
+          }
+        ],
+        "description": "`Graph.direction`."
+      },
+      "GraphLegendEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What the swatch means; ≤ 80 characters."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The state this entry explains."
+          },
+          "style": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphEdgeStyle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The edge style this entry explains."
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The node kind this entry explains."
+          }
+        },
+        "required": [
+          "label",
+          "state",
+          "style",
+          "kind"
+        ],
+        "description": "One `Graph.legend` entry: a label for a state, an edge style or a node kind."
+      },
+      "SequenceProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "actors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/SequenceActor"
+            },
+            "description": "Lanes, left to right; 2 to 12."
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/SequenceStep"
+            },
+            "description": "Messages in time order; 1 to 40."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the lanes."
+          },
+          "fragments": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/definitions/SequenceFragment"
+            },
+            "description": "Combined fragments over step index ranges, ≤ 2, disjoint, not nested."
+          }
+        },
+        "required": [
+          "actors",
+          "steps",
+          "title",
+          "fragments"
+        ],
+        "description": "`Sequence` props (design doc 71 §2.4)."
+      },
+      "SequenceActor": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the sequence; referenced by steps."
+          },
+          "label": {
+            "type": "string",
+            "description": "Lane title; ≤ 80 characters."
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "description": "One `Sequence` actor."
+      },
+      "SequenceStep": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Sending actor id."
+          },
+          "to": {
+            "type": "string",
+            "description": "Receiving actor id; may equal `from`."
+          },
+          "label": {
+            "type": "string",
+            "description": "Text on the arrow; ≤ 80 characters."
+          },
+          "style": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SequenceStyle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Arrow style; default call."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this step runs: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Note beside the step, ≤ 80 characters; ≤ 2 notes per sequence."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state of the arrow; default default."
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "label",
+          "style",
+          "ref",
+          "note",
+          "state"
+        ],
+        "description": "One `Sequence` step."
+      },
+      "SequenceStyle": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "call",
+            "description": "Solid arrow, closed head."
+          },
+          {
+            "type": "string",
+            "const": "return",
+            "description": "Dashed arrow: a reply."
+          },
+          {
+            "type": "string",
+            "const": "async",
+            "description": "Open arrowhead: fire and forget."
+          }
+        ],
+        "description": "`SequenceStep.style`."
+      },
+      "SequenceFragment": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "Frame kind.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/SequenceFragmentKind"
+              }
+            ]
+          },
+          "from": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0,
+            "description": "First step index (0-based)."
+          },
+          "to": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0,
+            "description": "Last step index (0-based), ≥ `from`."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Condition or caption in the frame's corner; ≤ 80 characters."
+          },
+          "else": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0,
+            "description": "`alt` only: the step index where the else region starts, inside `from..=to`."
+          }
+        },
+        "required": [
+          "kind",
+          "from",
+          "to",
+          "label",
+          "else"
+        ],
+        "description": "One `Sequence` fragment: a frame around steps `from..=to`."
+      },
+      "SequenceFragmentKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "alt",
+            "description": "Alternatives; `else` splits the regions."
+          },
+          {
+            "type": "string",
+            "const": "opt",
+            "description": "Optional."
+          },
+          {
+            "type": "string",
+            "const": "loop",
+            "description": "Repeated."
+          },
+          {
+            "type": "string",
+            "const": "par",
+            "description": "Parallel."
+          }
+        ],
+        "description": "`SequenceFragment.kind`."
+      },
+      "StepsProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Step"
+            },
+            "description": "Steps, in order; numbered from 1."
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "description": "`Steps` props."
+      },
+      "Step": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "What to do."
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How, or why."
+          }
+        },
+        "required": [
+          "title",
+          "detail"
+        ],
+        "description": "One `Steps` item."
+      },
+      "CalloutProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The aside."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bold first line."
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CalloutVariant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Icon; default note."
+          }
+        },
+        "required": [
+          "text",
+          "title",
+          "variant"
+        ],
+        "description": "`Callout` props."
+      },
+      "CalloutVariant": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "note",
+            "description": "Background information."
+          },
+          {
+            "type": "string",
+            "const": "tip",
+            "description": "A shortcut or best practice."
+          },
+          {
+            "type": "string",
+            "const": "question",
+            "description": "Something to decide or find out."
+          },
+          {
+            "type": "string",
+            "const": "important",
+            "description": "Must not be missed."
+          }
+        ],
+        "description": "`Callout.variant`."
+      },
+      "CodeProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The code, verbatim."
+          },
+          "lang": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Language name, e.g. `rust`."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "File name or caption above the block."
+          }
+        },
+        "required": [
+          "text",
+          "lang",
+          "title"
+        ],
+        "description": "`Code` props."
+      },
+      "DiffProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "before": {
+            "type": "string",
+            "description": "Left column text."
+          },
+          "after": {
+            "type": "string",
+            "description": "Right column text."
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Left heading; default Before."
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Right heading; default After."
+          }
+        },
+        "required": [
+          "before",
+          "after",
+          "from",
+          "to"
+        ],
+        "description": "`Diff` props."
+      },
+      "ExcerptProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Root-relative file path; no `..`, no scheme."
+          },
+          "text": {
+            "type": "string",
+            "description": "The quoted lines, verbatim."
+          },
+          "start": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "1-based line number of the first quoted line; default 1."
+          },
+          "lang": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Language name, e.g. `rust`."
+          },
+          "caption": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One line under the code: the claim these lines carry."
+          },
+          "mark": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "description": "Marked rows as `[from, to]` line-number pairs, inclusive, inside the quoted range."
+          },
+          "symbol": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the definition the range quotes; enables `moved` detection."
+          }
+        },
+        "required": [
+          "path",
+          "text",
+          "start",
+          "lang",
+          "caption",
+          "mark",
+          "symbol"
+        ],
+        "description": "`Excerpt` props (design doc 71 §2.5): ≤ 120 lines and ≤ 16 KiB of `text`."
+      },
+      "TreeProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/TreeItem"
+            },
+            "description": "Rows in reading order; a row nests under the nearest earlier row of smaller depth."
+          },
+          "layout": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TreeLayout"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`list` (default) is the indented list; `nodes`/`org` draw a node tree, `nested` nested boxes."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the tree."
+          }
+        },
+        "required": [
+          "items",
+          "layout",
+          "title"
+        ],
+        "description": "`Tree` props."
+      },
+      "TreeItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Row text."
+          },
+          "depth": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 6,
+            "description": "Nesting level, 0 to 6; default 0."
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Dim text after the label."
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unique id so boards and apps can point at this row."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this row is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "label",
+          "depth",
+          "detail",
+          "id",
+          "state",
+          "ref"
+        ],
+        "description": "One `Tree` row."
+      },
+      "TreeLayout": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "list",
+            "description": "Indented list."
+          },
+          {
+            "type": "string",
+            "const": "nodes",
+            "description": "Top-down node tree."
+          },
+          {
+            "type": "string",
+            "const": "nested",
+            "description": "Nested boxes."
+          },
+          {
+            "type": "string",
+            "const": "org",
+            "description": "Org chart: top-down, siblings aligned."
+          }
+        ],
+        "description": "`Tree.layout`."
+      },
+      "GlossaryProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Definition"
+            },
+            "description": "Terms, in order."
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "description": "`Glossary` props."
+      },
+      "Definition": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "term": {
+            "type": "string",
+            "description": "The term."
+          },
+          "text": {
+            "type": "string",
+            "description": "Its meaning."
+          }
+        },
+        "required": [
+          "term",
+          "text"
+        ],
+        "description": "One `Glossary` item."
+      },
+      "QuoteProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The quoted words."
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who or what said them."
+          }
+        },
+        "required": [
+          "text",
+          "source"
+        ],
+        "description": "`Quote` props."
+      },
+      "ImageProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "src": {
+            "type": "string",
+            "description": "`http(s)://` or `data:image/` URL."
+          },
+          "alt": {
+            "type": "string",
+            "description": "What the picture shows, for readers who cannot see it."
+          },
+          "caption": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text under the picture."
+          }
+        },
+        "required": [
+          "src",
+          "alt",
+          "caption"
+        ],
+        "description": "`Image` props."
+      },
+      "LinkListProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Link"
+            },
+            "description": "Links, in order."
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "description": "`LinkList` props."
+      },
+      "Link": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Link text."
+          },
+          "url": {
+            "type": "string",
+            "description": "`http(s)://` URL."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why follow it."
+          }
+        },
+        "required": [
+          "title",
+          "url",
+          "note"
+        ],
+        "description": "One `LinkList` item."
+      },
+      "TagsProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Tag"
+            },
+            "description": "Labels, in order."
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "description": "`Tags` props."
+      },
+      "Tag": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Label text."
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BadgeVariant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tone; default default."
+          }
+        },
+        "required": [
+          "text",
+          "variant"
+        ],
+        "description": "One `Tags` item; the same variants as `Badge`."
+      },
+      "GaugeProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "type": "number",
+            "format": "double",
+            "description": "Current value."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text under the arc."
+          },
+          "max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Full-arc value; default 100."
+          },
+          "min": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Empty-arc value; default 0."
+          }
+        },
+        "required": [
+          "value",
+          "label",
+          "max",
+          "min"
+        ],
+        "description": "`Gauge` props."
+      },
+      "SparklineProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Values in order, left to right."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text beside the line."
+          }
+        },
+        "required": [
+          "values",
+          "label"
+        ],
+        "description": "`Sparkline` props."
+      },
+      "HeatmapProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Row labels."
+          },
+          "cols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Column labels."
+          },
+          "cells": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "description": "One row of values per row label."
+          },
+          "max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Darkest-cell value; default the largest cell."
+          },
+          "palette": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/HeatmapPalette"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`sequential` (default) shades from light to dark; `diverging` runs negative→neutral→positive about 0."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the grid."
+          }
+        },
+        "required": [
+          "rows",
+          "cols",
+          "cells",
+          "max",
+          "palette",
+          "title"
+        ],
+        "description": "`Heatmap` props; `cells` has `rows.len()` rows of `cols.len()` values."
+      },
+      "HeatmapPalette": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "sequential",
+            "description": "Light to dark."
+          },
+          {
+            "type": "string",
+            "const": "diverging",
+            "description": "Two hues about zero."
+          }
+        ],
+        "description": "`Heatmap.palette`."
+      },
+      "PersonProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Full name; the avatar shows its initials."
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title or team."
+          },
+          "contact": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Email, handle or phone."
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "contact"
+        ],
+        "description": "`Person` props."
+      },
+      "FileListProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/FileItem"
+            },
+            "description": "Files, in order."
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "description": "`FileList` props."
+      },
+      "FileItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path; a trailing `/` or `kind: \"dir\"` is a folder."
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Type word, e.g. `dir`, `rust`, `image`."
+          },
+          "size": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Size, preformatted, e.g. `12 KB`."
+          }
+        },
+        "required": [
+          "path",
+          "kind",
+          "size"
+        ],
+        "description": "One `FileList` item."
+      },
+      "KanbanProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/KanbanColumn"
+            },
+            "description": "Columns, left to right."
+          },
+          "rows": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Story-map rows; cards pick one by `row` index."
+          },
+          "cut": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0,
+            "description": "Story map: the release line is drawn after row `cut`."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the board."
+          }
+        },
+        "required": [
+          "columns",
+          "rows",
+          "cut",
+          "title"
+        ],
+        "description": "`Kanban` props."
+      },
+      "KanbanColumn": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Column heading."
+          },
+          "cards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/KanbanCard"
+            },
+            "description": "Cards, top to bottom."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0,
+            "description": "WIP limit; a column over it is marked."
+          }
+        },
+        "required": [
+          "title",
+          "cards",
+          "limit"
+        ],
+        "description": "One `Kanban` column."
+      },
+      "KanbanCard": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Card text."
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Second line."
+          },
+          "tag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Short label on the card."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/KanbanState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Card state; default default."
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unique id so boards and apps can point at this card."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this card is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          },
+          "row": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0,
+            "description": "Story-map row index into `rows`."
+          }
+        },
+        "required": [
+          "title",
+          "detail",
+          "tag",
+          "state",
+          "id",
+          "ref",
+          "row"
+        ],
+        "description": "One `Kanban` card."
+      },
+      "KanbanState": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "default",
+            "description": "Plain."
+          },
+          {
+            "type": "string",
+            "const": "blocked",
+            "description": "Waiting on something."
+          },
+          {
+            "type": "string",
+            "const": "done",
+            "description": "Finished."
+          }
+        ],
+        "description": "`KanbanCard.state`."
+      },
+      "CalendarProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/CalendarDay"
+            },
+            "description": "Days, left to right."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text above the strip, e.g. the month."
+          }
+        },
+        "required": [
+          "days",
+          "title"
+        ],
+        "description": "`Calendar` props."
+      },
+      "CalendarDay": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "day": {
+            "type": "string",
+            "description": "Day text, e.g. `Mon 3` or `2026-09-25`."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What happens that day."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TimelineState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Marker; the same states as `Timeline`."
+          }
+        },
+        "required": [
+          "day",
+          "label",
+          "state"
+        ],
+        "description": "One `Calendar` day."
+      },
+      "StateMachineProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "states": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/MachineState"
+            },
+            "description": "States, in authored order; ≤ 40, at most one `initial`."
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Transition"
+            },
+            "description": "Transitions between state ids; ≤ 80."
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphDirection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Flow direction; default LR."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the diagram."
+          }
+        },
+        "required": [
+          "states",
+          "transitions",
+          "direction",
+          "title"
+        ],
+        "description": "`StateMachine` props (design doc 123 §4.2)."
+      },
+      "MachineState": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the machine; referenced by transitions."
+          },
+          "label": {
+            "type": "string",
+            "description": "Text in the state; ≤ 80 characters."
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/MachineStateKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Shape; default state."
+          },
+          "sub": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mono second line, ≤ 40 characters: an entry action, a timeout."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this state is: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "sub",
+          "state",
+          "ref"
+        ],
+        "description": "One `StateMachine` state."
+      },
+      "MachineStateKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "initial",
+            "description": "The entry dot; at most one."
+          },
+          {
+            "type": "string",
+            "const": "final",
+            "description": "A terminal ringed dot."
+          },
+          {
+            "type": "string",
+            "const": "state",
+            "description": "A rounded box."
+          },
+          {
+            "type": "string",
+            "const": "choice",
+            "description": "A diamond: a guarded branch."
+          }
+        ],
+        "description": "`MachineState.kind`."
+      },
+      "Transition": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Source state id."
+          },
+          "to": {
+            "type": "string",
+            "description": "Target state id; may equal `from`."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The event; ≤ 80 characters."
+          },
+          "guard": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The condition, drawn in brackets; ≤ 40 characters."
+          },
+          "style": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphEdgeStyle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Line style; default solid."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state of the arrow; default default."
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "label",
+          "guard",
+          "style",
+          "state"
+        ],
+        "description": "One `StateMachine` transition."
+      },
+      "EntitiesProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "entities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Entity"
+            },
+            "description": "Entities, in authored order; ≤ 24."
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Relation"
+            },
+            "description": "Relations between entity ids; ≤ 48."
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EntitiesDetail"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How much to show; default model."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the diagram."
+          }
+        },
+        "required": [
+          "entities",
+          "relations",
+          "detail",
+          "title"
+        ],
+        "description": "`Entities` props (design doc 123 §4.2)."
+      },
+      "Entity": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the diagram; referenced by relations."
+          },
+          "label": {
+            "type": "string",
+            "description": "Header text; ≤ 80 characters."
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EntityKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Header treatment; default entity."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Field"
+            },
+            "description": "Fields, in order; ≤ 32 with unique names."
+          },
+          "methods": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/definitions/Method"
+            },
+            "description": "Methods; only on `class` or `interface`."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this entity is: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "fields",
+          "methods",
+          "state",
+          "ref"
+        ],
+        "description": "One `Entities` entity."
+      },
+      "EntityKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "entity",
+            "description": "A domain entity."
+          },
+          {
+            "type": "string",
+            "const": "table",
+            "description": "A database table."
+          },
+          {
+            "type": "string",
+            "const": "class",
+            "description": "A class."
+          },
+          {
+            "type": "string",
+            "const": "interface",
+            "description": "An interface (italic header)."
+          },
+          {
+            "type": "string",
+            "const": "enum",
+            "description": "An enum."
+          }
+        ],
+        "description": "`Entity.kind`."
+      },
+      "Field": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Field name; unique within the entity."
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Type, as written."
+          },
+          "key": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/FieldKey"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Key role."
+          },
+          "nullable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Nullable; default false."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Short remark after the type."
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "key",
+          "nullable",
+          "note"
+        ],
+        "description": "One `Entity` field."
+      },
+      "FieldKey": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "pk",
+            "description": "Primary key."
+          },
+          {
+            "type": "string",
+            "const": "fk",
+            "description": "Foreign key."
+          },
+          {
+            "type": "string",
+            "const": "uk",
+            "description": "Unique key."
+          }
+        ],
+        "description": "`Field.key`."
+      },
+      "Method": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Method name."
+          },
+          "sig": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Signature after the name, e.g. `(id) -> User`."
+          }
+        },
+        "required": [
+          "name",
+          "sig"
+        ],
+        "description": "One `Entity` method."
+      },
+      "Relation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Source entity id."
+          },
+          "to": {
+            "type": "string",
+            "description": "Target entity id."
+          },
+          "kind": {
+            "description": "Cardinality or UML relation; chooses the line ends.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/RelationKind"
+              }
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text on the line; ≤ 80 characters."
+          },
+          "from_field": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A field of `from` the line leaves."
+          },
+          "to_field": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A field of `to` the line enters."
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "kind",
+          "label",
+          "from_field",
+          "to_field"
+        ],
+        "description": "One `Entities` relation."
+      },
+      "RelationKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "one-one",
+            "description": "1 : 1."
+          },
+          {
+            "type": "string",
+            "const": "one-many",
+            "description": "1 : n (crow's foot at `to`)."
+          },
+          {
+            "type": "string",
+            "const": "many-many",
+            "description": "n : m."
+          },
+          {
+            "type": "string",
+            "const": "inherits",
+            "description": "`from` extends `to`."
+          },
+          {
+            "type": "string",
+            "const": "implements",
+            "description": "`from` implements `to`."
+          },
+          {
+            "type": "string",
+            "const": "composes",
+            "description": "`from` owns `to` (filled diamond)."
+          },
+          {
+            "type": "string",
+            "const": "aggregates",
+            "description": "`from` has `to` (open diamond)."
+          },
+          {
+            "type": "string",
+            "const": "depends",
+            "description": "`from` uses `to` (dashed)."
+          },
+          {
+            "type": "string",
+            "const": "references",
+            "description": "`from` points at `to`."
+          }
+        ],
+        "description": "`Relation.kind`."
+      },
+      "EntitiesDetail": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "model",
+            "description": "Names and relations only."
+          },
+          {
+            "type": "string",
+            "const": "schema",
+            "description": "Fields with types and keys."
+          },
+          {
+            "type": "string",
+            "const": "class",
+            "description": "Fields and methods."
+          }
+        ],
+        "description": "`Entities.detail`."
+      },
+      "SwimlaneProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "lanes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Lane"
+            },
+            "description": "Lanes, in order; ≤ 8."
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/LaneStep"
+            },
+            "description": "Steps, each in a lane; ≤ 40."
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/LaneEdge"
+            },
+            "description": "Edges between step ids; ≤ 80."
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphDirection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Flow direction; default LR (lanes are rows)."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the diagram."
+          }
+        },
+        "required": [
+          "lanes",
+          "steps",
+          "edges",
+          "direction",
+          "title"
+        ],
+        "description": "`Swimlane` props (design doc 123 §4.2)."
+      },
+      "Lane": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the diagram; referenced by `LaneStep.lane`."
+          },
+          "label": {
+            "type": "string",
+            "description": "Lane title; ≤ 80 characters."
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "description": "One `Swimlane` lane."
+      },
+      "LaneStep": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the diagram; referenced by edges."
+          },
+          "lane": {
+            "type": "string",
+            "description": "The lane this step sits in."
+          },
+          "label": {
+            "type": "string",
+            "description": "Text in the step; ≤ 80 characters."
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/LaneStepKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Shape; default step."
+          },
+          "sub": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mono second line, ≤ 40 characters."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this step runs: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "id",
+          "lane",
+          "label",
+          "kind",
+          "sub",
+          "state",
+          "ref"
+        ],
+        "description": "One `Swimlane` step."
+      },
+      "LaneStepKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "step",
+            "description": "A rounded box."
+          },
+          {
+            "type": "string",
+            "const": "decision",
+            "description": "A diamond."
+          },
+          {
+            "type": "string",
+            "const": "start",
+            "description": "The entry pill."
+          },
+          {
+            "type": "string",
+            "const": "end",
+            "description": "The exit pill."
+          },
+          {
+            "type": "string",
+            "const": "data",
+            "description": "A parallelogram: a document or a dataset."
+          }
+        ],
+        "description": "`LaneStep.kind`."
+      },
+      "LaneEdge": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Source step id."
+          },
+          "to": {
+            "type": "string",
+            "description": "Target step id."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text on the arrow; ≤ 80 characters."
+          },
+          "style": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphEdgeStyle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Line style; default solid."
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "label",
+          "style"
+        ],
+        "description": "One `Swimlane` edge."
+      },
+      "GraphDeltaProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "before": {
+            "description": "The graph as it was.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/GraphSide"
+              }
+            ]
+          },
+          "after": {
+            "description": "The graph as it is; nodes with the same id keep their place.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/GraphSide"
+              }
+            ]
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphDirection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Flow direction; default LR."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above both panels."
+          }
+        },
+        "required": [
+          "before",
+          "after",
+          "direction",
+          "title"
+        ],
+        "description": "`GraphDelta` props (design doc 123 §4.2): ids are the identity across sides."
+      },
+      "GraphSide": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/GraphNode"
+            },
+            "description": "Nodes, in authored order."
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/GraphEdge"
+            },
+            "description": "Directed edges between node ids."
+          },
+          "groups": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/definitions/GraphGroup"
+            },
+            "description": "Groups a node may belong to."
+          }
+        },
+        "required": [
+          "nodes",
+          "edges",
+          "groups"
+        ],
+        "description": "One side of a `GraphDelta`: a `Graph` without direction."
+      },
+      "BarChartProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Category labels; ≤ 40."
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Series"
+            },
+            "description": "Series; ≤ 8, each with `labels.len()` values. `dumbbell` needs exactly 2."
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BarVariant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Layout; default grouped."
+          },
+          "xLabel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Category axis title."
+          },
+          "yLabel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Value axis title."
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unit after values, e.g. `ms`, `USD`."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the chart."
+          }
+        },
+        "required": [
+          "labels",
+          "series",
+          "variant",
+          "xLabel",
+          "yLabel",
+          "unit",
+          "title"
+        ],
+        "description": "`BarChart` props (design doc 123 §4.2)."
+      },
+      "Series": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Legend name; ≤ 80 characters."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "One value per label."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state colouring the series; default default."
+          }
+        },
+        "required": [
+          "name",
+          "values",
+          "state"
+        ],
+        "description": "One chart series: `values[i]` belongs to the i-th label or axis."
+      },
+      "BarVariant": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "grouped",
+            "description": "Series side by side per label."
+          },
+          {
+            "type": "string",
+            "const": "stacked",
+            "description": "Series stacked per label."
+          },
+          {
+            "type": "string",
+            "const": "dumbbell",
+            "description": "Two series as the ends of one connector per label."
+          },
+          {
+            "type": "string",
+            "const": "horizontal",
+            "description": "Bars run left to right, labels down the side."
+          }
+        ],
+        "description": "`BarChart.variant`."
+      },
+      "LineChartProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ordered x labels; ≤ 60."
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Series"
+            },
+            "description": "Series; ≤ 8, each with `labels.len()` values. `slope` needs exactly 2 labels; `bump` values are ranks ≥ 1."
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/LineVariant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Mark; default line."
+          },
+          "xLabel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "X axis title."
+          },
+          "yLabel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Y axis title."
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unit after values."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the chart."
+          }
+        },
+        "required": [
+          "labels",
+          "series",
+          "variant",
+          "xLabel",
+          "yLabel",
+          "unit",
+          "title"
+        ],
+        "description": "`LineChart` props (design doc 123 §4.2)."
+      },
+      "LineVariant": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "line",
+            "description": "Plain lines."
+          },
+          {
+            "type": "string",
+            "const": "area",
+            "description": "Filled under the line."
+          },
+          {
+            "type": "string",
+            "const": "slope",
+            "description": "Two labels, one segment per series."
+          },
+          {
+            "type": "string",
+            "const": "bump",
+            "description": "Ranks over time, 1 at the top."
+          },
+          {
+            "type": "string",
+            "const": "step",
+            "description": "Horizontal runs with vertical jumps."
+          }
+        ],
+        "description": "`LineChart.variant`."
+      },
+      "ScatterChartProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Point"
+            },
+            "description": "Points; ≤ 200."
+          },
+          "xLabel": {
+            "type": "string",
+            "description": "X axis title."
+          },
+          "yLabel": {
+            "type": "string",
+            "description": "Y axis title."
+          },
+          "groups": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/definitions/PointGroup"
+            },
+            "description": "Point groups a point may name; ≤ 8, each a legend entry."
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ScatterVariant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Mark; default scatter. `bubble` needs `size` on every point; `beeswarm` ignores `y`."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the chart."
+          }
+        },
+        "required": [
+          "points",
+          "xLabel",
+          "yLabel",
+          "groups",
+          "variant",
+          "title"
+        ],
+        "description": "`ScatterChart` props (design doc 123 §4.2)."
+      },
+      "Point": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "x": {
+            "type": "number",
+            "format": "double",
+            "description": "X value."
+          },
+          "y": {
+            "type": "number",
+            "format": "double",
+            "description": "Y value."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text beside the point; ≤ 80 characters."
+          },
+          "size": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Bubble size (any positive scale)."
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Group id from `groups`."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this point is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "label",
+          "size",
+          "group",
+          "state",
+          "ref"
+        ],
+        "description": "One `ScatterChart` point."
+      },
+      "PointGroup": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the chart; referenced by `Point.group`."
+          },
+          "label": {
+            "type": "string",
+            "description": "Legend text; ≤ 80 characters."
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "description": "One `ScatterChart` group."
+      },
+      "ScatterVariant": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "scatter",
+            "description": "Dots."
+          },
+          {
+            "type": "string",
+            "const": "bubble",
+            "description": "Dots sized by `size`."
+          },
+          {
+            "type": "string",
+            "const": "beeswarm",
+            "description": "Dots spread along x only."
+          }
+        ],
+        "description": "`ScatterChart.variant`."
+      },
+      "RadarChartProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "axes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Spoke labels; 3 to 8."
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Series"
+            },
+            "description": "Series; ≤ 5, each with `axes.len()` values. `polar` needs exactly 1."
+          },
+          "max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Outer ring value; default the largest value."
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RadarVariant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Mark; default radar."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the chart."
+          }
+        },
+        "required": [
+          "axes",
+          "series",
+          "max",
+          "variant",
+          "title"
+        ],
+        "description": "`RadarChart` props (design doc 123 §4.2)."
+      },
+      "RadarVariant": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "radar",
+            "description": "A polygon per series."
+          },
+          {
+            "type": "string",
+            "const": "polar",
+            "description": "Radial bars, one series."
+          }
+        ],
+        "description": "`RadarChart.variant`."
+      },
+      "WaterfallProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/WaterfallStep"
+            },
+            "description": "Steps, in order; ≤ 20."
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unit after values."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the chart."
+          }
+        },
+        "required": [
+          "steps",
+          "unit",
+          "title"
+        ],
+        "description": "`Waterfall` props (design doc 123 §4.2): the running total is computed."
+      },
+      "WaterfallStep": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Step text; ≤ 80 characters."
+          },
+          "value": {
+            "type": "number",
+            "format": "double",
+            "description": "A delta for `delta`; the absolute level for `total`/`subtotal`."
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WaterfallKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bar kind; default delta."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          }
+        },
+        "required": [
+          "label",
+          "value",
+          "kind",
+          "state"
+        ],
+        "description": "One `Waterfall` step."
+      },
+      "WaterfallKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "delta",
+            "description": "A floating change."
+          },
+          {
+            "type": "string",
+            "const": "total",
+            "description": "An absolute level from the baseline."
+          },
+          {
+            "type": "string",
+            "const": "subtotal",
+            "description": "An absolute level mid-way."
+          }
+        ],
+        "description": "`WaterfallStep.kind`."
+      },
+      "FunnelProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/FunnelStage"
+            },
+            "description": "Stages, top to bottom; ≤ 10. Values on all or none."
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/FunnelVariant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Shape; default funnel."
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unit after values."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the chart."
+          }
+        },
+        "required": [
+          "stages",
+          "variant",
+          "unit",
+          "title"
+        ],
+        "description": "`Funnel` props (design doc 123 §4.2)."
+      },
+      "FunnelStage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Stage text; ≤ 80 characters."
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Count at this stage."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Short remark."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          }
+        },
+        "required": [
+          "label",
+          "value",
+          "note",
+          "state"
+        ],
+        "description": "One `Funnel` stage."
+      },
+      "FunnelVariant": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "funnel",
+            "description": "Narrowing downwards."
+          },
+          {
+            "type": "string",
+            "const": "pyramid",
+            "description": "Widening downwards."
+          }
+        ],
+        "description": "`Funnel.variant`."
+      },
+      "GanttProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/GanttTask"
+            },
+            "description": "Tasks, top to bottom; ≤ 60."
+          },
+          "today": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The today line: ISO date or datetime."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the chart."
+          }
+        },
+        "required": [
+          "tasks",
+          "today",
+          "title"
+        ],
+        "description": "`Gantt` props (design doc 123 §4.2)."
+      },
+      "GanttTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the chart; referenced by `depends`."
+          },
+          "label": {
+            "type": "string",
+            "description": "Row text; ≤ 80 characters."
+          },
+          "start": {
+            "type": "string",
+            "description": "Start: ISO date or datetime."
+          },
+          "end": {
+            "type": "string",
+            "description": "End: ISO date or datetime, ≥ `start`."
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Band the task sits in; equal groups are adjacent."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "progress": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Done fraction, 0 to 1.",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "depends": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of tasks this one waits for."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this task is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "start",
+          "end",
+          "group",
+          "state",
+          "progress",
+          "depends",
+          "ref"
+        ],
+        "description": "One `Gantt` task."
+      },
+      "QuadrantProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "xLabel": {
+            "type": "string",
+            "description": "X axis title."
+          },
+          "yLabel": {
+            "type": "string",
+            "description": "Y axis title."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/QuadrantItem"
+            },
+            "description": "Items; ≤ 40."
+          },
+          "quadrants": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Quadrant captions, exactly 4: top-left, top-right, bottom-left, bottom-right."
+          },
+          "xTicks": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "X end labels, exactly 2: low, high."
+          },
+          "yTicks": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Y end labels, exactly 2: low, high."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the chart."
+          }
+        },
+        "required": [
+          "xLabel",
+          "yLabel",
+          "items",
+          "quadrants",
+          "xTicks",
+          "yTicks",
+          "title"
+        ],
+        "description": "`Quadrant` props (design doc 123 §4.2)."
+      },
+      "QuadrantItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unique id so boards and apps can point at this item."
+          },
+          "label": {
+            "type": "string",
+            "description": "Text beside the dot; ≤ 80 characters."
+          },
+          "x": {
+            "type": "number",
+            "format": "double",
+            "description": "Horizontal position, 0 (left) to 1 (right).",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "y": {
+            "type": "number",
+            "format": "double",
+            "description": "Vertical position, 0 (bottom) to 1 (top).",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "size": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Dot size (any positive scale)."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this item is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "x",
+          "y",
+          "size",
+          "state",
+          "ref"
+        ],
+        "description": "One `Quadrant` item."
+      },
+      "TreemapProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/TreemapCell"
+            },
+            "description": "Cells; ≤ 60 over ≤ 12 groups."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the map."
+          }
+        },
+        "required": [
+          "items",
+          "title"
+        ],
+        "description": "`Treemap` props (design doc 123 §4.2)."
+      },
+      "TreemapCell": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Cell text; ≤ 80 characters."
+          },
+          "value": {
+            "type": "number",
+            "format": "double",
+            "description": "Area weight, > 0."
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Group name; equal groups share a headed rectangle."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this cell is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "label",
+          "value",
+          "group",
+          "state",
+          "ref"
+        ],
+        "description": "One `Treemap` cell."
+      },
+      "SankeyProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/SankeyNode"
+            },
+            "description": "Nodes; ≤ 24."
+          },
+          "flows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/SankeyFlow"
+            },
+            "description": "Flows between node ids; ≤ 48, no self-flow, no cycle."
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unit after values."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the diagram."
+          }
+        },
+        "required": [
+          "nodes",
+          "flows",
+          "unit",
+          "title"
+        ],
+        "description": "`Sankey` props (design doc 123 §4.2)."
+      },
+      "SankeyNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the diagram; referenced by flows."
+          },
+          "label": {
+            "type": "string",
+            "description": "Node text; ≤ 80 characters."
+          },
+          "stage": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0,
+            "description": "Column, 0-based; derived from the flows when absent."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "stage",
+          "state"
+        ],
+        "description": "One `Sankey` node."
+      },
+      "SankeyFlow": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Source node id."
+          },
+          "to": {
+            "type": "string",
+            "description": "Target node id; ≠ `from`."
+          },
+          "value": {
+            "type": "number",
+            "format": "double",
+            "description": "Ribbon width, > 0."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text on the ribbon; ≤ 80 characters."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "value",
+          "label",
+          "state"
+        ],
+        "description": "One `Sankey` flow."
+      },
+      "VennProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/VennSet"
+            },
+            "description": "Sets; exactly 2 or 3."
+          },
+          "overlaps": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/definitions/VennOverlap"
+            },
+            "description": "Labelled overlaps of 2 or 3 distinct sets."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the diagram."
+          }
+        },
+        "required": [
+          "sets",
+          "overlaps",
+          "title"
+        ],
+        "description": "`Venn` props (design doc 123 §4.2): exactly 2 or 3 sets."
+      },
+      "VennSet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique within the diagram; referenced by overlaps."
+          },
+          "label": {
+            "type": "string",
+            "description": "Set text; ≤ 80 characters."
+          },
+          "size": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Size, shown after the label."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "size"
+        ],
+        "description": "One `Venn` set."
+      },
+      "VennOverlap": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The intersecting set ids; 2 or 3, distinct."
+          },
+          "label": {
+            "type": "string",
+            "description": "Text in the lens; ≤ 80 characters."
+          }
+        },
+        "required": [
+          "sets",
+          "label"
+        ],
+        "description": "One `Venn` overlap."
+      },
+      "LoopProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/LoopStep"
+            },
+            "description": "Steps clockwise from the top; 2 to 8."
+          },
+          "hub": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text in the centre."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the diagram."
+          }
+        },
+        "required": [
+          "steps",
+          "hub",
+          "title"
+        ],
+        "description": "`Loop` props (design doc 123 §4.2)."
+      },
+      "LoopStep": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Step text; ≤ 80 characters."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Short remark under the label."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this step runs: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "label",
+          "note",
+          "state",
+          "ref"
+        ],
+        "description": "One `Loop` step."
+      },
+      "LayersProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Layer"
+            },
+            "description": "Layers in reading order; ≤ 12, each ≤ 12 items."
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/LayersDirection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which way the stack reads; default top-down."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the stack."
+          }
+        },
+        "required": [
+          "layers",
+          "direction",
+          "title"
+        ],
+        "description": "`Layers` props (design doc 123 §4.2)."
+      },
+      "Layer": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Layer text; ≤ 80 characters."
+          },
+          "items": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Items in the layer; ≤ 12."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Dim remark at the right."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GraphState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic state; default default."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Code this layer is: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`."
+          }
+        },
+        "required": [
+          "label",
+          "items",
+          "note",
+          "state",
+          "ref"
+        ],
+        "description": "One `Layers` layer."
+      },
+      "LayersDirection": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "top-down",
+            "description": "First layer on top."
+          },
+          {
+            "type": "string",
+            "const": "bottom-up",
+            "description": "First layer at the bottom."
+          }
+        ],
+        "description": "`Layers.direction`."
+      },
+      "JourneyProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Stages across the top; ≤ 8."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/JourneyRow"
+            },
+            "description": "Rows down the side; ≤ 4, each with `stages.len()` cells."
+          },
+          "mood": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "One mood per stage, −1 to 1."
+          },
+          "pains": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/definitions/JourneyPain"
+            },
+            "description": "Pain points under a stage."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the map."
+          }
+        },
+        "required": [
+          "stages",
+          "rows",
+          "mood",
+          "pains",
+          "title"
+        ],
+        "description": "`Journey` props (design doc 123 §4.2)."
+      },
+      "JourneyRow": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Row title, e.g. Does, Thinks, Feels."
+          },
+          "cells": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One cell per stage."
+          }
+        },
+        "required": [
+          "label",
+          "cells"
+        ],
+        "description": "One `Journey` row."
+      },
+      "JourneyPain": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stage": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0,
+            "description": "Stage index, 0-based."
+          },
+          "text": {
+            "type": "string",
+            "description": "The pain; ≤ 80 characters."
+          }
+        },
+        "required": [
+          "stage",
+          "text"
+        ],
+        "description": "One `Journey` pain point."
+      },
+      "FishboneProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "effect": {
+            "type": "string",
+            "description": "The effect at the head; ≤ 80 characters."
+          },
+          "causes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/FishboneCause"
+            },
+            "description": "Cause categories on the bones; ≤ 8, each ≤ 6 items."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title above the diagram."
+          }
+        },
+        "required": [
+          "effect",
+          "causes",
+          "title"
+        ],
+        "description": "`Fishbone` props (design doc 123 §4.2)."
+      },
+      "FishboneCause": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "Bone title; ≤ 80 characters."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Causes on the bone; ≤ 6."
+          }
+        },
+        "required": [
+          "category",
+          "items"
+        ],
+        "description": "One `Fishbone` category."
+      }
+    },
+    "minItems": 3,
+    "maxItems": 3,
+    "title": "Tuple_of_Cell_and_NoteDefaults_and_Spec",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "items": [
+      {
+        "$ref": "#/definitions/Cell"
+      },
+      {
+        "$ref": "#/definitions/NoteDefaults"
+      },
+      {
+        "$ref": "#/definitions/Spec"
+      }
+    ]
+  }
+}
