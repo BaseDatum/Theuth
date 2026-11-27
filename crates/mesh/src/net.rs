@@ -88,6 +88,9 @@ pub(crate) const QUARANTINE_SKEW_MS: u64 = 5 * 60_000;
 /// Reconnect backoff bounds.
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
+/// Minimum duration a control connection must stay alive before its disconnect
+/// resets reconnect backoff; an immediate close (e.g. `not paired`) escalates backoff.
+const MIN_HEALTHY_CONN: Duration = Duration::from_secs(10);
 /// The higher id waits this long for the lower id's dial before dialing itself.
 const DIAL_GRACE: Duration = Duration::from_secs(3);
 /// Inbound stream queue per ALPN.
@@ -1918,6 +1921,14 @@ impl Net {
         vault_paired(&peer.to_string());
         let _ = send.finish();
         tracing::info!("mesh: paired with {}", peer.fmt_short());
+        // Push the updated peer set to already-connected peers: when a new node joins via a
+        // ticket it is the dialer (with 0 peers) and we are the acceptor, so existing peers
+        // only learn about it if we broadcast here. Spawned off the accept path so a slow or
+        // unreachable third peer cannot delay driving this connection.
+        let net = self.clone();
+        tokio::spawn(async move {
+            net.push_peers().await;
+        });
         self.drive(conn).await;
         Ok(())
     }
@@ -1970,6 +1981,7 @@ impl Net {
             }
             if self.is_connected(&peer) {
                 // Wait for our disconnect (or cancellation).
+                let started = tokio::time::Instant::now();
                 loop {
                     tokio::select! {
                         _ = cancel.cancelled() => return,
@@ -1981,6 +1993,7 @@ impl Net {
                         }
                     }
                 }
+                backoff = backoff_after_conn(backoff, started.elapsed());
                 continue;
             }
             if !me_lower {
@@ -2003,8 +2016,9 @@ impl Net {
             };
             match conn {
                 Ok(Ok(conn)) => {
-                    backoff = BACKOFF_MIN;
+                    let started = tokio::time::Instant::now();
                     self.drive(conn).await;
+                    backoff = backoff_after_conn(backoff, started.elapsed());
                 }
                 Ok(Err(e)) => tracing::debug!("mesh: dial {}: {e}", peer.fmt_short()),
                 Err(_) => tracing::debug!("mesh: dial {}: timed out", peer.fmt_short()),
@@ -2017,7 +2031,7 @@ impl Net {
                 _ = cancel.cancelled() => return,
                 _ = tokio::time::sleep(jitter) => {}
             }
-            backoff = (backoff * 2).min(BACKOFF_MAX);
+            backoff = next_backoff(backoff);
         }
     }
 
@@ -2328,6 +2342,22 @@ pub(crate) async fn read_msg(recv: &mut RecvStream) -> anyhow::Result<Msg> {
     let mut body = vec![0u8; len as usize];
     recv.read_exact(&mut body).await.context("read body")?;
     Ok(serde_json::from_slice(&body)?)
+}
+
+/// Reconnect backoff after a control connection closes: reset to [`BACKOFF_MIN`]
+/// only when the connection stayed alive for at least [`MIN_HEALTHY_CONN`]; an
+/// immediate close (e.g. `not paired`) keeps the current backoff so it escalates.
+fn backoff_after_conn(current: Duration, lived: Duration) -> Duration {
+    if lived >= MIN_HEALTHY_CONN {
+        BACKOFF_MIN
+    } else {
+        current
+    }
+}
+
+/// Double `current` up to [`BACKOFF_MAX`].
+fn next_backoff(current: Duration) -> Duration {
+    (current * 2).min(BACKOFF_MAX)
 }
 
 #[cfg(test)]
@@ -3180,5 +3210,166 @@ pub(crate) mod tests {
         conn.close(0u32.into(), b"done");
         edge.close().await;
         net.shutdown().await;
+    }
+
+    /// Bug 1: when a new node C (dialer, 0 peers) pairs with A via a remote ticket while
+    /// A is already connected to B, A (the pairing acceptor) pushes the updated peer set
+    /// so B learns C without waiting for a reconnect.
+    #[tokio::test]
+    async fn pairing_acceptor_pushes_updated_peers_to_existing_peers() {
+        let (a, b, _da, _db) = connected_pair().await;
+        let (c, _dc) = node("c").await;
+        assert!(!b.is_paired(&c.endpoint.id()));
+
+        let ticket = a.remote_ticket(60_000).await;
+        c.add_peer(&ticket).await.unwrap();
+
+        assert!(a.is_paired(&c.endpoint.id()));
+        assert!(c.is_paired(&a.endpoint.id()));
+        assert!(
+            c.is_paired(&b.endpoint.id()),
+            "dialer c learned existing peer b from PairAck"
+        );
+        assert!(
+            eventually(10, async || b.is_paired(&c.endpoint.id())).await,
+            "existing peer b should learn newly paired node c from acceptor push_peers"
+        );
+        assert!(
+            b.store
+                .peers()
+                .await
+                .unwrap()
+                .iter()
+                .any(|p| p.id == c.id),
+            "b persisted c in its peer store"
+        );
+
+        a.shutdown().await;
+        b.shutdown().await;
+        c.shutdown().await;
+    }
+
+    /// Bug 2 (unit): reconnect backoff escalates up to `BACKOFF_MAX` on immediate closes
+    /// (`lived < MIN_HEALTHY_CONN`) and resets to `BACKOFF_MIN` once a connection stays
+    /// healthy for at least `MIN_HEALTHY_CONN`.
+    #[test]
+    fn connect_backoff_escalates_on_immediate_close_and_resets_after_healthy_conn() {
+        let mut backoff = BACKOFF_MIN;
+        let mut sleeps = Vec::new();
+        for _ in 0..8 {
+            backoff = backoff_after_conn(backoff, Duration::from_millis(2));
+            sleeps.push(backoff);
+            backoff = next_backoff(backoff);
+        }
+        assert_eq!(
+            sleeps,
+            vec![
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(8),
+                Duration::from_secs(16),
+                Duration::from_secs(32),
+                BACKOFF_MAX,
+                BACKOFF_MAX,
+            ]
+        );
+        assert_eq!(
+            backoff_after_conn(
+                BACKOFF_MAX,
+                MIN_HEALTHY_CONN.saturating_sub(Duration::from_millis(1))
+            ),
+            BACKOFF_MAX,
+            "just under MIN_HEALTHY_CONN does not reset backoff"
+        );
+        assert_eq!(
+            backoff_after_conn(BACKOFF_MAX, MIN_HEALTHY_CONN),
+            BACKOFF_MIN,
+            "at MIN_HEALTHY_CONN resets backoff"
+        );
+        assert_eq!(
+            backoff_after_conn(BACKOFF_MAX, MIN_HEALTHY_CONN + Duration::from_secs(30)),
+            BACKOFF_MIN,
+            "above MIN_HEALTHY_CONN resets backoff"
+        );
+    }
+
+    /// Bug 2 (live): when a peer closes `ALPN_MESH` immediately after QUIC connect
+    /// (`not paired`), `connect_loop` escalates its reconnect interval instead of resetting
+    /// to `BACKOFF_MIN` on every attempt.
+    #[tokio::test]
+    async fn connect_loop_escalates_backoff_when_peer_closes_immediately() {
+        let (a_key, b_key) = loop {
+            let x = SecretKey::generate();
+            let y = SecretKey::generate();
+            if x.public() < y.public() {
+                break (x, y);
+            }
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let a = bind_at("a", 1_000, None, dir.path(), a_key, None).await;
+        let rejector = Endpoint::builder(presets::Minimal)
+            .secret_key(b_key)
+            .alpns(vec![ALPN_MESH.as_bytes().to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ep = rejector.clone();
+        let acceptor = tokio::spawn(async move {
+            for _ in 0..3 {
+                let Some(incoming) = ep.accept().await else {
+                    break;
+                };
+                if let Ok(conn) = incoming.await {
+                    let _ = tx.send(tokio::time::Instant::now());
+                    conn.close(0u32.into(), b"not paired");
+                }
+            }
+        });
+
+        a.store
+            .put_peer(&PeerEntry {
+                id: EngineId(rejector.id().to_string()),
+                name: "rejector".into(),
+                addrs: rejector.addr().addrs.into_iter().collect(),
+                hub_pref: HubPref::Eligible,
+                added_ms: now_ms(),
+                removed_ms: None,
+            })
+            .await
+            .unwrap();
+        a.refresh_paired().await.unwrap();
+
+        let cancel = CancellationToken::new();
+        let connector = tokio::spawn(a.clone().run_connector(cancel.clone()));
+
+        let mut times = Vec::with_capacity(3);
+        for _ in 0..3 {
+            let t = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                .await
+                .expect("timed out waiting for reconnect dial")
+                .expect("acceptor closed early");
+            times.push(t);
+        }
+
+        cancel.cancel();
+        let _ = connector.await;
+        let _ = acceptor.await;
+        rejector.close().await;
+        a.shutdown().await;
+
+        let gap1 = times[1].duration_since(times[0]);
+        let gap2 = times[2].duration_since(times[1]);
+        // First retry waits ~1 s (0.8..1.2 s); second retry must wait ~2 s (1.6..2.4 s),
+        // proving backoff was not reset to BACKOFF_MIN after the immediate close.
+        assert!(
+            gap2 > Duration::from_millis(1400) && gap2 > gap1,
+            "expected escalating backoff after immediate close: gap1={gap1:?}, gap2={gap2:?}"
+        );
     }
 }

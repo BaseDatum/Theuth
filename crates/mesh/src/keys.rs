@@ -1127,8 +1127,20 @@ mod tests {
                 .await
                 .unwrap();
             assert!(!x.is_paired(&ep(&e)), "{}: e is gone", x.id);
-            assert!(x.quarantined().await.unwrap().is_empty(), "{}", x.id);
         }
+        assert!(n.quarantined().await.unwrap().is_empty(), "{}", n.id);
+        // On b, `a` came at pairing (never quarantined). `n` was introduced to b by e's
+        // acceptor `push_peers` (`Msg::Peers`) moments before e was retired, so 183 R1 (S1)
+        // quarantines only `n` if that frame has already landed.
+        assert!(
+            b.quarantined()
+                .await
+                .unwrap()
+                .iter()
+                .all(|q| q.id == n.id),
+            "{}: nothing handed over at pairing is quarantined",
+            b.id
+        );
         assert!(
             n.is_paired(&ep(&a)) && n.is_paired(&ep(&b)),
             "a and b stay on n"
