@@ -283,7 +283,7 @@ impl JobsApiServer for Server {
             let Some(peer) = rpc_engine::pty_peer(ext, engine.as_deref()).await? else {
                 return Ok(None);
             };
-            let open = rpc_engine::PtyOpen { session, job: job.clone(), rows, cols };
+            let open = rpc_engine::PtyOpen::Job { session, job: job.clone(), rows, cols };
             rpc_engine::open(&peer, open).await.map(Some)
         };
         let remote = match remote.await {

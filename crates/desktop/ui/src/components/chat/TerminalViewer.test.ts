@@ -7,7 +7,13 @@ import type { PtyChunk } from "@/rpc/bindings/method.agent.output"
 import { RpcError } from '@/rpc/client'
 import { attachSource, CELL_KEYS, clearPopoutMark, liveRows, PoppedTerminal, setPopoutMark, Terminal } from './TerminalViewer'
 
-const api = { cell_input: vi.fn(async () => null), pty_input: vi.fn(async () => null), pty_resize: vi.fn(async () => null) }
+const api = {
+  cell_input: vi.fn(async () => null),
+  pty_input: vi.fn(async () => null),
+  pty_resize: vi.fn(async () => null),
+  shell_input: vi.fn(async () => null),
+  shell_resize: vi.fn(async () => null),
+}
 const unsub = vi.fn(async () => undefined)
 const client = { stream: vi.fn(async <T,>(_m: string, _p: unknown[], _u: string, _on: (c: T) => void) => unsub) }
 const touch = vi.fn(() => false)
@@ -248,4 +254,42 @@ test('setPopoutMark / clearPopoutMark toggle localStorage cleanly', () => {
   } finally {
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: prev })
   }
+})
+
+test('a standalone shell source uses subscribe_shell and shell_input, never pty_input, and reports disconnected drops', async () => {
+  const term = fakeTerm()
+  const onExit = vi.fn()
+  const onDisconnect = vi.fn()
+  const wire = attachSource(
+    { kind: 'shell', shell: 'main', engine: 'node-1' },
+    term as unknown as Term,
+    api,
+    client,
+    onExit,
+    undefined,
+    undefined,
+    onDisconnect,
+  )
+  expect(client.stream).toHaveBeenCalledTimes(1)
+  expect(client.stream.mock.calls[0]!.slice(0, 3)).toEqual(['subscribe_shell', ['main', 30, 100, 'node-1'], 'unsubscribe_shell'])
+
+  term.data!('ls\r')
+  await flush()
+  expect(api.shell_input).toHaveBeenCalledWith('main', 'ls\r', null, 'node-1')
+  expect(api.pty_input).not.toHaveBeenCalled()
+  expect(api.cell_input).not.toHaveBeenCalled()
+
+  const emit = client.stream.mock.calls[0]![3] as (c: PtyChunk | { type: 'disconnected'; reason: string }) => void
+  emit({ type: 'disconnected', reason: 'connection to node lost' })
+  expect(onDisconnect).toHaveBeenCalledWith('connection to node lost')
+  expect(wire.ended()).toBe(true)
+
+  // Nothing sent after disconnect.
+  term.data!('ignored')
+  await flush()
+  expect(api.shell_input).toHaveBeenCalledTimes(1)
+
+  wire.dispose()
+  await flush()
+  expect(unsub).toHaveBeenCalledTimes(1)
 })

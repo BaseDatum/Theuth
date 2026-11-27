@@ -70,19 +70,19 @@ use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Screen height at `start` (22 §1.9); a viewer may resize it (`pty_resize`).
 #[cfg(not(target_os = "ios"))]
-const ROWS: u16 = 40;
+pub(crate) const ROWS: u16 = 40;
 /// Screen width at `start` (22 §1.9).
 #[cfg(not(target_os = "ios"))]
-const COLS: u16 = 120;
+pub(crate) const COLS: u16 = 120;
 /// `pty_resize` bounds: a phone is ~40 columns, a wide monitor ~300.
 #[cfg(not(target_os = "ios"))]
-const ROWS_MAX: u16 = 200;
+pub(crate) const ROWS_MAX: u16 = 200;
 #[cfg(not(target_os = "ios"))]
-const COLS_MAX: u16 = 400;
+pub(crate) const COLS_MAX: u16 = 400;
 /// Output chunks a slow `subscribe_pty` client may fall behind before it is
 /// resynced from a fresh snapshot.
 #[cfg(not(target_os = "ios"))]
-const STREAM_CHUNKS: usize = 256;
+pub(crate) const STREAM_CHUNKS: usize = 256;
 /// `send` replies once no bytes arrived for this long (22 §4.5)…
 #[cfg(not(target_os = "ios"))]
 const SETTLE_QUIET: Duration = Duration::from_millis(300);
@@ -99,6 +99,7 @@ pub const AGENT_PTY_ENV: &str = "THEUTH_AGENT_PTY";
 /// `wait` default / maximum seconds (22 §4.6).
 #[cfg(not(target_os = "ios"))]
 const WAIT_DEFAULT: u64 = 30;
+/// `wait` maximum seconds.
 #[cfg(not(target_os = "ios"))]
 const WAIT_MAX: u64 = 120;
 /// `ready.timeout` maximum seconds (22 §4.7).
@@ -115,23 +116,23 @@ const IDLE_BACKOFF_MAX: Duration = Duration::from_secs(3600);
 const PORT_POLL: Duration = Duration::from_millis(250);
 /// Longest terminal query the responder carries across chunks (22 §4.4).
 #[cfg(not(target_os = "ios"))]
-const CARRY: usize = 16;
+pub(crate) const CARRY: usize = 16;
 /// Reader thread buffer (22 §4.2).
 #[cfg(not(target_os = "ios"))]
-const READ_BUF: usize = 64 * 1024;
+pub(crate) const READ_BUF: usize = 64 * 1024;
 /// Normal-screen scrollback rows retained per PTY (51 §7.1).
 #[cfg(not(target_os = "ios"))]
-const HISTORY: usize = 512;
+pub(crate) const HISTORY: usize = 512;
 
 /// vt100 sizes are `NonZeroU16`; every size passed here is a non-zero constant or validated.
 #[cfg(not(target_os = "ios"))]
-fn nz(n: u16) -> NonZeroU16 {
+pub(crate) fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n).expect("terminal size is non-zero")
 }
 
 /// `screen.size()` as plain `(rows, cols)`.
 #[cfg(not(target_os = "ios"))]
-fn dims(screen: &vt100::Screen) -> (u16, u16) {
+pub(crate) fn dims(screen: &vt100::Screen) -> (u16, u16) {
     let (rows, cols) = screen.size();
     (rows.get(), cols.get())
 }
@@ -429,7 +430,7 @@ pub enum Key {
 
 #[cfg(not(target_os = "ios"))]
 impl Key {
-    fn encode(&self, out: &mut Vec<u8>, screen: &vt100::Screen) -> Result<(), String> {
+    pub(crate) fn encode(&self, out: &mut Vec<u8>, screen: &vt100::Screen) -> Result<(), String> {
         let cursor = if screen.application_cursor() {
             b'O'
         } else {
@@ -793,7 +794,7 @@ impl PtyHandle {
 /// scrollback row on its own line, pushed off the top so the viewer's own
 /// scrollback holds it, then the live screen with its cursor and input modes.
 #[cfg(not(target_os = "ios"))]
-fn replay(mut screen: vt100::Screen) -> Vec<u8> {
+pub(crate) fn replay(mut screen: vt100::Screen) -> Vec<u8> {
     let (rows, cols) = dims(&screen);
     let mut out = Vec::new();
     if !screen.alternate_screen() {
@@ -2145,7 +2146,7 @@ fn spawn(
 // holder exits, so a `setsid` escapee delays the drop-master SIGHUP (22 §2.4)
 // and parks this thread; poll(2) with a stop flag if that ever matters.
 #[cfg(not(target_os = "ios"))]
-fn read_loop(mut r: Box<dyn Read + Send>, tx: &mpsc::Sender<Vec<u8>>) {
+pub(crate) fn read_loop(mut r: Box<dyn Read + Send>, tx: &mpsc::Sender<Vec<u8>>) {
     let mut buf = vec![0u8; READ_BUF];
     loop {
         match r.read(&mut buf) {
@@ -2253,7 +2254,7 @@ async fn linger(
 }
 
 #[cfg(not(target_os = "ios"))]
-fn exit_of(
+pub(crate) fn exit_of(
     r: Result<std::io::Result<portable_pty::ExitStatus>, tokio::task::JoinError>,
 ) -> JobExit {
     match r {
@@ -2803,6 +2804,17 @@ fn query(s: &[u8], cursor: (u16, u16)) -> Scan {
 /// The query responder (22 §4.4): replies go to the master, never the log.
 #[cfg(not(target_os = "ios"))]
 fn respond(pty: &PtyHandle, carry: &mut Vec<u8>, chunk: &[u8], cursor: (u16, u16)) {
+    respond_writer(&pty.writer, carry, chunk, cursor);
+}
+
+/// Answer terminal DSR/DA/CPR queries straight back to `writer`.
+#[cfg(not(target_os = "ios"))]
+pub(crate) fn respond_writer(
+    writer: &Mutex<Option<Box<dyn Write + Send>>>,
+    carry: &mut Vec<u8>,
+    chunk: &[u8],
+    cursor: (u16, u16),
+) {
     let data: Cow<[u8]> = if carry.is_empty() {
         Cow::Borrowed(chunk)
     } else {
@@ -2814,7 +2826,7 @@ fn respond(pty: &PtyHandle, carry: &mut Vec<u8>, chunk: &[u8], cursor: (u16, u16
         let at = i + off;
         match query(&data[at..], cursor) {
             Scan::Reply(len, reply) => {
-                if let Some(w) = lock(&pty.writer).as_mut() {
+                if let Some(w) = lock(writer).as_mut() {
                     let _ = w.write_all(&reply).and_then(|()| w.flush());
                 }
                 i = at + len;

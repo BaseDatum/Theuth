@@ -62,6 +62,7 @@ pub mod seat;
 pub mod secrets;
 #[cfg(not(target_os = "ios"))]
 pub mod shell;
+pub mod shell_registry;
 pub mod text;
 pub mod textref;
 

@@ -1306,23 +1306,32 @@ impl Cloud {
         }
     }
 
-    /// A shell on the node's engine (`engine_terminal` there), over the mesh: no SSH.
+    /// A standalone login shell on the node's engine (`engine_shell` there), over the mesh: no SSH,
+    /// no session, no job.
     pub async fn terminal(&self, name: &str) -> Result<TerminalOpen> {
         let id = self.peer_id(name).await?;
-        let v = self
+        let res = self
             .mesh
             .call(
                 &id,
-                "engine_terminal",
-                json!([null]),
+                "engine_shell",
+                json!([null, null, null, null]),
                 Duration::from_secs(30),
             )
-            .await?
-            .ok_or_else(|| CloudError(format!("{name} is not connected")))?;
+            .await;
+        let v = match res {
+            Ok(Some(v)) => v,
+            Ok(None) => return Err(CloudError(format!("{name} is not connected"))),
+            Err(CallError::NoMethod(_)) => {
+                return Err(CloudError(format!(
+                    "{name} is running an older version of theuth that does not support standalone terminals — update this node to open a terminal."
+                )));
+            }
+            Err(CallError::Failed(e)) => return Err(e),
+        };
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         Ok(TerminalOpen {
-            session: s("session").ok_or_else(|| CloudError("the node opened no session".into()))?,
-            job: s("job").ok_or_else(|| CloudError("the node opened no job".into()))?,
+            shell: s("shell").ok_or_else(|| CloudError("the node opened no shell".into()))?,
             engine: s("engine").unwrap_or(id),
         })
     }

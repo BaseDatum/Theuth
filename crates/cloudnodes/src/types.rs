@@ -372,14 +372,13 @@ pub struct OauthStart {
     pub url: String,
 }
 
-/// `cloud_terminal`: a PTY job on the node's engine; attach with `subscribe_pty(session, job)`.
+/// `cloud_terminal`: an in-memory login shell on the node's engine (no session, no job); attach
+/// with `subscribe_shell(shell, rows, cols, engine)`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TerminalOpen {
-    /// The owner root session the PTY job belongs to, on the node.
-    pub session: String,
-    /// The PTY job.
-    pub job: String,
-    /// The node's mesh endpoint id (where the PTY runs).
+    /// Shell id in the node engine's in-memory shell registry (default `"main"`).
+    pub shell: String,
+    /// The node's mesh endpoint id (where the shell runs).
     pub engine: String,
 }
 

@@ -2,6 +2,7 @@
 //! shared [`crate::engine::Cloud`] service; `cloud_create`, `cloud_restart`, `cloud_resize` and
 //! `cloud_update` return at once and report on `cloudnodes.events`.
 
+use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::Server;
@@ -93,8 +94,9 @@ pub trait CloudNodesApi {
         name: String,
         keep_volume: Option<bool>,
     ) -> RpcResult<Vec<String>>;
-    /// A shell on the node's engine over the mesh (no SSH); attach with `subscribe_pty`.
-    #[method(name = "cloud_terminal")]
+    /// A standalone login shell on the node's engine over the mesh (no SSH, no session, no job);
+    /// attach with `subscribe_shell`.
+    #[method(name = "cloud_terminal", with_extensions)]
     async fn cloud_terminal(&self, name: String) -> RpcResult<TerminalOpen>;
     /// The last `tail` lines of the node engine's log, read over the mesh.
     #[method(name = "cloud_logs")]
@@ -205,7 +207,8 @@ impl CloudNodesApiServer for Server {
             .map_err(err)
     }
 
-    async fn cloud_terminal(&self, name: String) -> RpcResult<TerminalOpen> {
+    async fn cloud_terminal(&self, ext: &Extensions, name: String) -> RpcResult<TerminalOpen> {
+        rpc_core::owner(ext)?;
         cloud().await?.terminal(&name).await.map_err(err)
     }
 

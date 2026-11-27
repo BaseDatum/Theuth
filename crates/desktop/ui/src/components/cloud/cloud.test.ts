@@ -6,7 +6,7 @@ import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { AlertDialog } from '@/components/ui/alert-dialog'
 import { CloudNodeWizard, specFromNode } from './CloudNodeWizard'
-import { CloudNodesSection, DestroyBody } from './CloudNodesSettings'
+import { CloudNodesSection, DestroyBody, dispatchTerminalOpen } from './CloudNodesSettings'
 import { Route as CloudNewRoute } from '@/routes/cloud.new'
 import { DESKTOP_NOTE, checkName, createLabel, defaultMemory, defaultName, desktopBlocked, destroySaving, etaText, fromPrice, localQuote, sizesOf, stageRows, statusOf, userOf } from './format'
 import { NodeDesktopView } from './NodeDesktop'
@@ -17,8 +17,16 @@ import type { CloudList, CloudNode, K8sInfo, ProviderInfo, Region, SizeList } fr
 import { peerSyncQueryKey } from '@/lib/peer-sync'
 import type { PeerSync } from '@/rpc/bindings/method.sessionsync.receiver'
 
+const mockOpenPopout = vi.fn(async (_t: unknown) => undefined)
+const mockCanPopout = vi.fn(() => true)
+const mockNavigate = vi.fn()
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
-vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<typeof Router>()), useNavigate: () => () => undefined }))
+vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<typeof Router>()), useNavigate: () => mockNavigate }))
+vi.mock('@/lib/popout', async (original) => ({
+  ...(await original<typeof import('@/lib/popout')>()),
+  canPopout: () => mockCanPopout(),
+  openPopout: (t: unknown) => mockOpenPopout(t),
+}))
 
 const regions = (rows: [string, string, string][]): Region[] => rows.map(([id, label, country]) => ({ id, label, country }))
 const DO_REGIONS = regions([['nyc3', 'New York', 'US'], ['sfo3', 'San Francisco', 'US'], ['tor1', 'Toronto', 'CA'], ['lon1', 'London', 'GB'], ['ams3', 'Amsterdam', 'NL'], ['fra1', 'Frankfurt', 'DE'], ['blr1', 'Bangalore', 'IN'], ['sgp1', 'Singapore', 'SG'], ['syd1', 'Sydney', 'AU']])
@@ -400,4 +408,24 @@ test('/cloud/new search params accept node for reopening provisioning status on 
   expect(validate({ node: 123 })).toEqual({})
 })
 
+
+test('Open terminal opens a node-terminal popout window (never a session route) on desktop, and falls back to a sheet on iOS', () => {
+  mockOpenPopout.mockClear()
+  mockNavigate.mockClear()
+  mockCanPopout.mockReturnValue(true)
+
+  const openSheet = vi.fn()
+  dispatchTerminalOpen({ shell: 'main', engine: 'peer-1' }, 'sky-do', openSheet)
+  expect(mockOpenPopout).toHaveBeenCalledWith({ kind: 'node-terminal', engine: 'peer-1', shell: 'main', name: 'sky-do' })
+  expect(openSheet).not.toHaveBeenCalled()
+  expect(mockNavigate).not.toHaveBeenCalled()
+
+  // iOS (`!canPopout()`): opens the sheet with the same shell target, still no session route.
+  mockOpenPopout.mockClear()
+  mockCanPopout.mockReturnValue(false)
+  dispatchTerminalOpen({ shell: 'main', engine: 'peer-1' }, 'sky-do', openSheet)
+  expect(mockOpenPopout).not.toHaveBeenCalled()
+  expect(openSheet).toHaveBeenCalledWith({ shell: 'main', engine: 'peer-1', name: 'sky-do' })
+  expect(mockNavigate).not.toHaveBeenCalled()
+})
 
