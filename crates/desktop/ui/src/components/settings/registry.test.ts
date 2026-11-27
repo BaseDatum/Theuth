@@ -59,10 +59,10 @@ test('Sky 2026-11-11: Tools opens on MCP (the servers theuth uses, at `tools`), 
   ])
 })
 
-test('Prompt holds Suffixes and System, and System declares the prompt section methods', () => {
+test('Prompt holds Prompts and System, and System declares the prompt section methods', () => {
   const prompt = CATEGORIES.find((category) => category.id === 'prompt')!
   expect(prompt.tabs.map((tab) => [tab.id, tab.label])).toEqual([
-    ['suffixes', 'Suffixes'],
+    ['prompts', 'Prompts'],
     ['system', 'System'],
   ])
   const system = prompt.tabs.find((tab) => tab.id === 'system')!
@@ -161,7 +161,7 @@ test('ratchet: every tab declares a scope, copyable, and only a machine tab copi
 test('the scope of every tab, as the settings recon placed it', () => {
   const by = (scope: string, copyable?: boolean) => tabs.filter((t) => t.scope === scope && (copyable === undefined || t.copyable === copyable)).map((t) => t.id)
   expect(by('device')).toEqual(['appearance', 'shortcuts'])
-  expect(by('everywhere')).toEqual(['suffixes', 'machines', 'devices', 'shared', 'contacts', 'shared-chats', 'shared-notes', 'sharing', 'domains', 'tools', 'browser'])
+  expect(by('everywhere')).toEqual(['prompts', 'machines', 'devices', 'shared', 'contacts', 'shared-chats', 'shared-notes', 'sharing', 'domains', 'tools', 'browser'])
   expect(by('hub')).toEqual(['dreaming', 'double', 'signal', 'slack', 'telegram'])
   expect(by('machine', true)).toEqual(['models', 'helpers', 'providers', 'loop', 'memory', 'approvals', 'advisor', 'autoresearch', 'system', 'voice-dictionary', 'templates', 'briefs', 'categories', 'builtins', 'search', 'plugins'])
   expect(by('machine', false)).toEqual(['app', 'external-secrets', 'harnesses', 'decision', 'voice', 'dictation', 'voice-key', 'voice-history', 'meetings', 'detection', 'live', 'speakers', 'calendar', 'upcoming', 'machine', 'messaging', 'vms', 'vault', 'mcp', 'computer'])

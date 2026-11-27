@@ -12,6 +12,7 @@ import {
   MessageSquarePlus,
   Paperclip,
   Plus,
+  Sparkles,
   Square,
   StickyNote,
   X } from 'lucide-react'
@@ -40,6 +41,14 @@ import { extFor, putAttachment, seedFile } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
 import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRef } from '@/lib/attach'
 import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-picker'
+import {
+  type InlineTrigger,
+  filterPromptTriggers,
+  filterSkillTriggers,
+  inlineTrigger,
+  insertExpansion,
+  stripTrigger,
+} from '@/lib/composer-triggers'
 import { attach, attachRef, drop, expand, type Pastes, reconcileShelved, type Shelf, tokenize, untoken } from '@/lib/pastes'
 import { pasteText } from '@/lib/paste-markdown'
 import { applyText } from '@/lib/text-edit'
@@ -74,6 +83,7 @@ import { useSessionField, useSessions } from '@/store/sessions'
 import { createNote } from '@/components/notes/create'
 import { useNotes } from '@/components/notes/useNotes'
 import { AttachPicker } from './AttachPicker'
+import { InlinePicker, type InlinePickerItem } from './InlinePicker'
 import { PillRow, SkillPicker, SkillsEntry } from './SkillPicker'
 import { SuffixList, SuffixScopes } from './SuffixPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
@@ -413,6 +423,7 @@ export function Composer({
   const canQuery1 = useQuerySupport(["list_models"])
   const canQuery1_2 = useQuerySupport(["vision_model"])
   const canQuery1_3 = useQuerySupport(["list_skills"])
+  const canUseSkills = useQuerySupport(["list_skills", "use_skill"])
   const canQuery1_4 = useQuerySupport(["list_sessions"])
   const api = useApi()
   const active = useEngines((s) => s.active)
@@ -461,9 +472,9 @@ export function Composer({
   const setPastes = (p: Pastes | ((held: Pastes) => Pastes)) => useDrafts.getState().setPastes(draftKey, p)
   /** Skills parked for the next send (`lib/drafts` `useSkillDraft`), in order: the send becomes `sendParked`. */
   const skills = useSkillDraft((s) => (session ? s.by[session] : undefined)) ?? NO_SKILLS
-  /** `+` › Skills: park the pick here; a new chat is created and opened the way `/skill:` does (`draftSkill`), the
+  /** `+` › Skills or `$`: park the pick here; a new chat is created and opened the way `/skill:` does (`draftSkill`), the
    * typed words and held chips moving with it. The menu closes; reopening it adds the next skill. */
-  const pickSkill = (name: string) => {
+  const pickSkill = (name: string, nextText?: string) => {
     setMenu(false)
     setSkillStep(false)
     if (session) {
@@ -472,6 +483,7 @@ export function Composer({
       return
     }
     const held = pastes
+    const text = nextText ?? (useDrafts.getState().by[draftKey] ?? EMPTY).text
     draftSkill(api, navigate, null, name, text, suffixChat).then(
       (id) => {
         useDrafts.getState().setPastes(id, held)
@@ -858,23 +870,68 @@ export function Composer({
   const [atWord, setAtWord] = useState<{ start: number; word: string } | null>(null)
   /** The `@` the user dismissed (Esc, no results): it stays as typed and does not reopen until edited past. */
   const atDismissed = useRef<number | null>(null)
-  /** Text changed: open the picker on a fresh `@word`, keep its query in step, close it when the word ends (a space). */
-  const changed = (next: string, caret: number) => {
+  /** The `$word` or `&word` under the caret while the inline skill/prompt picker is open. */
+  const [inlineWord, setInlineWord] = useState<InlineTrigger | null>(null)
+  /** The `$`/`&` trigger the user dismissed with Esc: stays literal until the caret moves past it. */
+  const inlineDismissed = useRef<{ kind: '$' | '&'; start: number } | null>(null)
+  /** Guard against re-triggering on our own programmatic inline edit. */
+  const suppressTrigger = useRef(false)
+  useEffect(() => {
+    setInlineWord(null)
+    inlineDismissed.current = null
+  }, [draftKey])
+  const inlineItems = useMemo<InlinePickerItem[]>(() => {
+    if (!inlineWord || picking !== null) return []
+    if (inlineWord.kind === '$') {
+      if (!canUseSkills) return []
+      return filterSkillTriggers(skillIndex ?? [], inlineWord.word).map((s) => ({
+        id: s.name,
+        label: s.name,
+        detail: s.description || undefined,
+        icon: Sparkles,
+        checked: skills.includes(s.name),
+      }))
+    }
+    return filterPromptTriggers(suffixes, inlineWord.word).map((p) => ({
+      id: p.id,
+      label: p.name,
+      detail: p.text.trim() || undefined,
+      icon: MessageSquarePlus,
+    }))
+  }, [inlineWord, picking, canUseSkills, skillIndex, skills, suffixes])
+  const inlineOpen = inlineWord !== null && picking === null && inlineItems.length > 0
+  /** Text changed: open the picker on a fresh `@`, `$`, or `&` word, keep its query in step, close when the word ends.
+   * Returns whether any quiet picker (`@`, `$`, `&`, or menu attach) is active on this keystroke so `pathChanged`
+   * runs with up-to-date state (e.g. `$HOME/` clears `$` before PATH-AC checks the same keystroke). */
+  const changed = (next: string, caret: number): boolean => {
     const t = atTrigger(next, caret)
+    const atActive = t !== null && atDismissed.current !== t.start
     if (!t) {
       atDismissed.current = null
       setAtWord(null)
       if (picking === 'at') setPicking(null)
-      return
+    } else if (atDismissed.current !== t.start) {
+      setAtWord(t)
+      if (picking === null) setPicking('at')
     }
-    if (atDismissed.current === t.start) return
-    setAtWord(t)
-    if (picking === null) setPicking('at')
+    const it = !atActive && picking !== 'menu' ? inlineTrigger(next, caret) : null
+    const inlineActive = it !== null && !(inlineDismissed.current?.kind === it.kind && inlineDismissed.current.start === it.start)
+    if (!it) {
+      inlineDismissed.current = null
+      setInlineWord(null)
+    } else if (inlineActive) {
+      setInlineWord(it)
+    }
+    return atActive || inlineActive || picking === 'menu'
   }
   const dismissAt = () => {
     if (atWord) atDismissed.current = atWord.start
     setPicking(null)
     setAtWord(null)
+  }
+  const dismissInline = () => {
+    if (inlineWord) inlineDismissed.current = { kind: inlineWord.kind, start: inlineWord.start }
+    setInlineWord(null)
   }
   /** The picker's result: chips for every picked reference, the `@word` gone (§7.8), focus back in the box (§7.7). */
   const picked = (refs: AttachRef[]) => {
@@ -883,6 +940,33 @@ export function Composer({
     if (picking === 'at' && atWord) edit(stripAt(text, atWord.start, atWord.word), atWord.start)
     setPicking(null)
     setAtWord(null)
+  }
+  /** `$` pick: strip the token and park the canonical skill; `&` pick: expand prompt text inline at the caret. */
+  const pickInline = (id: string) => {
+    if (!inlineWord) return
+    const trigger = inlineWord
+    setInlineWord(null)
+    inlineDismissed.current = null
+    if (trigger.kind === '$') {
+      const stripped = stripTrigger(text, trigger.start, trigger.word)
+      suppressTrigger.current = true
+      try {
+        edit(stripped, trigger.start)
+      } finally {
+        suppressTrigger.current = false
+      }
+      pickSkill(id, stripped)
+      return
+    }
+    const prompt = suffixes.find((p) => p.id === id)
+    if (!prompt) return
+    const next = insertExpansion(text, trigger.start, trigger.word, prompt.text)
+    suppressTrigger.current = true
+    try {
+      edit(next.text, next.caret)
+    } finally {
+      suppressTrigger.current = false
+    }
   }
 
   // PATH-AC: `path` is the open list; `pathAsk` the debounced request behind it. The engine running the session
@@ -903,10 +987,10 @@ export function Composer({
   const meta = useComposerMeta(!resolveSession && session ? session : null)
   // The row counts toward the box: the text's max height gives up its 16 px, so a full box is no taller than before.
   const textMax = meta ? (touch() ? 'max-h-[144px]' : 'max-h-[184px]') : touch() ? 'max-h-[160px]' : 'max-h-[200px]'
-  const pathChanged = (next: string, caret: number) => {
+  const pathChanged = (next: string, caret: number, quietActive = false) => {
     const t = pathTrigger(next, caret, pathWindows.current)
     const slashNow = /^\/\S*$/.test(next) && slashMenu(next, harnessMenu, pluginCommands).length > 0
-    if (!t || slashNow || picking !== null) {
+    if (!t || slashNow || quietActive) {
       pathDismissed.current = null
       setPath(null)
       setPathAsk(null)
@@ -945,7 +1029,7 @@ export function Composer({
     setPathAsk(item.is_dir ? { text: next.text, caret: next.caret, now: true } : null)
   }
   /** The list is for the draft as it stands: a send or a recall (programmatic text) leaves no stale rows. */
-  const pathOpen = path !== null && picking === null && pathTrigger(text, path.end, pathWindows.current)?.start === path.start
+  const pathOpen = path !== null && picking === null && !inlineOpen && pathTrigger(text, path.end, pathWindows.current)?.start === path.start
 
   // One file through `put_attachment` (31 §9), or `put_session_attachment` for a private tree, and an image's size read
   // alongside. The landed bytes seed the thumbnail cache, so the held strip shows them without fetching them back.
@@ -1024,6 +1108,8 @@ export function Composer({
     setPastes(NONE)
     shelf.current = new Map()
     setSelected(0)
+    setInlineWord(null)
+    inlineDismissed.current = null
   }
 
   const ctx: Ctx = {
@@ -1425,7 +1511,7 @@ export function Composer({
       putBuf(e.shiftKey ? dictationBuffer.redo(b) : dictationBuffer.undo(b))
       return
     }
-    if (slash && slashWord) {
+    if (slash && slashWord && picking === null && !inlineOpen) {
       const list = slashItems
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
@@ -1561,6 +1647,18 @@ export function Composer({
         onAttach={picked}
         onEmpty={dismissAt}
       />
+      <InlinePicker
+        open={inlineOpen}
+        label={inlineWord?.kind === '&' ? 'Prompts' : 'Skills'}
+        heading={inlineWord?.kind === '&' ? 'Prompts' : 'Skills'}
+        items={inlineItems}
+        anchor={box}
+        onPick={pickInline}
+        onClose={() => {
+          dismissInline()
+          ref.current?.focus()
+        }}
+      />
       {strip}
       <div
         ref={box}
@@ -1573,7 +1671,7 @@ export function Composer({
         {/* Row 0: `13%  ~$44`, a thin row inside the top of the box; the text starts under it at the full width. A voice
             note keeps the row's height, empty (no jump); a chat with no reading and no cost (or a draft) has no row. */}
         {meta && session && <ComposerMeta session={session} meta={meta} hidden={stage !== 'idle'} />}
-        {slash && <SlashList items={slashItems} selected={selected} onPick={pick} />}
+        {slash && picking === null && !inlineOpen && <SlashList items={slashItems} selected={selected} onPick={pick} />}
         {path && pathOpen && <PathList popup={path} mobile={isMobile} onPick={pickPath} />}
         <HeldStrip
           pastes={pastes}
@@ -1619,8 +1717,10 @@ export function Composer({
                     setText(e.target.value)
                     reconcileHeld(e.target.value)
                     setSelected(0)
-                    changed(e.target.value, e.target.selectionStart)
-                    pathChanged(e.target.value, e.target.selectionStart)
+                    if (!suppressTrigger.current) {
+                      const quietActive = changed(e.target.value, e.target.selectionStart)
+                      pathChanged(e.target.value, e.target.selectionStart, quietActive)
+                    }
                   }}
                   onSelect={(e) => {
                     const b = bufRef.current
@@ -1712,7 +1812,7 @@ export function Composer({
                   onManage={() => {
                     setMenu(false)
                     setSuffixStep(null)
-                    void navigate({ to: '/settings/$tab', params: { tab: 'suffixes' } })
+                    void navigate({ to: '/settings/$tab', params: { tab: 'prompts' } })
                   }}
                 />
               ) : suffixStep ? (
@@ -1772,7 +1872,7 @@ export function Composer({
                   </Button>
                   <SkillsEntry onOpen={() => setSkillStep(true)} />
                   <Button variant="ghost" className="w-full justify-start" onClick={() => setSuffixStep('list')}>
-                    <MessageSquarePlus /> Add prompt suffix
+                    <MessageSquarePlus /> Prompts
                     <ChevronRight className="ml-auto" />
                   </Button>
                 </>

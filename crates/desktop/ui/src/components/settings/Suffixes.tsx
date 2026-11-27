@@ -27,18 +27,18 @@ export function Suffixes(_: Partial<TabProps>) {
   }
   return (
     <Section
-      title="Prompt suffixes"
+      title="Prompts"
       actions={
         <Button variant="outline" size="sm" disabled={!!form} onClick={() => setForm({ id: null, name: '', text: '' })}>
-          New suffix
+          New prompt
         </Button>
       }
     >
       <p className="py-2 text-[13px] text-fg-secondary">
-        Text added to the end of a message, after a blank line. Turn one on in a chat from the composer’s + menu, for
-        one message or for every message until you turn it off.
+        Saved text you can insert into a message by typing &amp; in the composer. You can also attach one from the
+        composer’s + menu for this message or for every message until you turn it off.
       </p>
-      {list.length === 0 && !form && <Empty>No suffixes yet.</Empty>}
+      {list.length === 0 && !form && <Empty>No prompts yet.</Empty>}
       {list.map((s) =>
         form?.id === s.id ? null : (
           <Row key={s.id} label={s.name} description={s.text.length > 120 ? `${s.text.slice(0, 120)}…` : s.text}>
@@ -59,10 +59,10 @@ export function Suffixes(_: Partial<TabProps>) {
             save()
           }}
         >
-          <Input aria-label="Suffix name" placeholder="Name" value={form.name} autoFocus onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <Input aria-label="Prompt name" placeholder="Name" value={form.name} autoFocus onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <Textarea
-            aria-label="Suffix text"
-            placeholder="Text added to the end of the message"
+            aria-label="Prompt text"
+            placeholder="Prompt text"
             rows={5}
             value={form.text}
             onChange={(e) => setForm({ ...form, text: e.target.value })}

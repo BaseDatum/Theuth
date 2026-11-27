@@ -138,7 +138,7 @@ export function PillRow({
           <MessageSquarePlus className="size-3.5 shrink-0" />
           <span className="truncate font-medium">{suffix.name}</span>
           <span className="shrink-0 text-xs text-fg-tertiary">· {suffix.scope === 'once' ? 'this message' : 'every message'}</span>
-          <button type="button" aria-label="Turn off prompt suffix" onClick={onClearSuffix} className="ml-1 shrink-0 hover:text-foreground">
+          <button type="button" aria-label="Turn off prompt" onClick={onClearSuffix} className="ml-1 shrink-0 hover:text-foreground">
             <X className="size-3" />
           </button>
         </span>
