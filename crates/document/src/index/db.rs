@@ -73,6 +73,7 @@ pub struct State {
 pub struct Lexical {
     pub doc: String,
     pub block: String,
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     pub kind: String,
     pub heading: Option<String>,
     pub text: String,
