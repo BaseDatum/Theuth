@@ -80,7 +80,16 @@ impl MeshView for NoMesh {
     async fn remove(&self, _: &str) -> Result<()> {
         Err(CloudError("the mesh is not running on this engine".into()))
     }
-    async fn call(&self, _: &str, _: &str, _: Value, _: Duration) -> Result<Option<Value>> {
+    async fn self_id(&self) -> Result<String> {
+        Err(CloudError("the mesh is not running on this engine".into()))
+    }
+    async fn call(
+        &self,
+        _: &str,
+        _: &str,
+        _: Value,
+        _: Duration,
+    ) -> std::result::Result<Option<Value>, crate::mesh_view::CallError> {
         Ok(None)
     }
     async fn desktop(&self, _: &str) -> Result<DesktopOpen> {
@@ -120,6 +129,7 @@ fn pace() -> Pacing {
         oauth_every: Duration::ZERO,
         oauth_tries: 1,
         sizes_ttl: Duration::from_secs(3600),
+        vault_wait: Duration::from_millis(5),
     }
 }
 

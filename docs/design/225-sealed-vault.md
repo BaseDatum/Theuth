@@ -143,6 +143,12 @@ All but `init` call the running engine's RPC (the `cmd_67` transport); `methods`
   password is gone): the node is ready with *"Vault: device only — set a master password"*, whose
   action is this design's `PasswordForm` aimed at the node (`vault_add_password(node, pw)`).
 - **Another owner later:** `vault_add_device(nodeId, ownerId)`.
+- **Phone-only nodes** (224 §16.12): the creating engine is an iPhone's own, not a mesh member, so
+  there is no device unlock and no password through `cloud_create` (refused there). The app pairs
+  with the node over the relay and calls `vault_add_password(null, pw)` on it as its connected
+  engine; after a node restart the app's `SealedEngineCard` (in `UnsealHost`) offers
+  `vault_unseal(null, pw)`. When the iOS engine can join meshes, the phone joins the node's mesh
+  and device unlock applies as for any owner.
 
 ## 5. UI (`crates/desktop/ui/src/components/vault/`)
 

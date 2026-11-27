@@ -687,6 +687,7 @@ mod tests {
             relay: Arc::new(Relay::new(64)),
             web: None,
             oauth: oauth.clone(),
+            claims: Arc::default(),
         };
         let r = routes()
             .with_state(app)

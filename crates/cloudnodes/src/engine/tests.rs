@@ -922,6 +922,7 @@ async fn a_restart_loses_the_password_and_the_node_asks_for_one() {
         ticket_expires_ms: Some(now_ms() + TICKET_TTL_MS),
         created_ms: now_ms(),
         vault: Some(VaultProtection::Pending),
+        link: None,
     };
     r.cloud.records.put(&rec).unwrap();
     // One that was past the job when the engine stopped.
