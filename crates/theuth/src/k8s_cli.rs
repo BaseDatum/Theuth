@@ -136,6 +136,7 @@ pub async fn spec(
         volume_size: a.volume_size.clone(),
         image: image.unwrap_or_else(|| format!("{}:{}", k8s::IMAGE, platform::version::get())),
         deny_cidrs,
+        memory_gb: k8s::DEFAULT_MEMORY_GB,
     })
 }
 

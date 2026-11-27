@@ -74,7 +74,12 @@ pub struct K8sSpec {
     pub image: String,
     /// `Some`: add the NetworkPolicy with these CIDRs (plus [`METADATA_CIDR`]) denied.
     pub deny_cidrs: Option<Vec<String>>,
+    /// The container's memory request and limit, GiB ([`DEFAULT_MEMORY_GB`]).
+    pub memory_gb: u8,
 }
+
+/// A node's memory (request = limit): 2 GiB, the minimum the engine is sized for.
+pub const DEFAULT_MEMORY_GB: u8 = 2;
 
 /// A DNS-1123 label short enough that `theuth-<name>-workspace` stays one (≤ 40 characters).
 pub fn check_name(name: &str) -> anyhow::Result<()> {
@@ -126,11 +131,19 @@ pub fn kustomization(spec: &K8sSpec, ticket: bool) -> anyhow::Result<Value> {
     if let Some(sc) = &spec.storage_class {
         pvc.push(json!({"op": "add", "path": "/spec/storageClassName", "value": sc}));
     }
-    let env = json!([{
-        "op": "add",
-        "path": "/spec/template/spec/containers/0/env/-",
-        "value": {"name": "THEUTH_NODE_NAME", "value": spec.name},
-    }]);
+    if !(1..=64).contains(&spec.memory_gb) {
+        bail!("memory {} GiB: 1-64", spec.memory_gb);
+    }
+    let mem = format!("{}Gi", spec.memory_gb);
+    let env = json!([
+        {
+            "op": "add",
+            "path": "/spec/template/spec/containers/0/env/-",
+            "value": {"name": "THEUTH_NODE_NAME", "value": spec.name},
+        },
+        {"op": "replace", "path": "/spec/template/spec/containers/0/resources/requests/memory", "value": mem},
+        {"op": "replace", "path": "/spec/template/spec/containers/0/resources/limits/memory", "value": mem},
+    ]);
     let mut patches = vec![
         json!({"target": {"kind": "Deployment", "name": "engine"}, "patch": env.to_string()}),
         json!({"target": {"kind": "PersistentVolumeClaim"}, "patch": Value::from(pvc).to_string()}),
@@ -513,6 +526,7 @@ mod tests {
             volume_size: "20Gi".into(),
             image: "ghcr.io/basedatum/theuth/engine:2.31.2".into(),
             deny_cidrs: Some(vec!["10.42.0.0/16".into()]),
+            memory_gb: 4,
         }
     }
 
@@ -556,6 +570,7 @@ mod tests {
         let patches = k["patches"].to_string();
         assert!(patches.contains("169.254.169.254/32") && patches.contains("10.42.0.0/16"));
         assert!(patches.contains("storageClassName") && patches.contains("20Gi"));
+        assert!(patches.contains("resources/requests/memory") && patches.contains("4Gi"));
 
         let plain = K8sSpec {
             namespace: None,

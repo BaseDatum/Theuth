@@ -424,6 +424,15 @@ pub struct SetHubPref(pub HubPref);
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct PairingString;
 
+/// 224: `ask` → `Result<String, String>`: a key-less, single-use pairing ticket that lives
+/// `ttl_ms` (capped at an hour), for a cloud node. Separate from the Settings pairing string
+/// and opens no Nearby window.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct RemoteTicket {
+    /// How long the ticket works (ms).
+    pub ttl_ms: u64,
+}
+
 /// `ask` → `Result<Vec<EngineStats>, String>`: what every known engine
 /// advertises (this one included), for placement (`mesh_peers`, 67 §8).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -1077,6 +1086,14 @@ impl Message<PairingString> for Mesh {
         // 183 §6.8: `t mesh pair` also lets nearby machines find this one for the pair window.
         nearby::open_window(&self.ctx.net);
         Ok(s)
+    }
+}
+
+impl Message<RemoteTicket> for Mesh {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, m: RemoteTicket, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Ok(self.ctx.net.remote_ticket(m.ttl_ms).await)
     }
 }
 

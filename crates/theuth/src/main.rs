@@ -2149,6 +2149,7 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
         autoresearch::rpc_module(server.clone()),
         cells::rpc_module(server.clone()),
         share::rpc_module(server.clone()),
+        cloudnodes::rpc_module(server.clone()),
         sandbox::rpc_module(server),
     ]).expect("production RPC descriptors");
     let discovery = rpc_core::Discovery {
@@ -2301,6 +2302,9 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(webprofile::WebProfilePlugin),
         Box::new(tasks::TasksPlugin),
         Box::new(sandbox::SandboxPlugin),
+        // 224: cloud nodes (records, provider credentials in the vault, create jobs that pair
+        // over the mesh); after secrets and mesh.
+        Box::new(cloudnodes::CloudPlugin),
         // 210: public web sharing; after mesh (identity, endpoint, vault) and replica (shares table).
         Box::new(share::SharePlugin::engine()),
         // 216: external plugins; after roster (attention Source), before update.

@@ -94,6 +94,10 @@ cells.events#kernel_changed public
 cells.events#run_finished public
 cells.events#run_queued public
 cells.events#run_started public
+cloudnodes.events#CloudCredentialChanged public
+cloudnodes.events#CloudNodeChanged public
+cloudnodes.events#CloudNodeProgress public
+cloudnodes.events#CloudNodeRemoved public
 codeindex.events#CodeMapChanged public
 codeindex.events#CodeMapProgress public
 codeindex.events#CodeReconciled public
@@ -166,6 +170,8 @@ sandbox.events#Takeover public
 schedule.events#Changed public
 schedule.events#Fired public
 schedule.events#Skipped public
+secrets.events#ExternalUnlockRequested dropped
+secrets.events#ExternalUnlockResolved public
 secrets.events#SecretRequested dropped
 secrets.events#SecretResolved public
 secrets.events#SecretsChanged public

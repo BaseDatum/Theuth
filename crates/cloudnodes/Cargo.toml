@@ -1,0 +1,53 @@
+[package]
+name = "cloudnodes"
+version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Cloud nodes: an always-on theuth engine on the user's own DigitalOcean / Fly.io / Kubernetes account, created, joined to the mesh and managed from the app (design doc 224)"
+
+[dependencies]
+platform = { workspace = true }
+runtime = { workspace = true }
+wire = { workspace = true }
+rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
+jsonrpsee = { workspace = true }
+secrets = { workspace = true }
+mesh = { workspace = true }
+agent = { workspace = true }
+replica = { workspace = true }
+futures = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
+parking_lot = { workspace = true }
+# Kubernetes reuses `sandbox::k8s` (kubectl + the embedded kustomize base). Desktop only: an iOS
+# engine builds without it (sandbox links docker/ssh/VM stacks).
+sandbox = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tempfile = "3"
+
+[features]
+default = ["kubernetes"]
+kubernetes = ["dep:sandbox"]
+# `providers::http::testing::FakeTransport` for other crates' tests.
+testing = []
+
+[lints]
+workspace = true

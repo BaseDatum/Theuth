@@ -50,4 +50,5 @@
     pub use dreaming::DreamsApiClient;
     pub use autoresearch::ResearchApiClient;
     pub use ::sandbox::rpc::SandboxesApiClient;
+    pub use ::cloudnodes::rpc::CloudNodesApiClient;
     pub use ::share::rpc_share::ShareApiClient;

@@ -54,9 +54,9 @@ use tokio::sync::oneshot;
 pub use connections::{BackendFactory, ConnStore, RegisterBackendFactory};
 pub use external::{ExternalBackend, RegisterExternal, UnregisterExternal};
 pub use vault::{
-    KEEP, KeyInfo, KeyStore, MESH_PREFIX, OAUTH_PREFIX, PLUGINS_GRANTS_KEY, PLUGINS_PREFIX,
-    RetireHold, RotationPeer, RotationPhase, RotationState, SHARE_PREFIX, SecretInfo, SecretsList,
-    Vault, VersionInfo, WireKey,
+    CLOUD_PREFIX, KEEP, KeyInfo, KeyStore, MESH_PREFIX, OAUTH_PREFIX, PLUGINS_GRANTS_KEY,
+    PLUGINS_PREFIX, RetireHold, RotationPeer, RotationPhase, RotationState, SHARE_PREFIX,
+    SecretInfo, SecretsList, Vault, VersionInfo, WireKey,
 };
 
 /// How often the plugin looks for rows written by others (a peer's batch
