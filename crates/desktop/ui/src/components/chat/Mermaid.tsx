@@ -47,6 +47,8 @@ function config(t: DiagramTokens = diagramTokens()): MermaidConfig {
 let loading: Promise<Mermaid> | null = null
 /** Theme generation: bumps when `<html>`'s class changes so mounted diagrams re-render in the new palette. */
 let epoch = 0
+/** Background colour of the palette mermaid was initialised with for `epoch`. */
+let epochBg: string | undefined
 const listeners = new Set<() => void>()
 const subscribeEpoch = (cb: () => void) => {
   listeners.add(cb)
@@ -58,9 +60,13 @@ const subscribeEpoch = (cb: () => void) => {
 /** The one mermaid instance: fetched and initialised on first use, after the fonts so ELK measures the real font. */
 export function loadMermaid(): Promise<Mermaid> {
   return (loading ??= Promise.all([import('mermaid'), document.fonts.ready]).then(([m]) => {
-    m.default.initialize(config())
+    const initial = diagramTokens()
+    epochBg = initial.background
+    m.default.initialize(config(initial))
     subscribeDark(() => {
-      m.default.initialize(config())
+      const next = diagramTokens()
+      epochBg = next.background
+      m.default.initialize(config(next))
       epoch++
       for (const l of listeners) l()
     })
@@ -69,6 +75,7 @@ export function loadMermaid(): Promise<Mermaid> {
 }
 
 type Request = { chart: string; incomplete: boolean }
+type Rendered = { svg: string; background?: string }
 
 /** 135 §2: closed charts' svg by `fnv(chart):epoch`, so a remounted chart paints synchronously at its real height. */
 export const svgCache = new LruCache<string>(64)
@@ -79,18 +86,27 @@ let chain: Promise<unknown> = Promise.resolve()
 
 /**
  * `chart` rendered; under a snapshot whose appearance is not the app's (164 D3), between an `initialize` in the
- * snapshot frame's palette and one back in the app's.
+ * snapshot frame's palette and one back in the app's. Returns the background token of the palette it rendered under.
  */
-function render(m: Mermaid, chart: string, snap: SnapshotMode | null): Promise<{ svg: string }> {
+function render(m: Mermaid, chart: string, snap: SnapshotMode | null): Promise<{ svg: string; background: string; epoch: number }> {
   const id = `mermaid-${Math.random().toString(36).slice(2)}`
-  const swap = snap !== null && (snap.appearance === 'dark') !== document.documentElement.classList.contains('dark')
   const job = chain.then(async () => {
-    if (!swap) return m.render(id, chart)
-    m.initialize(config(diagramTokens(snap.root)))
+    const swap = snap !== null && (snap.appearance === 'dark') !== document.documentElement.classList.contains('dark')
+    if (!swap) {
+      const e = epoch
+      const background = epochBg ?? diagramTokens().background
+      const { svg } = await m.render(id, chart)
+      return { svg, background, epoch: e }
+    }
+    const tokens = diagramTokens(snap.root)
+    m.initialize(config(tokens))
     try {
-      return await m.render(id, chart)
+      const { svg } = await m.render(id, chart)
+      return { svg, background: tokens.background, epoch }
     } finally {
-      m.initialize(config())
+      const cur = diagramTokens()
+      epochBg = cur.background
+      m.initialize(config(cur))
     }
   })
   chain = job.catch(() => {})
@@ -98,12 +114,17 @@ function render(m: Mermaid, chart: string, snap: SnapshotMode | null): Promise<{
 }
 
 /**
- * The chart's svg (the last one that rendered, kept through a broken mid-stream state) and the closed fence's error.
- * A snapshot neither reads nor fills `svgCache`: its palette may not be the app's.
+ * The chart's svg (the last one that rendered, kept through a broken mid-stream state), the background token it was
+ * painted with, and the closed fence's error. A snapshot neither reads nor fills `svgCache`: its palette may not be the app's.
  */
-function useRender(chart: string, incomplete: boolean): { svg: string | null; error: string | null } {
+function useRender(chart: string, incomplete: boolean): { svg: string | null; background?: string; error: string | null } {
   const snap = useSnapshot()
-  const [svg, setSvg] = useState<string | null>(() => (snap ? null : (svgCache.get(svgKey(chart)) ?? null)))
+  const readCache = (c: string): Rendered | null => {
+    if (snap) return null
+    const hit = svgCache.get(svgKey(c))
+    return hit ? { svg: hit, background: epochBg ?? diagramTokens().background } : null
+  }
+  const [rendered, setRendered] = useState<Rendered | null>(() => readCache(chart))
   const [error, setError] = useState<string | null>(null)
   const theme = useSyncExternalStore(subscribeEpoch, () => epoch, () => epoch)
   const queue = useRef<RenderQueue<Request> | null>(null)
@@ -112,9 +133,9 @@ function useRender(chart: string, incomplete: boolean): { svg: string | null; er
       try {
         const m = await loadMermaid()
         const r = await render(m, req.chart, snap)
-        if (!req.incomplete && !snap) svgCache.set(svgKey(req.chart), r.svg)
+        if (!req.incomplete && !snap) svgCache.set(`${fnv(req.chart)}:${r.epoch}`, r.svg)
         if (!isCurrent()) return
-        setSvg(r.svg)
+        setRendered({ svg: r.svg, background: r.background })
         setError(null)
       } catch (e) {
         if (isCurrent() && !req.incomplete) setError(e instanceof Error ? e.message : String(e))
@@ -124,13 +145,13 @@ function useRender(chart: string, incomplete: boolean): { svg: string | null; er
     return () => q.dispose()
   }, [snap])
   useEffect(() => {
-    const hit = snap ? undefined : svgCache.get(svgKey(chart))
+    const hit = readCache(chart)
     if (hit) {
-      setSvg(hit)
+      setRendered(hit)
       setError(null)
     } else queue.current?.request({ chart, incomplete })
   }, [chart, incomplete, theme, snap])
-  return { svg, error }
+  return { svg: rendered?.svg ?? null, background: rendered?.background, error }
 }
 
 /**
@@ -140,7 +161,7 @@ function useRender(chart: string, incomplete: boolean): { svg: string | null; er
  * `fill` (the `.mmd` artifact view, 35 §3.2) sizes the block and the diagram to the parent instead of inline height.
  */
 export function MermaidFence({ code, isIncomplete, fill }: CustomRendererProps & { fill?: boolean }) {
-  const { svg, error } = useRender(code, isIncomplete)
+  const { svg, background, error } = useRender(code, isIncomplete)
   const ctx = useContext(FenceContext)
   const snap = useSnapshot()
   const enterRef = useRef<boolean | null>(null)
@@ -150,7 +171,7 @@ export function MermaidFence({ code, isIncomplete, fill }: CustomRendererProps &
         ? claimSurfaceEntrance(`mmd:${ctx.session ?? ''}:${ctx.entry ?? ''}:${svgKey(code)}`)
         : false
   }
-  const frame = <DiagramFrame svg={svg} name={diagramName(code)} label="mermaid" kind="mermaid-block" title={error ?? undefined} fill={fill} />
+  const frame = <DiagramFrame svg={svg} background={background} name={diagramName(code)} label="mermaid" kind="mermaid-block" title={error ?? undefined} fill={fill} />
   return (
     <FenceScope code={code}>
       {error && !svg ? (

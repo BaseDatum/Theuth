@@ -12,11 +12,12 @@ export function viewBox(attr: string | null | undefined): { x: number; y: number
 /**
  * `markup` as a standalone svg document: explicit `width`/`height` from the viewBox (mermaid emits `width="100%"`,
  * which an `<img>` decoder sizes to nothing), the inline `max-width` style dropped, `xmlns` present, and a
- * `background` rect behind everything (white for portability: dark-theme diagrams paste onto light pages).
+ * `background` rect behind everything. `background` must be the opaque page color of the palette the SVG was painted
+ * with — never assume white for a dark-theme SVG, whose pale ink relies on the dark page showing through.
  * The rect is the viewBox plus a unit on each side, so a non-zero origin or the rounding to whole pixels leaves no
  * transparent strip; the viewport clips the excess.
  */
-export function standalone(markup: string, background = '#fff'): { svg: string; width: number; height: number } {
+export function standalone(markup: string, background: string): { svg: string; width: number; height: number } {
   const open = /<svg\b[^>]*>/.exec(markup)?.[0]
   if (!open) throw new Error('no <svg> root')
   const box = viewBox(/\bviewBox="([^"]*)"/.exec(open)?.[1])

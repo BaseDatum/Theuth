@@ -7,7 +7,7 @@ import type { TileKind, TileRender } from '@/components/tiles/types'
 
 /** A diagram's fullscreen beside its chat. The pan/zoom view lives here, so the header's Reset view reaches it. */
 function DiagramTile({ tile, first, close }: TileRender) {
-  const { svg, name, label } = tile.props as DiagramProps
+  const { svg, name, label, background } = tile.props as DiagramProps
   const [view, setView] = useState(HOME)
   return (
     <TileFrame
@@ -17,12 +17,18 @@ function DiagramTile({ tile, first, close }: TileRender) {
       tab={`Diagram · ${label}`}
       meta={label}
       controls={
-        <Tools markup={() => svg} name={name} size="icon" extra={<Tool icon={RotateCcw} label="Reset view" onClick={() => setView(HOME)} size="icon" />} />
+        <Tools
+          markup={() => svg}
+          background={background}
+          name={name}
+          size="icon"
+          extra={<Tool icon={RotateCcw} label="Reset view" onClick={() => setView(HOME)} size="icon" />}
+        />
       }
       popOut={popOutTile(tile)}
       className="bg-background"
     >
-      <div className="absolute inset-0">
+      <div className="absolute inset-0" style={background ? { background } : undefined}>
         <Surface content={{ svg }} view={view} onView={setView} fill />
       </div>
     </TileFrame>
