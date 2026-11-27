@@ -5858,7 +5858,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "2.32.0"
+version = "2.32.1"
 dependencies = [
  "agent",
  "anstream",
@@ -18791,7 +18791,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relay"
-version = "2.32.0"
+version = "2.32.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -23590,7 +23590,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-ink"
-version = "2.32.0"
+version = "2.32.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -24021,7 +24021,7 @@ dependencies = [
 
 [[package]]
 name = "theuth"
-version = "2.32.0"
+version = "2.32.1"
 dependencies = [
  "a2a",
  "agent",
@@ -26089,6 +26089,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "wire",
+ "zip 9.2.2",
 ]
 
 [[package]]
@@ -28818,6 +28819,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e408c6cc4699dd017d53dc080cd51c2cea2b5354af57a1479bd265ed42911487"
 dependencies = [
  "crc32fast",
+ "flate2",
  "getrandom 0.4.3",
  "indexmap 2.14.2",
  "libc",
@@ -28825,6 +28827,7 @@ dependencies = [
  "nix 0.31.3",
  "typed-path 0.13.0",
  "windows-sys 0.61.2",
+ "zopfli",
 ]
 
 [[package]]
