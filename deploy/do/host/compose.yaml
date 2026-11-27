@@ -75,6 +75,10 @@ services:
       # Optional: the DigitalOcean OAuth app for cloud-node sign-in (design doc 224); empty → /oauth/digitalocean/* 503.
       THEUTH_DO_OAUTH_CLIENT_ID: ${THEUTH_DO_OAUTH_CLIENT_ID:-}
       THEUTH_DO_OAUTH_CLIENT_SECRET: ${THEUTH_DO_OAUTH_CLIENT_SECRET:-}
+      # The relay image is FROM scratch with no CA bundle; reqwest panics at start without one (v2.32.0).
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+    volumes:
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
     stop_grace_period: 20s
     networks:
       theuth: {ipv4_address: 172.30.0.12}
