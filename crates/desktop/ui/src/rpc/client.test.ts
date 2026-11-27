@@ -96,7 +96,7 @@ test('a loopback transport is not probed on foreground on desktop: its sockets d
   expect(t.resets).toBe(0)
 })
 
-test('on iOS, foreground still probes a loopback transport because iOS suspends local sockets in the background', async () => {
+test('on iOS, foreground still probes a loopback transport with a fast 1 s timeout because iOS suspends local sockets in the background', async () => {
   vi.stubGlobal('window', Object.assign(new EventTarget(), { __TAURI_INTERNALS__: {} }))
   vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15', maxTouchPoints: 5 })
   const t = new Fake(true)
@@ -105,8 +105,17 @@ test('on iOS, foreground still probes a loopback transport because iOS suspends 
   await vi.advanceTimersByTimeAsync(1)
   foreground()
   expect(requests(t).map((r) => r.method)).toEqual(['ping'])
-  await vi.advanceTimersByTimeAsync(5_000)
+  await vi.advanceTimersByTimeAsync(1_000)
   expect(t.resets).toBe(1)
+})
+
+test('updateLocalEndpoint skips backoff and redials immediately when the iOS engine rebinds its listener', () => {
+  const t = new Fake(true)
+  const c = new RpcClient(t)
+  t.state('open')
+  t.state('reconnecting')
+  c.updateLocalEndpoint('ws://127.0.0.1:55555', 'tok')
+  expect(t.connects).toBe(1)
 })
 
 test('a loopback transport still skips the backoff on foreground while reconnecting', () => {

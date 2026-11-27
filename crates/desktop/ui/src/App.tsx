@@ -46,6 +46,7 @@ import { installSpeechListeners } from '@/lib/speech'
 import * as talk from '@/lib/talk'
 import {
   connection,
+  onIosEngineReady,
   isIsland,
   isOverlay,
   isTauri,
@@ -811,7 +812,12 @@ function Main() {
       async () => {
         const c = await get()
         owned = c.owned
-        return RpcClient.local(c.url, c.token, CLIENT_TAG)
+        const client = RpcClient.local(c.url, c.token, CLIENT_TAG, isIos() ? connection : undefined)
+        if (isIos()) {
+          const off = onIosEngineReady((next) => client.updateLocalEndpoint(next.url, next.token))
+          ctl.signal.addEventListener('abort', () => void off.then((f) => f()), { once: true })
+        }
+        return client
       },
       ctl.signal,
     )

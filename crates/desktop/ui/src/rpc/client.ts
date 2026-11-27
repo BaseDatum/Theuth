@@ -3,7 +3,7 @@ import { SUBSCRIPTIONS, type MethodMap, type TopicEvent } from '@/rpc/bindings/c
 import { receiveStream } from '@/rpc/bindings/receive'
 import { capabilitiesSchema, disconnected, rawResult, ready, supports, UnsupportedCapability, validateDocument, verifyHash, type Capabilities, type Discovery, type DiscoveryDocument } from '@/rpc/discovery'
 import { readLegacy, readTopic } from '@/rpc/topics'
-import { type ConnState, type DropReason, LocalTransport, type Transport } from '@/rpc/transport'
+import { type ConnState, type DropReason, type LocalEndpoint, LocalTransport, type Transport } from '@/rpc/transport'
 
 export type { ConnState } from '@/rpc/transport'
 /** The pending backoff: `at` the redial time (`null` when none is pending), `attempt` the redials since the last open. */
@@ -28,6 +28,8 @@ export const isTransportError = (e: unknown): e is RpcError => e instanceof RpcE
 export const backoff = (attempt: number): number => Math.min(10_000, 500 * 2 ** attempt)
 /** A probe that saw no inbound frame for this long means the socket died while the phone slept. */
 const PROBE_MS = 5_000
+/** Loopback ping on iOS answers in ~1 ms when alive; detect a XNU-reclaimed socket in 1 s instead of 5 s. */
+const LOCAL_IOS_PROBE_MS = 1_000
 
 type Pending = { method: string; raw: boolean; sub?: Sub; resolve: (v: unknown) => void; reject: (e: Error) => void }
 type Sub = {
@@ -117,8 +119,36 @@ export class RpcClient {
   }
 
   /** The daemon's own socket (25 §2.1); `source` tags it (176 C3) and names it in `client_log`. */
-  static local(url: string, token: string, source?: string): RpcClient {
-    return new RpcClient(new LocalTransport(url, token, source), source)
+  static local(url: string, token: string, source?: string, resolveEndpoint?: () => Promise<LocalEndpoint>): RpcClient {
+    return new RpcClient(new LocalTransport(url, token, source, resolveEndpoint), source)
+  }
+
+  /**
+   * Apply a refreshed loopback endpoint pushed by the iOS engine after resume/rebind:
+   * - If the port changed while open, reset and reconnect to the new listener immediately.
+   * - If currently reconnecting/connecting, skip backoff and dial the confirmed listener right away.
+   * - If open on the same port, probe the socket so a dead pre-suspend WebSocket is replaced quickly.
+   */
+  updateLocalEndpoint(url: string, token: string): void {
+    if (this.#closed) return
+    const changed = this.#t instanceof LocalTransport ? this.#t.setEndpoint(url, token) : false
+    if (this.#state === 'reconnecting' || this.#state === 'connecting') {
+      this.#reset('foreground-reset')
+      clearTimeout(this.#timer)
+      this.#timer = undefined
+      this.#attempt = 0
+      this.#setRetry(null)
+      this.#t.connect().catch(() => this.#schedule())
+    } else if (changed && this.#state === 'open') {
+      this.#reset('foreground-reset')
+      clearTimeout(this.#timer)
+      this.#timer = undefined
+      this.#attempt = 0
+      this.#setRetry(null)
+      this.#t.connect().catch(() => this.#schedule())
+    } else if (this.#state === 'open') {
+      this.probe()
+    }
   }
 
   /** Open/authenticate the transport, then negotiate this generation's discovery readiness. */
@@ -334,10 +364,11 @@ export class RpcClient {
   probe(why: DropReason = 'probe-timeout'): void {
     if (this.#state !== 'open' || this.#probe) return
     const started = Date.now()
+    const timeoutMs = this.#t.loopback && container() === 'ios' ? LOCAL_IOS_PROBE_MS : PROBE_MS
     this.#probe = setTimeout(() => {
       this.#probe = undefined
       if (this.#heardAt < started) this.#reset(why)
-    }, PROBE_MS)
+    }, timeoutMs)
     void this.#request('ping', []).catch(() => undefined)
   }
 

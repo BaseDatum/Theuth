@@ -78,17 +78,38 @@ export type Drops = {
 export function watchDrops(conn: ConnectionApi): Drops {
   let downAt: number | undefined
   let outageTimer: number | undefined
-  const stop = () => {
+  const hasDoc = typeof document !== 'undefined' && typeof document.addEventListener === 'function'
+  const hasWin = typeof window !== 'undefined' && typeof window.addEventListener === 'function'
+  const visible = () => !hasDoc || document.visibilityState !== 'hidden'
+  const clearTimer = () => {
     clearTimeout(outageTimer)
     outageTimer = undefined
+  }
+  const armTimer = () => {
+    if (downAt === undefined || outageTimer !== undefined || !visible()) return
+    outageTimer = window.setTimeout(() => {
+      outageTimer = undefined
+      if (downAt !== undefined && visible()) conn.setState({ outage: true })
+    }, ROUTER_GRACE_MS)
+  }
+  const onVisibility = () => {
+    if (visible()) armTimer()
+    else clearTimer()
+  }
+  if (hasDoc) document.addEventListener('visibilitychange', onVisibility)
+  if (hasWin) window.addEventListener('pageshow', onVisibility)
+  const stop = () => {
+    clearTimer()
+    if (hasDoc) document.removeEventListener('visibilitychange', onVisibility)
+    if (hasWin) window.removeEventListener('pageshow', onVisibility)
   }
   return {
     next(s) {
       if (s === 'reconnecting' && downAt === undefined) {
         downAt = Date.now()
-        outageTimer = window.setTimeout(() => conn.setState({ outage: true }), ROUTER_GRACE_MS)
+        armTimer()
       } else if (s === 'open' && downAt !== undefined) {
-        stop()
+        clearTimer()
         conn.setState({ outage: false })
         const gap = Date.now() - downAt
         downAt = undefined

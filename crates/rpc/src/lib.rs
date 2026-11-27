@@ -88,11 +88,32 @@ pub async fn accept(
     let config = ServerConfig::builder().max_connections(4096).build();
     let services = ServerBuilder::new().set_config(config).to_service_builder();
     tokio::pin!(shutdown);
+    let mut consecutive_errors: u32 = 0;
     loop {
         let (sock, addr) = tokio::select! {
             r = listener.accept() => match r {
-                Ok(accepted) => accepted,
-                Err(e) => { tracing::debug!("rpc accept: {e}"); continue }
+                Ok(accepted) => {
+                    consecutive_errors = 0;
+                    accepted
+                }
+                Err(e) => {
+                    if is_fatal_accept_error(&e) {
+                        tracing::warn!("rpc accept fatal ({e}); exiting accept loop");
+                        break;
+                    }
+                    consecutive_errors = consecutive_errors.saturating_add(1);
+                    #[cfg(target_os = "ios")]
+                    if consecutive_errors >= 5 {
+                        tracing::warn!("rpc accept repeated errors ({e}); exiting defunct iOS accept loop");
+                        break;
+                    }
+                    tracing::debug!(consecutive_errors, "rpc accept: {e}");
+                    // Back off briefly so transient errors (e.g. EMFILE) or revoked mobile sockets never spin 100% CPU.
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => continue,
+                        _ = &mut shutdown => break,
+                    }
+                }
             },
             _ = &mut shutdown => break,
         };
@@ -133,6 +154,26 @@ pub async fn accept(
         });
     }
     let _ = server.stop();
+}
+
+/// Errors that mean the listening socket descriptor itself is closed or revoked (for example when
+/// iOS reclaims a listening socket on background suspension) and retrying `accept()` will never
+/// succeed.
+fn is_fatal_accept_error(err: &std::io::Error) -> bool {
+    if matches!(
+        err.kind(),
+        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotConnected
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    if let Some(code) = err.raw_os_error() {
+        // EBADF (9), EINVAL (22), ENOTSOCK (38 macOS/iOS, 88 Linux), ENOTCONN (57 macOS/iOS, 107 Linux)
+        if matches!(code, 9 | 22 | 38 | 57 | 88 | 107) {
+            return true;
+        }
+    }
+    false
 }
 
 

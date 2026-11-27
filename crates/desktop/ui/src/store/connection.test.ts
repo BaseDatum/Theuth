@@ -106,3 +106,36 @@ test('mirror: a window coming back re-reads the client, so a state it missed doe
   doc.dispatchEvent(new Event('visibilitychange'))
   expect(conn.getState().state).toBe('open')
 })
+
+test('watchDrops: time spent hidden (phone locked / app backgrounded) does not count toward ROUTER_GRACE_MS', async () => {
+  const doc = Object.assign(new EventTarget(), { visibilityState: 'hidden' })
+  vi.stubGlobal('document', doc)
+  vi.stubGlobal('window', Object.assign(new EventTarget(), { setTimeout, clearTimeout }))
+  const conn = createConnection()
+  conn.setState({ info: {} as Info, state: 'open' })
+  const drops = watchDrops(conn)
+
+  // Socket drops while phone is locked / app is backgrounded for 60 s.
+  conn.getState().setConnState('reconnecting')
+  drops.next('reconnecting')
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(routerMounted(conn.getState(), true, false)).toBe(true)
+
+  // Returning to foreground starts a fresh 10 s grace window; reconnecting promptly never flashes StartupScreen.
+  doc.visibilityState = 'visible'
+  doc.dispatchEvent(new Event('visibilitychange'))
+  await vi.advanceTimersByTimeAsync(500)
+  expect(routerMounted(conn.getState(), true, false)).toBe(true)
+  conn.getState().setConnState('open')
+  expect(drops.next('open')).toBe(60_500)
+  expect(routerMounted(conn.getState(), true, false)).toBe(true)
+
+  // If still down for 10 full visible seconds after foregrounding, outage triggers as expected.
+  conn.getState().setConnState('reconnecting')
+  drops.next('reconnecting')
+  await vi.advanceTimersByTimeAsync(9_999)
+  expect(routerMounted(conn.getState(), true, false)).toBe(true)
+  await vi.advanceTimersByTimeAsync(1)
+  expect(routerMounted(conn.getState(), true, false)).toBe(false)
+  drops.stop()
+})
