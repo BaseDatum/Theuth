@@ -102,14 +102,14 @@ function CategoryMark({ category, caps, names }: { category: SettingsCategory; c
  * category list (`/settings`), then the body. You leave by navigating or with Back: no close button, no Esc.
  * Per-machine Settings: device tabs leave their category for a "This <device>" group; every tab is tagged with its scope.
  */
-export function SettingsPage({ tab, focus }: { tab: string; focus: string | null }) {
+export function SettingsPage({ tab, focus, progress = null }: { tab: string; focus: string | null; progress?: string | null }) {
   // `beforeLoad` sent unknown and hidden ids elsewhere.
   const placed = placeOf(tab)
   if (!placed) return null
-  return <WithMachines tab={placed.tab}>{(machines) => <Page tab={tab} focus={focus} machines={machines} />}</WithMachines>
+  return <WithMachines tab={placed.tab}>{(machines) => <Page tab={tab} focus={focus} progress={progress} machines={machines} />}</WithMachines>
 }
 
-function Page({ tab, focus, machines }: { tab: string; focus: string | null; machines: SettingsMachines }) {
+function Page({ tab, focus, progress, machines }: { tab: string; focus: string | null; progress: string | null; machines: SettingsMachines }) {
   const discovery = useConnection(s => s.discovery)
   const mobile = useIsMobile()
   const navigate = useNavigate()
@@ -141,7 +141,7 @@ function Page({ tab, focus, machines }: { tab: string; focus: string | null; mac
           connectedOnly={current.scope === 'machine' && isRemote(target) && !aimed ? target.name : null}
         />
         <MachineScope machine={aimed}>
-          {current.required ? <Capability required={current.required}><current.Component focus={focus} /></Capability> : <current.Component focus={focus} />}
+          {current.required ? <Capability required={current.required}><current.Component focus={focus} progress={progress} /></Capability> : <current.Component focus={focus} progress={progress} />}
         </MachineScope>
       </div>
     </div>

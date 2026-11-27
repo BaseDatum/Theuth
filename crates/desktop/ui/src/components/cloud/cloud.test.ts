@@ -5,8 +5,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { AlertDialog } from '@/components/ui/alert-dialog'
-import { CloudNodeWizard } from './CloudNodeWizard'
+import { CloudNodeWizard, specFromNode } from './CloudNodeWizard'
 import { CloudNodesSection, DestroyBody } from './CloudNodesSettings'
+import { Route as CloudNewRoute } from '@/routes/cloud.new'
 import { DESKTOP_NOTE, checkName, createLabel, defaultMemory, defaultName, desktopBlocked, destroySaving, etaText, fromPrice, localQuote, sizesOf, stageRows, statusOf, userOf } from './format'
 import { NodeDesktopView } from './NodeDesktop'
 import { applyCloudEvent, cloudKeys } from './queries'
@@ -339,4 +340,64 @@ test('bootstrapping cloud node: statusOf, NodeRow, and CloudNodeWizard done step
   expect(doneReady).toContain('Ready')
   expect(doneReady).not.toContain('Syncing mesh history —')
 })
+
+test('reopen status: creating and failed rows expose View status; specFromNode preserves every configure field', () => {
+  const creating = node({ name: 'alpha-cloud', state: 'creating', stage: 'install', region: 'fra1', memory_gb: 8, desktop: false, version: null })
+  const failed = node({ name: 'beta-cloud', state: 'failed', stage: 'join', error: 'mesh join timed out', region: 'nyc3', memory_gb: 4, desktop: true, version: null })
+  const ready = node({ name: 'gamma-cloud', state: 'ready' })
+  const k8sNode = node({ name: 'k8s-cloud', provider: 'kubernetes', region: null, memory_gb: 4, desktop: false, k8s: { context: 'rwx-dev', namespace: 'theuth-nodes', storage_class: 'nfs-csi', create_namespace: false, deny_cluster_network: true } })
+
+  expect(specFromNode(creating)).toEqual({ provider: 'digitalocean', name: 'alpha-cloud', region: 'fra1', memory_gb: 8, volume_gb: 10, desktop: false, k8s: null })
+  expect(specFromNode(k8sNode)).toEqual({ provider: 'kubernetes', name: 'k8s-cloud', region: undefined, memory_gb: 4, volume_gb: 10, desktop: false, k8s: k8sNode.k8s })
+
+  const renderRows = (nodes: CloudNode[]) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+    qc.setQueryData(cloudKeys.providers, PROVIDERS)
+    qc.setQueryData<CloudList>(cloudKeys.list, { nodes, errors: [] })
+    return html(createElement(QueryClientProvider, { client: qc }, createElement(CloudNodesSection, {})))
+  }
+
+  expect(renderRows([creating])).toContain('View status')
+  expect(renderRows([failed])).toContain('View status')
+  expect(renderRows([ready])).not.toContain('View status')
+})
+
+test('reopened CloudNodeWizard handles creating, failed, already-ready, and disappeared nodes without trapping on a spinner', () => {
+  const renderProgress = (nodes: CloudNode[], target = 'sky-cloud') => {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+    qc.setQueryData(cloudKeys.providers, PROVIDERS)
+    qc.setQueryData<CloudList>(cloudKeys.list, { nodes, errors: [] })
+    return html(createElement(QueryClientProvider, { client: qc }, createElement(CloudNodeWizard, { entry: 'add-to-mesh', initial: { step: 'progress', node: target }, onClose: () => undefined })))
+  }
+
+  const creating = renderProgress([node({ state: 'creating', stage: 'install', version: null })])
+  expect(creating).toContain('Starting sky-cloud')
+  expect(creating).toContain('role="progressbar"')
+
+  const failed = renderProgress([node({ state: 'failed', stage: 'install', error: 'cloud-init timed out', version: null })])
+  expect(failed).toContain('sky-cloud could not start')
+  expect(failed).toContain('cloud-init timed out')
+  expect(failed).toContain('Destroy and retry')
+
+  // Already ready: immediately advances to DoneView instead of showing a spinner.
+  const alreadyReady = renderProgress([node({ state: 'ready' })])
+  expect(alreadyReady).toContain('sky-cloud is ready')
+  expect(alreadyReady).not.toContain('Starting sky-cloud')
+  expect(alreadyReady).not.toContain('role="progressbar"')
+
+  // Disappeared (destroyed elsewhere): explains and offers Close instead of spinning forever.
+  const missing = renderProgress([], 'ghost-cloud')
+  expect(missing).toContain('ghost-cloud is no longer here')
+  expect(missing).toContain('Close')
+  expect(missing).not.toContain('role="progressbar"')
+})
+
+test('/cloud/new search params accept node for reopening provisioning status on phone', () => {
+  const validate = CloudNewRoute.options.validateSearch as (s: Record<string, unknown>) => { entry?: string; node?: string }
+  expect(validate({ entry: 'add-to-mesh', node: 'sky-cloud' })).toEqual({ entry: 'add-to-mesh', node: 'sky-cloud' })
+  expect(validate({ node: 'sky-cloud' })).toEqual({ node: 'sky-cloud' })
+  expect(validate({ entry: 'add-to-mesh', node: '' })).toEqual({ entry: 'add-to-mesh' })
+  expect(validate({ node: 123 })).toEqual({})
+})
+
 

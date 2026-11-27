@@ -4,7 +4,7 @@
 
 import { useNavigate } from '@tanstack/react-router'
 import { Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Tag } from '@/components/costs/ui'
 import { Terminal } from '@/components/chat/TerminalViewer'
 import { Empty, Section, useAction } from '@/components/settings/shared'
@@ -29,7 +29,7 @@ import { notify } from '@/lib/notify'
 import { isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
 import { cn } from '@/lib/utils'
 import { Capability } from '@/rpc/capabilities'
-import { CloudNodeWizard } from './CloudNodeWizard'
+import { CloudNodeWizard, specFromNode } from './CloudNodeWizard'
 import { NodeDesktopPanel } from './NodeDesktop'
 import { type Tone, destroySaving, diskUsd, localQuote, sizesOf, statusOf, usd, vaultRow } from './format'
 import { CLOUD_REQUIRED, cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudLogs, useCloudProviders, useCloudSizes, useVaultSupport } from './queries'
@@ -38,13 +38,13 @@ import { type CloudNode, DEFAULT_VOLUME_GB, type NodeDesktop, type ProviderInfo,
 
 export const PROVIDER_LABEL: Record<ProviderKind, string> = { digitalocean: 'DigitalOcean', fly: 'Fly.io', kubernetes: 'Kubernetes', lightsail: 'AWS Lightsail' }
 
-export type CloudDialog = 'destroy' | 'resize' | 'logs' | 'terminal' | 'desktop' | 'vault'
+export type CloudDialog = 'destroy' | 'resize' | 'logs' | 'terminal' | 'desktop' | 'vault' | 'progress'
 
 /** The section, shown only on an engine with `cloudnodes` (the rest of the Machines tab never depends on it). */
-export function CloudNodesSettings({ initial }: { initial?: { dialog: CloudDialog; node: string; adding?: boolean } | { adding: true } }) {
+export function CloudNodesSettings({ initial, progress }: { initial?: { dialog: CloudDialog; node: string; adding?: boolean } | { adding: true }; progress?: string | null }) {
   return (
     <Capability required={CLOUD_REQUIRED} hide>
-      <CloudNodesSection initial={initial} />
+      <CloudNodesSection initial={initial} progress={progress} />
     </Capability>
   )
 }
@@ -65,7 +65,7 @@ function Status({ node, bootstrapping = false }: { node: CloudNode; bootstrappin
   return (
     <span
       data-syncing={s.tone === 'sync' ? '' : undefined}
-      title={s.hint ?? s.text}
+      title={node.error ?? s.hint ?? s.text}
       className={cn(
         'inline-flex min-w-0 items-center gap-1.5 truncate text-[13px] whitespace-nowrap',
         s.tone === 'bad' && 'text-danger',
@@ -84,7 +84,7 @@ export function placeChip(n: CloudNode): string {
   return `☁︎ ${PROVIDER_LABEL[n.provider]}${where ? ` · ${where}` : ''}`
 }
 
-export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialog; node?: string; adding?: boolean } }) {
+export function CloudNodesSection({ initial, progress }: { initial?: { dialog?: CloudDialog; node?: string; adding?: boolean }; progress?: string | null }) {
   useCloudEvents()
   const mobile = useIsMobile()
   const navigate = useNavigate()
@@ -93,15 +93,41 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
   const providers = useCloudProviders()
   const actions = useCloudActions()
   const [adding, setAdding] = useState(!!initial?.adding)
-  const [open, setOpen] = useState<{ dialog: CloudDialog; node: string } | null>(initial?.dialog && initial.node ? { dialog: initial.dialog, node: initial.node } : null)
+  const [open, setOpen] = useState<{ dialog: CloudDialog; node: string } | null>(
+    initial?.dialog && initial.node ? { dialog: initial.dialog, node: initial.node } : progress ? { dialog: 'progress', node: progress } : null,
+  )
   const [terminal, setTerminal] = useState<(TerminalOpen & { name: string }) | null>(null)
   const [desktop, setDesktop] = useState<(NodeDesktop & { name: string }) | null>(null)
+
+  useEffect(() => {
+    if (!progress) return
+    setAdding(false)
+    setOpen({ dialog: 'progress', node: progress })
+  }, [progress])
 
   const nodes = list.data?.nodes ?? []
   const target = open ? nodes.find((n) => n.name === open.node) : undefined
   const infoOf = (k: ProviderKind): ProviderInfo | undefined => providers.data?.find((p) => p.provider === k)
 
-  const add = () => (mobile ? void navigate({ to: '/cloud/new', search: { entry: 'add-to-mesh' } }) : setAdding(true))
+  const add = () => {
+    if (mobile) void navigate({ to: '/cloud/new', search: { entry: 'add-to-mesh' } })
+    else {
+      setOpen(null)
+      setAdding(true)
+    }
+  }
+  const openDialog = (dialog: CloudDialog, name: string) => {
+    if (dialog === 'progress' && mobile) {
+      void navigate({ to: '/cloud/new', search: { entry: 'add-to-mesh', node: name } })
+      return
+    }
+    setAdding(false)
+    setOpen({ dialog, node: name })
+  }
+  const closeProgress = () => {
+    setOpen(null)
+    if (progress) void navigate({ to: '/settings/$tab', params: { tab: 'machines' }, search: {}, replace: true })
+  }
 
   const openTerminal = (name: string) =>
     actions.terminal.mutate(name, {
@@ -151,7 +177,7 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
               onTerminal={() => openTerminal(n.name)}
               onDesktop={() => openDesktop(n.name)}
               opening={(actions.terminal.isPending && actions.terminal.variables === n.name) || (actions.desktop.isPending && actions.desktop.variables === n.name)}
-              onOpen={(dialog) => setOpen({ dialog, node: n.name })}
+              onOpen={(dialog) => openDialog(dialog, n.name)}
             />
           ))}
         </ul>
@@ -218,6 +244,15 @@ export function CloudNodesSection({ initial }: { initial?: { dialog?: CloudDialo
         />
       )}
       {open?.dialog === 'vault' && target?.peer_id && <VaultPasswordDialog name={target.name} engine={target.peer_id} onClose={() => setOpen(null)} />}
+      {open?.dialog === 'progress' && (
+        <CloudNodeWizard
+          key={open.node}
+          entry="desktop-dialog"
+          initial={{ step: 'progress', node: open.node, ...(target ? { spec: specFromNode(target) } : {}) }}
+          onClose={closeProgress}
+          onDone={closeProgress}
+        />
+      )}
       {adding && <CloudNodeWizard entry="desktop-dialog" onClose={() => setAdding(false)} onDone={() => setAdding(false)} />}
     </Section>
   )
@@ -243,11 +278,49 @@ export function NodeRow({
   onOpen: (d: CloudDialog) => void
 }) {
   const orphan = node.state === 'orphan'
+  const creating = node.state === 'creating'
+  const failed = node.state === 'failed'
   const live = node.state === 'ready'
-  const settled = live || node.state === 'failed' || node.state === 'volume_kept' || orphan
+  const settled = live || failed || node.state === 'volume_kept' || orphan
   const vault = vaultRow(node)
+  const menu = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon-sm" className="justify-self-end" aria-label={`${node.name} actions`}>
+          {opening ? <Loader2 className="animate-spin" /> : <MoreHorizontal />}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem disabled={!live} onSelect={onRestart}>
+          Restart
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!live || node.provider === 'kubernetes'} onSelect={() => onOpen('resize')}>
+          Resize…
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!live} onSelect={onUpdate}>
+          Update now
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem disabled={!live} onSelect={onTerminal}>
+          Open terminal
+        </DropdownMenuItem>
+        {node.desktop && (
+          <DropdownMenuItem disabled={!live} onSelect={onDesktop}>
+            View desktop
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem disabled={!live} onSelect={() => onOpen('logs')}>
+          View logs
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" disabled={!settled} onSelect={() => onOpen('destroy')}>
+          Destroy…
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
   return (
-    <li data-cloud-node={node.name} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border-subtle py-3 last:border-0 md:grid md:grid-cols-[1.5rem_minmax(0,1fr)_10.5rem_8rem_4.5rem_4.75rem] md:gap-x-3">
+    <li data-cloud-node={node.name} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border-subtle py-3 last:border-0 md:grid md:grid-cols-[1.5rem_minmax(0,1fr)_10.5rem_8rem_4.5rem_minmax(4.75rem,auto)] md:gap-x-3">
       <ProviderBadge kind={node.provider} className="size-6 text-[10px]" />
       <div className="flex min-w-0 flex-1 items-center gap-x-2">
         <span className="shrink-0 text-sm font-semibold">{node.name}</span>
@@ -263,41 +336,19 @@ export function NodeRow({
         <Button size="xs" variant="outline" className="justify-self-end text-danger" onClick={() => onOpen('destroy')}>
           Destroy…
         </Button>
+      ) : creating ? (
+        <Button size="xs" variant="outline" className="justify-self-end" onClick={() => onOpen('progress')}>
+          View status
+        </Button>
+      ) : failed ? (
+        <div className="flex items-center justify-end gap-1 justify-self-end">
+          <Button size="xs" variant="outline" onClick={() => onOpen('progress')}>
+            View status
+          </Button>
+          {menu}
+        </div>
       ) : (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" className="justify-self-end" aria-label={`${node.name} actions`}>
-              {opening ? <Loader2 className="animate-spin" /> : <MoreHorizontal />}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem disabled={!live} onSelect={onRestart}>
-              Restart
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled={!live || node.provider === 'kubernetes'} onSelect={() => onOpen('resize')}>
-              Resize…
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled={!live} onSelect={onUpdate}>
-              Update now
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem disabled={!live} onSelect={onTerminal}>
-              Open terminal
-            </DropdownMenuItem>
-            {node.desktop && (
-              <DropdownMenuItem disabled={!live} onSelect={onDesktop}>
-                View desktop
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuItem disabled={!live} onSelect={() => onOpen('logs')}>
-              View logs
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" disabled={!settled} onSelect={() => onOpen('destroy')}>
-              Destroy…
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        menu
       )}
       {vault && (
         <div data-vault={node.vault} className="flex w-full min-w-0 items-center gap-2 text-xs md:col-span-5 md:col-start-2">

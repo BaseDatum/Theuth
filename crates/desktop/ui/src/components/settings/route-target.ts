@@ -2,8 +2,8 @@ import { type LibraryRoute, movedTab } from '@/components/library/moved'
 import { movedSettingsTab } from '@/components/routines/helpers'
 import { MOVED_TABS, isTab, shownTab } from '@/components/settings/registry'
 
-/** `/settings/$tab`'s search: `focus` names a control the tab focuses (Memory: `model` | `spend`); `session` scopes MCP's (`tools`) per-chat rows, and `peer` comes only on legacy links to the per-chat rows. */
-export type SettingsSearch = { session?: string; peer?: string; focus?: string }
+/** `/settings/$tab`'s search: `focus` names a control the tab focuses (Memory: `model` | `spend`); `progress` names a cloud node whose status dialog Machines opens; `session` scopes MCP's (`tools`) per-chat rows, and `peer` comes only on legacy links to the per-chat rows. */
+export type SettingsSearch = { session?: string; peer?: string; focus?: string; progress?: string }
 
 /** What `/settings/<tab>` does: render the tab, or redirect (replacing the entry) to another page, a chat or a tab. */
 export type RouteTarget =

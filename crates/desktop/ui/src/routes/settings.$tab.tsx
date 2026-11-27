@@ -7,6 +7,7 @@ export const Route = createFileRoute('/settings/$tab')({
     ...(typeof s.session === 'string' && { session: s.session }),
     ...(typeof s.peer === 'string' && { peer: s.peer }),
     ...(typeof s.focus === 'string' && { focus: s.focus }),
+    ...(typeof s.progress === 'string' && s.progress.length > 0 && { progress: s.progress }),
   }),
   beforeLoad: ({ params, search }) => {
     const target = routeTarget(params.tab, search)
@@ -26,6 +27,6 @@ export const Route = createFileRoute('/settings/$tab')({
 
 function Settings() {
   const { tab } = Route.useParams()
-  const { focus } = Route.useSearch()
-  return <SettingsPage tab={tab} focus={focus ?? null} />
+  const { focus, progress } = Route.useSearch()
+  return <SettingsPage tab={tab} focus={focus ?? null} progress={progress ?? null} />
 }

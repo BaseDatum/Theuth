@@ -18,7 +18,7 @@ import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { usePhoneLink } from './phoneLink'
 import { checkName, defaultMemory, defaultName, desktopBlocked, fromPrice, localQuote, offered, progressPct, sizesOf, stageRows, userOf } from './format'
-import { cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudNode, useCloudProgress, useCloudProviders, useCloudSizes, useCredentialChanged, useK8sInfo, useVaultSupport } from './queries'
+import { cloudKeys, removeNode, useCloudActions, useCloudEvents, useCloudList, useCloudNode, useCloudProgress, useCloudProviders, useCloudSizes, useCredentialChanged, useK8sInfo, useVaultSupport } from './queries'
 import { nearestRegion } from './region'
 import {
   ChooseStep,
@@ -38,7 +38,7 @@ import {
   type WizardEntry,
   providerAction,
 } from './steps'
-import { DEFAULT_VOLUME_GB, type CloudNode, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type SizeList } from './types'
+import { DEFAULT_VOLUME_GB, type CloudList, type CloudNode, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type SizeList } from './types'
 
 export type { WizardEntry } from './steps'
 export type WizardStep = 'choose' | 'provider' | 'configure' | 'progress' | 'done'
@@ -53,6 +53,19 @@ export type WizardInitial = {
   advancedOpen?: boolean
   /** The vault field as typed (the fixture's screenshots). */
   vault?: { password: string; confirm: string }
+}
+
+/** Seed wizard configure fields from an existing node so "Destroy and retry" keeps the original choices. */
+export function specFromNode(n: CloudNode): NonNullable<WizardInitial['spec']> {
+  return {
+    provider: n.provider,
+    name: n.name,
+    region: n.region ?? undefined,
+    memory_gb: n.memory_gb ?? undefined,
+    volume_gb: n.volume_gb ?? undefined,
+    desktop: n.desktop,
+    k8s: n.k8s,
+  }
 }
 
 const DEFAULT_NAMESPACE = 'theuth-nodes'
@@ -114,7 +127,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
 
   const desktopOn = !!kind && desktopPick && !desktopBlocked(kind)
   const memory = memoryPick ?? defaultMemory(desktopOn)
-  const spec: NodeSpec | null = kind ? { provider: kind, name: nodeName, region: isK8s ? '' : region, memory_gb: memory, volume_gb: DEFAULT_VOLUME_GB, k8s: isK8s ? k8sOpts : null, desktop: desktopOn } : null
+  const spec: NodeSpec | null = kind ? { provider: kind, name: nodeName, region: isK8s ? '' : region, memory_gb: memory, volume_gb: initial?.spec?.volume_gb ?? DEFAULT_VOLUME_GB, k8s: isK8s ? k8sOpts : null, desktop: desktopOn } : null
   // Live sizes and prices for the chosen provider and region (needs its credential; Kubernetes needs none).
   const sizesQ = useCloudSizes(kind, isK8s ? null : region || null, !!provider && (provider.connected || isK8s))
   const sizes = sizesOf(sizesQ.data) ?? (sizesQ.isError ? provider?.sizes.map((s) => ({ ...s, monthly_usd: null })) : undefined)
@@ -122,6 +135,20 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const nameError = checkName(nodeName) ?? (taken.includes(nodeName) && nodeName !== created ? `${nodeName} is taken` : null)
 
   const node = useCloudNode(created)
+  // Reopened via URL (phone `/cloud/new?node=…` or `?progress=…` before `cloud_list` landed): seed configure fields
+  // once the node loads so "Destroy and retry" on a failed node keeps the original choices.
+  const [seeded, setSeeded] = useState(!!initial?.spec)
+  useEffect(() => {
+    if (seeded || !initial?.node || !node) return
+    setSeeded(true)
+    setPicked(node.provider)
+    setName(node.name)
+    if (node.region) setRegions((r) => ({ ...r, [node.provider]: node.region! }))
+    if (node.memory_gb != null) setMemory(node.memory_gb)
+    setDesktop(node.desktop)
+    setK8s(node.k8s)
+  }, [seeded, initial?.node, node])
+
   // The connected engine is this iPhone/iPad's own: not a mesh member, so its nodes form their own mesh (224 §16.12),
   // and the system browser does not open from the app (the in-app sheet, `ios_auth`, does).
   const active = useEngines((s) => s.active)
@@ -136,6 +163,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   }, [phoneLink.state.phase])
   const progress = useCloudProgress(created)
   const rows = stageRows({ node, progress, version: node?.version ?? info?.version ?? null })
+  const effectiveStep: WizardStep = step === 'progress' && node?.state === 'ready' ? 'done' : step
   useEffect(() => {
     if (step === 'progress' && node?.state === 'ready') setStep('done')
   }, [step, node?.state])
@@ -221,11 +249,13 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
 
   const retry = () => {
     if (!created) return
+    const target = created
     actions.destroy.mutate(
-      { name: created, keep: false },
+      { name: target, keep: false },
       {
         onSuccess: () => {
-          qc.removeQueries({ queryKey: cloudKeys.progress(created) })
+          qc.setQueryData<CloudList>(cloudKeys.list, (l) => removeNode(l, target))
+          qc.removeQueries({ queryKey: cloudKeys.progress(target) })
           setCreated(null)
           setStep('configure')
         },
@@ -241,8 +271,8 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   }
 
   const back = () => {
-    if (step === 'configure') setStep('provider')
-    else if (step === 'provider' && entry === 'first-run') setStep('choose')
+    if (effectiveStep === 'configure') setStep('provider')
+    else if (effectiveStep === 'provider' && entry === 'first-run') setStep('choose')
     else onClose()
   }
 
@@ -288,12 +318,45 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     </>
   )
 
-  const progressView = created && (
-    <>
-      <ProgressView name={created} rows={rows} pct={progressPct(rows, progress)} eta={progress?.eta_secs ?? null} error={node?.error ?? null} retrying={actions.destroy.isPending} phone={phone} onRetry={retry} />
-      {node?.link && !node.error && <p className="text-[13px] text-fg-tertiary">{LEAVE_HINT}</p>}
-    </>
+  const unavailableProgress = (heading: string, detail?: string) => (
+    <div data-cloud-missing={created ?? undefined} className="flex flex-1 flex-col gap-2">
+      <h2 className="mt-1 text-[19px] leading-tight font-semibold">{heading}</h2>
+      {detail && <p className="text-sm text-fg-secondary">{detail}</p>}
+      {phone && (
+        <div className="mt-auto pt-4">
+          <Button className="h-11 w-full rounded-[10px] text-[15px] font-semibold" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      )}
+    </div>
   )
+
+  let progressView = null
+  if (created) {
+    if (!node && list.isPending) {
+      progressView = <p className="text-sm text-fg-tertiary">Loading {created}…</p>
+    } else if (!node && list.isError) {
+      progressView = unavailableProgress(`Could not load ${created}`, list.error.message)
+    } else if (!node) {
+      progressView = unavailableProgress(`${created} is no longer here`, 'This node was removed or destroyed elsewhere.')
+    } else if (node.state === 'volume_kept') {
+      progressView = unavailableProgress(`${created} was destroyed`, 'Its disk was kept; you can manage it in Settings › Machines.')
+    } else if (node.state === 'destroying') {
+      progressView = unavailableProgress(`Destroying ${created}…`, 'This node is being removed.')
+    } else if (node.state === 'orphan') {
+      progressView = unavailableProgress(`${created} is not on this engine`, 'Manage or destroy it from Settings › Machines.')
+    } else if (node.state === 'busy') {
+      progressView = unavailableProgress(`${created} is busy`, 'Check Settings › Machines for its current status.')
+    } else {
+      progressView = (
+        <>
+          <ProgressView name={created} rows={rows} pct={progressPct(rows, progress)} eta={progress?.eta_secs ?? null} error={node.error ?? null} retrying={actions.destroy.isPending} phone={phone} onRetry={retry} />
+          {node.link && !node.error && <p className="text-[13px] text-fg-tertiary">{LEAVE_HINT}</p>}
+        </>
+      )
+    }
+  }
   const linkState = phoneLink.state
   const nodePeerId = node?.peer_id ?? node?.link?.engine ?? null
   const nodeBootstrapping = !!nodePeerId && isPeerBootstrapping(byPeer.get(nodePeerId))
@@ -322,9 +385,9 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
 
   if (phone) {
     const first: WizardStep = entry === 'first-run' ? 'choose' : 'provider'
-    const canBack = step === 'configure' || (step === 'provider' && first === 'choose')
+    const canBack = effectiveStep === 'configure' || (effectiveStep === 'provider' && first === 'choose')
     let body
-    if (step === 'choose')
+    if (effectiveStep === 'choose')
       body = (
         <ChooseStep
           fromPrice={fromPrice(providersQ.data ?? [], true, Object.fromEntries(qc.getQueriesData<SizeList>({ queryKey: ['cloud', 'sizes'] }).flatMap(([key, data]) => (data ? [[key[2], data]] : []))))}
@@ -333,7 +396,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           onContinue={() => (choice === 'cloud' ? setStep('provider') : onDone ? onDone(null) : onClose())}
         />
       )
-    else if (step === 'provider')
+    else if (effectiveStep === 'provider')
       body = loading ?? (
         <PhoneProviderStep
           providers={providers}
@@ -347,8 +410,8 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           onNext={next}
         />
       )
-    else if (step === 'configure') body = loading ?? configure
-    else if (step === 'progress') body = progressView
+    else if (effectiveStep === 'configure') body = loading ?? configure
+    else if (effectiveStep === 'progress') body = progressView
     else body = doneView
     return (
       <div data-cloud-wizard={entry} className="flex min-h-full flex-col bg-background px-4 pt-[calc(var(--safe-top)+8px)] pb-[calc(var(--safe-bottom)+16px)] text-foreground">
@@ -360,7 +423,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           ) : (
             <span />
           )}
-          {step !== 'done' && (
+          {(effectiveStep !== 'done' || !!initial?.node) && (
             <Button variant="ghost" size="icon-sm" aria-label="Close" className="-mr-2" onClick={onClose}>
               <X className="size-5" />
             </Button>
@@ -372,9 +435,9 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   }
 
   // Desktop: the rail, then one pane per step.
-  const rail: RailStep = step === 'progress' || step === 'done' ? 'create' : step === 'configure' ? 'configure' : 'provider'
+  const rail: RailStep = effectiveStep === 'progress' || effectiveStep === 'done' ? 'create' : effectiveStep === 'configure' ? 'configure' : 'provider'
   let pane
-  if (step === 'provider' || step === 'choose')
+  if (effectiveStep === 'provider' || effectiveStep === 'choose')
     pane = loading ?? (
       <>
         <ProviderCards providers={providers} phone={false} grid selected={kind} k8sContexts={k8sInfo.data?.contexts.length ?? null} onSelect={select} onUse={(p, id) => actions.importCredential.mutate({ provider: p.provider, id })} using={actions.importCredential.isPending ? (actions.importCredential.variables?.provider ?? null) : null} />
@@ -400,29 +463,33 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
         )}
       </>
     )
-  else if (step === 'configure')
+  else if (effectiveStep === 'configure')
     pane = loading ?? (
       <>
         <ProviderCards providers={providers.filter((p) => p.available && (p.connected || p.provider === kind))} phone={false} grid selected={kind} k8sContexts={k8sInfo.data?.contexts.length ?? null} onSelect={select} />
         {configure}
       </>
     )
-  else if (step === 'progress')
+  else if (effectiveStep === 'progress')
     pane = (
       <>
         {progressView}
-        <DesktopFooter left="Closing this keeps the node starting; Settings › Machines shows it." action="Close" onAction={onClose} />
+        <DesktopFooter left={node?.state === 'creating' ? 'Closing this keeps the node starting; Settings › Machines shows it.' : null} action="Close" onAction={onClose} />
       </>
     )
   else pane = <div className="mx-auto flex w-full max-w-sm flex-1 flex-col gap-2.5">{doneView}</div>
+
+  const reopened = !!initial?.node && (effectiveStep === 'progress' || effectiveStep === 'done')
+  const dialogTitle = reopened ? (created ?? initial.node) : 'New cloud node'
+  const dialogDesc = reopened ? `Provisioning status for ${created ?? initial.node}.` : 'Create an always-on theuth node on your own cloud account.'
 
   // The dialog is the wizard's own: mounting the desktop entry opens it, closing it calls `onClose`.
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-[980px]">
-        <DialogDescription className="sr-only">Create an always-on theuth node on your own cloud account.</DialogDescription>
+        <DialogDescription className="sr-only">{dialogDesc}</DialogDescription>
         <div data-cloud-wizard={entry} className="grid min-h-[460px] grid-cols-[200px_1fr] text-foreground">
-          <Rail at={rail} title={<DialogTitle className="text-sm font-semibold">New cloud node</DialogTitle>} />
+          <Rail at={rail} title={<DialogTitle className="text-sm font-semibold">{dialogTitle}</DialogTitle>} />
           <main className="flex min-w-0 flex-col gap-3 px-6 pt-12 pb-5">{pane}</main>
         </div>
       </DialogContent>

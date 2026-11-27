@@ -2,26 +2,18 @@
 // lives in the `['cloud', 'list']` cache and is patched in place (`CloudNodeChanged` upserts, `CloudNodeRemoved`
 // deletes); `CloudNodeProgress` folds into a per-node progress entry (stage, pct, eta, lines) the wizard's step ④ reads.
 
-import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { useAction } from '@/components/settings/shared'
-import { notify } from '@/lib/notify'
 import { useApi } from '@/lib/rpc'
 import { useQuerySupport, useSupported } from '@/rpc/capabilities'
 import type { Requirements } from '@/rpc/discovery'
 import { on } from '@/store/sessions'
-import { type CloudProgress, foldProgress } from './format'
+import { applyCloudEvent, cloudKeys, removeNode, subscribeCloudEvents, upsertNode } from './events'
+import type { CloudProgress } from './format'
 import type { CloudEvent, CloudList, CloudNode, K8sInfo, NodeDesktop, NodeLogs, NodeSpec, ProviderInfo, ProviderKind, SizeList, TerminalOpen } from './types'
 
-export const cloudKeys = {
-  all: ['cloud'] as const,
-  list: ['cloud', 'list'] as const,
-  providers: ['cloud', 'providers'] as const,
-  sizes: (provider: ProviderKind | null, region: string | null) => ['cloud', 'sizes', provider, region] as const,
-  k8s: (context: string | null) => ['cloud', 'k8s', context] as const,
-  logs: (name: string) => ['cloud', 'logs', name] as const,
-  progress: (name: string) => ['cloud', 'progress', name] as const,
-}
+export { applyCloudEvent, cloudKeys, removeNode, subscribeCloudEvents, upsertNode }
 
 /** What the cloud section needs of the engine; an engine without `cloudnodes` hides it (the Machines tab stays). */
 export const CLOUD_REQUIRED = {
@@ -44,72 +36,12 @@ export function useVaultSupport(): boolean {
   return useSupported(VAULT_REQUIRED)
 }
 
-type Changed = Extract<CloudEvent, { type: 'CloudNodeChanged' }>
-type Progress = Extract<CloudEvent, { type: 'CloudNodeProgress' }>
-type Removed = Extract<CloudEvent, { type: 'CloudNodeRemoved' }>
 type Credential = Extract<CloudEvent, { type: 'CloudCredentialChanged' }>
 
-export function upsertNode(list: CloudList | undefined, node: CloudNode): CloudList {
-  const nodes = list?.nodes ?? []
-  return { errors: list?.errors ?? [], nodes: nodes.some((n) => n.name === node.name) ? nodes.map((n) => (n.name === node.name ? node : n)) : [...nodes, node] }
-}
-
-export function removeNode(list: CloudList | undefined, name: string): CloudList {
-  return { errors: list?.errors ?? [], nodes: (list?.nodes ?? []).filter((n) => n.name !== name) }
-}
-
-/** Fold one `cloudnodes.events` event into the caches; a create that finishes or fails says so in the status bar. */
-export function applyCloudEvent(qc: QueryClient, e: CloudEvent): void {
-  switch (e.type) {
-    case 'CloudNodeChanged': {
-      const before = qc.getQueryData<CloudList>(cloudKeys.list)?.nodes.find((n) => n.name === e.node.name)
-      // The event never carries a price (only `cloud_list` / `cloud_status` ask the provider): keep the row's.
-      const node = e.node.monthly_usd === null && before ? { ...e.node, monthly_usd: before.monthly_usd } : e.node
-      qc.setQueryData<CloudList>(cloudKeys.list, (list) => upsertNode(list, node))
-      if (before?.state === 'creating' && e.node.state === 'ready') notify.success(`${e.node.name} is ready`, { id: `cloud-${e.node.name}` })
-      if (before?.state === 'creating' && e.node.state === 'failed') notify.error(`${e.node.name} could not be created`, { id: `cloud-${e.node.name}`, description: e.node.error ?? undefined })
-      return
-    }
-    case 'CloudNodeRemoved':
-      qc.setQueryData<CloudList>(cloudKeys.list, (list) => removeNode(list, e.name))
-      qc.removeQueries({ queryKey: cloudKeys.progress(e.name) })
-      return
-    case 'CloudNodeProgress':
-      qc.setQueryData<CloudProgress>(cloudKeys.progress(e.name), (p) => foldProgress(p, e))
-      return
-    case 'CloudCredentialChanged':
-      void qc.invalidateQueries({ queryKey: cloudKeys.providers })
-      return
-  }
-}
-
-/** One subscription per QueryClient however many cloud views are mounted (a progress line must fold once). */
-const subscribed = new WeakMap<QueryClient, { count: number; off: () => void }>()
-
-/** Keep the caches following `cloudnodes.events` while any cloud view is mounted. */
+/** Keep the caches following `cloudnodes.events` while any cloud view is mounted (ref-counted with `useInvalidateOn`). */
 export function useCloudEvents(): void {
   const qc = useQueryClient()
-  useEffect(() => {
-    const held = subscribed.get(qc)
-    if (held) held.count++
-    else {
-      const offs = [
-        on('cloudnodes.events@1', 'CloudNodeChanged', (e: Changed) => applyCloudEvent(qc, e)),
-        on('cloudnodes.events@1', 'CloudNodeProgress', (e: Progress) => applyCloudEvent(qc, e)),
-        on('cloudnodes.events@1', 'CloudNodeRemoved', (e: Removed) => applyCloudEvent(qc, e)),
-        on('cloudnodes.events@1', 'CloudCredentialChanged', (e: Credential) => applyCloudEvent(qc, e)),
-      ]
-      subscribed.set(qc, { count: 1, off: () => offs.forEach((off) => off()) })
-    }
-    return () => {
-      const s = subscribed.get(qc)
-      if (!s) return
-      if (--s.count === 0) {
-        s.off()
-        subscribed.delete(qc)
-      }
-    }
-  }, [qc])
+  useEffect(() => subscribeCloudEvents(qc), [qc])
 }
 
 /** `CloudCredentialChanged` for one provider (the OAuth wait); `cb` sees each change. */

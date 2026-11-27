@@ -85,7 +85,7 @@ export function MachineTab() {
  * 188 Settings › Network › Machines (183 §6.7–§6.8): the machines in this mesh, Nearby with Pair…, the pairing string
  * and SSH nodes. The engine's Nearby window is open while this tab is mounted.
  */
-export function MachinesTab() {
+export function MachinesTab({ progress }: { focus?: string | null; progress?: string | null } = {}) {
   const api = useApi()
   const status = useMesh()
   const pairing = usePairFlow()
@@ -107,7 +107,7 @@ export function MachinesTab() {
   return (
     <>
       <Machines s={s} onUnpair={setUnpair} />
-      <CloudNodesSettings />
+      <CloudNodesSettings progress={progress} />
       <NearbyList on={s.nearby} onPair={pairing.start} />
       <PairString />
       <OverSsh />
