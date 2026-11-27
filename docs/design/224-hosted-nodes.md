@@ -369,10 +369,16 @@ exist; `create(dry_run: false)` refuses.
 | AWS Lightsail (coming soon) | `small_3_0` eu-west-2 | $12.00 | $1.00 | **$13.00** |
 | Kubernetes | 2Gi request | the cluster's | the class's | — |
 
-2 GB is the owner's minimum (§ top); 4 GB (DO `s-2vcpu-4gb` $24, Fly `shared-cpu-2x` 4096 MB
-$21.38) and 8 GB (DO `s-4vcpu-8gb` $48, Fly `shared-cpu-4x` 8192 MB $42.76) are the steps up.
-Egress is within the providers' included transfer for a mesh node. The numbers live in one place,
-`crates/cloudnodes/src/providers/catalog.rs`; the UI shows `cloud_quote`'s total in the create button.
+These are reference figures for this document only. **The app never ships a price** (owner rule):
+the wizard and the node list fetch them live from the provider — `cloud_sizes(provider, region)`
+calls DigitalOcean's `GET /v2/sizes` (filtered to the region; `price_monthly`) when the wizard
+opens or the provider/region changes and when the list is shown, through a 1-hour engine cache per
+provider and region (prices rarely change; failures are not cached). The only number in code is DigitalOcean's
+volume price (`DO_VOLUME_USD_PER_GB_MONTH`, one labelled constant: the API has no price field for
+volumes). Fly.io has no machine-readable price source, so the app says "price from Fly" with a link
+and no number; Kubernetes says "uses your cluster". If the fetch fails the size cards show no
+prices, *Create node* stays enabled without a price, and a note says "price unavailable". An
+existing node's monthly cost is computed from the same live data by its actual size slug.
 
 ## 12. Fly.io notes
 
