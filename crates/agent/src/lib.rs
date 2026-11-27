@@ -268,8 +268,8 @@ pub use supervisor::{
 pub use supervisor::{spawn_engine_agents, spawn_test_agents};
 pub use tools::Retention;
 pub use user::{
-    Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
-    UserSink,
+    Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR,
+    UnregisterUserSink, UserChannels, UserSink, unregister_sink_on_scope_stop,
 };
 pub use vision::{VisionNote, VisionObservation, VisionSource, VisionStatus};
 

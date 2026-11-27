@@ -1928,6 +1928,7 @@ pub fn start(
         runtime::subscriber_mailbox(),
     );
     actor.register(DREAMING_ACTOR)?;
+    rt.release_on_scope_stop(actor.clone());
     let rt2 = rt.clone();
     tokio::spawn(async move {
         rt2.subscribe::<Night, knowledge::KnowledgeChanged>(&actor)

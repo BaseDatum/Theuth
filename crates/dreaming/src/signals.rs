@@ -541,6 +541,7 @@ pub async fn start(rt: &Runtime, engine: &str) -> anyhow::Result<()> {
     signals.flush();
     let actor = Signals::spawn_with_mailbox(signals, runtime::subscriber_mailbox());
     actor.register(SIGNALS_ACTOR)?;
+    rt.release_on_scope_stop(actor.clone());
     rt.subscribe::<Signals, agent::AgentEvent>(&actor).await;
     rt.subscribe::<Signals, knowledge::KnowledgeChanged>(&actor)
         .await;

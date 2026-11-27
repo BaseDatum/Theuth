@@ -472,6 +472,11 @@ impl runtime::Plugin for SlackPlugin {
                 tracing::error!("slack: registering {SLACK_ACTOR}: {e}");
                 return;
             }
+            // Hub-only gating (design doc 224): a stopped scope frees the name and the sink.
+            rt.release_on_scope_stop(actor);
+            if sink.is_some() {
+                agent::unregister_sink_on_scope_stop(&rt, "slack");
+            }
             if !configured {
                 rt.publish(SlackEvent::Unconfigured).await;
             }

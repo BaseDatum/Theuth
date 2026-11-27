@@ -33,6 +33,8 @@ pub struct Runtime {
     pub data_dir: PathBuf,
     /// Cancelled when the process should exit (UI quit, ctrl-c, RPC shutdown).
     pub shutdown: CancellationToken,
+    /// Set on a [`Runtime::scoped`] clone; `None` on the engine's own runtime.
+    scope: Option<ScopeInner>,
     /// Plugin-neutral state shared by Runtime clones, keyed by component type.
     extensions: std::sync::Arc<parking_lot::Mutex<Extensions>>,
 }
@@ -52,8 +54,60 @@ impl Runtime {
             config,
             data_dir,
             shutdown: CancellationToken::new(),
+            scope: None,
             extensions: Default::default(),
         }
+    }
+
+    /// A clone whose `shutdown` is a child of this one's: [`Scope::stop`] ends what a plugin
+    /// started on the clone (its loops select on `shutdown`, its [`Runtime::on_scope_stop`]
+    /// hooks run) while the process keeps running. The subsystem gate (design doc 224) starts
+    /// hub-only plugins this way and stops them when the hub lease moves.
+    pub fn scoped(&self) -> (Runtime, Scope) {
+        let token = self.shutdown.child_token();
+        let tasks = tokio_util::task::TaskTracker::new();
+        let mut rt = self.clone();
+        rt.scope = Some(ScopeInner {
+            parent: self.shutdown.clone(),
+            tasks: tasks.clone(),
+        });
+        rt.shutdown = token.clone();
+        (rt, Scope { token, tasks })
+    }
+
+    /// Resolves once this [`Runtime::scoped`] clone was stopped while the process lives on;
+    /// never on an unscoped runtime nor at process shutdown.
+    pub async fn scope_stopped(&self) {
+        let Some(scope) = &self.scope else {
+            return std::future::pending().await;
+        };
+        self.shutdown.cancelled().await;
+        if scope.parent.is_cancelled() {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// On a [`Runtime::scoped`] clone: run `hook` when the scope stops — release what outlives
+    /// the plugin's loops (user sinks, tools). [`Scope::stop`] waits for it. A no-op (`hook`
+    /// dropped) on the engine's own runtime.
+    pub fn on_scope_stop(&self, hook: impl Future<Output = ()> + Send + 'static) {
+        let Some(scope) = &self.scope else {
+            return;
+        };
+        let rt = self.clone();
+        scope.tasks.spawn(async move {
+            rt.scope_stopped().await;
+            hook.await;
+        });
+    }
+
+    /// On a [`Runtime::scoped`] clone: kill `actor` when the scope stops, freeing its registry
+    /// name for the next start. A no-op on the engine's own runtime.
+    pub fn release_on_scope_stop<A: kameo::Actor>(&self, actor: ActorRef<A>) {
+        self.on_scope_stop(async move {
+            actor.kill();
+            actor.wait_for_shutdown().await;
+        });
     }
 
     /// One slot per type; a private T lets only its owning crate reach the slot.
@@ -107,6 +161,29 @@ impl Runtime {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
             }
         }
+    }
+}
+
+#[derive(Clone)]
+struct ScopeInner {
+    /// The token of the runtime the scope was cut from: its cancellation is process exit.
+    parent: CancellationToken,
+    tasks: tokio_util::task::TaskTracker,
+}
+
+/// The handle of a [`Runtime::scoped`] clone.
+pub struct Scope {
+    token: CancellationToken,
+    tasks: tokio_util::task::TaskTracker,
+}
+
+impl Scope {
+    /// Cancel the scope's `shutdown` and wait until every [`Runtime::on_scope_stop`] hook ran:
+    /// afterwards the plugin's named actors are gone and it may be started again.
+    pub async fn stop(self) {
+        self.token.cancel();
+        self.tasks.close();
+        self.tasks.wait().await;
     }
 }
 
