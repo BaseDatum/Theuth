@@ -68,7 +68,9 @@ mod tests {
         }
         assert_eq!(s.matches(t).count(), 1);
         assert!(s.contains("name='lab'") && s.contains(&format!("dev='{DEV}'")));
-        assert!(s.contains(&format!("THEUTH_MANIFEST={MANIFEST}")));
+        // Cloud-node VMs must not pin a single THEUTH_MANIFEST so theuth-install.sh uses its
+        // 3-endpoint fallback chain on boot/restart.
+        assert!(!s.contains("THEUTH_MANIFEST="));
         // Only the header comment says "no Docker"; no command uses it.
         assert!(!s.lines().filter(|l| !l.trim_start().starts_with('#')).any(|l| l.to_lowercase().contains("docker")));
         assert!(s.contains("/etc/sudoers.d/90-theuth-engine") && s.contains("NOPASSWD:ALL"));

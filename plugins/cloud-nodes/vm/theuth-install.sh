@@ -36,7 +36,6 @@ DATA="${THEUTH_DATA_DIR:-/data}"
 BIN="$DATA/bin"
 BAKED="${THEUTH_BAKED_DIR:-}"
 PUBKEY_FILE="${THEUTH_PUBKEY_FILE:-/usr/local/share/theuth/pubkey.txt}"
-MANIFEST="${THEUTH_MANIFEST:-https://s3.rwx.dev/theuth/releases/latest.json}"
 MARKER="$DATA/.theuth-paired"
 
 log() { printf 'theuth-install: %s\n' "$*" >&2; }
@@ -119,14 +118,14 @@ install_release() {
 	rm -rf "$stage"
 }
 
-# manifest_entry: `VERSION URL SIGNATURE` for this machine's `cli-linux-<arch>`.
+# manifest_entry URL: `VERSION URL SIGNATURE` for this machine's `cli-linux-<arch>`.
 manifest_entry() {
 	case "$(uname -m)" in
 	x86_64 | amd64) arch=x86_64 ;;
 	aarch64 | arm64) arch=aarch64 ;;
 	*) return 1 ;;
 	esac
-	curl -fsSL --retry 2 --max-time 30 "$MANIFEST" | python3 -c '
+	curl -fsSL --retry 2 --max-time 30 "$1" | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
 p = m["platforms"]["cli-linux-" + sys.argv[1]]
@@ -146,20 +145,47 @@ cmd_install() {
 		fi
 	fi
 	if [ "${THEUTH_BOOT_UPDATE:-1}" != 0 ]; then
-		if entry="$(manifest_entry 2>/dev/null)"; then
+		if [ -n "${THEUTH_MANIFEST:-}" ]; then
+			set -- "$THEUTH_MANIFEST"
+		else
+			set -- \
+				"https://github.com/BaseDatum/Theuth/releases/latest/download/latest.json" \
+				"https://s3.us-central-1.wasabisys.com/theuth-releases/latest.json" \
+				"https://s3.rwx.dev/theuth/releases/latest.json"
+		fi
+		fetched=0
+		remaining=$#
+		for manifest_url in "$@"; do
+			remaining=$((remaining - 1))
+			if ! entry="$(manifest_entry "$manifest_url" 2>/dev/null)"; then
+				if [ "$remaining" -gt 0 ]; then
+					log "release manifest $manifest_url unreachable; trying next endpoint"
+				else
+					log "release manifest $manifest_url unreachable"
+				fi
+				continue
+			fi
+			fetched=1
 			# Three space-separated fields; none holds a space.
 			latest="${entry%% *}"
 			rest="${entry#* }"
 			url="${rest%% *}"
 			sig="${rest#* }"
 			if is_newer "$have" "$latest" && { [ -z "$have" ] || [ "$(major "$latest")" = "$(major "$have")" ]; }; then
-				log "installing t $latest from the release manifest (had ${have:-none})"
+				log "installing t $latest from $manifest_url (had ${have:-none})"
 				if install_release "$latest" "$url" "$sig"; then
 					have="$latest"
+					break
 				fi
+				if [ "$remaining" -gt 0 ]; then
+					log "install from $manifest_url failed; trying next endpoint"
+				fi
+			else
+				break
 			fi
-		else
-			log "release manifest $MANIFEST unreachable; keeping t ${have:-none}"
+		done
+		if [ "$fetched" = 0 ]; then
+			log "all release manifests unreachable; keeping t ${have:-none}"
 		fi
 	fi
 	if [ -z "$have" ]; then
