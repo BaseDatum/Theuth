@@ -8,5 +8,5 @@ export const security: SettingsCategory = {
   id: 'security',
   label: 'Security',
   icon: ShieldCheck,
-  tabs: [{ required: vaultRequirements, id: 'vault', label: 'Vault', icon: Lock, Component: VaultSettings }],
+  tabs: [{ required: vaultRequirements, id: 'vault', scope: 'machine', copyable: false, copyNote: 'Each machine has its own vault key and unlock methods.', label: 'Vault', icon: Lock, Component: VaultSettings }],
 }

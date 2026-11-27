@@ -164,7 +164,7 @@ test('the scope of every tab, as the settings recon placed it', () => {
   expect(by('everywhere')).toEqual(['suffixes', 'machines', 'devices', 'shared', 'contacts', 'shared-chats', 'shared-notes', 'sharing', 'domains', 'tools', 'browser'])
   expect(by('hub')).toEqual(['dreaming', 'double', 'signal', 'slack', 'telegram'])
   expect(by('machine', true)).toEqual(['models', 'helpers', 'providers', 'loop', 'memory', 'approvals', 'advisor', 'autoresearch', 'system', 'voice-dictionary', 'templates', 'briefs', 'categories', 'builtins', 'search', 'plugins'])
-  expect(by('machine', false)).toEqual(['app', 'external-secrets', 'harnesses', 'decision', 'voice', 'dictation', 'voice-key', 'voice-history', 'meetings', 'detection', 'live', 'speakers', 'calendar', 'upcoming', 'machine', 'messaging', 'vms', 'mcp', 'computer'])
+  expect(by('machine', false)).toEqual(['app', 'external-secrets', 'harnesses', 'decision', 'voice', 'dictation', 'voice-key', 'voice-history', 'meetings', 'detection', 'live', 'speakers', 'calendar', 'upcoming', 'machine', 'messaging', 'vms', 'vault', 'mcp', 'computer'])
 })
 
 test('notApplicable: a headless engine dims the mic, display and user tabs only; the desktop daemon dims none', () => {

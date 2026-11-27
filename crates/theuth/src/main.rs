@@ -1369,7 +1369,7 @@ tools:
   # pty_shell: ~        # program for `start` PTY jobs; default $SHELL, on Windows pwsh.exe else powershell.exe (58 §0.3)
 
 # secrets:                   # design doc 37; `/secrets`, Settings › Secrets, `t --secret-set`
-#   key_store: auto          # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
+#   key_store: auto          # auto | keychain | file | sealed — how the vault key opens at boot (225); auto = keychain, else <data_dir>/secrets.key (0600) with a warning; sealed = never a key file: master password / device unlock only (`t vault`)
 #   tools: true              # false: no secret_* tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed; the vault, /secrets and the harness's own keys are unaffected
 #   request_timeout_secs: 1800   # `secret_request` gives up (the model sees \"no answer\") after this
 
