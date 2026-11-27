@@ -42,7 +42,8 @@ fail() { echo "package-ios: $*" >&2; exit 1; }
 
 echo "==> [1/3] toolchain"
 dev_dir="$(xcode-select -p 2>/dev/null || true)"
-if [[ -z "$dev_dir" || "$dev_dir" != *"Xcode.app"* ]]; then
+# GitHub's macos-15 image names it Xcode_26.3.0.app, not Xcode.app.
+if [[ -z "$dev_dir" || "$dev_dir" != *Xcode*.app* ]]; then
   fail "full Xcode required. xcode-select -p = '${dev_dir:-<none>}'.
         Install Xcode and run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
 fi
