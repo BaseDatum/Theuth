@@ -5,9 +5,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { chordOf } from '@/lib/chord'
+import { CopyControls } from '@/components/settings/copy/CopyControls'
+import type { CopyField } from '@/components/settings/copy/set-on-all'
 import type { Api } from '@/rpc/bindings/client'
 import type { SyncResult } from "@/rpc/bindings/method.agent.output"
-import { useConnection } from '@/store/connection'
+import { connectionOfApi, useConnection } from '@/store/connection'
 
 /** The one connected / logged-in / online indicator of every settings pane: green on, faint grey off. */
 export function Dot({ on }: { on: boolean }) {
@@ -66,6 +68,7 @@ export function Row({
   stack,
   wide,
   children,
+  copy,
 }: {
   label: ReactNode
   description?: ReactNode
@@ -74,6 +77,8 @@ export function Row({
   /** A control that grows (chips, lists, switch or button groups, long text): always under the label at full width, at any width (169). */
   wide?: boolean
   children?: ReactNode
+  /** 227: a copyable value: "differs on N" and "Set on all machines…" under the description (Settings page only). */
+  copy?: CopyField
 }) {
   const control = isValidElement<{ type?: string; role?: string; size?: string }>(children) ? children : null
   const nativeSmall = control?.type === 'input' && (control.props.type === 'checkbox' || control.props.type === 'radio')
@@ -93,6 +98,7 @@ export function Row({
       <div className="min-w-0">
         <div className="text-sm">{label}</div>
         {description && <div className="mt-0.5 text-[13px] text-fg-secondary">{description}</div>}
+        {copy && <CopyControls field={copy} className="mt-1.5 flex" />}
       </div>
       {children && <Control data-settings-control="" className={`${column ? 'flex w-full items-center gap-2' : 'flex shrink-0 items-center gap-2'}${small ? '' : ' max-lg:@max-[480px]/settings:w-full max-lg:@max-[480px]/settings:flex-wrap'}`}>{children}</Control>}
     </div>
@@ -100,12 +106,17 @@ export function Row({
 }
 
 /** A titled group of rows with optional header actions. */
-export function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+export function Section({ title, actions, copy, children }: { title: string; actions?: ReactNode; copy?: CopyField; children: ReactNode }) {
   return (
     <section className="mb-8">
       <div data-settings-heading="" className="flex h-9 items-center justify-between">
         <h3 className="text-base font-semibold">{title}</h3>
-        {actions && <div className="flex items-center gap-2">{actions}</div>}
+        {(actions || copy) && (
+          <div className="flex items-center gap-2">
+            {copy && <CopyControls field={copy} />}
+            {actions}
+          </div>
+        )}
       </div>
       {children}
     </section>
@@ -253,7 +264,8 @@ export function useAction<V, R>(
   })
 }
 
-/** Re-read `info()` into the connection store after a setting it carries changed. */
+/** Re-read `info()` into the connection store after a setting it carries changed: `api`'s own (227: a remote machine's), else the active engine's. */
 export async function refreshInfo(api: Api): Promise<void> {
-  useConnection.getState().setInfo(await api.info())
+  const info = await api.info()
+  ;(connectionOfApi.get(api) ?? useConnection).getState().setInfo(info)
 }

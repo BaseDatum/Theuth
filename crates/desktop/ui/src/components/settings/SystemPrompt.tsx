@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 import { CharterEditor } from '@/components/agents/CharterEditor'
+import { copyField, fromGetter } from '@/components/settings/copy/fields'
 import { Empty, Section, errorText, useAction } from '@/components/settings/shared'
 import type { TabProps } from '@/components/settings/types'
 import { Badge } from '@/components/ui/badge'
@@ -32,6 +33,30 @@ const SYSTEM_METHODS = [
   'set_prompt_section_enabled',
   'reset_prompt_section',
 ] as const
+
+/** One section as "Set on all machines" copies it: its custom text (`null`: the default) and its switch. */
+type SectionCopy = { id: string; content: string | null; enabled: boolean }
+
+const sectionCopies = (sections: readonly PromptSection[], group: string): SectionCopy[] =>
+  sections.filter((s) => s.group === group).map((s) => ({ id: s.id, content: s.customized ? s.content : null, enabled: s.enabled }))
+
+/** 227: a group's sections copy as one: each section's text (custom or reset to the default) and its switch. */
+function promptCopy(sections: readonly PromptSection[], group: string, label: string) {
+  return copyField({
+    id: `prompt:${group}`,
+    label,
+    value: sectionCopies(sections, group),
+    format: (v) => `${v.filter((s) => s.content !== null).length} customized, ${v.filter((s) => !s.enabled).length} disabled`,
+    plan: (v) => ({
+      kind: 'calls',
+      calls: v.flatMap((s) => [
+        s.content === null ? { method: 'reset_prompt_section', args: [s.id] } : { method: 'set_prompt_section', args: [s.id, s.content] },
+        { method: 'set_prompt_section_enabled', args: [s.id, s.enabled] },
+      ]),
+    }),
+    read: fromGetter('list_prompt_sections', (raw) => sectionCopies(raw as PromptSection[], group)),
+  })
+}
 
 function matchesQuery(section: PromptSection, needle: string): boolean {
   if (!needle) return true
@@ -275,8 +300,8 @@ export function SystemPrompt(_: Partial<TabProps>) {
         <Empty>{list.length === 0 ? 'No prompt sections available.' : 'No prompt sections match the current filter.'}</Empty>
       )}
 
-      {coreSections.length > 0 && <Section title="System & core">{renderRows(coreSections)}</Section>}
-      {pluginSections.length > 0 && <Section title="Plugins">{renderRows(pluginSections)}</Section>}
+      {coreSections.length > 0 && <Section title="System & core" copy={promptCopy(list, 'core', 'System & core sections')}>{renderRows(coreSections)}</Section>}
+      {pluginSections.length > 0 && <Section title="Plugins" copy={promptCopy(list, 'plugin', 'Plugin prompt sections')}>{renderRows(pluginSections)}</Section>}
     </div>
   )
 }

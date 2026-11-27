@@ -34,6 +34,8 @@ import {
   RUNTIMES,
   runtimeLabel,
 } from '@/components/settings/providers'
+import { copyField } from '@/components/settings/copy/fields'
+import { useSettingsMachines } from '@/components/settings/machine-target'
 import { type Action, Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import {
   AlertDialog,
@@ -516,9 +518,22 @@ function ProviderList() {
     )
   }
 
+  // 227: "Set on all machines…" pushes this engine's custom and local providers (`sync_providers`, never keys). Only from
+  // the connected engine: `sync_providers` is not forwardable (it may carry keys).
+  const source = useSettingsMachines()?.target
+  const copyProviders = source?.connected
+    ? copyField({
+        id: 'providers',
+        label: 'Providers',
+        value: source.id,
+        format: () => `${source.name}'s custom and local providers and favorites (no keys)`,
+        plan: (from) => ({ kind: 'providers', from }),
+      })
+    : undefined
   return (
     <Section
       title="Providers"
+      copy={copyProviders}
       actions={
         <>
           {canRefreshAll && (

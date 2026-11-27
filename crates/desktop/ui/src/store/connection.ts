@@ -51,6 +51,9 @@ export const createConnection = (): ConnectionApi =>
     setError: (error) => set({ error }),
   }))
 
+/** 227: the connection an `Api` aimed at another machine belongs to (Settings' remote scope), so `refreshInfo` updates that machine's `info`, not the connected engine's. */
+export const connectionOfApi = new WeakMap<Api, ConnectionApi>()
+
 /** 176 U3: the local engine keeps its router mounted (with a "Reconnecting…" pill) through a drop this long. */
 export const ROUTER_GRACE_MS = 10_000
 

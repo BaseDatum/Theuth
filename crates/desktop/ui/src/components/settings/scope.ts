@@ -49,18 +49,21 @@ export function deviceKind(): string {
   return 'browser'
 }
 
-/** What the connected engine's host has: `true`/`false` when known, absent when not (an unknown is assumed present). */
+/** What an engine's host has: `true`/`false` when known, absent when not (an unknown is assumed present). */
 export type EngineCaps = Partial<Record<SettingsNeed, boolean>>
 
+/** `engine_caps()`'s answer (227 §1), the part `engineCaps` reads. */
+export type HostCaps = { display: boolean; mic: boolean; interactive_user: boolean }
+
 /**
- * The connected engine's caps from what the client already has.
- * - The desktop shell's own daemon runs in the user's session: display, user and mic all present.
- * - Any other engine: a `list_input_devices` answer with no device means no mic; display and user stay unknown.
- *
- * TODO(engine): `info` should report the host's `{ display, mic, interactive_user }` (a headless or cloud node has
- * none); until then a remote headless engine is only caught for the mic.
+ * An engine's caps.
+ * - `host` (its `engine_caps` answer, 227) wins when known.
+ * - Else the desktop shell's own daemon runs in the user's session: display, user and mic all present.
+ * - Else a `list_input_devices` answer with no device means no mic; display and user stay unknown (an engine without
+ *   `engine_caps`).
  */
-export function engineCaps({ local, inputDevices }: { local: boolean; inputDevices?: readonly unknown[] }): EngineCaps {
+export function engineCaps({ local, inputDevices, host }: { local: boolean; inputDevices?: readonly unknown[]; host?: HostCaps }): EngineCaps {
+  if (host) return { display: host.display, user: host.interactive_user, mic: host.mic }
   if (local) return { display: true, user: true, mic: true }
   return inputDevices ? { mic: inputDevices.length > 0 } : {}
 }

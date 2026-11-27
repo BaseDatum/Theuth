@@ -2,10 +2,14 @@ import './small-screens.css'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
 import { SidebarLead, TabBand, type BandTab } from '@/components/nav/SectionBand'
 import { useInsideTile } from '@/components/tiles/tile-context'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { RestartBanner } from '@/components/settings/page/RestartBanner'
+import { SetOnAllSheet, type SetOnAllRequest } from '@/components/settings/copy/SetOnAllSheet'
+import { MachinePicker } from '@/components/settings/MachinePicker'
+import { MachineScope, type SettingsMachines, SettingsMachinesProvider, aimedAt, isRemote, useSettingsMachinesValue } from '@/components/settings/machine-target'
 import { bandTabs, deviceTabs, isDeviceTab, navCategories, navTabs, placeOf } from '@/components/settings/registry'
 import { NotHereTag, ScopeHeader, ScopeTag } from '@/components/settings/ScopeTag'
 import { type EngineCaps, type ScopeNames, type SettingsNeed, deviceKind, engineCaps, notApplicable, sharedScope } from '@/components/settings/scope'
@@ -26,23 +30,44 @@ import { useConnection } from '@/store/connection'
 /** Category links keep a visible focus ring, as the band's tabs do. */
 const FOCUS_RING = 'outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50'
 
-/** The tooltips' names: the connected engine (`info.name`), the hub (`mesh_status`'s lease holder), this client's kind. */
-function useScopeNames(): ScopeNames {
-  const engine = useConnection((s) => s.info?.name ?? null)
+/**
+ * The tooltips' names: the machine Settings edits (227: the picked one, else the connected engine's `info.name`), the
+ * hub (`mesh_status`'s lease holder), this client's kind.
+ */
+function useScopeNames(machines: SettingsMachines): ScopeNames {
+  const connected = useConnection((s) => s.info?.name ?? null)
   const mesh = useMesh().data
   const holder = mesh?.lease.holder ?? null
   const hub = !mesh || holder === null ? null : holder === mesh.self_id ? mesh.self_name : (mesh.peers.find((p) => p.id === holder)?.name ?? null)
-  return { engine, hub, device: deviceKind() }
+  return { engine: isRemote(machines.target) ? machines.target.name : connected, hub, device: deviceKind() }
 }
 
-/** What the connected engine's host has (`engineCaps`): the desktop's own daemon has everything; elsewhere the mic list tells. */
-function useEngineCaps(): EngineCaps {
+/**
+ * What the edited machine's host has (`engineCaps`): its `engine_caps` when known (227); else, for the connected
+ * engine, the desktop's own daemon has everything and elsewhere the mic list tells.
+ */
+function useEngineCaps(machines: SettingsMachines): EngineCaps {
   const local = useEngines((s) => s.active) === LOCAL && isDesktop()
   const canList = useQuerySupport(['list_input_devices'])
   const api = useApi()
+  const target = machines.target
   // Same key as Voice › Microphone, so opening it after the nav asks nothing twice.
-  const devices = useQuery({ enabled: canList && !local, queryKey: voiceKeys.devices, queryFn: () => api.list_input_devices() })
+  const devices = useQuery({ enabled: canList && !local && !target?.caps, queryKey: voiceKeys.devices, queryFn: () => api.list_input_devices() })
+  if (target?.caps) return engineCaps({ local: false, host: target.caps })
+  if (isRemote(target)) return {}
   return engineCaps({ local, inputDevices: devices.data })
+}
+
+/** The page's machines (227) and the "Set on all machines…" sheet around `children`. */
+function WithMachines({ tab, children }: { tab: SettingsTab | null; children: (machines: SettingsMachines) => ReactNode }) {
+  const [request, setRequest] = useState<SetOnAllRequest | null>(null)
+  const machines = useSettingsMachinesValue(tab, setRequest)
+  return (
+    <SettingsMachinesProvider value={machines}>
+      {children(machines)}
+      <SetOnAllSheet request={request} settings={machines} onClose={() => setRequest(null)} />
+    </SettingsMachinesProvider>
+  )
 }
 
 /** The needs every one of `tabs` lacks here, or `null` when any of them applies. */
@@ -78,15 +103,22 @@ function CategoryMark({ category, caps, names }: { category: SettingsCategory; c
  * Per-machine Settings: device tabs leave their category for a "This <device>" group; every tab is tagged with its scope.
  */
 export function SettingsPage({ tab, focus }: { tab: string; focus: string | null }) {
-  const discovery = useConnection(s => s.discovery)
-  const mobile = useIsMobile()
-  const navigate = useNavigate()
-  const names = useScopeNames()
-  const caps = useEngineCaps()
   // `beforeLoad` sent unknown and hidden ids elsewhere.
   const placed = placeOf(tab)
   if (!placed) return null
+  return <WithMachines tab={placed.tab}>{(machines) => <Page tab={tab} focus={focus} machines={machines} />}</WithMachines>
+}
+
+function Page({ tab, focus, machines }: { tab: string; focus: string | null; machines: SettingsMachines }) {
+  const discovery = useConnection(s => s.discovery)
+  const mobile = useIsMobile()
+  const navigate = useNavigate()
+  const names = useScopeNames(machines)
+  const caps = useEngineCaps(machines)
+  const placed = placeOf(tab)!
   const { category, tab: current } = placed
+  const { target } = machines
+  const aimed = aimedAt(current, target)
   const band = (
     <TabBand
       tabs={bandTabs(placed, discovery).map((t) => bandTab(t, caps, names))}
@@ -95,13 +127,21 @@ export function SettingsPage({ tab, focus }: { tab: string; focus: string | null
       onValueChange={(id) => void navigate({ to: '/settings/$tab', params: { tab: id } })}
     />
   )
-  // Keyed by tab: a new tab starts at the top.
+  // Keyed by tab and, for a machine tab, the machine: a new tab or machine starts at the top with its own state.
   const body = (
-    <div key={tab} className="min-h-0 min-w-0 flex-1 overflow-y-auto max-lg:@container/settings">
+    <div key={`${tab}@${aimed?.id ?? ''}`} className="min-h-0 min-w-0 flex-1 overflow-y-auto max-lg:@container/settings">
       <div className="mx-auto w-full max-w-[720px] px-4 pt-4 pb-8 md:px-6">
         <RestartBanner />
-        <ScopeHeader scope={current.scope} names={names} missing={notApplicable(current, caps)} />
-        {current.required ? <Capability required={current.required}><current.Component focus={focus} /></Capability> : <current.Component focus={focus} />}
+        <ScopeHeader
+          scope={current.scope}
+          names={names}
+          missing={notApplicable(current, caps)}
+          editing={machines.machines.length > 1 ? target?.name : null}
+          ignoring={isRemote(target) ? target.name : null}
+        />
+        <MachineScope machine={aimed}>
+          {current.required ? <Capability required={current.required}><current.Component focus={focus} /></Capability> : <current.Component focus={focus} />}
+        </MachineScope>
       </div>
     </div>
   )
@@ -150,6 +190,7 @@ function Categories({ current, currentTab, caps, names }: { current: SettingsCat
       >
         Settings
       </div>
+      <MachinePicker className="mx-2 mt-2 w-auto" />
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
         {navCategories(discovery).map((category) => {
           const Icon = category.icon
@@ -190,12 +231,16 @@ function Categories({ current, currentTab, caps, names }: { current: SettingsCat
   )
 }
 
-/** 188 S3: `/settings` on a phone: one row per category, opening its first shown tab, then the "This <device>" group. */
+/** 188 S3: `/settings` on a phone: one row per category, opening its first shown tab, then the "This <device>" group. 227: the machine picker heads it. */
 export function SettingsHome() {
+  return <WithMachines tab={null}>{(machines) => <Home machines={machines} />}</WithMachines>
+}
+
+function Home({ machines }: { machines: SettingsMachines }) {
   const discovery = useConnection(s => s.discovery)
   const insideTile = useInsideTile()
-  const names = useScopeNames()
-  const caps = useEngineCaps()
+  const names = useScopeNames(machines)
+  const caps = useEngineCaps(machines)
   const device = deviceTabs(discovery)
   const row = cn('flex h-12 items-center gap-3 rounded-[10px] px-3 text-base active:bg-layer-3', FOCUS_RING)
   return (
@@ -204,6 +249,7 @@ export function SettingsHome() {
         {!insideTile && <SidebarLead />}
         <h2 className="px-1 text-sm font-semibold">Settings</h2>
       </header>
+      <MachinePicker phone className="mx-3 mt-3 w-auto" />
       <nav aria-label="Settings categories" className="min-h-0 flex-1 overflow-y-auto p-2">
         {navCategories(discovery).map((category) => (
           <Link key={category.id} to="/settings/$tab" params={{ tab: navTabs(category, discovery)[0]!.id }} className={row}>

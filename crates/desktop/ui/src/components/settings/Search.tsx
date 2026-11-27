@@ -22,6 +22,7 @@ import {
   updateProvider,
   validate,
 } from '@/components/settings/search-settings'
+import { copyField, fromGetter } from '@/components/settings/copy/fields'
 import { Dot, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -96,7 +97,11 @@ export function Search() {
           ))}
         </div>
       </Section>
-      <Section title="Defaults">
+      <Section
+        title="Defaults"
+        // 227: the providers' order and options plus these defaults copy as one; keys never (`strip` clears them).
+        copy={settings.data ? copyField({ id: 'search', label: 'Search settings', value: strip(settings.data), format: (v) => `${v.providers.filter((p) => p.enabled).map((p) => label(p.name)).join(' → ') || 'no providers'}; ${v.defaults.read_top} pages read`, plan: (v) => ({ kind: 'calls', calls: [{ method: 'search_settings_set', args: [v] }] }), read: fromGetter('search_settings_get', (raw) => strip(raw as SearchSettings)) }) : undefined}
+      >
         <Row label="Pages read per search" description="Top hits search_web reads and excerpts when the call gives no read count (0..8).">
           <Input
             type="number"

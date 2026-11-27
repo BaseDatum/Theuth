@@ -146,4 +146,6 @@ const body = `import { receiveResult } from './receive'\nexport interface Method
 await writeFile(`${out}/client.ts`, `/* Generated from OpenRPC; do not edit. */\n${[...imports].map(([group, alias]) => `import type * as ${alias} from './${group}'`).join('\n')}\n${body}\nexport interface ReceiverResults {\n${receiverResults}\n}\nexport interface TopicReceiverPayloads {\n${receiverTopics}\n}\nexport interface ComponentResults {\n${componentResults}\n}\nexport interface ComponentReceivers {\n${componentReceivers}\n}\n`)
 await writeFile(`${out}/receive.ts`, emitAdapters(doc, schemas))
 await writeFile(`${out}/components.json`, JSON.stringify(Object.fromEntries([...groups].flatMap(([group, defs]) => Object.keys(defs).map(n => [`${group}.${n}`, { path: group, name: toSafeString(n) }]))), null, 2))
+// 227: each method's parameter names in order, so a positional call can be re-sent with named params (`engine_call`).
+await writeFile(`${out}/param-names.ts`, `/* Generated from OpenRPC; do not edit. */\nexport const PARAM_NAMES: Readonly<Record<string, readonly string[]>> = ${JSON.stringify(Object.fromEntries(methods.map(m => [m.name, m.params.map(p => p.name)])))}\n`)
 console.log(`Generated ${methods.length} methods, ${doc['x-theuth'].events.length} topics, ${groups.size} scoped modules from ${input}`)

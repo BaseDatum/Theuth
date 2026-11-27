@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useSearch } from '@tanstack/react-router'
 import { ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
+import { copyField, fromGetter } from '@/components/settings/copy/fields'
 import { type Action, Empty, Section, errorText, useAction } from '@/components/settings/shared'
 import {
   AlertDialog,
@@ -83,7 +84,22 @@ export function ToolCategories({ session }: { session: string | null }) {
 
   const disabled = (list.data ?? []).filter((c) => !c.default_enabled).map((c) => c.id)
   return (
-    <Section title="Tool categories">
+    <Section
+      title="Tool categories"
+      copy={
+        // 227: which categories new chats start without; the categories themselves are per machine (their tools differ).
+        session === null && list.data
+          ? copyField({
+              id: 'default-categories',
+              label: 'Categories off by default',
+              value: [...disabled].sort(),
+              format: (off) => (off.length === 0 ? 'none' : off.join(', ')),
+              plan: (off) => ({ kind: 'calls', calls: [{ method: 'set_default_tool_categories', args: [off] }] }),
+              read: fromGetter('list_tool_categories', (raw) => (raw as { id: string; default_enabled: boolean }[]).filter((c) => !c.default_enabled).map((c) => c.id).sort()),
+            })
+          : undefined
+      }
+    >
       <form onSubmit={create} className="grid gap-2 border-b border-border-subtle pb-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto]">
         <Input
           value={label}

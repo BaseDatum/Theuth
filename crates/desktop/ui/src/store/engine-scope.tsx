@@ -83,10 +83,14 @@ export function useScope(): Stores {
 
 /** Mount with `key={engine}` so a switch remounts the tree with the other engine's stores and query cache. */
 export function EngineProvider({ engine, children }: { engine: string; children: ReactNode }) {
-  const st = scope(engine)
+  return <StoresProvider stores={scope(engine)}>{children}</StoresProvider>
+}
+
+/** `stores` in context. 227: a Settings tab aimed at another machine of the mesh reads that machine's connection and query cache. */
+export function StoresProvider({ stores, children }: { stores: Stores; children: ReactNode }) {
   return (
-    <EngineContext value={st}>
-      <QueryClientProvider client={st.qc}>{children}</QueryClientProvider>
+    <EngineContext value={stores}>
+      <QueryClientProvider client={stores.qc}>{children}</QueryClientProvider>
     </EngineContext>
   )
 }

@@ -19,6 +19,7 @@ import { SearchDialog } from '@/components/sidebar/SearchDialog'
 import { SidebarInset, SidebarProvider, useSidebarActions, useSidebarIsMobile } from '@/components/ui/sidebar'
 import { useHotkeys } from '@/lib/hotkeys'
 import { CostsPrefetch } from '@/lib/costs/queries'
+import { PendingSettingsRetry } from '@/components/settings/copy/PendingRetry'
 import { CostsResident, ResidentCtx } from '@/components/costs/Resident'
 import type { SearchRequest } from '@/lib/search'
 import { pageTitle } from '@/lib/nav'
@@ -102,6 +103,8 @@ function Root() {
         <Capability required={routineRequirements} hide><RoutineDraftBridge /></Capability>
         <Capability required={costsRequirements} hide><CostsPrefetch /></Capability>
         <Capability required={studyRequirements} hide><StudyDraftBridge /></Capability>
+        {/* 227: this window's pending "Set on all machines" copies, retried when their machines are back. */}
+        <PendingSettingsRetry />
         <DragOverlay />
         <PublicShareHost />
         {/* 215: first-run wizard, upgrade toast and tours; the host itself stays out of pop-outs and remote engines. */}

@@ -2,6 +2,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useModels } from '@/components/agents/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
+import { fromGetter, setterField } from '@/components/settings/copy/fields'
 import { Row, Section, useAction } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
 
@@ -66,9 +67,19 @@ export function Helpers() {
   const unavailable =
     vision && models.isSuccess && !visionModels.some((m) => m.id === vision.id) ? vision.id : null
 
+  // 227: each helper model copies to the other machines (the model only; `null` is Off).
+  const modelName = (id: string | null) => (id ? (models.data?.find((m) => m.id === id)?.name ?? id) : 'Off')
+  const helper = (id: string, label: string, q: { isSuccess: boolean }, value: string | null, method: 'set_title_model' | 'set_vision_model' | 'set_escalate_model' | 'set_knowledge_harvester_model', getter: 'title_model' | 'vision_model' | 'escalate_model' | 'knowledge_harvester_model') =>
+    setterField(id, label, q.isSuccess ? value : undefined, method, {
+      format: modelName,
+      read: fromGetter(getter, (raw) => {
+        const r = raw as { id?: string; model?: { id?: string } | null } | null
+        return (getter === 'escalate_model' ? r?.model?.id : r?.id) ?? null
+      }),
+    })
   return (
     <Section title="Helper models">
-      <Row stack label="Title model" description="Names new chats after the first exchange.">
+      <Row stack label="Title model" description="Names new chats after the first exchange." copy={helper('title-model', 'Title model', titleModel, titleModel.data?.id ?? null, 'set_title_model', 'title_model')}>
         <ModelCombobox
           aria-label="Title model"
           className="max-w-64 max-md:w-full max-md:max-w-none"
@@ -83,6 +94,7 @@ export function Helpers() {
       <Row
         stack
         label="Vision fallback model"
+        copy={helper('vision-model', 'Vision fallback model', visionModel, vision?.id ?? null, 'set_vision_model', 'vision_model')}
         description={
           visionModel.isError
             ? `Could not read the vision fallback: ${visionModel.error.message}`
@@ -105,6 +117,7 @@ export function Helpers() {
       <Row
         stack
         label="Escalation model"
+        copy={helper('escalate-model', 'Escalation model', escalateModel, escalateModel.data?.model?.id ?? null, 'set_escalate_model', 'escalate_model')}
         description={
           escalateModel.isError
             ? `Could not read the escalation model: ${escalateModel.error.message}`
@@ -129,6 +142,7 @@ export function Helpers() {
       <Row
         stack
         label="Knowledge harvester model"
+        copy={helper('harvester-model', 'Knowledge harvester model', harvesterModel, harvesterModel.data?.id ?? null, 'set_knowledge_harvester_model', 'knowledge_harvester_model')}
         description={
           harvesterModel.isError
             ? `Could not read the knowledge harvester: ${harvesterModel.error.message}`

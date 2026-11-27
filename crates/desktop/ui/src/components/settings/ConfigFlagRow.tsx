@@ -1,6 +1,7 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ReactNode, useEffect } from 'react'
+import { formatValue } from '@/components/settings/copy/fields'
 import { Row, errorText, useAction } from '@/components/settings/shared'
 import { Switch } from '@/components/ui/switch'
 import { useRestartPending } from '@/lib/restart-pending'
@@ -54,6 +55,17 @@ export function ConfigFlagRow({ flag, name, label, description }: { flag: Config
   return (
     <Row
       label={label}
+      copy={
+        loaded
+          ? {
+              id: `flag:${id}`,
+              label,
+              value: states.every((s) => s.data?.enabled === true),
+              format: formatValue,
+              plan: (on) => ({ kind: 'calls', calls: keys.map((key) => ({ method: 'config_flag_set', args: [key, on] })) }),
+            }
+          : undefined
+      }
       description={
         <>
           {description}

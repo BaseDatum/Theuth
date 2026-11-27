@@ -2,6 +2,8 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useModels } from '@/components/agents/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
+import { fromGetter, fromInfo, setterField } from '@/components/settings/copy/fields'
+import type { CopyField } from '@/components/settings/copy/set-on-all'
 import { Row, Section, useAction } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
@@ -34,9 +36,29 @@ export function ModelDefaults() {
   const current = models.data?.find((m) => m.id === info?.default_model)
   const subagent = models.data?.find((m) => m.id === subagentModel.data?.id)
   const theuth = models.data?.find((m) => m.id === theuthModel.data?.id)
+  const modelName = (id: string | null | undefined) => (id ? (models.data?.find((m) => m.id === id)?.name ?? id) : SAME_AS_NEW.label)
+  // 227: copyable to the other machines (a model id they do not have comes back "failed" or "skipped" there).
+  const copyDefault: CopyField<{ model: string; effort: string | null }> | undefined = info
+    ? {
+        id: 'default-model',
+        label: 'Default model',
+        value: { model: info.default_model, effort: info.default_effort ?? null },
+        format: (v) => [modelName(v.model), v.effort].filter(Boolean).join(' · '),
+        plan: (v) => ({ kind: 'calls', calls: [{ method: 'set_model', args: [null, v.model, true] }, { method: 'set_effort', args: [null, v.effort, true] }] }),
+        read: fromInfo((i) => ({ model: i.default_model, effort: i.default_effort ?? null })),
+      }
+    : undefined
+  const copySubagent = setterField('subagent-model', 'Subagent model', subagentModel.isSuccess ? (subagentModel.data?.id ?? null) : undefined, 'set_subagent_model', {
+    format: modelName,
+    read: fromGetter('subagent_model', (raw) => (raw as { id?: string } | null)?.id ?? null),
+  })
+  const copyTheuth = setterField('theuth-agent-model', 'theuth agent model', theuthModel.isSuccess ? (theuthModel.data?.id ?? null) : undefined, 'set_theuth_agent_model', {
+    format: modelName,
+    read: fromGetter('theuth_agent_model', (raw) => (raw as { id?: string } | null)?.id ?? null),
+  })
   return (
     <Section title="Models">
-      <Row stack label="New sessions" description="The model every new chat starts on. Picking a model inside a chat changes only that chat.">
+      <Row stack label="New sessions" description="The model every new chat starts on. Picking a model inside a chat changes only that chat." copy={copyDefault}>
         <ModelCombobox
           aria-label="New sessions model"
           className="max-w-64 max-md:w-full max-md:max-w-none"
@@ -50,6 +72,7 @@ export function ModelDefaults() {
       <Row
         stack
         label="Subagents"
+        copy={copySubagent}
         description="What theuth subagents start on unless you ask the agent for a specific model. External harnesses (omp, OpenCode) keep their own model."
       >
         <ModelCombobox
@@ -63,7 +86,7 @@ export function ModelDefaults() {
           onChange={(v) => setSubagentModel.mutate(v)}
         />
       </Row>
-      <Row stack label="theuth agent" description="The built-in root on the Agents page: its desk and the work it starts for tasks.">
+      <Row stack label="theuth agent" description="The built-in root on the Agents page: its desk and the work it starts for tasks." copy={copyTheuth}>
         <ModelCombobox
           aria-label="theuth agent model"
           className="max-w-64 max-md:w-full max-md:max-w-none"

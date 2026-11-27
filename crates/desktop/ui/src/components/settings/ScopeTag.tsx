@@ -31,11 +31,27 @@ export function NotHereTag({ missing, engine, className }: { missing: readonly S
   )
 }
 
-/** The top of a tab's body: its scope tag, and why it does nothing on this engine when it does not apply. */
-export function ScopeHeader({ scope, names, missing }: { scope: SettingsScope; names: ScopeNames; missing: readonly SettingsNeed[] | null }) {
+/**
+ * The top of a tab's body: its scope tag, and why it does nothing on this engine when it does not apply.
+ * 227: with more than one machine, a `machine` tab says which one it edits (`editing`); any other tab, while another
+ * machine is picked, says it ignores the pick (`ignoring`: the picked machine's name).
+ */
+export function ScopeHeader({ scope, names, missing, editing, ignoring }: { scope: SettingsScope; names: ScopeNames; missing: readonly SettingsNeed[] | null; editing?: string | null; ignoring?: string | null }) {
   return (
     <div className="mb-3 flex flex-col gap-2">
-      <ScopeTag scope={scope} names={names} className="self-start" />
+      <div className="flex items-center gap-2">
+        <ScopeTag scope={scope} names={names} />
+        {scope === 'machine' && editing && (
+          <span data-editing="" className="ml-auto truncate text-xs text-fg-tertiary">
+            Editing <b className="font-semibold text-foreground">{editing}</b>
+          </span>
+        )}
+        {scope !== 'machine' && ignoring && (
+          <span data-ignores-picker="" title={`Not specific to ${ignoring}`} className="ml-auto truncate text-xs text-fg-tertiary">
+            Ignores the picker: {IGNORES[scope]}
+          </span>
+        )}
+      </div>
       {missing && (
         <p role="note" className="rounded-[10px] border border-border-subtle bg-layer-2 px-3 py-2 text-sm text-fg-secondary">
           <span className="font-medium text-foreground">Not on this machine.</span> {notApplicableText(missing, names.engine)}
@@ -43,4 +59,11 @@ export function ScopeHeader({ scope, names, missing }: { scope: SettingsScope; n
       )}
     </div>
   )
+}
+
+/** What a tab that ignores the picker edits instead (227). */
+const IGNORES: Readonly<Record<Exclude<SettingsScope, 'machine'>, string>> = {
+  everywhere: 'shared by every machine',
+  hub: 'runs on the hub',
+  device: 'this device only',
 }

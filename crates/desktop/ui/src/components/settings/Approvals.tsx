@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import { useId, useState } from 'react'
 import { Name } from '@/components/library/Tools'
+import { fromInfo, setterField } from '@/components/settings/copy/fields'
 import { Empty, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,6 +25,7 @@ export function Approvals() {
       <Section title="Approvals">
         <Row
           label="Ask before risky tools"
+          copy={setterField('approvals', 'Ask before risky tools', info?.approvals.global, 'set_approvals', { args: (on) => [null, on], read: fromInfo((i) => i.approvals.global) })}
           description={
             off
               ? 'Off: tools run without asking, except the always-ask entries below and the mandatory gates. Each chat can override this from its menu.'

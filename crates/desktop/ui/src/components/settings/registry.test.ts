@@ -168,6 +168,10 @@ test('notApplicable: a headless engine dims the mic, display and user tabs only;
   expect(na(engineCaps({ local: false, inputDevices: [] }))).toEqual(['voice'])
   expect(na(engineCaps({ local: false }))).toEqual([])
   expect(na(engineCaps({ local: true, inputDevices: [] }))).toEqual([])
+  // 227: the picked machine's `engine_caps` wins, even over `local`: a headless node dims the same tabs.
+  const headless = { display: false, mic: false, interactive_user: false }
+  expect(na(engineCaps({ local: true, host: headless }))).toEqual(['voice', 'dictation', 'meetings', 'detection', 'live', 'computer'])
+  expect(na(engineCaps({ local: false, host: { display: true, mic: true, interactive_user: true } }))).toEqual([])
 })
 
 test('the nav: device tabs leave General for the "This <device>" group, whose band is the group; nothing else moves', () => {

@@ -4,6 +4,7 @@ import { ChevronRight, Search } from 'lucide-react'
 import { useState } from 'react'
 import { CHAT_HINT, Name, RISK_NAME } from '@/components/library/Tools'
 import { AlwaysAskSelect } from '@/components/library/AlwaysAskSelect'
+import { copyField, fromGetter } from '@/components/settings/copy/fields'
 import { type Action, Empty, Section, errorText, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -49,6 +50,24 @@ function search(cats: BuiltinCategory[], query: string): Shown[] {
   })
 }
 
+const offNames = (cats: readonly { tools: readonly { name: string; disabled: boolean }[] }[]) => cats.flatMap((c) => c.tools.filter((t) => t.disabled).map((t) => t.name)).sort()
+
+/** 227: the harness-wide "Off" switches copy as one: every listed tool switched on, then the ones off here switched off. */
+function builtinsCopy(cats: readonly { tools: readonly { name: string; disabled: boolean }[] }[]) {
+  const all = cats.flatMap((c) => c.tools.map((t) => t.name))
+  return copyField({
+    id: 'builtins',
+    label: 'Built-in tools switched off',
+    value: offNames(cats),
+    format: (off) => (off.length === 0 ? 'none off' : off.join(', ')),
+    plan: (off) => ({
+      kind: 'calls',
+      calls: [{ method: 'set_builtins_disabled', args: [all.filter((n) => !off.includes(n)), false] }, ...(off.length > 0 ? [{ method: 'set_builtins_disabled', args: [off, true] }] : [])],
+    }),
+    read: fromGetter('list_builtins', (raw) => offNames(raw as { tools: { name: string; disabled: boolean }[] }[])),
+  })
+}
+
 /** `session`: a chat id, `''` for the not-yet-created chat (its hides live in the draft), or null (Settings, no chat:
  * only the harness-wide switch). */
 export function Builtins({ session }: { session: string | null }) {
@@ -68,7 +87,7 @@ export function Builtins({ session }: { session: string | null }) {
   const searching = query.trim()
   const approvalsOff = useConnection((s) => s.info?.approvals.global === false)
   return (
-    <Section title="Built-in tools">
+    <Section title="Built-in tools" copy={session === null && list.data ? builtinsCopy(list.data) : undefined}>
       {session === null && <p className="text-[13px] text-fg-tertiary">"Off here" needs a chat. {CHAT_HINT}</p>}
       {session === null && approvalsOff && (
         <p data-approvals-off="" className="text-[13px] text-fg-tertiary">

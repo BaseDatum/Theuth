@@ -1,5 +1,6 @@
 import { useModels } from '@/components/agents/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
+import { copyField, fromInfo } from '@/components/settings/copy/fields'
 import { Count, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useApi } from '@/lib/rpc'
@@ -39,7 +40,32 @@ export function Advisor() {
   const setConsults = useAction((n: number) => api.set_advisor_max_consults(n).then(() => refreshInfo(api)))
   const current = models.data?.find((m) => m.id === advisor?.model)
   return (
-    <Section title="Advisor">
+    <Section
+      title="Advisor"
+      copy={
+        // 227: the whole advisor block copies as one: model, effort and the four tunings.
+        advisor
+          ? copyField({
+              id: 'advisor',
+              label: 'Advisor defaults',
+              value: advisor,
+              format: (a) => `${a.model ? (models.data?.find((m) => m.id === a.model)?.name ?? a.model) : 'None'}${a.effort ? ` · ${a.effort}` : ''}, ${a.max_notes_per_update} notes, ${a.immune_turns} immune, ${backlogLabel(a.sync_backlog)}, ${consultsLabel(a.max_consults)}`,
+              plan: (a) => ({
+                kind: 'calls',
+                calls: [
+                  { method: 'set_advisor_default_model', args: [a.model] },
+                  { method: 'set_advisor_default_effort', args: [a.effort] },
+                  { method: 'set_advisor_notes_per_update', args: [a.max_notes_per_update] },
+                  { method: 'set_advisor_immune_turns', args: [a.immune_turns] },
+                  { method: 'set_advisor_sync_backlog', args: [a.sync_backlog] },
+                  { method: 'set_advisor_max_consults', args: [a.max_consults] },
+                ],
+              }),
+              read: fromInfo((i) => i.advisor),
+            })
+          : undefined
+      }
+    >
       <Row
         stack
         label="Default advisor model"

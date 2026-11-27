@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
+import { copyField, fromGetter } from '@/components/settings/copy/fields'
 import { Count, Range, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { SummaryTestCall } from '@/components/settings/SummaryTestCall'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -129,7 +130,11 @@ export function Memory({ focus = null }: { focus?: string | null }) {
 
   return (
     <>
-      <Section title="Defaults">
+      <Section
+        title="Defaults"
+        // 227: the fractal-context settings copy as one (`endless_settings_set`).
+        copy={s ? copyField({ id: 'endless', label: 'Context settings', value: s, format: (v) => `fractal context ${v.default_chat ? 'on' : 'off'} for new chats, with this machine’s tail, compactor and recall settings`, plan: (v) => ({ kind: 'calls', calls: [{ method: 'endless_settings_set', args: [v] }] }), read: fromGetter('endless_settings_get', (raw) => raw as typeof s) }) : undefined}
+      >
         <Row label="New chats use fractal context" description="The ∞ switch on the New chat view starts on; each draft can still turn it off.">
           <Switch aria-label="New chats use fractal context" checked={s?.default_chat ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_chat: v })} />
         </Row>
