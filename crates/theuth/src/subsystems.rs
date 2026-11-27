@@ -1,4 +1,4 @@
-//! Subsystem gating (design doc 224): which plugins an engine starts for its role.
+//! Subsystem gating (design doc 226): which plugins an engine starts for its role.
 //!
 //! Every gated subsystem declares what it needs ([`Need`]); [`decide`] weighs that against
 //! the host ([`Env`]) and the owner's override (`subsystems.<name>: auto|on|off`). A subsystem
@@ -69,7 +69,7 @@ pub struct Rule {
     pub needs: &'static [Need],
 }
 
-/// The gating table (224 §2). Plugins not listed always start.
+/// The gating table (226 §2). Plugins not listed always start.
 pub const RULES: &[Rule] = &[
     Rule { name: "dreaming", needs: &[Need::Hub] },
     Rule { name: "signal", needs: &[Need::Hub] },

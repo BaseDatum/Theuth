@@ -1051,7 +1051,7 @@ agent:
 #   enabled: true            # false: no watcher, no actor, no tool, no prompt block
 #   run_timeout_secs: 1800   # a run still going after this is cancelled and reported as `timeout`
 
-# subsystems:                # which subsystems this engine starts for its role (design doc 224); auto | on | off each.
+# subsystems:                # which subsystems this engine starts for its role (design doc 226); auto | on | off each.
 #                            # auto follows the rule: dreaming/signal/slack/telegram run only on the mesh hub (channels stay
 #                            # control-only elsewhere and move with the lease); meeting/voice/talk need an interactive host
 #                            # (desktop app, TUI — never `t --headless`) and an audio device; computer needs a display (Xvfb counts).
@@ -2299,7 +2299,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
     plugins
 }
 
-/// Start `plugins` on `rt` in order, gated for `env` (design doc 224): every plugin declared
+/// Start `plugins` on `rt` in order, gated for `env` (design doc 226): every plugin declared
 /// its wire already; a skipped one does not start, a hub-only one starts under
 /// [`subsystems::follow_hub`] once the lease is known. First, 51 §8.2: the owners the registry
 /// must hear from before a private root may open — every lifecycle participant whose plugin
@@ -2413,7 +2413,7 @@ async fn start_plugins(
     Ok(())
 }
 
-/// The plugin a hub-only subsystem runs per lease phase (224 §3): dreaming only on the hub;
+/// The plugin a hub-only subsystem runs per lease phase (226 §3): dreaming only on the hub;
 /// a channel listens on the hub (in daemon mode) and is control-only elsewhere.
 fn hub_subsystem(name: &'static str, daemon: bool) -> Option<subsystems::HubSubsystem> {
     let make: subsystems::MakePlugin = match name {
