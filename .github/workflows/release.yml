@@ -27,8 +27,8 @@
 #   THEUTH_UPDATE_KEY_PASSWORD   Password for THEUTH_UPDATE_KEY (empty for --ci keys)
 #   S3_ACCESS_KEY_ID             S3/RustFS access key for release publishing
 #   S3_SECRET_ACCESS_KEY         S3/RustFS secret key for release publishing
-#   WASABI_ACCESS_KEY_ID         Wasabi S3 access key for release mirror (theuth-releases)
-#   WASABI_SECRET_ACCESS_KEY     Wasabi S3 secret key for release mirror (theuth-releases)
+#   WASABI_ACCESS_KEY_ID         Wasabi S3 access key (theuth-releases mirror + theuth-build-cache)
+#   WASABI_SECRET_ACCESS_KEY     Wasabi S3 secret key (theuth-releases mirror + theuth-build-cache)
 #   HOMEBREW_TAP_TOKEN           Fine-grained PAT (contents:write on BaseDatum/homebrew-tap), OR
 #   HOMEBREW_TAP_SSH_KEY         SSH deploy key with push access to BaseDatum/homebrew-tap
 #
@@ -41,6 +41,7 @@
 #   WASABI_S3_REGION             Default: us-central-1
 #   WASABI_S3_BUCKET             Default: theuth-releases
 #   WASABI_S3_PUBLIC_BASE_URL    Default: https://s3.us-central-1.wasabisys.com/theuth-releases
+#   WASABI_CACHE_BUCKET          Default: theuth-build-cache (sccache + Docker Buildx cache)
 
 name: Release
 
@@ -90,7 +91,16 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
   BUN_VERSION: '1.4.2'
+  SCCACHE_VERSION: '0.20.1'
+  SCCACHE_BUCKET: ${{ vars.WASABI_CACHE_BUCKET || 'theuth-build-cache' }}
+  SCCACHE_REGION: ${{ vars.WASABI_S3_REGION || 'us-central-1' }}
+  SCCACHE_ENDPOINT: ${{ vars.WASABI_S3_ENDPOINT || 'https://s3.us-central-1.wasabisys.com' }}
+  SCCACHE_S3_USE_SSL: 'true'
+  SCCACHE_S3_KEY_PREFIX: sccache/
+  SCCACHE_IDLE_TIMEOUT: '0'
 
 jobs:
   prepare:
@@ -171,10 +181,10 @@ jobs:
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "Release metadata: version=$VERSION tag=$TAG ref=$CHECKOUT_REF prerelease=$PRERELEASE"
 
-      - name: Install just
+      - name: Install just and sccache
         uses: taiki-e/install-action@v2
         with:
-          tool: just
+          tool: just,sccache@0.20.1
 
       - name: Check committed JS bundles
         run: just apps-bundle-check documents-bundle-check
@@ -201,12 +211,30 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
         with:
-          shared-key: ts-bindings-linux-x86_64
-          cache-all-crates: true
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-linux-x86_64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-linux-x86_64-
+
+      - name: Start sccache (Wasabi S3)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+            echo "::warning::WASABI_ACCESS_KEY_ID / WASABI_SECRET_ACCESS_KEY not set; building without sccache"
+            exit 0
+          fi
+          if sccache --start-server; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "::warning::sccache failed to connect to Wasabi S3; continuing without sccache"
+          fi
 
       - name: Cache Bun packages
         uses: actions/cache@v4
@@ -219,12 +247,18 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: '0'
           CARGO_PROFILE_TEST_DEBUG: '0'
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
           df -h /
           just ts-desktop
           test -d crates/desktop/ui/src/rpc/bindings
           test -n "$(ls -A crates/desktop/ui/src/rpc/bindings)"
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
 
       - name: Upload TypeScript bindings artifact
         uses: actions/upload-artifact@v4
@@ -260,10 +294,10 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Install cargo-tauri and just
+      - name: Install cargo-tauri, just, and sccache
         uses: taiki-e/install-action@v2
         with:
-          tool: tauri-cli@2.12.6,just
+          tool: tauri-cli@2.12.6,just,sccache@0.20.1
 
       - name: Install Homebrew build tools
         run: |
@@ -272,12 +306,30 @@ jobs:
           echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
           echo "LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib" >> "$GITHUB_ENV"
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
         with:
-          shared-key: release-macos-aarch64
-          cache-all-crates: true
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-macos-aarch64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-macos-aarch64-
+
+      - name: Start sccache (Wasabi S3)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+            echo "::warning::WASABI_ACCESS_KEY_ID / WASABI_SECRET_ACCESS_KEY not set; building without sccache"
+            exit 0
+          fi
+          if sccache --start-server; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "::warning::sccache failed to connect to Wasabi S3; continuing without sccache"
+          fi
 
       - name: Cache microsandbox and ONNX Runtime artifacts
         uses: actions/cache@v4
@@ -381,6 +433,8 @@ jobs:
           THEUTH_SKIP_TS_BINDINGS: '1'
           THEUTH_SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           THEUTH_S3_PUBLIC_BASE_URL: ${{ vars.THEUTH_S3_PUBLIC_BASE_URL || 'https://s3.rwx.dev/theuth/releases' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
         run: ./scripts/package-macos.sh
 
       - name: Notarize and staple macOS DMG
@@ -393,11 +447,15 @@ jobs:
       - name: Package macOS update payloads
         run: ./scripts/package-update-macos.sh
 
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
       - name: Clean up signing keychain and notary key
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/theuth-signing.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8"
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8" 
 
       - name: Upload macOS release artifacts
         uses: actions/upload-artifact@v4
@@ -467,17 +525,35 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Install cargo-tauri and just
+      - name: Install cargo-tauri, just, and sccache
         uses: taiki-e/install-action@v2
         with:
-          tool: tauri-cli@2.12.6,just
+          tool: tauri-cli@2.12.6,just,sccache@0.20.1
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
         with:
-          shared-key: release-linux-${{ matrix.arch }}
-          cache-all-crates: true
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-linux-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-linux-${{ matrix.arch }}-
+
+      - name: Start sccache (Wasabi S3)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+            echo "::warning::WASABI_ACCESS_KEY_ID / WASABI_SECRET_ACCESS_KEY not set; building without sccache"
+            exit 0
+          fi
+          if sccache --start-server; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "::warning::sccache failed to connect to Wasabi S3; continuing without sccache"
+          fi
 
       - name: Cache microsandbox runtime artifacts
         uses: actions/cache@v4
@@ -510,10 +586,16 @@ jobs:
           THEUTH_SKIP_TS_BINDINGS: '1'
           THEUTH_SKIP_UPLOAD: '1'
           THEUTH_LINUX_NATIVE: '1'
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
           ./scripts/package-linux.sh
           ./scripts/stage-linux.sh
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
 
       - name: Smoke-test Linux CLI tarball in clean ubuntu:24.04 container
         env:
@@ -588,10 +670,10 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Install cargo-tauri and just
+      - name: Install cargo-tauri, just, and sccache
         uses: taiki-e/install-action@v2
         with:
-          tool: tauri-cli@2.12.6,just
+          tool: tauri-cli@2.12.6,just,sccache@0.20.1
 
       - name: Ensure Windows native build tools (LLVM, protoc, cmake, perl, nasm)
         shell: pwsh
@@ -682,12 +764,31 @@ jobs:
           & perl --version | Select-String 'This is perl' | Select-Object -First 1
           if ($env:ARCH -eq 'x86_64') { & nasm -v }
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
         with:
-          shared-key: release-windows-${{ matrix.arch }}
-          cache-all-crates: true
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-windows-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-windows-${{ matrix.arch }}-
+
+      - name: Start sccache (Wasabi S3)
+        shell: pwsh
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:AWS_ACCESS_KEY_ID) -or [string]::IsNullOrEmpty($env:AWS_SECRET_ACCESS_KEY)) {
+            Write-Host "::warning::WASABI_ACCESS_KEY_ID / WASABI_SECRET_ACCESS_KEY not set; building without sccache"
+            exit 0
+          }
+          & sccache --start-server
+          if ($LASTEXITCODE -eq 0) {
+            "RUSTC_WRAPPER=sccache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            Write-Host "::warning::sccache failed to connect to Wasabi S3; continuing without sccache"
+          }
 
       - name: Cache microsandbox and ONNX Runtime artifacts
         uses: actions/cache@v4
@@ -732,7 +833,17 @@ jobs:
           THEUTH_SKIP_TS_BINDINGS: '1'
           THEUTH_SKIP_COMPANION_SMOKE: '1'
           THEUTH_S3_PUBLIC_BASE_URL: ${{ vars.THEUTH_S3_PUBLIC_BASE_URL || 'https://s3.rwx.dev/theuth/releases' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
         run: pwsh -NoProfile -File scripts/package-windows.ps1
+
+      - name: Show sccache stats
+        if: always()
+        shell: pwsh
+        run: |
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            & sccache --show-stats
+          }
 
       - name: Upload Windows release artifacts
         uses: actions/upload-artifact@v4
@@ -969,17 +1080,35 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Install cargo-tauri and just
+      - name: Install cargo-tauri, just, and sccache
         uses: taiki-e/install-action@v2
         with:
-          tool: tauri-cli@2.12.6,just
+          tool: tauri-cli@2.12.6,just,sccache@0.20.1
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
         with:
-          shared-key: release-ios-aarch64
-          cache-all-crates: true
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-ios-aarch64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-ios-aarch64-
+
+      - name: Start sccache (Wasabi S3)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+            echo "::warning::WASABI_ACCESS_KEY_ID / WASABI_SECRET_ACCESS_KEY not set; building without sccache"
+            exit 0
+          fi
+          if sccache --start-server; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "::warning::sccache failed to connect to Wasabi S3; continuing without sccache"
+          fi
 
       - name: Cache Bun packages
         uses: actions/cache@v4
@@ -1028,7 +1157,13 @@ jobs:
           THEUTH_IOS_CLOUD_SIGN: '1'
           THEUTH_SKIP_BUN_INSTALL: '1'
           THEUTH_SKIP_TS_BINDINGS: '1'
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
         run: ./scripts/package-ios.sh
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
 
       - name: Upload iOS IPA artifact
         uses: actions/upload-artifact@v4
@@ -1151,6 +1286,10 @@ jobs:
 
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v6
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ vars.WASABI_S3_REGION || 'us-central-1' }}
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
@@ -1162,8 +1301,8 @@ jobs:
           build-args: |
             ${{ matrix.build_args }}
             ${{ matrix.fetch_iroh && format('IROH_RELAY_VERSION={0}', steps.iroh.outputs.version) || '' }}
-          cache-from: type=gha,scope=docker-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=docker-${{ matrix.name }}
+          cache-from: ${{ secrets.WASABI_ACCESS_KEY_ID != '' && format('type=s3,region={0},bucket={1},endpoint_url={2},use_path_style=true,prefix=buildx/,name={3}', vars.WASABI_S3_REGION || 'us-central-1', vars.WASABI_CACHE_BUCKET || 'theuth-build-cache', vars.WASABI_S3_ENDPOINT || 'https://s3.us-central-1.wasabisys.com', matrix.name) || '' }}
+          cache-to: ${{ secrets.WASABI_ACCESS_KEY_ID != '' && format('type=s3,region={0},bucket={1},endpoint_url={2},use_path_style=true,prefix=buildx/,name={3},mode=max,ignore-error=true', vars.WASABI_S3_REGION || 'us-central-1', vars.WASABI_CACHE_BUCKET || 'theuth-build-cache', vars.WASABI_S3_ENDPOINT || 'https://s3.us-central-1.wasabisys.com', matrix.name) || '' }}
 
   docker-release-images:
     name: Docker (${{ matrix.name }})
@@ -1239,6 +1378,10 @@ jobs:
 
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v6
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ vars.WASABI_S3_REGION || 'us-central-1' }}
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
@@ -1250,5 +1393,5 @@ jobs:
             THEUTH_VERSION=${{ needs.prepare.outputs.version }}
             THEUTH_PUBKEY=${{ steps.cfg.outputs.pubkey }}
             THEUTH_MANIFEST=${{ steps.cfg.outputs.manifest }}
-          cache-from: type=gha,scope=docker-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=docker-${{ matrix.name }}
+          cache-from: ${{ secrets.WASABI_ACCESS_KEY_ID != '' && format('type=s3,region={0},bucket={1},endpoint_url={2},use_path_style=true,prefix=buildx/,name={3}', vars.WASABI_S3_REGION || 'us-central-1', vars.WASABI_CACHE_BUCKET || 'theuth-build-cache', vars.WASABI_S3_ENDPOINT || 'https://s3.us-central-1.wasabisys.com', matrix.name) || '' }}
+          cache-to: ${{ secrets.WASABI_ACCESS_KEY_ID != '' && format('type=s3,region={0},bucket={1},endpoint_url={2},use_path_style=true,prefix=buildx/,name={3},mode=max,ignore-error=true', vars.WASABI_S3_REGION || 'us-central-1', vars.WASABI_CACHE_BUCKET || 'theuth-build-cache', vars.WASABI_S3_ENDPOINT || 'https://s3.us-central-1.wasabisys.com', matrix.name) || '' }}
