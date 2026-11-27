@@ -77,3 +77,40 @@ lands).
   value with 'Use this everywhere' per row (→ the Set-on-all flow pre-filled).
 
 Mock: `mesh-settings-mock.html` (owner drafts, session 01a2181b).
+
+## 2. Engine as built (`crates/agent/src/rpc_machines.rs`)
+
+Contract fill-ins (no change to §1's shapes):
+
+- `PressToken = { at: number }` (ms epoch of the UI press). Advisory only: the engine the app is connected to
+  forwards a press only when `secrets::rpc::human_press` passes for the calling connection; an agent (internal
+  peer), a guest, an unauthenticated or closed connection never gets one, whatever it sends.
+- `ForwardedPress` lives in `rpc_core` (so `secrets::rpc::human_press` can see it) and is re-exported from
+  `agent::rpc_forward` beside `Forwarded`. Wire: `"_press": true` as a top-level field of the `theuth/rpc/1`
+  request line. Trust model: no MAC — trusted because `theuth/rpc/1` is accepted only from engines in the live paired
+  set (iroh endpoint key + mesh `Inbound` gate), and every paired engine is the owner's (contacts use `theuth/a2a/1`,
+  guests never reach the mesh). The receiver (`rpc_forward::serve`) inserts the marker only when the line's method is
+  on `SETTINGS_FORWARDABLE` and the opening peer is in `transport.peers()`; `_press` on any other method, inside
+  `params`, or from an engine no longer paired is ignored. Plugins' own `HumanPress` (install/approve code) still
+  refuses every forwarded call.
+- The hub forwards the method itself (not `engine_call`) to the target, so an engine without 227 still answers
+  settings calls (without the press).
+- A call `engine_call` runs on this engine dispatches into this engine's composed API as the caller's own connection
+  (`rpc_compose::methods` installs it per runtime); `pressed` matters only across the hop.
+- `params` by name (object) or position (array); `null` = no params.
+- `settings_values` with `engines: []` = this engine and every paired engine. Getters are called without params;
+  `null` where a getter failed or does not apply.
+- Error mapping (`classify`): `-32010` owner unreachable → `-32051`; `-32052`, a message starting "the vault is
+  sealed" (feat/sealed-vault, `crates/secrets/src/envelope.rs`), or "vault is locked" → `-32052`; `-32601` method
+  not found and `-32001` actor not running → `-32053`. `engine_call_all` turns them into `status` per row.
+- `restart_required`: the reply's own `restart_required: true` (`config_flag_set`, plugin flags), or
+  `config_flag_set` of a `subsystems.*` key.
+- `engine_caps`: `display`/`interactive_user` from the startup probe `theuth::subsystems::Env` (installed by
+  `start_plugins`; a host that installs none — iOS — reports a person's device); `display` also when
+  `<data_dir>/desktop.json` (the node's watchable desktop) exists; `mic` from `list_input_devices` (non-empty),
+  else the startup audio probe; `headless = !interactive_user`; `hub = mesh::is_hub()`.
+- Allowlist exclusions beyond §1: `mcp_server_get` (returns the token), `add_account`, `acp_login`,
+  `sync_providers` / `apply_providers` (may carry keys; own owner-press flow), and the pairing ceremonies
+  (`contact_window`, `contact_pair`, `contact_answer`, `contact_nearby`, `mesh_nearby`, `mesh_nearby_watch`,
+  `mesh_pair_nearby`, `mesh_pair_answer`): their tickets are credentials and they need a person at the machine.
+
