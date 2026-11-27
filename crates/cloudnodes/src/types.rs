@@ -292,6 +292,27 @@ pub struct CloudNode {
     pub k8s: Option<K8sOptions>,
     /// How its vault is protected; `None` when unknown (older records, orphans).
     pub vault: Option<VaultProtection>,
+    /// Phone-only nodes (224 §16.12): the node forms its own mesh and the app pairs with it over
+    /// the relay. `None` for a node that joined this engine's mesh.
+    #[serde(default)]
+    pub link: Option<NodeLink>,
+}
+
+/// How the app reaches a node made by an engine that is not a mesh member (224 §16.12). Public
+/// data only: the claim's PSK stays in this engine's vault until the app paired.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeLink {
+    /// The one-time link claim's relay rendezvous id (a hash of its PSK).
+    pub claim_id: String,
+    /// When the claim dies (Unix ms).
+    pub expires_ms: u64,
+    /// The node's link identity (base64url public key) once it answered on the relay.
+    pub engine: Option<String>,
+    /// The name the node answered with.
+    pub engine_name: Option<String>,
+    /// The app paired with the node; the claim is spent and forgotten here.
+    #[serde(default)]
+    pub paired: bool,
 }
 
 /// `cloud_list`: every node from local records and every connected provider's tagged

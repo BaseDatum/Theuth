@@ -15,6 +15,8 @@ rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 secrets = { workspace = true }
 mesh = { workspace = true }
+# One-time link claims of phone-only nodes (`link::claim`, 224 §16.12).
+link = { workspace = true }
 agent = { workspace = true }
 replica = { workspace = true }
 futures = { workspace = true }

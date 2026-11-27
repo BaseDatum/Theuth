@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useConnection } from '@/store/connection'
 import { isUnsupported, type UnsealRequestView, vaultApi } from './api'
+import { SealedEngineCard } from './SealedEngineCard'
 import { type BeforeApprove, UnsealPrompt } from './UnsealPrompt'
 
 /** 225: `vault_unseal_requests` has no event; the contract asks for a poll every ~3 s. */
@@ -46,13 +47,14 @@ export function UnsealHost({ beforeApprove }: { beforeApprove?: BeforeApprove })
   }, [client, discovery])
 
   const shown = requests.filter((r) => !answered.has(r.id))
-  if (shown.length === 0) return null
+  if (shown.length === 0) return <SealedEngineCard floating />
   return (
     <div
       className="fixed top-[calc(var(--safe-top)+3rem)] right-4 z-50 flex max-h-[calc(50vh)] w-96 max-w-[calc(100vw-2rem)] flex-col gap-2 overflow-y-auto"
       role="region"
       aria-label="Vault unlock requests"
     >
+      <SealedEngineCard />
       {shown.map((r) => (
         <UnsealPrompt key={r.id} request={r} beforeApprove={beforeApprove} onDone={(id) => setAnswered((done) => new Set(done).add(id))} />
       ))}

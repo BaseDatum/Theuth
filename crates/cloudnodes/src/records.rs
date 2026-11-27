@@ -40,6 +40,10 @@ pub struct Record {
     /// How the node's vault is protected (`Pending` while the create job holds a password).
     #[serde(default)]
     pub vault: Option<VaultProtection>,
+    /// Phone-only nodes (224 §16.12): the link claim's public half; its PSK is in the vault
+    /// (`cloud/link-claim.<name>`) until the app paired.
+    #[serde(default)]
+    pub link: Option<crate::types::NodeLink>,
 }
 
 /// The directory of records; every write is a whole-file replace (temp file + rename).

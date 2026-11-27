@@ -31,7 +31,8 @@ fn safe_chars(s: &str) -> bool {
 /// `desktop` the watchable desktop (Xvnc + websockify on 127.0.0.1, reached over the mesh).
 pub fn render(name: &str, data_dev: &str, ticket: &str, manifest: &str, desktop: bool) -> Result<String> {
     check_name(name)?;
-    if !ticket.is_empty() && !is_ticket(ticket) {
+    // A mesh ticket, or a phone's one-time link claim (`L1.…`, 224 §16.12); both `[0-9A-Za-z.]`.
+    if !ticket.is_empty() && !is_ticket(ticket) && !link::claim::looks_like(ticket) {
         return Err(CloudError("not a pairing ticket".into()));
     }
     let manifest_ok = manifest

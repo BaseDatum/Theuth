@@ -486,9 +486,10 @@ Lightsail** (listed with its price, *coming soon*, not creatable).
 `CloudCredentialChanged{provider, connected, error}` — none carries a credential.
 
 The wizard calls these on **whatever engine the app is connected to**: the iPhone's own engine
-on a phone-only install, or a desktop/hub engine. A fresh engine already has a mesh identity
-(`<data_dir>/mesh/identity` is created on first start), so minting the ticket and having the node
-join *is* forming the mesh: the phone becomes its first member with nothing to copy or paste.
+on a phone-only install, or a desktop/hub engine. On an engine that is a mesh member, minting the
+ticket and having the node join *is* forming the mesh. The on-device iOS engine is not a mesh
+member (no iroh, §16.12): its nodes form their own mesh and the phone reaches them over the relay.
+Two more methods serve that path: `cloud_link_pairing(name)` and `cloud_link_paired(name)`.
 
 ### 16.3 The ticket: 15 minutes, single use, separate slot
 
@@ -746,3 +747,80 @@ get device unlock only.
 (app → engine) and the forwarded request line (engine → node); the browser's input state until
 the create call returns (then cleared) and React Query's mutation variables until they are
 collected — the same exposure as 225's own `vault_unseal` / Settings › Vault forms.
+
+### 16.12 The phone-only path (an iPhone/iPad with no other machine)
+
+**Decision.** The on-device iOS engine has no iroh (netdev blocks it; `mesh/src/ios_impl.rs`
+stubs `RemoteTicket`/`AddPeer`), so the phone can neither mint the §16.3 ticket nor be a member of
+the node's mesh. **The node is its own mesh** (a single-node mesh, its own hub), and the phone is
+its **UI client over the relay** — the same pairing (31 §4.4, Noise `IKpsk2`) and the same engine
+row (`useEngines`, IndexedDB `harnesses`) as any remote engine the app adds. No second
+mesh-membership mechanism exists: when the iOS engine can join meshes (owner rule: a phone's local
+engine joins exactly one mesh), the upgrade is **the phone joins the node's mesh with a ticket the
+node mints** (`mesh_pairing_string` on the node, `mesh_add` on the phone); the mesh is then node +
+phone, and device unlock of the node's vault (225 §2) works from the phone. `Cloud::set_own_mesh`
+(today `cfg!(target_os = "ios")`) turns off at that point, and new nodes from such a phone take
+the ordinary §16.3 path. Existing-mesh users on an iPhone (the app connected to a desktop engine)
+are unchanged: the wizard runs on the connected engine.
+
+**The credential to the node.** The node has no inbound channel, so the only thing the phone can
+hand it is in the user data. That is a **one-time link claim** (`link::claim`):
+`L1.<hex psk>.<expires ms>.<hex relay>` — a 32-byte PSK, an expiry ≤ **30 minutes** after mint,
+and the phone's relay. The user data (and Fly's file, the provider's metadata service) is visible to
+the provider, who hosts the node anyway (the §16.3 argument). It is not a long-lived secret: it
+arms a pairing that is consumed by the first device that pairs, and dies at its expiry either way.
+
+**Sequence** (who calls what, where each secret lives):
+
+| # | Where | What |
+|---|---|---|
+| 1 | phone UI → phone engine | `cloud_create(spec)`. `Cloud::mint_claim`: PSK into the phone's vault row `cloud/link-claim.<name>` (sealed by the phone's vault, never listed, deleted at step 9, on failure, on destroy); the record (`<data_dir>/cloudnodes/<name>.json`) keeps only `link: {claim_id, expires_ms}`. |
+| 2 | phone engine → provider (HTTPS) | Server created with the claim as the "ticket" (DO user data `/data/pair-ticket` 0600; Fly `files` entry). Resources tagged `theuth-managed` + `theuth-node:<name>` as always. |
+| 3 | node | `theuth-install.sh join` sees `L1.` and runs `t mesh devices claim <claim>` → RPC `device_pair_claim` → `link::ClaimPairing`: rejects expired / > 30 min / already used; turns Link on with the claim's relay; arms the **engine identity's** single pairing with the PSK until the claim's expiry; stores the claim in `<data_dir>/link/claim` (0600) so a restart re-arms it (`claim::rearm`); `PUT /claim/<id>` on the relay. The join loop then writes `.theuth-paired` and deletes `/data/pair-ticket`. |
+| 4 | relay | `crates/relay/src/claim.rs`: keeps `{engine, name, mac}` under `id` for 30 min. `id = b64url(sha256("theuth-link-claim-id-1\0" ‖ psk)[..16])` reveals nothing about the PSK; `mac = HMAC-SHA256(psk, domain ‖ len ‖ engine ‖ name)`. First write wins (an identical retry is fine, another body 409); reads are not consuming. Public data only. |
+| 5 | phone engine | The job polls `GET /claim/<id>` every 5 s, accepts only an entry whose MAC checks with the PSK, stores `link.engine` / `engine_name` in the record, marks the node `ready`. |
+| 6 | phone UI → phone engine | `cloud_link_pairing(name)` → the ordinary 3-part pairing string `https://<relay>/link#1.<node pub‖psk>.<name>` (RPC answer only; never in an event or the record). |
+| 7 | phone UI → node (relay) | `pair(key, deviceName())` (`link/pairing.ts`): `IKpsk2` with the PSK. The node's `commit_pairing` enrols the phone's device key and **consumes** the PSK; `claim::consumed` deletes `<data_dir>/link/claim` and records the id in `link/claims-used`, so the claim never arms again. The long-lived credential is the phone's device key (IndexedDB `identity`) in the node's `devices` table, as for any pairing. |
+| 8 | phone UI → node (link) | If the user typed a master password: `vault_add_password(null, pw)` on the node through a client on that link (`phoneLink.ts`). The password exists only in the wizard's state and the request; never in the phone's engine, user data, disk or logs. |
+| 9 | phone UI → phone engine | `cloud_link_paired(name)`: the PSK row is deleted, `link.paired = true`. The app switches to the node (`setActive`) on *Connect a model* / *Add my laptop*, which then run on the node. |
+
+Secrets and lifetimes: the PSK lives in the phone's vault ≤ 30 min (until step 9), in the node's
+`link/claim` file until it is consumed or expires, and in the provider's user data (dead after
+either). The relay sees only the id, the node's public key, its name and the MAC. The node's link
+identity (`<data_dir>/link/identity`) is on disk, **not** in the vault, so a sealed node still
+answers on it — that is why the claim arms the engine identity and not the mesh identity
+(`mesh/device_key` lives in the vault).
+
+**Vault on a phone-only node.** The phone is not a mesh member, so 225's device unlock does not
+apply; the master password is the node's only method. After a node restart the node boots sealed,
+still answers on its engine identity, and the app shows *"<name>'s vault is locked"* with *Unlock*
+(`SealedEngineCard` in `UnsealHost`; `vault_unseal(null, pw)` on the connected engine). Without a
+master password (the field left empty, or step 8 failed) the node's DEK is in memory only, and a
+restart before one is set loses the vault (225 §1 window); the done screen and Settings › Security
+say so. Mesh nodes are untouched: their device unlock and the create job's password stage (§16.11)
+stay as they are.
+
+**Background-safe.** iOS freezes the engine on background (`ios_engine.rs`: ≤ 20 s background task
+→ `agent::suspend_engine`) and may kill it. Every step persists before the next: the record (atomic
+replace) and the vault row exist before the provider is called; after a thaw or relaunch
+`Cloud::resume` restarts the job, which asks the provider whether the tagged server already exists
+(`Provider::status`) before creating (a create call cut off by the freeze is retried, ≤ 3 times),
+then goes back to polling the relay. The progress screen says *"You can leave theuth — we'll finish
+when you're back."*
+
+**iOS engine.** `cloudnodes::CloudPlugin` and `cloudnodes::rpc_module` are in `ios_engine.rs`
+(`default-features = false`: no `kubernetes`, no kubectl); no CLI-login discovery (no home); the
+Kubernetes card is hidden on phones (`offered`); Fly stays *beta*. *Sign in with DigitalOcean* opens
+the in-app sheet (`ios_auth::open_auth_browser`) when the connected engine is the phone's own; a
+dismissed sheet cancels the wait.
+
+**Release dependency.** Step 3 needs a node `t` with `t mesh devices claim` and the relay with
+`/claim/<id>`; a node that installs an older release never answers, and the job fails at the
+claim's expiry with a message saying so.
+
+**Not built / not run.** No real provider, relay or device: the cloudnodes tests replay provider
+and relay HTTP; the link tests cover the claim format, MAC, expiry and single use; the relay tests
+the rendezvous routes; the UI test drives pair → paired → password → switch with fakes. *Connect a
+model* on the node: model logins whose OAuth redirect is a loopback URL on the engine (Anthropic,
+OpenAI) cannot complete from the phone's browser against a headless node; API keys and device-code
+logins work. Forwarding the loopback redirect from the phone to the node is open.

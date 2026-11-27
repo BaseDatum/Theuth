@@ -240,6 +240,9 @@ pub struct Cloud {
     prices: Mutex<HashMap<PriceKey, (Instant, Vec<SizeOption>)>>,
     /// Serialises record read-modify-write.
     write: Mutex<()>,
+    /// This engine is not a mesh member (iOS: no iroh): new nodes form their own mesh and the
+    /// app pairs with them over the relay (224 §16.12).
+    own_mesh: std::sync::atomic::AtomicBool,
 }
 
 impl Cloud {
@@ -265,6 +268,7 @@ impl Cloud {
             oauth: Mutex::new(HashMap::new()),
             prices: Mutex::new(HashMap::new()),
             write: Mutex::new(()),
+            own_mesh: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -660,7 +664,12 @@ impl Cloud {
             )));
         }
         let provider = self.provider(spec.provider, spec.k8s.as_ref()).await?;
-        let peers = self.mesh.peers().await?;
+        // An engine that is not a mesh member (iOS) has no peers to check against.
+        let peers = if self.own_mesh() {
+            Vec::new()
+        } else {
+            self.mesh.peers().await?
+        };
         if peers.iter().any(|p| {
             p.name == spec.name && prior.as_ref().and_then(|r| r.peer_id.as_ref()) != Some(&p.id)
         }) {
@@ -669,6 +678,21 @@ impl Cloud {
                 spec.name
             )));
         }
+        // 224 §16.12: the one-time link claim exists (its PSK in the vault) before the record,
+        // so a resumed job always finds it. This engine cannot reach the node over a mesh, so the
+        // app sets the master password itself once paired (over the link); never through here.
+        let link = if self.own_mesh() {
+            if password.is_some() {
+                return Err(CloudError(
+                    "this engine is not a mesh member: the app sets the node's master password \
+                     once it is connected to the node"
+                        .into(),
+                ));
+            }
+            Some(self.mint_claim(&spec.name).await?)
+        } else {
+            None
+        };
         let rec = Record {
             spec,
             created: None,
@@ -681,6 +705,7 @@ impl Cloud {
             ticket_expires_ms: None,
             created_ms: now_ms(),
             vault: password.as_ref().map(|_| VaultProtection::Pending),
+            link,
         };
         let name = rec.spec.name.clone();
         {
@@ -691,6 +716,10 @@ impl Cloud {
         self.emit(CloudEvent::CloudNodeChanged { node: node.clone() });
         let me = self.clone();
         let job_name = name.clone();
+        if self.own_mesh() {
+            self.spawn_phone_job(name);
+            return Ok(node);
+        }
         let task = tokio::spawn(async move {
             if let Err(e) = me.create_job(&job_name, provider, password).await {
                 me.fail(&job_name, &e.0);
@@ -1043,6 +1072,8 @@ impl Cloud {
                 let _ = self.update(&name, |r| r.vault = Some(VaultProtection::NeedsPassword));
             }
             match rec.state {
+                // 224 §16.12: a phone-only create picks up where it was, from the provider's API.
+                NodeState::Creating if rec.link.is_some() => self.spawn_phone_job(name),
                 NodeState::Creating if rec.created.is_some() => {
                     let me = self.clone();
                     let job_name = name.clone();
@@ -1404,6 +1435,7 @@ impl Cloud {
                 name: name.to_owned(),
             });
         }
+        self.forget_claim(name).await;
         for l in &lines {
             self.progress(name, None, l, None, None);
         }
@@ -1486,6 +1518,7 @@ pub fn view(rec: &Record, peer: Option<&MeshPeer>, status: Option<&ProviderStatu
         created_ms: Some(rec.created_ms),
         k8s: rec.spec.k8s.clone(),
         vault: rec.vault,
+        link: rec.link.clone(),
     }
 }
 
@@ -1615,6 +1648,7 @@ pub fn merge(
             created_ms: None,
             k8s: None,
             vault: None,
+            link: None,
         });
     }
     nodes
@@ -1622,3 +1656,7 @@ pub fn merge(
 
 #[cfg(test)]
 mod tests;
+
+mod phone;
+#[cfg(test)]
+mod phone_tests;

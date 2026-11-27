@@ -140,6 +140,8 @@ app = { workspace = true }
 search = { workspace = true }
 search-providers = { workspace = true }
 agent = { workspace = true }
+# 224 §16.12: cloud nodes made from the phone; no `kubernetes` feature (kubectl, sandbox stacks).
+cloudnodes = { workspace = true, default-features = false }
 surface = { workspace = true }
 js-runtime = { workspace = true }
 tokio = { workspace = true, features = ["net"] }

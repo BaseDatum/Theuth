@@ -130,8 +130,16 @@ impl runtime::Plugin for CloudPlugin {
                 let _ = tx.send(ev);
             }),
             Pacing::default(),
-            dirs::home_dir(),
+            // iOS: no CLI logins to discover in the app's sandbox (224 §16.12).
+            if cfg!(target_os = "ios") {
+                None
+            } else {
+                dirs::home_dir()
+            },
         ));
+        // iOS has no mesh (no iroh): its nodes form their own mesh and the app pairs over the
+        // relay. Set before `resume` so an interrupted phone-only create resumes as one.
+        cloud.set_own_mesh(cfg!(target_os = "ios"));
         cloud.resume();
         let actor = CloudActor::spawn(CloudActor { cloud });
         actor.register(CLOUD_ACTOR)?;

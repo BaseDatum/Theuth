@@ -297,6 +297,9 @@ async fn boot_engine(
         Box::new(app::AppPlugin),
         Box::new(search_providers::SearchProvidersPlugin),
         Box::new(agent::AgentPlugin),
+        // 224 §16.12: cloud nodes from the phone (no mesh here: they form their own mesh and the
+        // app pairs with them over the relay). Kubernetes is compiled out (no kubectl on iOS).
+        Box::new(cloudnodes::CloudPlugin),
         Box::new(IosSearchToolsPlugin),
         Box::new(IosRpcPlugin {
             token: token.clone(),
@@ -444,6 +447,7 @@ fn ios_rpc_composition(
         search_providers::rpc_module(server.clone()),
         tools::rpc_module(server.clone()),
         web::rpc_module(server.clone()),
+        cloudnodes::rpc_module(server.clone()),
         secrets::rpc_module(server),
     ])?;
     let discovery = rpc_core::Discovery {

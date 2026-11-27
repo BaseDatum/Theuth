@@ -11,8 +11,11 @@ import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { useApi } from '@/lib/rpc'
-import { openExternal } from '@/lib/platform'
+import { isIos, openExternal } from '@/lib/platform'
+import { closeAuthBrowser, onAuthBrowserDismissed, openAuthBrowser } from '@/lib/tauri'
+import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
+import { usePhoneLink } from './phoneLink'
 import { checkName, defaultMemory, defaultName, desktopBlocked, fromPrice, localQuote, offered, progressPct, sizesOf, stageRows, userOf } from './format'
 import { cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudNode, useCloudProgress, useCloudProviders, useCloudSizes, useCredentialChanged, useK8sInfo, useVaultSupport } from './queries'
 import { nearestRegion } from './region'
@@ -52,6 +55,10 @@ export type WizardInitial = {
 }
 
 const DEFAULT_NAMESPACE = 'theuth-nodes'
+/** 224 §16.12: a phone-only create keeps going while the app is away; the engine resumes it on return. */
+export const LEAVE_HINT = "You can leave theuth — we'll finish when you're back."
+const VAULT_LATER = 'Vault protection arrives with the next theuth release on this node; set a master password in Settings › Security then.'
+const VAULT_FAILED = 'The master password was not set on the node; set it in Settings › Security › Vault.'
 
 export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: WizardEntry; onDone?: (node: CloudNode | null) => void; onClose: () => void; initial?: WizardInitial }) {
   const desktop = entry === 'desktop-dialog'
@@ -113,6 +120,18 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const nameError = checkName(nodeName) ?? (taken.includes(nodeName) && nodeName !== created ? `${nodeName} is taken` : null)
 
   const node = useCloudNode(created)
+  // The connected engine is this iPhone/iPad's own: not a mesh member, so its nodes form their own mesh (224 §16.12),
+  // and the system browser does not open from the app (the in-app sheet, `ios_auth`, does).
+  const active = useEngines((s) => s.active)
+  const onPhoneEngine = isIos() && active === LOCAL
+  // Phone-only: the node is paired with this device over the relay once it is ready, and the master password goes to
+  // the node over that link (never to this engine), so it is kept here until then.
+  const phoneLink = usePhoneLink(api, node, vaultPassword)
+  useEffect(() => {
+    if (phoneLink.state.phase !== 'paired') return
+    setVaultPassword('')
+    setVaultConfirm('')
+  }, [phoneLink.state.phase])
   const progress = useCloudProgress(created)
   const rows = stageRows({ node, progress, version: node?.version ?? info?.version ?? null })
   useEffect(() => {
@@ -123,12 +142,13 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const onCredential = useCallback(
     (e: { connected: boolean; error: string | null }) => {
       setConnect((c) => ({ ...c, waiting: false, error: e.connected ? null : (e.error ?? 'The sign-in did not finish') }))
+      if (onPhoneEngine) void closeAuthBrowser()
       if (e.connected) {
         void qc.invalidateQueries({ queryKey: cloudKeys.providers })
         setStep('configure')
       }
     },
-    [qc],
+    [qc, onPhoneEngine],
   )
   useCredentialChanged(connect.waiting ? kind : null, onCredential)
 
@@ -143,7 +163,8 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     setConnect((c) => ({ ...c, waiting: true, error: null }))
     try {
       const { url } = await api.cloud_oauth_start(kind)
-      openExternal(url)
+      if (onPhoneEngine) void openAuthBrowser(url, false)
+      else openExternal(url)
     } catch (e) {
       setConnect((c) => ({ ...c, waiting: false, error: errorText(e) }))
     }
@@ -152,6 +173,15 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     if (kind) void api.cloud_oauth_cancel(kind).catch(() => undefined)
     setConnect((c) => ({ ...c, waiting: false }))
   }
+  // The user closed the in-app sign-in sheet: stop waiting for the relay.
+  useEffect(() => {
+    if (!onPhoneEngine || !connect.waiting || !kind) return
+    const off = onAuthBrowserDismissed(() => {
+      void api.cloud_oauth_cancel(kind).catch(() => undefined)
+      setConnect((c) => ({ ...c, waiting: false }))
+    })
+    return () => void off.then((f) => f())
+  }, [onPhoneEngine, connect.waiting, kind, api])
 
   /** The provider step's primary: continue when connected, else sign in or save the pasted token. */
   const next = () => {
@@ -173,11 +203,13 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const create = () => {
     if (!spec || (nameError && !isK8s)) return
     actions.create.mutate(
-      { spec, vaultPassword: vault && !isK8s && vaultPassword ? vaultPassword : null },
+      { spec, vaultPassword: vault && !isK8s && vaultPassword && !onPhoneEngine ? vaultPassword : null },
       {
         onSuccess: (n) => {
-          setVaultPassword('')
-          setVaultConfirm('')
+          if (!onPhoneEngine) {
+            setVaultPassword('')
+            setVaultConfirm('')
+          }
           setCreated(n.name)
           setStep('progress')
         },
@@ -201,6 +233,8 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
 
   const finish = (to: 'providers' | 'machines') => {
     onDone?.(node)
+    // Phone-only: "Connect a model" / "Add my laptop" happen on the node, so it becomes the connected engine first.
+    phoneLink.use()
     void navigate({ to: '/settings/$tab', params: { tab: to } })
   }
 
@@ -252,8 +286,35 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     </>
   )
 
-  const progressView = created && <ProgressView name={created} rows={rows} pct={progressPct(rows, progress)} eta={progress?.eta_secs ?? null} error={node?.error ?? null} retrying={actions.destroy.isPending} phone={phone} onRetry={retry} />
-  const doneView = <DoneView name={created ?? nodeName} entry={entry} onModel={() => finish('providers')} onLaptop={() => finish('machines')} />
+  const progressView = created && (
+    <>
+      <ProgressView name={created} rows={rows} pct={progressPct(rows, progress)} eta={progress?.eta_secs ?? null} error={node?.error ?? null} retrying={actions.destroy.isPending} phone={phone} onRetry={retry} />
+      {node?.link && !node.error && <p className="text-[13px] text-fg-tertiary">{LEAVE_HINT}</p>}
+    </>
+  )
+  const linkState = phoneLink.state
+  const doneView =
+    node?.link && !node.link.paired && linkState.phase !== 'paired' ? (
+      <div data-cloud-link={linkState.phase} className="flex flex-col gap-2 text-sm">
+        <p className="font-medium">{created ?? nodeName} is online</p>
+        {linkState.phase === 'error' ? (
+          <>
+            <p className="text-danger">Could not connect this device: {linkState.error}</p>
+            <Button variant="outline" onClick={phoneLink.retry}>
+              Try again
+            </Button>
+          </>
+        ) : (
+          <p className="text-fg-tertiary">Connecting this device to it…</p>
+        )}
+      </div>
+    ) : (
+      <>
+        <DoneView name={created ?? nodeName} entry={entry} onModel={() => finish('providers')} onLaptop={() => finish('machines')} />
+        {linkState.phase === 'paired' && linkState.vault === 'unsupported' && <p className="text-[13px] text-fg-tertiary">{VAULT_LATER}</p>}
+        {linkState.phase === 'paired' && linkState.vault === 'failed' && <p className="text-[13px] text-danger">{VAULT_FAILED}</p>}
+      </>
+    )
 
   if (phone) {
     const first: WizardStep = entry === 'first-run' ? 'choose' : 'provider'

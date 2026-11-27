@@ -103,6 +103,14 @@ pub trait CloudNodesApi {
     /// node, and its password (RPC only, never in an event). Fails when it was created without.
     #[method(name = "cloud_desktop")]
     async fn cloud_desktop(&self, name: String) -> RpcResult<DesktopOpen>;
+    /// Phone-only nodes (224 §16.12): the pairing string for the node's engine, built from the
+    /// node's answer on the relay and the claim's PSK (RPC answer only, never in an event or the
+    /// record). Fails before the node answered, after the claim expired or once paired.
+    #[method(name = "cloud_link_pairing")]
+    async fn cloud_link_pairing(&self, name: String) -> RpcResult<String>;
+    /// The app paired with the node: forget the claim's PSK here, mark the node paired.
+    #[method(name = "cloud_link_paired")]
+    async fn cloud_link_paired(&self, name: String) -> RpcResult<CloudNode>;
 }
 
 #[async_trait]
@@ -207,6 +215,19 @@ impl CloudNodesApiServer for Server {
 
     async fn cloud_desktop(&self, name: String) -> RpcResult<DesktopOpen> {
         cloud().await?.desktop(&name).await.map_err(err)
+    }
+
+    async fn cloud_link_pairing(&self, name: String) -> RpcResult<String> {
+        cloud()
+            .await?
+            .link_pairing(&name)
+            .await
+            .map(|s| s.to_string())
+            .map_err(err)
+    }
+
+    async fn cloud_link_paired(&self, name: String) -> RpcResult<CloudNode> {
+        cloud().await?.link_paired(&name).await.map_err(err)
     }
 }
 
