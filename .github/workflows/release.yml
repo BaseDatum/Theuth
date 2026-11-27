@@ -1405,7 +1405,27 @@ jobs:
           APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
           AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
-        run: ./scripts/package-ios.sh
+        run: |
+          set -euo pipefail
+          # Retry transient Apple App Store Connect Cloud Signing 502/HTML responses
+          # ("The data couldn't be read because it isn't in the correct format");
+          # target/ and DerivedData stay warm so retries only re-run archive/export (~1 min).
+          for attempt in 1 2 3; do
+            if ./scripts/package-ios.sh; then
+              exit 0
+            fi
+            echo "::warning::package-ios.sh failed on attempt $attempt/3"
+            DIST_LOG="$(ls -td "${TMPDIR:-/tmp}"/*.xcdistributionlogs 2>/dev/null | head -n 1 || true)"
+            if [[ -n "$DIST_LOG" && -d "$DIST_LOG" ]]; then
+              echo "=== Latest Xcode distribution log tail ($DIST_LOG) ==="
+              grep -rnE "error|status|HTTP|profile|signing|fault" "$DIST_LOG" 2>/dev/null | tail -n 30 || true
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              sleep 20
+            else
+              exit 1
+            fi
+          done
 
       - name: Show sccache stats
         if: always()
