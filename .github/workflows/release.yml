@@ -1124,7 +1124,13 @@ jobs:
             exit 0
           fi
           if sccache --start-server; then
-            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+            SCCACHE_BIN="$(command -v sccache)"
+            echo "RUSTC_WRAPPER=$SCCACHE_BIN" >> "$GITHUB_ENV"
+            # xcodebuild strips RUSTC_WRAPPER from its Build Phase environment;
+            # write it to $CARGO_HOME/config.toml so cargo inside Xcode uses sccache.
+            CARGO_CFG="${CARGO_HOME:-$HOME/.cargo}/config.toml"
+            mkdir -p "$(dirname "$CARGO_CFG")"
+            printf '\n[build]\nrustc-wrapper = "%s"\n' "$SCCACHE_BIN" >> "$CARGO_CFG" 
           else
             echo "::warning::sccache failed to connect to Wasabi S3; continuing without sccache"
           fi
