@@ -39,8 +39,9 @@ export const openCodemapTile = (host: string, root: string): string | null =>
   openTile({ kind: 'codemap', host, props: { root } satisfies CodemapProps })
 
 /** A diagram's fullscreen: the svg markup (mermaid's, or the mounted React svg), the export stem (a content hash, so
- * also the tile key) and the card's label. */
-export type DiagramProps = { svg: string; name: string; label: string }
+ * also the tile key), the card's label, and the opaque page colour the svg was painted for (so a popped-out tile stays
+ * legible and exports with matching contrast if the theme later flips). */
+export type DiagramProps = { svg: string; name: string; label: string; background?: string }
 /** `refresh`: only an open diagram tile takes the new markup (a redraw), staying behind its panel's active tab. */
 export const openDiagramTile = (host: string, props: DiagramProps, refresh = false): string | null =>
   openTile({ kind: 'diagram', host, key: props.name, props, refresh })

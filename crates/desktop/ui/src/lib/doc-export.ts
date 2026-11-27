@@ -77,7 +77,7 @@ export function exportAssets(mounted: readonly MountedDiagram[], from: DiagramTo
   const out: ExportAsset[] = []
   for (const m of mounted) {
     try {
-      out.push({ id: m.id, svg: standalone(swap(m.markup)).svg })
+      out.push({ id: m.id, svg: standalone(swap(m.markup), '#fff').svg })
     } catch {
       // No viewBox: the daemon's snapshot or text fallback stands in.
     }

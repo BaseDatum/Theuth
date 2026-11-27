@@ -1,5 +1,5 @@
 import { Copy, FileDown, ImageDown, type LucideIcon, Maximize2, RotateCcw, X } from 'lucide-react'
-import { type PointerEvent as ReactPointerEvent, type ReactNode, useContext, useEffect, useRef, useState } from 'react'
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { useTileHost } from '@/components/tiles/host'
 import { openDiagramTile } from '@/components/tiles/open'
@@ -7,10 +7,12 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { rasterize, standalone } from '@/lib/diagram-export'
+import { diagramTokens } from '@/lib/diagram-theme'
 import { isLocal, saveBlob } from '@/lib/files'
 import { container } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { useSnapshot } from '@/lib/snapshot-mode'
+import { subscribeDark } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
 import { Reserve } from './Reserve'
@@ -154,12 +156,29 @@ export function Tool({ icon: Icon, label, onClick, size = 'icon-sm' }: { icon: L
 }
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
+const defaultBackground = () => diagramTokens().background
+const isDark = () => document.documentElement.classList.contains('dark')
 
 /** Copy PNG · Save PNG… · Save SVG… (the latter two only where `saveBlob` has a sink), then `extra`. */
-export function Tools({ markup, name, size, extra }: { markup: () => string; name: string; size?: 'icon-sm' | 'icon'; extra?: ReactNode }) {
+export function Tools({
+  markup,
+  background = defaultBackground,
+  name,
+  size,
+  extra,
+}: {
+  markup: () => string
+  /** Opaque page colour matching `markup()`; defaults to the live theme's `--background`, read inside the click. */
+  background?: string | (() => string)
+  name: string
+  size?: 'icon-sm' | 'icon'
+  extra?: ReactNode
+}) {
   const api = useApi()
   const active = useEngines((s) => s.active)
-  const png = () => rasterize(standalone(markup()))
+  const resolveBg = () => (typeof background === 'function' ? background() : background) || diagramTokens().background
+  const doc = () => standalone(markup(), resolveBg())
+  const png = () => rasterize(doc())
   const copy = () =>
     // The blob is promised, not awaited: Safari only honours a write that is still inside the click's user activation.
     navigator.clipboard.write([new ClipboardItem({ 'image/png': png() })]).then(() => toast('Copied PNG'), fail)
@@ -172,7 +191,7 @@ export function Tools({ markup, name, size, extra }: { markup: () => string; nam
           <Tool
             icon={FileDown}
             label="Save SVG…"
-            onClick={() => saveBlob(api, new Blob([standalone(markup()).svg], { type: 'image/svg+xml' }), name, 'svg').catch(fail)}
+            onClick={() => saveBlob(api, new Blob([doc().svg], { type: 'image/svg+xml' }), name, 'svg').catch(fail)}
             size={size}
           />
         </>
@@ -188,7 +207,19 @@ export function Tools({ markup, name, size, extra }: { markup: () => string; nam
  * so the layer stack, Esc and focus are handled; no scroll container, so wheel and fingers reach the surface.
  * Controls are `icon` (36 px; 44 px on coarse pointers through the Button variant) and clear the safe areas.
  */
-function Fullscreen({ content, markup, name, onClose }: { content: Content; markup: () => string; name: string; onClose: () => void }) {
+function Fullscreen({
+  content,
+  markup,
+  background,
+  name,
+  onClose,
+}: {
+  content: Content
+  markup: () => string
+  background?: string | (() => string)
+  name: string
+  onClose: () => void
+}) {
   const [view, setView] = useState(HOME)
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -206,6 +237,7 @@ function Fullscreen({ content, markup, name, onClose }: { content: Content; mark
         >
           <Tools
             markup={markup}
+            background={background}
             name={name}
             size="icon"
             extra={
@@ -225,13 +257,16 @@ function Fullscreen({ content, markup, name, onClose }: { content: Content; mark
  * The diagram card: `label` in the header, the content behind pan/zoom, the toolbar on hover, fullscreen on demand (a
  * tile beside the chat where the layout tiles, which takes the markup as it is now and follows a re-render of it).
  * `svg` is mermaid's markup (`null` while the first render is pending); `children` is a React-rendered `<svg>`
- * (Graph). `name` is the export file stem — a content hash in every caller, so with the fence's entry id it is also the
- * card's remembered-height key (135 §2): the placeholder takes the last measured height while the content renders.
+ * (Graph). `background` overrides the live theme background when `svg` was captured under an earlier palette (e.g.
+ * mermaid while re-rendering after a theme flip). `name` is the export file stem — a content hash in every caller, so
+ * with the fence's entry id it is also the card's remembered-height key (135 §2): the placeholder takes the last
+ * measured height while the content renders.
  * `title` is the card's tooltip (a mid-stream error, "JSON repaired").
  * `fill` (the `.mmd` artifact view, 35 §3.2) sizes the card and the diagram to the parent instead of inline height.
  */
 export function DiagramFrame({
   svg,
+  background,
   children,
   name,
   label,
@@ -240,6 +275,7 @@ export function DiagramFrame({
   fill,
 }: {
   svg?: string | null
+  background?: string
   children?: ReactNode
   name: string
   label: string
@@ -261,10 +297,14 @@ export function DiagramFrame({
   /** The markup to export: mermaid's string, or the mounted `<svg>` of the React content. */
   const markup = () => svg ?? inline.current?.querySelector('svg')?.outerHTML ?? ''
   const host = useTileHost()
-  // An open tile follows a re-render of the same diagram (a theme switch redraws mermaid under the same name).
+  const dark = useSyncExternalStore(subscribeDark, isDark, () => false)
+  const tileBackground = () => background ?? diagramTokens().background
+  // An open tile follows a re-render of the same diagram (a theme switch redraws mermaid and React svgs under the same name).
   useEffect(() => {
-    if (host && content) openDiagramTile(host, { svg: markup(), name, label }, true)
-  }, [host, svg, name, label])
+    if (!host || !content) return
+    const m = markup()
+    if (m) openDiagramTile(host, { svg: m, background: tileBackground(), name, label }, true)
+  }, [host, svg, background, dark, name, label])
   return (
     <div
       className={cn('group relative', bare ? 'flex h-full min-h-0 flex-1 flex-col' : cn('rounded-xl border bg-layer-1 p-2', fill ? 'flex h-full flex-col' : 'my-4'))}
@@ -277,8 +317,15 @@ export function DiagramFrame({
         <div className={cn('absolute top-2 right-2 flex items-center gap-0.5 rounded-md bg-layer-1/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100', !bare && 'pointer-coarse:opacity-100')}>
           <Tools
             markup={markup}
+            background={background}
             name={name}
-            extra={<Tool icon={Maximize2} label="Fullscreen" onClick={() => (host ? openDiagramTile(host, { svg: markup(), name, label }) : setFull(true))} />}
+            extra={
+              <Tool
+                icon={Maximize2}
+                label="Fullscreen"
+                onClick={() => (host ? openDiagramTile(host, { svg: markup(), background: tileBackground(), name, label }) : setFull(true))}
+              />
+            }
           />
         </div>
       )}
@@ -291,7 +338,7 @@ export function DiagramFrame({
           </div>
         )}
       </Reserve>
-      {full && content && <Fullscreen content={content} markup={markup} name={name} onClose={() => setFull(false)} />}
+      {full && content && <Fullscreen content={content} markup={markup} background={background} name={name} onClose={() => setFull(false)} />}
     </div>
   )
 }
