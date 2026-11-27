@@ -20718,6 +20718,7 @@ version = "2.22.2"
 dependencies = [
  "aho-corasick",
  "anyhow",
+ "argon2 0.5.3",
  "async-trait",
  "base64 0.23.1",
  "chacha20poly1305 0.11.0",
@@ -20728,6 +20729,7 @@ dependencies = [
  "jsonrpsee",
  "kameo",
  "keyring",
+ "libc",
  "oauth",
  "platform",
  "rand 0.10.3",

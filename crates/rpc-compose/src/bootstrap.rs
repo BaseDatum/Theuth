@@ -28,6 +28,29 @@ pub(crate) fn install_forward_hooks() {
     secrets::rpc::install_engine_forward(|ext, engine, method, params| {
         Box::pin(forward::to_engine(ext, Some(engine), method, params))
     });
+    // 225: the sealed vault's engine-to-engine calls ride the same `theuth/rpc/1` peer call, and
+    // read the caller's authenticated endpoint id from the forwarded marker.
+    secrets::seal::install_peer_call(std::sync::Arc::new(VaultPeers));
+    secrets::seal::install_caller(|ext| ext.get::<forward::Forwarded>().map(|f| f.0.0.clone()));
+}
+
+/// 225: `secrets::seal::PeerCall` over [`forward::to_peer`]: one call, never a second hop.
+struct VaultPeers;
+
+impl secrets::seal::PeerCall for VaultPeers {
+    fn call<'a>(
+        &'a self,
+        peer: &'a str,
+        method: &'static str,
+        params: serde_json::Value,
+    ) -> futures::future::BoxFuture<'a, Result<Option<serde_json::Value>, String>> {
+        Box::pin(async move {
+            let ext = jsonrpsee::Extensions::new();
+            forward::to_peer::<serde_json::Value>(&ext, &replica::PeerId(peer.to_owned()), method, params)
+                .await
+                .map_err(|e| e.message().to_owned())
+        })
+    }
 }
 
 /// Install the existing forwarding and per-runtime insight hooks.

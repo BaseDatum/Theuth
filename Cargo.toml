@@ -454,6 +454,7 @@ chacha20poly1305 = "0.11"  # secrets vault (37)
 zeroize = "1"  # secrets vault (37)
 aho-corasick = "1"  # secrets vault (37)
 rpassword = "7"  # secrets vault (37)
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }  # 225: master-password KEK (Argon2id)
 
 [workspace.lints.rust]
 missing_docs = "warn"

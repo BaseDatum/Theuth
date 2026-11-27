@@ -11,6 +11,7 @@ mod plugin_cli;
 mod secret_cli;
 mod service;
 mod subsystems;
+mod vault_cli;
 mod worker;
 #[cfg(test)]
 mod wire_discovery_tests;
@@ -211,6 +212,11 @@ enum Cmd {
     Plugin {
         #[command(subcommand)]
         cmd: plugin_cli::PluginCmd,
+    },
+    /// The sealed secrets vault (design doc 225): status, seal/unseal, unlock methods, offline init.
+    Vault {
+        #[command(subcommand)]
+        cmd: vault_cli::VaultCmd,
     },
 }
 
@@ -645,6 +651,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
         Cmd::Double { .. } => unreachable!("t double runs without an engine"),
         Cmd::Dreaming { .. } => unreachable!("t dreaming runs without an engine"),
         Cmd::Plugin { .. } => unreachable!("t plugin is served by plugin_cli::run"),
+        Cmd::Vault { .. } => unreachable!("t vault is served by vault_cli::run"),
     };
     match r {
         Ok(v) => {
@@ -1731,6 +1738,7 @@ async fn run() -> anyhow::Result<()> {
                 k8s, name, image, ..
             },
         }) if k8s.k8s && k8s.dry_run => return k8s_cli::dry_run(&k8s, name, image).await,
+        Some(Cmd::Vault { cmd }) => return vault_cli::run(&data_dir, &config, cmd).await,
         Some(cmd) => return cmd_67(&data_dir, &config, cmd).await,
         None => {}
     }

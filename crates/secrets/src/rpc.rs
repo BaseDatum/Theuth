@@ -205,6 +205,145 @@ pub trait CredentialsApi {
     /// cards from on (re)connect. Fields as `ExternalUnlockRequested`.
     #[method(name = "list_unlock_requests")]
     async fn list_unlock_requests(&self) -> RpcResult<Vec<secrets::external::UnlockRequestView>>;
+
+    /// 225: the sealed vault of this engine (`engine: null`) or of a paired engine, forwarded
+    /// over the mesh. Never key material.
+    #[method(name = "vault_status", with_extensions)]
+    async fn vault_status(&self, engine: Option<String>) -> RpcResult<secrets::seal::VaultStatus>;
+    /// 225: unseal with the master password. The password travels only inside the mesh's
+    /// end-to-end connection when `engine` is another machine; the KEK is derived there.
+    /// `-32042` wrong password (throttled after 5 in a row).
+    #[method(name = "vault_unseal", with_extensions)]
+    async fn vault_unseal(
+        &self,
+        engine: Option<String>,
+        password: String,
+    ) -> RpcResult<secrets::seal::VaultStatus>;
+    /// 225: lock reads now (needs a password or device method).
+    #[method(name = "vault_seal", with_extensions)]
+    async fn vault_seal(&self, engine: Option<String>) -> RpcResult<secrets::seal::VaultStatus>;
+    /// 225: add the master password (≥ 12 characters); drops a legacy `file` method.
+    #[method(name = "vault_add_password", with_extensions)]
+    async fn vault_add_password(
+        &self,
+        engine: Option<String>,
+        password: String,
+    ) -> RpcResult<secrets::seal::VaultStatus>;
+    /// 225: change the master password (the current one must open the vault).
+    #[method(name = "vault_change_password", with_extensions)]
+    async fn vault_change_password(
+        &self,
+        engine: Option<String>,
+        old: String,
+        new: String,
+    ) -> RpcResult<secrets::seal::VaultStatus>;
+    /// 225: remove an unlock method by id; never the last.
+    #[method(name = "vault_remove_method", with_extensions)]
+    async fn vault_remove_method(
+        &self,
+        engine: Option<String>,
+        id: String,
+    ) -> RpcResult<secrets::seal::VaultStatus>;
+    /// 225: ask paired engine `owner` to become an unlock device of `engine`'s vault (the owner
+    /// may show a prompt; the method appears once it approves).
+    #[method(name = "vault_add_device", with_extensions)]
+    async fn vault_add_device(
+        &self,
+        engine: Option<String>,
+        owner: String,
+    ) -> RpcResult<secrets::seal::VaultStatus>;
+    /// 225: unlock / enrol prompts waiting on this engine (poll).
+    #[method(name = "vault_unseal_requests")]
+    async fn vault_unseal_requests(&self) -> RpcResult<Vec<secrets::seal::UnsealRequestView>>;
+    /// 225: answer a prompt; the owner's own press only. `false` = already answered or expired.
+    #[method(name = "vault_answer_unseal", with_extensions)]
+    async fn vault_answer_unseal(&self, id: String, approve: bool, always: bool) -> RpcResult<bool>;
+    /// 225: the machines this engine unlocks.
+    #[method(name = "vault_unlock_devices")]
+    async fn vault_unlock_devices(&self) -> RpcResult<Vec<secrets::seal::UnlockDevice>>;
+    /// 225: "Unlock automatically" for one machine; the owner's own press only.
+    #[method(name = "vault_set_auto_unlock", with_extensions)]
+    async fn vault_set_auto_unlock(&self, node: String, auto: bool) -> RpcResult<()>;
+    /// 225: stop unlocking a machine.
+    #[method(name = "vault_forget_node", with_extensions)]
+    async fn vault_forget_node(&self, node: String) -> RpcResult<()>;
+    /// 225 engine-to-engine (mesh only): a sealed node asks this owner (`purpose` = `unlock` |
+    /// `enroll`). The caller is the forwarded request's authenticated endpoint id.
+    #[method(name = "vault_peer_ask", with_extensions)]
+    #[rpc_audience("mesh")]
+    async fn vault_peer_ask(
+        &self,
+        nonce: String,
+        purpose: String,
+        name: String,
+    ) -> RpcResult<secrets::seal::AskReply>;
+    /// 225 engine-to-engine (mesh only): the owner's approved key for the node's outstanding
+    /// `nonce`; single use, bound to the owner the nonce was sent to.
+    #[method(name = "vault_peer_grant", with_extensions)]
+    #[rpc_audience("mesh")]
+    async fn vault_peer_grant(
+        &self,
+        nonce: String,
+        purpose: String,
+        key: String,
+        name: String,
+    ) -> RpcResult<()>;
+}
+
+/// 225: the seal gate; absent when the plugin is not loaded.
+fn gate() -> RpcResult<Arc<secrets::seal::Gate>> {
+    secrets::seal::installed().ok_or_else(|| {
+        ErrorObjectOwned::owned(rpc_core::NOT_RUNNING, "secrets vault unavailable", None::<()>)
+    })
+}
+
+/// 225: a [`secrets::seal::SealError`] with its code (`-32041` sealed, `-32042` password).
+fn seal_err(e: secrets::seal::SealError) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(e.code(), e.to_string(), None::<()>)
+}
+
+/// 225: run a `vault_*` call on `engine` over the mesh (D15's forward, `theuth/rpc/1`).
+/// `Ok(None)`: here (no engine, this engine, or already forwarded).
+async fn forward_vault<T: serde::de::DeserializeOwned>(
+    ext: &Extensions,
+    engine: &Option<String>,
+    method: &'static str,
+    params: serde_json::Value,
+) -> RpcResult<Option<T>> {
+    let (Some(engine), Some(fwd)) = (engine.as_deref().filter(|e| !e.is_empty()), FORWARD.get())
+    else {
+        return Ok(None);
+    };
+    match fwd(ext, engine, method, params).await? {
+        Some(v) => serde_json::from_value(v).map(Some).map_err(failed),
+        None => Ok(None),
+    }
+}
+
+/// 225: answering a prompt or loosening auto-unlock is the owner's own press, never the
+/// internal peer (the agent's halves, a forwarded call) or a share guest.
+fn press_only(ext: &Extensions) -> RpcResult<()> {
+    if human_press(ext) {
+        Ok(())
+    } else {
+        Err(ErrorObjectOwned::owned(
+            rpc_core::UNAUTHORIZED,
+            "only the owner's own press answers a vault unlock",
+            None::<()>,
+        ))
+    }
+}
+
+/// 225: the authenticated endpoint id of a call forwarded over `theuth/rpc/1`; anything else
+/// is refused.
+fn mesh_caller(ext: &Extensions) -> RpcResult<String> {
+    secrets::seal::caller(ext).ok_or_else(|| {
+        ErrorObjectOwned::owned(
+            rpc_core::UNAUTHORIZED,
+            "vault_peer_* is engine-to-engine over the mesh only",
+            None::<()>,
+        )
+    })
 }
 
 fn failed(e: impl std::fmt::Display) -> ErrorObjectOwned {
@@ -550,6 +689,179 @@ impl CredentialsApiServer for Server {
 
     async fn list_unlock_requests(&self) -> RpcResult<Vec<secrets::external::UnlockRequestView>> {
         Ok(send(&secrets()?, GetExternals).await?.unlock_requests())
+    }
+
+    async fn vault_status(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+    ) -> RpcResult<secrets::seal::VaultStatus> {
+        if let Some(v) = forward_vault(ext, &engine, "vault_status", serde_json::json!([null])).await? {
+            return Ok(v);
+        }
+        Ok(gate()?.status())
+    }
+
+    async fn vault_unseal(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+        password: String,
+    ) -> RpcResult<secrets::seal::VaultStatus> {
+        let password = Zeroizing::new(password);
+        if let Some(v) =
+            forward_vault(ext, &engine, "vault_unseal", serde_json::json!([null, *password])).await?
+        {
+            return Ok(v);
+        }
+        let g = gate()?;
+        g.unseal_password(password).await.map_err(seal_err)?;
+        Ok(g.status())
+    }
+
+    async fn vault_seal(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+    ) -> RpcResult<secrets::seal::VaultStatus> {
+        if let Some(v) = forward_vault(ext, &engine, "vault_seal", serde_json::json!([null])).await? {
+            return Ok(v);
+        }
+        let g = gate()?;
+        g.seal().map_err(seal_err)?;
+        Ok(g.status())
+    }
+
+    async fn vault_add_password(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+        password: String,
+    ) -> RpcResult<secrets::seal::VaultStatus> {
+        let password = Zeroizing::new(password);
+        if let Some(v) =
+            forward_vault(ext, &engine, "vault_add_password", serde_json::json!([null, *password]))
+                .await?
+        {
+            return Ok(v);
+        }
+        let g = gate()?;
+        g.add_password(password).await.map_err(seal_err)?;
+        Ok(g.status())
+    }
+
+    async fn vault_change_password(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+        old: String,
+        new: String,
+    ) -> RpcResult<secrets::seal::VaultStatus> {
+        let (old, new) = (Zeroizing::new(old), Zeroizing::new(new));
+        if let Some(v) = forward_vault(
+            ext,
+            &engine,
+            "vault_change_password",
+            serde_json::json!([null, *old, *new]),
+        )
+        .await?
+        {
+            return Ok(v);
+        }
+        let g = gate()?;
+        g.change_password(old, new).await.map_err(seal_err)?;
+        Ok(g.status())
+    }
+
+    async fn vault_remove_method(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+        id: String,
+    ) -> RpcResult<secrets::seal::VaultStatus> {
+        if let Some(v) =
+            forward_vault(ext, &engine, "vault_remove_method", serde_json::json!([null, id])).await?
+        {
+            return Ok(v);
+        }
+        let g = gate()?;
+        g.remove_method(&id).await.map_err(seal_err)?;
+        Ok(g.status())
+    }
+
+    async fn vault_add_device(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+        owner: String,
+    ) -> RpcResult<secrets::seal::VaultStatus> {
+        if let Some(v) =
+            forward_vault(ext, &engine, "vault_add_device", serde_json::json!([null, owner])).await?
+        {
+            return Ok(v);
+        }
+        let g = gate()?;
+        g.add_device(&owner).await.map_err(seal_err)?;
+        Ok(g.status())
+    }
+
+    async fn vault_unseal_requests(&self) -> RpcResult<Vec<secrets::seal::UnsealRequestView>> {
+        Ok(gate()?.requests())
+    }
+
+    async fn vault_answer_unseal(
+        &self,
+        ext: &Extensions,
+        id: String,
+        approve: bool,
+        always: bool,
+    ) -> RpcResult<bool> {
+        press_only(ext)?;
+        gate()?.answer(&id, approve, always).await.map_err(seal_err)
+    }
+
+    async fn vault_unlock_devices(&self) -> RpcResult<Vec<secrets::seal::UnlockDevice>> {
+        gate()?.unlock_devices().await.map_err(seal_err)
+    }
+
+    async fn vault_set_auto_unlock(&self, ext: &Extensions, node: String, auto: bool) -> RpcResult<()> {
+        press_only(ext)?;
+        gate()?.set_auto(&node, auto).await.map_err(seal_err)
+    }
+
+    async fn vault_forget_node(&self, ext: &Extensions, node: String) -> RpcResult<()> {
+        press_only(ext)?;
+        gate()?.forget_node(&node).await.map_err(seal_err)
+    }
+
+    async fn vault_peer_ask(
+        &self,
+        ext: &Extensions,
+        nonce: String,
+        purpose: String,
+        name: String,
+    ) -> RpcResult<secrets::seal::AskReply> {
+        let caller = mesh_caller(ext)?;
+        gate()?
+            .on_ask(&caller, &nonce, &purpose, &name)
+            .await
+            .map_err(seal_err)
+    }
+
+    async fn vault_peer_grant(
+        &self,
+        ext: &Extensions,
+        nonce: String,
+        purpose: String,
+        key: String,
+        name: String,
+    ) -> RpcResult<()> {
+        let caller = mesh_caller(ext)?;
+        let key = Zeroizing::new(key);
+        gate()?
+            .on_grant(&caller, &nonce, &purpose, &key, &name)
+            .await
+            .map_err(seal_err)
     }
 
     async fn set_connection_setting(
