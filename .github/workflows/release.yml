@@ -1183,6 +1183,7 @@ jobs:
           THEUTH_IOS_CLOUD_SIGN: '1'
           THEUTH_SKIP_BUN_INSTALL: '1'
           THEUTH_SKIP_TS_BINDINGS: '1'
+          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
           AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
         run: ./scripts/package-ios.sh
