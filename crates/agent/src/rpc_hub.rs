@@ -20,12 +20,14 @@ use agent::rpc_support::RpcServerExt;
 #[rpc(server, client)]
 pub trait AgentHubApi {
     /// PTY jobs of `session` (and, with `descendants: true`, its subtree)
-    /// whose terminal is still retained (51 §7.3).
+    /// whose terminal is still retained (51 §7.3). `engine` (mesh id, owner
+    /// only): the session is on that engine (`engine_terminal`'s).
     #[method(name = "list_terminals", with_extensions)]
     async fn list_terminals(
         &self,
         session: SessionId,
         descendants: Option<bool>,
+        engine: Option<String>,
     ) -> RpcResult<Vec<TerminalSummary>>;
     /// PATH-AC: candidates for the path token under `cursor` in `input`,
     /// listed by the engine running `session` (`None`: this engine, its
@@ -80,7 +82,11 @@ impl AgentHubApiServer for Server {
         ext: &Extensions,
         session: SessionId,
         descendants: Option<bool>,
+        engine: Option<String>,
     ) -> RpcResult<Vec<TerminalSummary>> {
+        if let Some(peer) = agent::rpc_engine::pty_peer(ext, engine.as_deref()).await? {
+            return forward::call_peer(ext, &peer, "list_terminals", (session, descendants)).await;
+        }
         self.authorize(ext, session).await?;
         let mut sessions = vec![session];
         if descendants == Some(true) {

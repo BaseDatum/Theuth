@@ -76,8 +76,11 @@ export const CELL_KEYS: [string, (app: boolean) => string][] = [
 
 type JobRef = { session: string; job: string }
 
-/** Where a `Terminal`'s bytes come from: an agent PTY job, or a cell run's kernel PTY (171 §11.1 output). */
-export type TerminalSource = { kind: 'pty'; session: string; job: string } | { kind: 'cell'; run: CellRunId }
+/** Where a `Terminal`'s bytes come from: an agent PTY job (on mesh engine `engine` when set), or a cell run's kernel PTY (171 §11.1 output). */
+export type TerminalSource = { kind: 'pty'; session: string; job: string; engine?: string } | { kind: 'cell'; run: CellRunId }
+
+/** The trailing `engine` argument of the PTY calls: present only for a job on another engine, so local calls are unchanged. */
+const onEngine = (engine?: string): [] | [string] => (engine ? [engine] : [])
 
 /**
  * The wire between one source and an xterm (171 §7.4): bytes stream in (`subscribe_pty` / `cell_attach`), keystrokes
@@ -95,7 +98,8 @@ export function attachSource(
 ) {
   let ended = false
   let lane: Promise<unknown> = Promise.resolve()
-  const call = src.kind === 'pty' ? (d: string) => api.pty_input(src.session, src.job, d, null) : (d: string) => api.cell_input(src.run, utf8ToB64(d))
+  const call =
+    src.kind === 'pty' ? (d: string) => api.pty_input(src.session, src.job, d, null, ...onEngine(src.engine)) : (d: string) => api.cell_input(src.run, utf8ToB64(d))
   const send = (d: string) => {
     if (ended) return
     lane = lane.then(() => call(d).catch(() => undefined))
@@ -132,7 +136,7 @@ export function attachSource(
   }
   const off = (
     src.kind === 'pty'
-      ? client.stream<PtyChunk>('subscribe_pty', [src.session, src.job, term.rows, term.cols], 'unsubscribe_pty', chunk)
+      ? client.stream<PtyChunk>('subscribe_pty', [src.session, src.job, term.rows, term.cols, ...onEngine(src.engine)], 'unsubscribe_pty', chunk)
       : client.stream<PtyChunk>('cell_attach', [src.run], 'cell_detach', chunk)
   ).catch((e: unknown) => {
     const r = runsElsewhere(e)
@@ -192,6 +196,8 @@ export function PopoutTerminalButton({ session, job, className }: JobRef & { cla
 export type TerminalProps = {
   label: string
   popped?: boolean
+  /** Mesh id of the engine running the PTY job (`engine_terminal`'s `engine`); unset: the connected engine. */
+  engine?: string
   /** Once, when the stream's `exit` chunk arrives. */
   onExit?: () => void
   /** 183 §4.3: the run's live output stays on another engine (`-32014`); its id. */
@@ -206,7 +212,7 @@ export type TerminalProps = {
  * strip and the status line (`label` · size · exit). `popped`: this is the window's whole content — it owns the
  * PTY's size (leaves the `mark`, restores the default grid on close) and titles the window.
  */
-export function Terminal({ session, job, label, popped = false, source, onExit, onElsewhere, className }: TerminalProps) {
+export function Terminal({ session, job, engine, label, popped = false, source, onExit, onElsewhere, className }: TerminalProps) {
   const api = useApi()
   const client = useConnection((s) => s.client)
   const mobile = useIsMobile()
@@ -228,9 +234,10 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
   const run = source?.kind === 'cell' ? source.run : null
   const ptySession = source?.kind === 'pty' ? source.session : session
   const ptyJob = source?.kind === 'pty' ? source.job : job
+  const ptyEngine = (source?.kind === 'pty' ? source.engine : engine) || undefined
   const src = useMemo<TerminalSource>(
-    () => (run !== null ? { kind: 'cell', run } : { kind: 'pty', session: ptySession!, job: ptyJob! }),
-    [run, ptySession, ptyJob],
+    () => (run !== null ? { kind: 'cell', run } : { kind: 'pty', session: ptySession!, job: ptyJob!, ...(ptyEngine ? { engine: ptyEngine } : {}) }),
+    [run, ptySession, ptyJob, ptyEngine],
   )
   useEffect(() => {
     onExitRef.current = onExit
@@ -296,7 +303,7 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
     const resized = ref
       ? term.onResize(({ rows, cols }) => {
           setSize(`${cols}×${rows}`)
-          if (!wire.ended()) void api.pty_resize(ref.session, ref.job, rows, cols).catch(() => undefined)
+          if (!wire.ended()) void api.pty_resize(ref.session, ref.job, rows, cols, ...onEngine(ref.engine)).catch(() => undefined)
         })
       : null
     if (ref) setSize(`${term.cols}×${term.rows}`)
@@ -332,7 +339,8 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
     const leave = () => {
       if (!ref) return
       if (popped) localStorage.removeItem(mark(ref))
-      if (!wire.ended() && (popped || !marked(ref))) void api.pty_resize(ref.session, ref.job, DEFAULT_ROWS, DEFAULT_COLS).catch(() => undefined)
+      if (!wire.ended() && (popped || !marked(ref)))
+        void api.pty_resize(ref.session, ref.job, DEFAULT_ROWS, DEFAULT_COLS, ...onEngine(ref.engine)).catch(() => undefined)
     }
     window.addEventListener('pagehide', leave)
     return () => {
@@ -404,7 +412,7 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
                   size="sm"
                   className="h-11 min-w-11 font-mono"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => void api.pty_input(src.session, src.job, null, [k]).catch(() => undefined)}
+                  onClick={() => void api.pty_input(src.session, src.job, null, [k], ...onEngine(src.engine)).catch(() => undefined)}
                 >
                   {text}
                 </Button>
