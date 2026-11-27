@@ -297,9 +297,20 @@ fn gate() -> RpcResult<Arc<secrets::seal::Gate>> {
     })
 }
 
-/// 225: a [`secrets::seal::SealError`] with its code (`-32041` sealed, `-32042` password).
+/// 225: a [`secrets::seal::SealError`] with its code (`-32052` sealed, `-32042` password). A
+/// sealed error carries `data: {engine, methods}` (the engine's name and its method kinds).
 fn seal_err(e: secrets::seal::SealError) -> ErrorObjectOwned {
-    ErrorObjectOwned::owned(e.code(), e.to_string(), None::<()>)
+    let data = match (&e, secrets::seal::installed()) {
+        (secrets::seal::SealError::Sealed(_), Some(g)) => {
+            let s = g.status();
+            let mut methods: Vec<&str> = s.methods.iter().map(|m| m.kind.as_str()).collect();
+            methods.sort_unstable();
+            methods.dedup();
+            Some(serde_json::json!({"engine": s.name, "methods": methods}))
+        }
+        _ => None,
+    };
+    ErrorObjectOwned::owned(e.code(), e.to_string(), data)
 }
 
 /// 225: run a `vault_*` call on `engine` over the mesh (D15's forward, `theuth/rpc/1`).

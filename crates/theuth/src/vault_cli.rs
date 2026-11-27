@@ -15,7 +15,7 @@ use jsonrpsee::ws_client::WsClient;
 use serde_json::Value;
 
 /// The typed sealed error (`VAULT_SEALED`): its message, exit 2.
-const VAULT_SEALED: i32 = -32041;
+const VAULT_SEALED: i32 = -32052;
 
 /// `--engine`: the target engine.
 #[derive(clap::Args, Debug)]

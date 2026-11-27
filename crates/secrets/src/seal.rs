@@ -38,7 +38,7 @@ use crate::envelope::{self, Kind, KeyFile, LockedKey, Wrapped};
 use crate::vault::{KeyStore, Vault};
 
 /// JSON-RPC error code of [`SealError::Sealed`].
-pub const VAULT_SEALED: i32 = -32041;
+pub const VAULT_SEALED: i32 = -32052;
 /// JSON-RPC error code of [`SealError::WrongPassword`] and [`SealError::Throttled`].
 pub const WRONG_PASSWORD: i32 = -32042;
 /// An unanswered ask (and its nonce) lives this long.
@@ -370,7 +370,8 @@ impl Gate {
         self.vault().is_none()
     }
 
-    /// "sky-cloud is sealed — unlock it from your phone or with the master password".
+    /// "the vault is sealed on sky-cloud — unlock it from your phone …" (stable prefix: peers and
+    /// the settings forward match "the vault is sealed").
     pub fn sealed_text(&self) -> String {
         let name = rd(&self.name);
         let f = envelope::load(&self.dir).ok().flatten().unwrap_or_default();
@@ -382,7 +383,7 @@ impl Gate {
             (false, true) => "unlock it with the master password",
             (false, false) => "it has no unlock method left",
         };
-        format!("{name} is sealed — {how}")
+        format!("the vault is sealed on {name} — {how}")
     }
 
     /// Resolves with the vault once it is open (at once when it is).

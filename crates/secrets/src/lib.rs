@@ -1148,7 +1148,7 @@ pub async fn handle(rt: &Runtime) -> Option<Arc<Vault>> {
 }
 
 /// 225: `Some(text)` while this engine's vault is sealed — what a reader that got `None` from
-/// [`handle`] tells its user ("sky-cloud is sealed — unlock it from your phone …").
+/// [`handle`] tells its user ("the vault is sealed on sky-cloud — unlock it from your phone …").
 pub fn sealed() -> Option<seal::SealError> {
     seal::installed()
         .filter(|g| g.is_sealed())

@@ -65,7 +65,7 @@ export interface UnlockDevice {
 }
 
 /** `vault_*` errors with their own handling. */
-export const VAULT_SEALED = -32041
+export const VAULT_SEALED = -32052
 export const WRONG_PASSWORD = -32042
 
 export const VAULT_METHODS = [

@@ -29,9 +29,9 @@ pairing keyring hand-over is unchanged.
 3. **Sealed.** Boot opens the DEK with `file` or `keychain` if present; otherwise the engine starts
    **sealed**: mesh, sync, sessions, every non-secret feature run; the secrets plugin finishes its
    start (actor, tools, replication of the vault tables) when the vault opens. While sealed:
-   placeholder expansion fails with *"sky-cloud is sealed — unlock it from your phone or another
+   placeholder expansion fails with *"the vault is sealed on sky-cloud — unlock it from your phone or another
    of your devices, or with the master password"*; `secrets::handle` answers `None` at once and
-   `secrets::sealed()` says why; RPC errors carry code **-32041** (`VAULT_SEALED`); due schedules
+   `secrets::sealed()` says why; RPC errors carry code **-32052** (`VAULT_SEALED`, the same code the per-machine settings forward uses), message prefix "the vault is sealed", `data: {engine: <name>, methods: [<kinds>]}`; due schedules
    are **deferred** (their `next` stays due; the first tick after the unseal fires them, `missed:`
    deciding as after a pause).
 4. **Memory.** The DEK lives in `LockedKey` (boxed, `mlock`ed best effort, zeroed + `munlock`ed on
@@ -120,7 +120,7 @@ remove-method <id> | init`, each with `--engine <id>` (a mesh peer, forwarded) a
 `--password-stdin` where a password is read (else a no-echo prompt; new passwords typed twice).
 All but `init` call the running engine's RPC (the `cmd_67` transport); `methods` falls back to
 `vault-keys.json` offline; `init` refuses a running engine or an existing vault. Exit 2 on
--32041 (sealed).
+-32052 (sealed).
 
 ## 4. Cloud-node wizard integration points
 

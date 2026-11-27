@@ -102,7 +102,7 @@ async fn file_key_engine_migrates_warns_then_a_password_replaces_the_file() {
     let g = engine(&net, "node", dir.path(), KeyStore::Auto).await;
     assert!(g.is_sealed());
     match g.require() {
-        Err(SealError::Sealed(t)) => assert!(t.starts_with("node is sealed"), "{t}"),
+        Err(SealError::Sealed(t)) => assert!(t.starts_with("the vault is sealed on node"), "{t}"),
         other => panic!("{other:?}"),
     }
     assert_eq!(g.status().state, "sealed");
