@@ -1,14 +1,15 @@
 # Multi-platform release workflow for BaseDatum/Theuth.
 #
-# Builds 5 native desktop/CLI targets in parallel on every tag push `v*` (or manual dispatch):
+# Builds 6 native targets in parallel on every tag push `v*` (or manual dispatch):
 #   1. macOS Apple Silicon (aarch64-apple-darwin) on macos-15
 #   2. Linux x86_64        (x86_64-unknown-linux-gnu) on ubuntu-24.04
 #   3. Linux ARM64         (aarch64-unknown-linux-gnu) on ubuntu-24.04-arm
 #   4. Windows x86_64      (x86_64-pc-windows-msvc) on windows-latest
 #   5. Windows ARM64       (aarch64-pc-windows-msvc) on windows-11-arm
-# Once all desktop builds succeed, two publish jobs run in parallel:
-#   - `publish`     (sign, S3, Homebrew tap, GitHub Release)
-#   - `publish-ios` (iOS/iPadOS aarch64-apple-ios IPA + App Store Connect / TestFlight upload)
+#   6. iOS/iPadOS          (aarch64-apple-ios signed IPA) on macos-15 (`build-ios`)
+# Once all builds succeed, two publish jobs run in parallel:
+#   - `publish`     (sign, S3, Wasabi, Homebrew tap, GitHub Release)
+#   - `publish-ios` (upload prebuilt `ios-ipa` artifact to App Store Connect / TestFlight)
 #
 # Note: Intel macOS (x86_64-apple-darwin) is intentionally skipped — it is hard incompatible with
 # `microsandbox` 0.7.13, `mlx-sys`, the `sandbox` preflight, and the SwiftPM macOS companion.
@@ -1255,25 +1256,10 @@ jobs:
           rm -f "$RUNNER_TEMP/homebrew_tap_key" "$RUNNER_TEMP/known_hosts"
           git config --global --unset-all "http.https://github.com/BaseDatum/homebrew-tap.git.extraheader" 2>/dev/null || true
 
-  publish-ios:
-    name: Build & Publish iOS (TestFlight)
-    needs:
-      - prepare
-      - build-macos-arm64
-      - build-linux
-      - build-windows
-    if: |
-      always() &&
-      needs.prepare.result == 'success' &&
-      inputs.skip_ios != true &&
-      (
-        inputs.ios_only == true ||
-        (
-          needs.build-macos-arm64.result == 'success' &&
-          needs.build-linux.result == 'success' &&
-          needs.build-windows.result == 'success'
-        )
-      )
+  build-ios:
+    name: Build iOS (aarch64)
+    needs: prepare
+    if: inputs.skip_ios != true
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -1442,6 +1428,74 @@ jobs:
           path: crates/desktop/gen/apple/build/arm64/*.ipa
           if-no-files-found: error
           retention-days: 5
+
+      - name: Clean up App Store Connect API key
+        if: always()
+        run: rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_"*.p8
+
+  publish-ios:
+    name: Publish iOS (TestFlight)
+    needs:
+      - prepare
+      - build-ios
+      - build-macos-arm64
+      - build-linux
+      - build-windows
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.build-ios.result == 'success' &&
+      inputs.skip_ios != true &&
+      (
+        inputs.ios_only == true ||
+        (
+          needs.build-macos-arm64.result == 'success' &&
+          needs.build-linux.result == 'success' &&
+          needs.build-windows.result == 'success'
+        )
+      )
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Download iOS IPA artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ios-ipa
+          path: crates/desktop/gen/apple/build/arm64
+
+      - name: Configure App Store Connect API key
+        env:
+          # A `secrets.A || secrets.B` expression is blanked by Actions. Pick in bash.
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KEY_P8="${APPLE_API_KEY_P8:-$APPLE_NOTARY_KEY_P8}"
+          KEY_ID="${APPLE_API_KEY_ID:-$APPLE_NOTARY_KEY_ID}"
+          ISSUER_ID="${APPLE_API_ISSUER:-$APPLE_NOTARY_ISSUER_ID}"
+          if [[ -z "$KEY_P8" || -z "$KEY_ID" || -z "$ISSUER_ID" ]]; then
+            echo "::error::App Store Connect API key secrets are required (APPLE_API_KEY_P8/_ID/APPLE_API_ISSUER or APPLE_NOTARY_KEY_P8/_ID/_ISSUER_ID)"
+            exit 1
+          fi
+          ASC_DIR="$HOME/.appstoreconnect/private_keys"
+          KEY_PATH="$ASC_DIR/AuthKey_${KEY_ID}.p8"
+          mkdir -p "$ASC_DIR"
+          printf '%s' "$KEY_P8" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          {
+            echo "APPLE_API_KEY=${KEY_ID}"
+            echo "APPLE_API_KEY_ID=${KEY_ID}"
+            echo "APPLE_API_ISSUER=${ISSUER_ID}"
+            echo "APPLE_API_KEY_PATH=${KEY_PATH}"
+          } >> "$GITHUB_ENV"
 
       - name: Upload iOS IPA to TestFlight
         run: ./scripts/upload-testflight.sh
