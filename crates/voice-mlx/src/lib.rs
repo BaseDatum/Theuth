@@ -75,12 +75,18 @@ pub struct ParakeetMlx {
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 impl ParakeetMlx {
+    /// Load `config.json` and `model.safetensors` from a model directory (see [`FILES`]); always
+    /// fails on targets without MLX.
     pub fn load(_dir: &Path) -> anyhow::Result<Self> {
         anyhow::bail!("Parakeet on MLX needs macOS on Apple silicon")
     }
+
+    /// Warm up the engine before the first transcription; always fails on targets without MLX.
     pub fn warm(&mut self) -> anyhow::Result<()> {
         anyhow::bail!("Parakeet on MLX needs macOS on Apple silicon")
     }
+
+    /// Transcribe 16 kHz mono float PCM; always fails on targets without MLX.
     pub fn transcribe(&mut self, _pcm16k: &[f32]) -> anyhow::Result<Transcript> {
         anyhow::bail!("Parakeet on MLX needs macOS on Apple silicon")
     }
