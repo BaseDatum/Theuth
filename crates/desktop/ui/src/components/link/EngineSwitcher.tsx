@@ -9,12 +9,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { AddCloudNodeEntry } from '@/components/cloud/AddCloudNodeEntry'
+import { CLOUD_REQUIRED } from '@/components/cloud/queries'
 import { useLinkFailure } from '@/components/link/LinkFailure'
 import { isIos } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngineTree, useEngines } from '@/link/engines'
 import { retryPair } from '@/link/nodes'
 import { useConnection } from '@/store/connection'
+import { Capability } from '@/rpc/capabilities'
 import { scope } from '@/store/engine-scope'
 
 const DOT: Record<Presence, string> = {
@@ -143,6 +146,14 @@ export function EngineSwitcher({ className, compact = false }: { className?: str
           )
         })}
         <DropdownMenuSeparator />
+        {/* 224: the item navigates (click or keyboard) and closes the menu; the card's own button only shows it. */}
+        <Capability required={CLOUD_REQUIRED} hide>
+          <DropdownMenuItem asChild className="p-0 focus:bg-transparent" onSelect={() => void navigate({ to: '/cloud/new', search: { entry: 'add-to-mesh' } })}>
+            <div>
+              <AddCloudNodeEntry onClick={() => undefined} />
+            </div>
+          </DropdownMenuItem>
+        </Capability>
         <DropdownMenuItem onSelect={() => void navigate({ to: '/link' })}>
           <Plus /> Pair with a mesh…
         </DropdownMenuItem>
