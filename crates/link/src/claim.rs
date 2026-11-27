@@ -97,7 +97,11 @@ pub fn https_origin(relay: &str) -> String {
 impl Claim {
     /// A fresh claim: 32 random bytes, living `ttl_ms` (at most [`MAX_TTL_MS`]) from `now_ms`.
     pub fn mint(relay: Option<&str>, now_ms: u64, ttl_ms: u64) -> Self {
-        Self::from_parts(rand::random(), now_ms + ttl_ms.min(MAX_TTL_MS), relay.map(str::to_owned))
+        Self::from_parts(
+            rand::random(),
+            now_ms + ttl_ms.min(MAX_TTL_MS),
+            relay.map(str::to_owned),
+        )
     }
 
     /// From stored parts (the phone keeps the PSK in its vault while the create job runs).
@@ -197,7 +201,9 @@ impl Claim {
     /// public key) on `relay` (`wss://…`); `None` when `engine` is not a key.
     pub fn pairing(&self, relay: &str, engine: &str, name: &str) -> Option<Zeroizing<String>> {
         let public: [u8; 32] = unb64(engine)?.try_into().ok()?;
-        Some(Zeroizing::new(pairing::build(relay, &public, &self.psk, name, None)))
+        Some(Zeroizing::new(pairing::build(
+            relay, &public, &self.psk, name, None,
+        )))
     }
 }
 
@@ -334,7 +340,10 @@ impl Message<ClaimPairing> for LinkActor {
             let identity = st.identity.clone().ok_or(crate::DISABLED)?;
             let name = st.name().to_owned();
             let relay = st.cfg.relay.clone();
-            let armed = st.pairing.as_ref().is_some_and(|p| p.secret == *claim.psk());
+            let armed = st
+                .pairing
+                .as_ref()
+                .is_some_and(|p| p.secret == *claim.psk());
             if !armed {
                 st.pairing = Some(Pending {
                     secret: *claim.psk(),
@@ -425,7 +434,7 @@ mod tests {
         let bare = Claim::from_parts([7; 32], NOW, None);
         assert_eq!(Claim::parse(&bare.encode()).unwrap().relay, None);
         assert_eq!(
-            Claim::mint(None, NOW, 24 * 3600_000).expires_ms,
+            Claim::mint(None, NOW, 24 * 3_600_000).expires_ms,
             NOW + MAX_TTL_MS,
             "capped"
         );
@@ -447,7 +456,12 @@ mod tests {
     #[test]
     fn debug_never_shows_the_psk() {
         let c = Claim::from_parts([0xab; 32], NOW, None);
-        let d = format!("{c:?} {:?}", ClaimPairing { claim: c.encode().to_string() });
+        let d = format!(
+            "{c:?} {:?}",
+            ClaimPairing {
+                claim: c.encode().to_string()
+            }
+        );
         assert!(!d.contains(&hex::encode([0xab; 32])), "{d}");
         assert!(!d.contains("abab"), "{d}");
     }
@@ -456,7 +470,11 @@ mod tests {
     fn id_mac_and_pairing() {
         let c = Claim::from_parts([3; 32], NOW, None);
         let other = Claim::from_parts([4; 32], NOW, None);
-        assert_eq!(c.id(), Claim::from_parts([3; 32], 1, None).id(), "id depends on the psk only");
+        assert_eq!(
+            c.id(),
+            Claim::from_parts([3; 32], 1, None).id(),
+            "id depends on the psk only"
+        );
         assert_eq!(c.id().len(), 22);
         assert_ne!(c.id(), other.id());
         let engine = b64(&[9; 32]);
@@ -474,7 +492,10 @@ mod tests {
         );
         assert_eq!(p.relay_host, "relay.example");
         assert!(c.pairing("wss://r", "short", "lab").is_none());
-        assert_eq!(https_origin("wss://relay.theuth.io/"), "https://relay.theuth.io");
+        assert_eq!(
+            https_origin("wss://relay.theuth.io/"),
+            "https://relay.theuth.io"
+        );
         assert_eq!(https_origin("ws://127.0.0.1:8787"), "http://127.0.0.1:8787");
     }
 
@@ -488,18 +509,32 @@ mod tests {
         let c = Claim::from_parts([5; 32], NOW + 60_000, None);
         let s = c.encode();
         assert!(check(&s, NOW, &link).is_ok());
-        assert_eq!(check(&s, NOW + 60_000, &link).unwrap_err(), INVALID, "expired");
+        assert_eq!(
+            check(&s, NOW + 60_000, &link).unwrap_err(),
+            INVALID,
+            "expired"
+        );
         let long = Claim::from_parts([5; 32], NOW + MAX_TTL_MS + 120_000, None);
-        assert_eq!(check(&long.encode(), NOW, &link).unwrap_err(), INVALID, "too long-lived");
+        assert_eq!(
+            check(&long.encode(), NOW, &link).unwrap_err(),
+            INVALID,
+            "too long-lived"
+        );
         assert_eq!(check("L1.nope", NOW, &link).unwrap_err(), INVALID);
 
         std::fs::write(link.join(FILE), s.as_bytes()).unwrap();
         consumed(dir.path(), &[6; 32]);
-        assert!(link.join(FILE).exists(), "another pairing's psk leaves the claim alone");
+        assert!(
+            link.join(FILE).exists(),
+            "another pairing's psk leaves the claim alone"
+        );
         consumed(dir.path(), c.psk());
         assert!(!link.join(FILE).exists(), "the claim file is gone");
         assert_eq!(check(&s, NOW, &link).unwrap_err(), USED);
         let used = std::fs::read_to_string(link.join(USED_FILE)).unwrap();
-        assert!(!used.contains(&hex::encode(c.psk())), "only the id is recorded");
+        assert!(
+            !used.contains(&hex::encode(c.psk())),
+            "only the id is recorded"
+        );
     }
 }

@@ -101,13 +101,23 @@ struct Conn(Arc<Prov>);
 
 #[async_trait]
 impl Connect for Conn {
-    fn open(&self, _: ProviderKind, _: Option<&StoredCred>, _: Option<&K8sOptions>) -> Result<Arc<dyn Provider>> {
+    fn open(
+        &self,
+        _: ProviderKind,
+        _: Option<&StoredCred>,
+        _: Option<&K8sOptions>,
+    ) -> Result<Arc<dyn Provider>> {
         Ok(self.0.clone())
     }
     async fn check(&self, _: ProviderKind, _: &StoredCred) -> Result<()> {
         Ok(())
     }
-    async fn sizes(&self, kind: ProviderKind, _: &StoredCred, _: Option<&str>) -> Result<Vec<SizeOption>> {
+    async fn sizes(
+        &self,
+        kind: ProviderKind,
+        _: &StoredCred,
+        _: Option<&str>,
+    ) -> Result<Vec<SizeOption>> {
         Ok(providers::sizes(kind))
     }
 }
@@ -221,7 +231,10 @@ fn assert_psk_nowhere(r: &Rig, psk: &[u8; 32]) {
         base64::engine::general_purpose::STANDARD.encode(psk),
     ];
     let mut haystack = String::new();
-    for e in std::fs::read_dir(r.dir.path().join("cloudnodes")).unwrap().flatten() {
+    for e in std::fs::read_dir(r.dir.path().join("cloudnodes"))
+        .unwrap()
+        .flatten()
+    {
         haystack.push_str(&std::fs::read_to_string(e.path()).unwrap());
     }
     haystack.push_str(&format!("{:?}", r.events.lock()));
@@ -240,12 +253,19 @@ async fn phone_only_create_uses_a_link_claim_and_pairs_once() {
         "the master password never goes through a phone-only create"
     );
     let node = r.cloud.create(spec("lab"), None).await.unwrap();
-    let link = node.link.clone().expect("a phone-only node carries its link state");
+    let link = node
+        .link
+        .clone()
+        .expect("a phone-only node carries its link state");
     assert!(!link.paired && link.engine.is_none());
     let claim = r.cloud.load_claim("lab").unwrap();
     assert_eq!(link.claim_id, claim.id());
     assert!(claim.expires_ms <= now_ms() + phone::CLAIM_TTL_MS);
-    assert_eq!(claim.relay.as_deref(), Some("wss://relay.test"), "the node dials the phone's relay");
+    assert_eq!(
+        claim.relay.as_deref(),
+        Some("wss://relay.test"),
+        "the node dials the phone's relay"
+    );
 
     // The provider gets the claim, not a mesh ticket.
     for _ in 0..200 {
@@ -255,20 +275,36 @@ async fn phone_only_create_uses_a_link_claim_and_pairs_once() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     let ticket = r.prov.tickets.lock()[0].clone();
-    assert!(ticket.starts_with("L1.") && !ticket.starts_with("1."), "{}", &ticket[..3]);
-    assert_eq!(link::claim::Claim::parse(&ticket).unwrap().psk(), claim.psk());
-    assert!(crate::providers::userdata::render("lab", "/dev/x", &ticket, catalog::MANIFEST, true).is_ok());
+    assert!(
+        ticket.starts_with("L1.") && !ticket.starts_with("1."),
+        "{}",
+        &ticket[..3]
+    );
+    assert_eq!(
+        link::claim::Claim::parse(&ticket).unwrap().psk(),
+        claim.psk()
+    );
+    assert!(
+        crate::providers::userdata::render("lab", "/dev/x", &ticket, catalog::MANIFEST, true)
+            .is_ok()
+    );
 
     // Still waiting: the relay has nothing yet.
     tokio::time::sleep(Duration::from_millis(30)).await;
-    assert_eq!(r.cloud.records.get("lab").unwrap().unwrap().state, NodeState::Creating);
+    assert_eq!(
+        r.cloud.records.get("lab").unwrap().unwrap().state,
+        NodeState::Creating
+    );
     assert!(r.cloud.link_pairing("lab").await.is_err(), "not online yet");
 
     park(&r, &claim, None);
     let rec = settle(&r.cloud, "lab").await;
     assert_eq!(rec.state, NodeState::Ready, "{:?}", rec.error);
     let l = rec.link.clone().unwrap();
-    assert_eq!((l.engine.as_deref(), l.engine_name.as_deref()), (Some(ENGINE), Some("lab")));
+    assert_eq!(
+        (l.engine.as_deref(), l.engine_name.as_deref()),
+        (Some(ENGINE), Some("lab"))
+    );
     assert_psk_nowhere(&r, claim.psk());
 
     let s = r.cloud.link_pairing("lab").await.unwrap();
@@ -276,11 +312,17 @@ async fn phone_only_create_uses_a_link_claim_and_pairs_once() {
     assert_eq!(p.secret, *claim.psk());
     assert_eq!(p.relay_host, "relay.test");
     assert!(p.secure);
-    assert_eq!(p.pending, None, "the node's engine identity, not a mesh pending row");
+    assert_eq!(
+        p.pending, None,
+        "the node's engine identity, not a mesh pending row"
+    );
 
     let node = r.cloud.link_paired("lab").await.unwrap();
     assert!(node.link.unwrap().paired);
-    assert!(r.store.0.lock().get(&claim_row("lab")).is_none(), "the PSK is gone here");
+    assert!(
+        r.store.0.lock().get(&claim_row("lab")).is_none(),
+        "the PSK is gone here"
+    );
     assert!(r.cloud.link_pairing("lab").await.is_err(), "single use");
     assert!(r.http.lines().iter().all(|l| !l.contains("oauth")));
 }
@@ -290,7 +332,11 @@ async fn a_forged_relay_answer_is_ignored_and_the_claim_expires() {
     let r = rig().await;
     r.cloud.create(spec("lab"), None).await.unwrap();
     let claim = r.cloud.load_claim("lab").unwrap();
-    park(&r, &claim, Some(&link::claim::Claim::from_parts([1; 32], 0, None).mac(ENGINE, "lab")));
+    park(
+        &r,
+        &claim,
+        Some(&link::claim::Claim::from_parts([1; 32], 0, None).mac(ENGINE, "lab")),
+    );
     // Shorten the claim: rewrite the vault row with an expiry just ahead.
     let soon = now_ms() + 80;
     r.store.0.lock().insert(
@@ -308,8 +354,14 @@ async fn a_forged_relay_answer_is_ignored_and_the_claim_expires() {
     let rec = settle(&r.cloud, "lab").await;
     assert_eq!(rec.state, NodeState::Failed);
     assert!(rec.error.unwrap().contains("30-minute link claim expired"));
-    assert!(rec.link.unwrap().engine.is_none(), "the forged answer was not taken");
-    assert!(r.store.0.lock().get(&claim_row("lab")).is_none(), "a failed job forgets the PSK");
+    assert!(
+        rec.link.unwrap().engine.is_none(),
+        "the forged answer was not taken"
+    );
+    assert!(
+        r.store.0.lock().get(&claim_row("lab")).is_none(),
+        "a failed job forgets the PSK"
+    );
 }
 
 /// iOS killed the app after the record and the claim were written, before the provider call
@@ -337,7 +389,9 @@ async fn resume_after_restart_finds_the_server_at_the_provider() {
     *r.prov.exists.lock() = true;
     let claim = r.cloud.load_claim("lab").unwrap();
     // The relaunch: a new service over the same records and vault.
-    let Rig { prov, store, dir, .. } = r;
+    let Rig {
+        prov, store, dir, ..
+    } = r;
     let r = rig_on(dir, prov, store).await;
     park(&r, &claim, None);
     r.cloud.resume();
@@ -362,7 +416,11 @@ async fn a_cut_off_create_is_retried_once_the_provider_says_nothing_exists() {
     let rec = settle(&r.cloud, "lab").await;
     assert_eq!(rec.state, NodeState::Ready, "{:?}", rec.error);
     let calls = r.prov.calls.lock().clone();
-    assert_eq!(calls.iter().filter(|c| c.starts_with("create")).count(), 2, "{calls:?}");
+    assert_eq!(
+        calls.iter().filter(|c| c.starts_with("create")).count(),
+        2,
+        "{calls:?}"
+    );
 }
 
 #[tokio::test]

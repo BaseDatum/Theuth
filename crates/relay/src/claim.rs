@@ -166,7 +166,12 @@ mod tests {
             .layer(MockConnectInfo(SocketAddr::from(([203, 0, 113, 7], 4242))))
     }
 
-    async fn call(r: &Router, method: &str, uri: &str, body: Option<serde_json::Value>) -> (StatusCode, String) {
+    async fn call(
+        r: &Router,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, String) {
         let req = Request::builder()
             .method(method)
             .uri(uri)
@@ -174,7 +179,9 @@ mod tests {
             .unwrap();
         let res = r.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1 << 16)
+            .await
+            .unwrap();
         (status, String::from_utf8(body.to_vec()).unwrap())
     }
 
@@ -187,7 +194,10 @@ mod tests {
         let r = router(None);
         let uri = format!("/claim/{ID}");
         assert_eq!(call(&r, "GET", &uri, None).await.0, StatusCode::NOT_FOUND);
-        assert_eq!(call(&r, "PUT", &uri, Some(entry("lab"))).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(
+            call(&r, "PUT", &uri, Some(entry("lab"))).await.0,
+            StatusCode::NO_CONTENT
+        );
         assert_eq!(
             call(&r, "PUT", &uri, Some(entry("lab"))).await.0,
             StatusCode::NO_CONTENT,
@@ -202,34 +212,62 @@ mod tests {
             let (status, body) = call(&r, "GET", &uri, None).await;
             assert_eq!(status, StatusCode::OK);
             let got: Entry = serde_json::from_str(&body).unwrap();
-            assert_eq!((got.engine.as_str(), got.name.as_str(), got.mac.as_str()), (KEY, "lab", MAC));
+            assert_eq!(
+                (got.engine.as_str(), got.name.as_str(), got.mac.as_str()),
+                (KEY, "lab", MAC)
+            );
         }
     }
 
     #[tokio::test]
     async fn malformed_is_400() {
         let r = router(None);
-        assert_eq!(call(&r, "GET", "/claim/short", None).await.0, StatusCode::BAD_REQUEST);
         assert_eq!(
-            call(&r, "PUT", &format!("/claim/{ID}"), Some(serde_json::json!({"engine": "x", "name": "a", "mac": MAC}))).await.0,
+            call(&r, "GET", "/claim/short", None).await.0,
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            call(&r, "PUT", &format!("/claim/{ID}"), Some(entry(""))).await.0,
+            call(
+                &r,
+                "PUT",
+                &format!("/claim/{ID}"),
+                Some(serde_json::json!({"engine": "x", "name": "a", "mac": MAC}))
+            )
+            .await
+            .0,
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            call(&r, "PUT", &format!("/claim/{ID}"), Some(entry(&"n".repeat(MAX_NAME + 1)))).await.0,
+            call(&r, "PUT", &format!("/claim/{ID}"), Some(entry("")))
+                .await
+                .0,
             StatusCode::BAD_REQUEST
         );
-        assert_eq!(call(&r, "PUT", &format!("/claim/{ID}"), None).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            call(
+                &r,
+                "PUT",
+                &format!("/claim/{ID}"),
+                Some(entry(&"n".repeat(MAX_NAME + 1)))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call(&r, "PUT", &format!("/claim/{ID}"), None).await.0,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]
     async fn entries_expire() {
         let r = router(Some(Duration::ZERO));
         let uri = format!("/claim/{ID}");
-        assert_eq!(call(&r, "PUT", &uri, Some(entry("lab"))).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(
+            call(&r, "PUT", &uri, Some(entry("lab"))).await.0,
+            StatusCode::NO_CONTENT
+        );
         assert_eq!(call(&r, "GET", &uri, None).await.0, StatusCode::NOT_FOUND);
         assert_eq!(
             call(&r, "PUT", &uri, Some(entry("other"))).await.0,

@@ -91,7 +91,12 @@ impl Cloud {
         let row = claim_row(name);
         for _ in 0..3 {
             let expected = self.creds.store.get_versioned(&row).map(|(v, _)| v);
-            if self.creds.store.set_if_version(&row, &value, expected).await? {
+            if self
+                .creds
+                .store
+                .set_if_version(&row, &value, expected)
+                .await?
+            {
                 return Ok(NodeLink {
                     claim_id: claim.id(),
                     expires_ms: claim.expires_ms,
@@ -105,11 +110,15 @@ impl Cloud {
     }
 
     pub(super) fn load_claim(&self, name: &str) -> Result<Claim> {
-        let (_, v) = self.creds.store.get_versioned(&claim_row(name)).ok_or_else(|| {
-            CloudError(format!(
-                "the one-time link claim of {name} is gone (used, expired or destroyed)"
-            ))
-        })?;
+        let (_, v) = self
+            .creds
+            .store
+            .get_versioned(&claim_row(name))
+            .ok_or_else(|| {
+                CloudError(format!(
+                    "the one-time link claim of {name} is gone (used, expired or destroyed)"
+                ))
+            })?;
         let s: StoredClaim = serde_json::from_str(&v)
             .map_err(|_| CloudError(format!("the link claim of {name} is unreadable")))?;
         let psk = Zeroizing::new(URL_SAFE_NO_PAD.decode(&s.psk).unwrap_or_default());
@@ -208,7 +217,13 @@ impl Cloud {
                 tracing::warn!("cloudnodes: {name}: {e}");
             }
             let pct = if s == Stage::Server { 10 } else { 25 };
-            self.progress(name, Some(s), line, Some(pct), Some(server_secs + install_secs));
+            self.progress(
+                name,
+                Some(s),
+                line,
+                Some(pct),
+                Some(server_secs + install_secs),
+            );
         };
         self.progress(
             name,
@@ -267,7 +282,9 @@ impl Cloud {
                     if claim.verify(s("engine"), s("name"), s("mac")) {
                         break (s("engine").to_owned(), s("name").to_owned());
                     }
-                    tracing::warn!("cloudnodes: {name}: ignoring a relay answer whose MAC is wrong");
+                    tracing::warn!(
+                        "cloudnodes: {name}: ignoring a relay answer whose MAC is wrong"
+                    );
                 }
                 Ok(_) => {}
                 Err(e) => tracing::debug!("cloudnodes: {name}: relay: {e:#}"),
@@ -326,7 +343,9 @@ impl Cloud {
             .link
             .ok_or_else(|| CloudError(format!("{name} joined the mesh; it pairs no device")))?;
         if link.paired {
-            return Err(CloudError(format!("this device already paired with {name}")));
+            return Err(CloudError(format!(
+                "this device already paired with {name}"
+            )));
         }
         let engine = link
             .engine
