@@ -7,7 +7,7 @@ use runtime::Runtime;
 use tokio::sync::broadcast;
 
 use crate::{
-    AddPeer, ConfirmPeer, DocsGate, DocsGateState, EngineId, EngineStats, ListStats, Mesh,
+    AddPeer, ConfirmPeer, DocsGate, DocsGateState, EngineId, EngineStats, ListStats, Mesh, RemoteTicket,
     MeshEvent, MeshPlugin, MeshStatus, Nearby, NearbyEngine, NearbyWatch, PairAnswer, PairCeremony,
     PairNearby, PairingString, Peer, PreviewUnpair, RemovePeer, RemovedPeers, Rename, RotateVault,
     SetHubPref, SetMessaging, SetNearby, Status, Subscribe, Unpair, UnpairPreview, declare_wire,
