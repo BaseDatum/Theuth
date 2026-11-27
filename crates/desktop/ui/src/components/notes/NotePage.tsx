@@ -190,6 +190,7 @@ export function NoteView({
 
   return (
     <DocumentPage
+      docId={id}
       backTo="/notes"
       backLabel="Back to notes"
       back={wayBack.back}

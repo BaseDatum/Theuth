@@ -389,7 +389,9 @@ impl Tool for DocExportTool {
 
     fn description(&self) -> String {
         "Export a note or board (`doc` from doc_create / doc_read) as a file: `pdf` (default; A4, \
-         diagrams as text, excerpts as numbered code) or `markdown`. Without `dest` the file becomes an \
+         excerpts as numbered code; mermaid, json-render and openui diagrams drawn as figures when a \
+         desktop/web client is connected to render them, else json-render as text and the others as \
+         code) or `markdown`. Without `dest` the file becomes an \
          artifact card in this chat; with `dest` (absolute, under the user's home) it is written there. \
          Returns {path | artifact_id, call_id, pages, warnings}."
             .into()

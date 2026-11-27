@@ -11,7 +11,7 @@ import { exportAssets, mountedDiagrams } from '@/lib/doc-export'
 import { isLocal } from '@/lib/files'
 import { useApi } from '@/lib/rpc'
 import { useEngines } from '@/link/engines'
-import type { ExportFormat } from '@/rpc/bindings/method.artifact.input'
+import type { ExportAsset, ExportFormat } from '@/rpc/bindings/method.artifact.input'
 
 const EXT: Record<ExportFormat, { ext: string; name: string }> = { markdown: { ext: 'md', name: 'Markdown' }, pdf: { ext: 'pdf', name: 'PDF' } }
 
@@ -34,9 +34,18 @@ export function copyMarkdown(markdown: () => Promise<string>): Promise<void> {
 }
 
 /**
+ * What `doc_export` takes along: for PDF, the diagrams mounted in document `id`'s column (`lib/doc-export`) recoloured
+ * to the light palette; nothing for Markdown.
+ */
+export function docAssets(format: ExportFormat, id: string, root: Parameters<typeof mountedDiagrams>[0] = document): ExportAsset[] {
+  return format === 'pdf' ? exportAssets(mountedDiagrams(root, id), diagramTokens(), lightTokens()) : []
+}
+
+/**
  * 72 §3: **Export ▸ Markdown… / PDF… / Copy Markdown** in the note bar. Desktop on the local daemon: a save dialog, then
  * `doc_export` writes the file and the toast reveals it. Elsewhere (web, iOS, a remote engine): `doc_export` stores an
- * artifact and the viewer opens on it. PDF takes the mounted diagrams along as light-palette svgs (`lib/doc-export`).
+ * artifact and the viewer opens on it. PDF takes this document's mounted single diagrams along as light-palette svgs
+ * (`docAssets`); the daemon has the client draw every other diagram (mermaid, composite cards, unmounted blocks).
  * Copy Markdown puts `doc_markdown` (what the Markdown export writes) on the clipboard, everywhere alike.
  */
 export function ExportMenu({ id, title, disabled }: { id: string; title: string; disabled?: boolean }) {
@@ -50,7 +59,7 @@ export function ExportMenu({ id, title, disabled }: { id: string; title: string;
       dest = await save({ defaultPath: `${title || 'note'}.${ext}`, filters: [{ name, extensions: [ext] }] })
       if (!dest) return
     }
-    const assets = format === 'pdf' ? exportAssets(mountedDiagrams(document), diagramTokens(), lightTokens()) : []
+    const assets = docAssets(format, id)
     const r = await api.doc_export(id, format, dest, assets)
     for (const w of r.warnings) toast.warning(w)
     if (r.path) {

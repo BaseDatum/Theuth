@@ -191,7 +191,7 @@ pub struct State {
     /// `<data_dir>/artifacts/`, or `<scratch>/artifacts/` for a private tree.
     pub dir: PathBuf,
     pool: SqlitePool,
-    rt: Runtime,
+    pub(crate) rt: Runtime,
     /// Extra font directories for PDF compiles (`artifact.fonts`).
     pub fonts: Vec<PathBuf>,
     /// Writers (`show`, `commit`) hold it shared from first blob write to row

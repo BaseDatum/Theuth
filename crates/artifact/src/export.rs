@@ -9,6 +9,7 @@ use runtime::SessionId;
 use serde::{Deserialize, Serialize};
 
 use crate::store::State;
+use crate::snapshot::{self, SnapshotOutcome};
 use crate::{ShowArgs, Source, pdf};
 
 /// Output format of [`ExportDoc`].
@@ -71,29 +72,74 @@ pub struct ExportDoc {
 /// The session export artifacts are recorded under: not a chat.
 pub const EXPORT_SESSION: SessionId = SessionId(uuid::Uuid::nil());
 
-/// Front matter + print markdown for `m`; asset SVGs written under `scratch`.
-async fn print_source(m: &ExportDoc, scratch: &Path) -> Result<String, String> {
-    let mut images = BTreeMap::new();
-    if !m.assets.is_empty() {
-        tokio::fs::create_dir_all(scratch)
-            .await
-            .map_err(|e| format!("{}: {e}", scratch.display()))?;
+/// CSS px width a diagram missing from `assets` is drawn at for print ([`crate::snapshot`]).
+const PDF_DIAGRAM_WIDTH: u32 = 720;
+
+impl State {
+    /// Front matter + print markdown for `m`. Asset SVGs are written under `scratch`; every
+    /// picture fence without one is drawn by a connected client ([`crate::snapshot::render`],
+    /// light, 2×) into `scratch` as PNG. A fence nobody drew prints as text or code.
+    async fn print_source(
+        &self,
+        m: &ExportDoc,
+        scratch: &Path,
+        snapshot_live: bool,
+    ) -> Result<String, String> {
+        let mut images = BTreeMap::new();
+        if !m.assets.is_empty() {
+            create_dir(scratch).await?;
+        }
+        for a in &m.assets {
+            let path = scratch.join(format!("{}.svg", file_stem(&a.id)));
+            write(&path, a.svg.as_bytes()).await?;
+            images.insert(a.id.clone(), path);
+        }
+        let body = without_title_heading(strip_front_matter(&m.markdown), &m.title);
+        let missing: Vec<_> = surface::export::diagram_fences(body)
+            .into_iter()
+            .filter(|f| !images.contains_key(&f.key))
+            .collect();
+        let drawn = futures::future::join_all(missing.iter().map(|f| {
+            snapshot::render_gated(
+                snapshot_live,
+                &self.rt,
+                f.lang.into(),
+                &f.body,
+                PDF_DIAGRAM_WIDTH,
+                snapshot::Appearance::Light,
+                snapshot::SCALE,
+            )
+        }))
+        .await;
+        for (f, out) in missing.into_iter().zip(drawn) {
+            // NoRenderer / Failed / TimedOut / Cancelled: the fence prints as text instead.
+            if let SnapshotOutcome::Done { png, .. } = out {
+                create_dir(scratch).await?;
+                let path = scratch.join(format!("{}.png", file_stem(&f.key)));
+                write(&path, &png).await?;
+                images.insert(f.key, path);
+            }
+        }
+        let toc = surface::export::heading_count(body) >= 3;
+        let title = serde_json::to_string(&m.title).map_err(|e| e.to_string())?;
+        Ok(format!(
+            "---\ntitle: {title}\ndate: {}\ntoc: {toc}\nfont: Newsreader\n---\n{}",
+            chrono::Local::now().format("%Y-%m-%d"),
+            surface::export::print_markdown(body, &images)
+        ))
     }
-    for a in &m.assets {
-        let path = scratch.join(format!("{}.svg", file_stem(&a.id)));
-        tokio::fs::write(&path, a.svg.as_bytes())
-            .await
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        images.insert(a.id.clone(), path);
-    }
-    let body = without_title_heading(strip_front_matter(&m.markdown), &m.title);
-    let toc = surface::export::heading_count(body) >= 3;
-    let title = serde_json::to_string(&m.title).map_err(|e| e.to_string())?;
-    Ok(format!(
-        "---\ntitle: {title}\ndate: {}\ntoc: {toc}\nfont: Newsreader\n---\n{}",
-        chrono::Local::now().format("%Y-%m-%d"),
-        surface::export::print_markdown(body, &images)
-    ))
+}
+
+async fn create_dir(dir: &Path) -> Result<(), String> {
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| format!("{}: {e}", dir.display()))
+}
+
+async fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    tokio::fs::write(path, bytes)
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// `text` without a leading `---` block (a board's `root:`).
@@ -153,19 +199,32 @@ pub fn file_stem(title: &str) -> String {
 impl State {
     /// Run `m`; asset scratch files live under `<artifacts>/export/<uuid>/` for the compile only.
     pub async fn export_doc(&self, m: ExportDoc) -> Result<ExportResult, String> {
+        self.export_doc_gated(m, crate::preview::feed_live()).await
+    }
+
+    async fn export_doc_gated(
+        &self,
+        m: ExportDoc,
+        snapshot_live: bool,
+    ) -> Result<ExportResult, String> {
         let scratch = self
             .dir
             .join("export")
             .join(uuid::Uuid::now_v7().to_string());
-        let r = self.export_inner(m, &scratch).await;
+        let r = self.export_inner(m, &scratch, snapshot_live).await;
         let _ = tokio::fs::remove_dir_all(&scratch).await;
         r
     }
 
-    async fn export_inner(&self, m: ExportDoc, scratch: &Path) -> Result<ExportResult, String> {
+    async fn export_inner(
+        &self,
+        m: ExportDoc,
+        scratch: &Path,
+        snapshot_live: bool,
+    ) -> Result<ExportResult, String> {
         let (ext, content) = match m.format {
             ExportFormat::Markdown => ("md", m.markdown.clone()),
-            ExportFormat::Pdf => ("pdf", print_source(&m, scratch).await?),
+            ExportFormat::Pdf => ("pdf", self.print_source(&m, scratch, snapshot_live).await?),
         };
         let Some(dest) = m.dest else {
             let args = ShowArgs {
@@ -309,7 +368,12 @@ mod pipeline_tests {
             svg: SVG.into(),
         }];
         let scratch = dir.path().join("scratch");
-        let source = print_source(&doc(ExportFormat::Pdf, None, assets.clone()), &scratch)
+        let source = state
+            .print_source(
+                &doc(ExportFormat::Pdf, None, assets.clone()),
+                &scratch,
+                false,
+            )
             .await
             .unwrap();
         assert!(
@@ -391,5 +455,165 @@ mod pipeline_tests {
         let a = state.record(&r.call_id.unwrap()).await.unwrap();
         assert_eq!(a.kind, Kind::Markdown);
         assert_eq!(std::fs::read_to_string(&a.path).unwrap(), BOARD);
+    }
+
+    const GRAPH: &str = r#"{"root":"g","elements":{"g":{"type":"Graph","props":{"nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}],"edges":[{"from":"a","to":"b"}]}}}}"#;
+
+    fn note(markdown: String, dest: Option<PathBuf>, assets: Vec<ExportAsset>) -> ExportDoc {
+        ExportDoc {
+            title: "Flow".into(),
+            format: ExportFormat::Pdf,
+            markdown,
+            dest,
+            assets,
+            record: None,
+        }
+    }
+
+    /// Image XObjects in a PDF, alpha masks (`/SMask`, themselves `/Subtype/Image`) not counted.
+    fn images_in(pdf: &[u8]) -> usize {
+        let count = |needle: &[u8]| pdf.windows(needle.len()).filter(|w| *w == needle).count();
+        count(b"/Subtype/Image") - count(b"/SMask ")
+    }
+
+    #[tokio::test]
+    async fn a_mermaid_fence_with_an_svg_asset_prints_as_a_figure() {
+        let (state, dir) = open().await;
+        let md = "<!-- t -->\n# Flow\n\n<!-- m1 -->\n```mermaid\ngraph LR\n  A --> B\n```\n\nAfter.\n";
+        let assets = vec![ExportAsset {
+            id: "m1".into(),
+            svg: SVG.into(),
+        }];
+        let scratch = dir.path().join("scratch");
+        let source = state
+            .print_source(&note(md.into(), None, assets.clone()), &scratch, false)
+            .await
+            .unwrap();
+        assert!(
+            source.contains(&format!("![]({}/m1.svg)", scratch.display())),
+            "{source}"
+        );
+        assert!(!source.contains("```mermaid"), "{source}");
+        assert!(!source.contains("graph LR"), "{source}");
+
+        let dest = dir.path().join("flow.pdf");
+        let r = state
+            .export_doc(note(md.into(), Some(dest.clone()), assets))
+            .await
+            .unwrap();
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        assert!(std::fs::read(&dest).unwrap().starts_with(b"%PDF"));
+    }
+
+    mod painter {
+        use std::sync::{Arc, Mutex};
+
+        use kameo::message::{Context, Message};
+
+        use crate::snapshot::{
+            Client, FenceLang, FenceSnapshotAnswer, FenceSnapshotRequested, answer,
+        };
+
+        /// A desktop client stand-in: draws each requested fence as a distinct PNG.
+        #[derive(kameo::Actor)]
+        pub struct Painter {
+            pub seen: Arc<Mutex<Vec<FenceSnapshotRequested>>>,
+        }
+
+        impl Message<FenceSnapshotRequested> for Painter {
+            type Reply = ();
+            async fn handle(&mut self, m: FenceSnapshotRequested, _: &mut Context<Self, ()>) {
+                let fill = if m.lang == FenceLang::Mermaid {
+                    "#c0392b"
+                } else {
+                    "#2471a3"
+                };
+                let svg = format!(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40" width="120" height="40"><rect width="120" height="40" fill="{fill}"/></svg>"#
+                );
+                let r = crate::svg::rasterize(svg.as_bytes()).unwrap();
+                self.seen.lock().unwrap().push(m.clone());
+                use base64::Engine as _;
+                answer(
+                    m.id,
+                    FenceSnapshotAnswer::Done {
+                        png: base64::engine::general_purpose::STANDARD.encode(&r.png),
+                        width: r.width,
+                        height: r.height,
+                        client: Client::Desktop,
+                    },
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn diagrams_without_assets_are_drawn_by_the_connected_client() {
+        use kameo::actor::Spawn;
+        use std::sync::{Arc, Mutex};
+
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let painter = painter::Painter::spawn(painter::Painter { seen: seen.clone() });
+        rt.subscribe::<painter::Painter, snapshot::FenceSnapshotRequested>(&painter)
+            .await;
+        let state = State::open(dir.path(), rt, Vec::new()).await.unwrap();
+
+        let md = format!(
+            "<!-- t -->\n# Flow\n\n<!-- m1 -->\n```mermaid\ngraph LR\n  A --> B\n```\n\n```json-render\n{GRAPH}\n```\n"
+        );
+        let scratch = dir.path().join("scratch");
+        let source = state
+            .print_source(&note(md.clone(), None, Vec::new()), &scratch, true)
+            .await
+            .unwrap();
+        let s = scratch.display();
+        assert!(source.contains(&format!("![]({s}/m1.png)")), "{source}");
+        assert!(
+            source.contains(&format!("![]({s}/__fence_1.png)\n\n*Graph: 2 nodes, 1 edges*")),
+            "{source}"
+        );
+        assert!(
+            !source.contains("```mermaid") && !source.contains("```json-render"),
+            "{source}"
+        );
+        {
+            let seen = seen.lock().unwrap();
+            let mut asked: Vec<_> = seen
+                .iter()
+                .map(|r| (r.lang, r.source.as_str(), r.width, r.scale, r.appearance))
+                .collect();
+            asked.sort_by_key(|a| a.1.len());
+            let graph = format!("{GRAPH}\n");
+            assert_eq!(
+                asked,
+                vec![
+                    (
+                        snapshot::FenceLang::Mermaid,
+                        "graph LR\n  A --> B\n",
+                        720,
+                        2,
+                        snapshot::Appearance::Light
+                    ),
+                    (
+                        snapshot::FenceLang::JsonRender,
+                        graph.as_str(),
+                        720,
+                        2,
+                        snapshot::Appearance::Light
+                    ),
+                ]
+            );
+        }
+
+        let dest = dir.path().join("flow.pdf");
+        let r = state
+            .export_doc_gated(note(md, Some(dest.clone()), Vec::new()), true)
+            .await
+            .unwrap();
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        let pdf = std::fs::read(&dest).unwrap();
+        assert_eq!(images_in(&pdf), 2);
     }
 }

@@ -31,7 +31,7 @@ const FORBIDDEN: [&str; 5] = [
 pub enum PictureLang {
     /// `json-render` or `jsonrender`.
     JsonRender,
-    /// `mermaid`.
+    /// `mermaid` (alias `mmd`).
     Mermaid,
     /// `openui`.
     Openui,
@@ -45,6 +45,7 @@ impl PictureLang {
             ("json-render", Self::JsonRender),
             ("jsonrender", Self::JsonRender),
             ("mermaid", Self::Mermaid),
+            ("mmd", Self::Mermaid),
             ("openui", Self::Openui),
         ]
         .into_iter()
@@ -346,6 +347,8 @@ mod tests {
         );
         assert_eq!(PictureLang::of("jsonrender"), Some(PictureLang::JsonRender));
         assert_eq!(PictureLang::of("Mermaid title"), Some(PictureLang::Mermaid));
+        assert_eq!(PictureLang::of("mmd"), Some(PictureLang::Mermaid));
+        assert_eq!(PictureLang::of("MMD"), Some(PictureLang::Mermaid));
         assert_eq!(PictureLang::of("openui"), Some(PictureLang::Openui));
         assert_eq!(PictureLang::of("json"), None);
         assert_eq!(PictureLang::of(""), None);

@@ -1,46 +1,107 @@
 //! Print lowering (design doc 72): a note's markdown as cmarker/Typst can render it.
 //!
-//! Every `json-render` fence becomes markdown — an image when the client rendered it
-//! (`images`, keyed by the block id the `<!-- id -->` annotation names), a compact textual
-//! form otherwise; the annotations go; `code:` links flatten to `label (path#La-Lb)`.
+//! Every picture fence (`json-render`, `mermaid`/`mmd`, `openui`) becomes an image when one was
+//! rendered for it (`images`, keyed by the block id the `<!-- id -->` annotation names, else by
+//! `__fence_<n>`); without one a `json-render` fence lowers to a compact textual form and the
+//! others stay code. The annotations go; `code:` links flatten to `label (path#La-Lb)`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
+use crate::PictureLang;
 use crate::fences::fences;
 use crate::parse;
 use crate::render::num;
 use crate::spec::*;
 
+/// A fence [`print_markdown`] would draw as a picture given an image under `key`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagramFence {
+    /// The fence's block id (its `<!-- id -->` annotation), else `__fence_<n>` (`n` = 0-based
+    /// index among closed fences).
+    pub key: String,
+    /// Its picture language.
+    pub lang: PictureLang,
+    /// The fence body.
+    pub body: String,
+}
+
+/// The closed fences of `text` worth a picture: non-empty `mermaid`/`mmd` and `openui`, and
+/// `json-render` that parses and holds at least one diagram component.
+pub fn diagram_fences(text: &str) -> Vec<DiagramFence> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    for (idx, f) in fences(text).filter(|f| f.closed).enumerate() {
+        let prose = &text[pos..f.range.start];
+        pos = f.range.end;
+        let Some(lang) = PictureLang::of(f.lang) else {
+            continue;
+        };
+        let wanted = match lang {
+            PictureLang::Mermaid | PictureLang::Openui => !f.body.trim().is_empty(),
+            PictureLang::JsonRender => parse(f.body).is_ok_and(|p| has_diagram(&p.spec)),
+        };
+        if wanted {
+            out.push(DiagramFence {
+                key: annotation_before(prose)
+                    .map_or_else(|| format!("__fence_{idx}"), str::to_owned),
+                lang,
+                body: f.body.to_owned(),
+            });
+        }
+    }
+    out
+}
+
+/// Whether any element of `spec` draws as a diagram.
+fn has_diagram(spec: &Spec) -> bool {
+    spec.elements.values().any(|e| is_diagram(&e.component))
+}
+
 /// `text` is the annotated markdown of a document (`<!-- id -->` before each top-level block);
-/// `images` maps a fence's block id to a rendered SVG on disk. Prose, Mermaid fences and
-/// fences that fail to parse are byte-identical.
+/// `images` maps a fence's key (block id, else `__fence_<n>`) to a rendered image on disk.
+/// Prose, other fences, picture fences without an image and fences that fail to parse are
+/// byte-identical, except that a parsing `json-render` fence without an image lowers to text.
 pub fn print_markdown(text: &str, images: &BTreeMap<String, impl AsRef<Path>>) -> String {
     let mut out = String::with_capacity(text.len());
     let mut pos = 0;
-    for f in fences(text).filter(|f| f.closed) {
+    for (idx, f) in fences(text).filter(|f| f.closed).enumerate() {
         let prose = &text[pos..f.range.start];
         pos = f.range.end;
         let id = annotation_before(prose);
         strip_annotations(prose, &mut out);
-        if f.lang != "json-render" {
-            out.push_str(&text[f.range.clone()]);
-            continue;
-        }
-        let Ok(parsed) = parse(f.body) else {
-            out.push_str(&text[f.range.clone()]);
-            continue;
-        };
-        let root = parsed.spec.elements.get(&parsed.spec.root);
-        match id.and_then(|id| images.get(id)) {
-            Some(path) if root.is_some_and(|e| is_diagram(&e.component)) => {
-                let _ = write!(out, "![]({})\n\n", path.as_ref().display());
-                if let Some(c) = root.and_then(|e| caption(&e.component)) {
-                    let _ = write!(out, "*{c}*");
+        let image = id
+            .and_then(|id| images.get(id))
+            .or_else(|| images.get(&format!("__fence_{idx}")))
+            .map(AsRef::as_ref);
+        match PictureLang::of(f.lang) {
+            Some(PictureLang::Mermaid | PictureLang::Openui) => match image {
+                Some(path) => {
+                    let _ = write!(out, "![]({})", path.display());
+                }
+                None => out.push_str(&text[f.range.clone()]),
+            },
+            Some(PictureLang::JsonRender) => {
+                let Ok(parsed) = parse(f.body) else {
+                    out.push_str(&text[f.range.clone()]);
+                    continue;
+                };
+                let root = parsed.spec.elements.get(&parsed.spec.root);
+                match image {
+                    Some(path) if has_diagram(&parsed.spec) => {
+                        let _ = write!(out, "![]({})", path.display());
+                        if let Some(c) = root
+                            .filter(|e| is_diagram(&e.component))
+                            .and_then(|e| caption(&e.component))
+                        {
+                            let _ = write!(out, "\n\n*{c}*");
+                        }
+                    }
+                    _ => out.push_str(lower(&parsed.spec).trim_end()),
                 }
             }
-            _ => out.push_str(lower(&parsed.spec).trim_end()),
+            None => out.push_str(&text[f.range.clone()]),
         }
     }
     strip_annotations(&text[pos..], &mut out);
@@ -1282,5 +1343,86 @@ graph LR
             out.contains("Diagram: 2 nodes, 1 edges\n\n- **A** → B (calls)\n- **B**"),
             "{out}"
         );
+    }
+
+    const GRAPH: &str = "{\"root\":\"g\",\"elements\":{\"g\":{\"type\":\"Graph\",\"props\":{\"nodes\":[{\"id\":\"a\",\"label\":\"A\"},{\"id\":\"b\",\"label\":\"B\"}],\"edges\":[{\"from\":\"a\",\"to\":\"b\"}]}}}}";
+    const CARD: &str = "{\"root\":\"c\",\"elements\":{\"c\":{\"type\":\"Card\",\"props\":{\"title\":\"Arch\"},\"children\":[\"g\"]},\"g\":{\"type\":\"Graph\",\"props\":{\"nodes\":[{\"id\":\"a\",\"label\":\"A\"},{\"id\":\"b\",\"label\":\"B\"}],\"edges\":[{\"from\":\"a\",\"to\":\"b\"}]}}}}";
+    const STEPS: &str = "{\"root\":\"s\",\"elements\":{\"s\":{\"type\":\"Separator\"}}}";
+
+    #[test]
+    fn mermaid_mmd_and_openui_fences_swap_in_their_image_and_stay_code_without_one() {
+        let doc = "<!-- m1 -->\n```mermaid\ngraph LR\n  A --> B\n```\n\n<!-- m2 -->\n```mmd\nsequenceDiagram\n  A->>B: hi\n```\n\n<!-- o3 -->\n```openui\nroot = Card([])\n```\n";
+        let images = BTreeMap::from([
+            ("m1".to_owned(), "/s/m1.svg"),
+            ("m2".to_owned(), "/s/m2.png"),
+        ]);
+        let out = print_markdown(doc, &images);
+        assert!(out.contains("![](/s/m1.svg)"), "{out}");
+        assert!(out.contains("![](/s/m2.png)"), "{out}");
+        assert!(
+            !out.contains("```mermaid") && !out.contains("```mmd"),
+            "{out}"
+        );
+        assert!(out.contains("```openui\nroot = Card([])\n```"), "{out}");
+        assert!(!out.contains("<!--"), "{out}");
+    }
+
+    #[test]
+    fn jsonrender_alias_and_composite_cards_take_the_image_without_a_caption() {
+        let doc = format!(
+            "<!-- j1 -->\n```jsonrender\n{GRAPH}\n```\n\n<!-- c2 -->\n```json-render\n{CARD}\n```\n\n<!-- s3 -->\n```json-render\n{STEPS}\n```\n"
+        );
+        let images = BTreeMap::from([
+            ("j1".to_owned(), "/s/j1.svg"),
+            ("c2".to_owned(), "/s/c2.png"),
+            ("s3".to_owned(), "/s/s3.png"),
+        ]);
+        let out = print_markdown(&doc, &images);
+        assert!(
+            out.contains("![](/s/j1.svg)\n\n*Graph: 2 nodes, 1 edges*"),
+            "{out}"
+        );
+        // The card holds a diagram: its image, no root caption.
+        assert!(out.contains("![](/s/c2.png)\n"), "{out}");
+        assert_eq!(out.matches("*Graph: ").count(), 1, "{out}");
+        // No diagram inside: lowered even with an image.
+        assert!(!out.contains("/s/s3.png"), "{out}");
+        assert!(!out.contains("render"), "{out}");
+    }
+
+    #[test]
+    fn unannotated_fences_match_images_by_their_index() {
+        let doc = format!(
+            "```rust\nfn x() {{}}\n```\n\n```mermaid\ngraph LR\n```\n\n```json-render\n{GRAPH}\n```\n"
+        );
+        let images = BTreeMap::from([
+            ("__fence_1".to_owned(), "/s/one.png"),
+            ("__fence_2".to_owned(), "/s/two.png"),
+        ]);
+        let out = print_markdown(&doc, &images);
+        assert!(out.starts_with("```rust\nfn x() {}\n```"), "{out}");
+        assert!(out.contains("![](/s/one.png)"), "{out}");
+        assert!(out.contains("![](/s/two.png)\n\n*Graph: "), "{out}");
+    }
+
+    #[test]
+    fn diagram_fences_lists_what_print_markdown_would_draw() {
+        let doc = format!(
+            "<!-- a -->\n```mermaid\ngraph LR\n```\n\n```mmd\n  \n```\n\n```rust\nx\n```\n\n```JSONRENDER\n{GRAPH}\n```\n\n<!-- c -->\n```json-render\n{CARD}\n```\n\n```json-render\n{STEPS}\n```\n\n```json-render\n{{broken\n```\n\n```openui\nroot = X()\n```\n\n```mermaid\nunclosed\n"
+        );
+        let got: Vec<_> = diagram_fences(&doc)
+            .into_iter()
+            .map(|f| (f.key, f.lang))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("a".to_owned(), PictureLang::Mermaid),
+                ("__fence_3".to_owned(), PictureLang::JsonRender),
+                ("c".to_owned(), PictureLang::JsonRender),
+                ("__fence_7".to_owned(), PictureLang::Openui),
+            ]
+        );
+        assert_eq!(diagram_fences(&doc)[0].body, "graph LR\n");
     }
 }

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { DiagramTokens } from './diagram-theme'
-import { exportAssets, mountedDiagrams } from './doc-export'
+import { type El, exportAssets, mountedDiagrams } from './doc-export'
 
 const DARK: DiagramTokens = {
   background: '#12100e',
@@ -19,25 +19,93 @@ const DARK: DiagramTokens = {
 // Light foreground equals dark primary's hue family but not its value; background/foreground cross over on purpose.
 const LIGHT: DiagramTokens = { ...DARK, background: '#f3eadf', foreground: '#1a1612', primary: '#1a1612', card: '#ffffff', border: '#d4c4a8' }
 
-const svg = (viewBox: string | null, inButton = false) => ({
-  outerHTML: viewBox ? `<svg viewBox="${viewBox}"/>` : '<svg/>',
-  getAttribute: (name: string) => (name === 'viewBox' ? viewBox : null),
-  closest: (sel: string) => (sel === 'button' && inButton ? {} : null),
-})
-const frame = (id: string, svgs: ReturnType<typeof svg>[]) => ({
-  getAttribute: (name: string) => (name === 'data-block' ? id : null),
-  querySelectorAll: () => svgs,
-})
+/** A DOM node stand-in: tag, attributes (`class` too), children; answers the selectors `mountedDiagrams` uses. */
+type Node = El & { tag: string; attrs: Record<string, string>; kids: Node[]; parent: Node | null }
 
-test('mountedDiagrams keys the diagram svg by block id, skipping button icons and frames without a diagram', () => {
-  const root = {
-    // g1: the Tour button's icon comes first in DOM order; the diagram is the second svg.
-    querySelectorAll: () => [frame('g1', [svg('0 0 24 24', true), svg('0 0 10 10')]), frame('s2', []), frame('s3', [svg(null), svg('0 0 4 4')])],
+function h(tag: string, attrs: Record<string, string> = {}, kids: Node[] = []): Node {
+  const n: Node = {
+    tag,
+    attrs,
+    kids,
+    parent: null,
+    get outerHTML() {
+      const a = Object.entries(attrs).map(([k, v]) => ` ${k}="${v}"`)
+      return `<${tag}${a.join('')}/>`
+    },
+    getAttribute: (name) => attrs[name] ?? null,
+    closest: (sel) => {
+      for (let p: Node | null = n; p; p = p.parent) if (matches(p, sel)) return p
+      return null
+    },
+    querySelector: (sel) => all(n, sel)[0] ?? null,
+    querySelectorAll: (sel) => all(n, sel),
   }
+  for (const k of kids) k.parent = n
+  return n
+}
+
+/** One compound selector: `tag`, `.class`, `[attr]`, `[attr="v"]`, any combination. */
+function matches(n: Node, sel: string): boolean {
+  const tag = /^[a-z]+/.exec(sel)?.[0]
+  if (tag && n.tag !== tag) return false
+  for (const [, c] of sel.matchAll(/\.([\w-]+)/g)) if (!(n.attrs.class ?? '').split(' ').includes(c!)) return false
+  for (const [, k, v] of sel.matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g)) if (n.attrs[k!] === undefined || (v !== undefined && n.attrs[k!] !== v)) return false
+  return true
+}
+
+function all(root: Node, selector: string): Node[] {
+  if (selector === ':scope > *') return root.kids
+  const sels = selector.split(',').map((s) => s.trim())
+  const out: Node[] = []
+  const walk = (n: Node) => {
+    for (const k of n.kids) {
+      if (sels.some((s) => matches(k, s))) out.push(k)
+      walk(k)
+    }
+  }
+  walk(root)
+  return out
+}
+
+const svg = (viewBox: string) => h('svg', { viewBox })
+const icon = () => h('button', {}, [svg('0 0 24 24')])
+/** A board diagram block. */
+const board = (id: string, ...kids: Node[]) => h('div', { class: 'board-block board-wide board-diagram', 'data-block': id }, kids)
+/** A note code block rendered as a diagram: `DiagramView` around the fence's surface. */
+const note = (kind: 'json-render' | 'mermaid', id: string, surface: Node) => h('div', { 'data-diagram': kind, 'data-block': id, 'data-doc': 'n1' }, [icon(), surface])
+const surface = (...kids: Node[]) => h('div', { 'data-streamdown': 'json-render' }, kids)
+const frame = (kind: string, viewBox: string) => h('div', { 'data-streamdown': `${kind}-block` }, [icon(), h('div', {}, [svg(viewBox)])])
+
+test('mountedDiagrams keys a board diagram svg by block id, skipping button icons and blocks without a diagram', () => {
+  const root = h('body', {}, [board('g1', icon(), svg('0 0 10 10')), board('s2'), board('s3', h('svg'), svg('0 0 4 4'))])
   expect(mountedDiagrams(root)).toEqual([
     { id: 'g1', markup: '<svg viewBox="0 0 10 10"/>' },
     { id: 's3', markup: '<svg viewBox="0 0 4 4"/>' },
   ])
+})
+
+test('a note json-render block that is one diagram gives its svg; composites, mermaid and plain blocks give nothing', () => {
+  const root = h('body', {}, [
+    note('json-render', 'g1', surface(frame('graph', '0 0 30 20'))),
+    // A Card around the Graph: the daemon snapshots the whole card.
+    note('json-render', 'c2', surface(h('div', { class: 'card' }, [h('h3'), frame('graph', '0 0 5 5')]))),
+    // A Graph beside a Text at the top level.
+    note('json-render', 'c3', surface(frame('sequence', '0 0 6 6'), h('p'))),
+    // A chart drawn outside DiagramFrame.
+    note('json-render', 'b4', surface(h('div', { class: 'chart' }, [svg('0 0 7 7')]))),
+    // Mermaid goes through the daemon's PNG snapshot (Typst's svg text uses the host's fonts).
+    note('mermaid', 'm5', h('div', { 'data-streamdown': 'mermaid-block' }, [svg('0 0 8 8')])),
+  ])
+  expect(mountedDiagrams(root)).toEqual([{ id: 'g1', markup: '<svg viewBox="0 0 30 20"/>' }])
+})
+
+test('with a docId, only that document column counts; without its column, the whole root', () => {
+  const column = (doc: string, id: string) => h('div', { 'data-doc': doc }, [board(id, svg('0 0 1 1'))])
+  const root = h('body', {}, [column('d1', 'a'), column('d2', 'b')])
+  expect(mountedDiagrams(root, 'd2').map((d) => d.id)).toEqual(['b'])
+  expect(mountedDiagrams(root, 'd1').map((d) => d.id)).toEqual(['a'])
+  expect(mountedDiagrams(root, 'gone').map((d) => d.id)).toEqual(['a', 'b'])
+  expect(mountedDiagrams(root).map((d) => d.id)).toEqual(['a', 'b'])
 })
 
 test('exportAssets recolours in one pass to the light palette and makes each svg standalone', () => {

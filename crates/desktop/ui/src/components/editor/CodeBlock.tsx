@@ -74,7 +74,24 @@ const own = (e: { currentTarget: HTMLElement; target: EventTarget | null }) =>
  * The rendered surface: static (the fence's pan/zoom never sees a pointer or wheel event, fingers scroll the note),
  * one click on it or the button opens the source. Fullscreen and export stay on the fence's own toolbar.
  */
-function DiagramView({ kind, source, parses, editable, onEdit }: { kind: Diagram; source: string; parses: boolean | null; editable: boolean; onEdit: () => void }) {
+function DiagramView({
+  kind,
+  source,
+  parses,
+  editable,
+  onEdit,
+  blockId,
+  docId,
+}: {
+  kind: Diagram
+  source: string
+  parses: boolean | null
+  editable: boolean
+  onEdit: () => void
+  /** 72 §3: the block id and document a PDF export keys this diagram's asset by (`lib/doc-export`). */
+  blockId: string
+  docId?: string
+}) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = ref.current!
@@ -91,6 +108,8 @@ function DiagramView({ kind, source, parses, editable, onEdit }: { kind: Diagram
     <div
       ref={ref}
       data-diagram={kind}
+      data-block={blockId}
+      data-doc={docId}
       contentEditable={false}
       className={cn('w-full [&_[data-streamdown]]:my-0 [&_*]:touch-auto!', editable && 'cursor-pointer')}
       onClick={(e) => editable && own(e) && onEdit()}
@@ -171,7 +190,7 @@ function CodeBlock({ block, editor, contentRef }: Props) {
   return (
     <>
       {defaults && <CellDefaults text={source} second={!firstDefaults(editor.document, block.id)} onOpen={open} />}
-      {diagram && <DiagramView kind={kind} source={source} parses={parses} editable={editable} onEdit={open} />}
+      {diagram && <DiagramView kind={kind} source={source} parses={parses} editable={editable} onEdit={open} blockId={block.id} docId={host?.provider.id} />}
       <div contentEditable={false} className={cn((diagram || defaults) && 'hidden')}>
         <select
           value={block.props.language}

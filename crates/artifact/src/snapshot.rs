@@ -367,7 +367,7 @@ pub async fn render(
 }
 
 /// [`render`] with the subscriber check given.
-async fn render_gated(
+pub(crate) async fn render_gated(
     live: bool,
     rt: &Runtime,
     lang: FenceLang,

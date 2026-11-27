@@ -216,6 +216,7 @@ export function DocumentPage({
   below,
   children,
   actions,
+  docId,
   ...frame
 }: {
   live: LiveDocument
@@ -234,6 +235,8 @@ export function DocumentPage({
   band?: boolean
   embedded?: boolean
   back?: NotebookBack
+  /** The document's id on the column (`data-doc`), so a PDF export collects only this document's diagrams (`lib/doc-export`). */
+  docId?: string
 }) {
   const mobile = useIsMobile()
   // 59 §8.2, §8.5: who is here, and the owner's "Share…" — every document page alike.
@@ -250,7 +253,7 @@ export function DocumentPage({
   return (
     <Frame {...frame} actions={bar}>
       <div className="flex min-h-0 flex-1">
-        <div ref={columnRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
+        <div ref={columnRef} tabIndex={-1} data-doc={docId ?? live.provider?.id} className="flex min-w-0 flex-1 flex-col outline-none">
           {live.provider && <ServerBanner provider={live.provider} />}
           {above}
           {fallback ?? <Live {...live} onAsk={onAsk} />}
