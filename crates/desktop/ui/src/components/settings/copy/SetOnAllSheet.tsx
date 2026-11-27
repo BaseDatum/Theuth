@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { MachineRow } from '@/components/settings/MachineRow'
-import type { SettingsMachines } from '@/components/settings/machine-target'
+import { type SettingsMachines, usePickedMachine } from '@/components/settings/machine-target'
 import type { SettingsNeed } from '@/components/settings/scope'
 import { errorText } from '@/components/settings/shared'
 import { type Choice, type CopyField, type ResultRow, choices, resultRow, runApis, runPlan, settlePending } from '@/components/settings/copy/set-on-all'
@@ -22,14 +22,14 @@ export function SetOnAllSheet({ request, settings, onClose }: { request: SetOnAl
   return (
     <Sheet open={!!request} onOpenChange={(o) => !o && onClose()}>
       <SheetContent side={mobile ? 'bottom' : 'right'} className={cn('gap-0 overflow-y-auto', mobile && 'max-h-[85dvh] rounded-t-2xl')}>
-        {request && <SetOnAll key={`${request.tab}/${request.field.id}/${JSON.stringify(request.value)}`} request={request} settings={settings} />}
+        {request && <SetOnAll key={`${request.tab}/${request.field.id}/${JSON.stringify(request.value)}`} request={request} settings={settings} onClose={onClose} />}
       </SheetContent>
     </Sheet>
   )
 }
 
-/** The sheet's body; `SetOnAllSheet` keys it per request so a new request starts unticked-fresh. */
-export function SetOnAll({ request, settings }: { request: SetOnAllRequest; settings: SettingsMachines }) {
+/** The sheet's body; `SetOnAllSheet` keys it per request so a new request starts unticked-fresh. `onClose` closes the sheet. */
+export function SetOnAll({ request, settings, onClose }: { request: SetOnAllRequest; settings: SettingsMachines; onClose: () => void }) {
   const { field, value } = request
   const plan = field.plan(value)
   const display = field.format(value)
@@ -68,8 +68,15 @@ export function SetOnAll({ request, settings }: { request: SetOnAllRequest; sett
 
   const pending = rows?.filter((r) => r.pending) ?? []
   const retry = () => void run(settings.machines.filter((m) => pending.some((r) => r.engine === m.id)), rows ?? [])
-  // From the click itself, so the run carries this press (`userPressed`) to that one machine.
-  const applyOn = (engine: string) => void run(settings.machines.filter((m) => m.id === engine), rows ?? [])
+  /**
+   * `needs_press`: the change must be pressed on that machine itself (a forwarded call is never a press). A machine
+   * this app reaches with a client of its own: pick it and close the sheet, leaving its tab open to press there.
+   */
+  const openOn = (m: Machine) => {
+    usePickedMachine.getState().pick(m.connected ? null : m.id)
+    onClose()
+  }
+  const reachable = (engine: string) => settings.machines.find((m) => m.id === engine && !m.forwarded)
 
   return (
     <div data-set-on-all="" className="flex flex-col gap-4 p-4">
@@ -97,11 +104,16 @@ export function SetOnAll({ request, settings }: { request: SetOnAllRequest; sett
                 <span className="min-w-0 truncate">{row.name}</span>
                 {row.restart && <span data-restart-chip="" className="shrink-0 rounded-full border border-warning/40 px-1.5 text-[10px] leading-4 text-warning">restart needed</span>}
                 <small className="ml-auto text-right text-[12px] text-fg-tertiary">{row.text}</small>
-                {row.press && (
-                  <Button size="sm" variant="outline" data-apply-on={row.engine} className="h-6 shrink-0 px-2 text-[11px]" disabled={busy} onClick={() => applyOn(row.engine)}>
-                    Apply on {row.name}
-                  </Button>
-                )}
+                {row.press &&
+                  (reachable(row.engine) ? (
+                    <Button size="sm" variant="outline" data-open-on={row.engine} className="h-6 shrink-0 px-2 text-[11px]" onClick={() => openOn(reachable(row.engine)!)}>
+                      Open on {row.name}
+                    </Button>
+                  ) : (
+                    <small data-open-theuth-on={row.engine} className="shrink-0 text-[11px] text-fg-tertiary">
+                      open theuth on {row.name} to finish
+                    </small>
+                  ))}
               </li>
             ))}
           </ul>

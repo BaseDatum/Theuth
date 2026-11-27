@@ -19,27 +19,16 @@ test('227: the connected engine is the api itself: no engine_call', async () => 
   expect(api.engine_call).not.toHaveBeenCalled()
 })
 
-test('227: another engine: m(...args) becomes engine_call(target, m, named params, pressed), with the bindings\' names', async () => {
+test('227: another engine: m(...args) becomes engine_call(target, m, named params), with the bindings\' names and no press', async () => {
   const api = fakeApi()
-  const there = forEngine(api, 'p50', 'mac', () => ({ at: 1 }))
+  const there = forEngine(api, 'p50', 'mac')
   await there.set_model(null, 'openai/gpt-6', true)
-  expect(api.engine_call).toHaveBeenLastCalledWith('p50', 'set_model', { session: null, model: 'openai/gpt-6', manual: true }, { at: 1 })
+  expect(api.engine_call).toHaveBeenLastCalledWith('p50', 'set_model', { session: null, model: 'openai/gpt-6', manual: true })
   await there.config_flag_set('knowledge.peek', false)
-  expect(api.engine_call).toHaveBeenLastCalledWith('p50', 'config_flag_set', { key: 'knowledge.peek', on: false }, { at: 1 })
+  expect(api.engine_call).toHaveBeenLastCalledWith('p50', 'config_flag_set', { key: 'knowledge.peek', on: false })
   // A reply comes back as the method's own would.
   await expect(there.info()).resolves.toMatchObject({ name: 'there' })
   expect(api.set_model).not.toHaveBeenCalled()
-})
-
-test('227: pressed is read at call time; outside a press it is null', async () => {
-  const api = fakeApi()
-  let pressed: { at: number } | null = null
-  const there = forEngine(api, 'p50', 'mac', () => pressed)
-  await there.info()
-  expect(api.engine_call).toHaveBeenLastCalledWith('p50', 'info', {}, null)
-  pressed = { at: 7 }
-  await there.info()
-  expect(api.engine_call).toHaveBeenLastCalledWith('p50', 'info', {}, { at: 7 })
 })
 
 test('227: a vault method is not forwarded: it runs here with the picked engine as its own `engine` argument', async () => {

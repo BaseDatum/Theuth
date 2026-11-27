@@ -109,8 +109,12 @@ export function unreachableText(e: unknown, name: string): string {
   return `${name} did not answer: ${e instanceof Error ? e.message : String(e)}`
 }
 
-/** The machine a tab edits: the target for a `machine` tab; `null` (the connected engine, no forwarding) for any other scope. */
-export const aimedAt = (tab: Pick<SettingsTab, 'scope'>, target: Machine | null): Machine | null => (tab.scope === 'machine' ? target : null)
+/**
+ * The machine a tab edits: the target for a `machine` tab; `null` (the connected engine, no forwarding) for any other
+ * scope, and for a `connectedOnly` tab whose target only `engine_call` reaches (its methods are not forwardable).
+ */
+export const aimedAt = (tab: Pick<SettingsTab, 'scope' | 'connectedOnly'>, target: Machine | null): Machine | null =>
+  tab.scope !== 'machine' || (tab.connectedOnly && target?.forwarded) ? null : target
 
 /**
  * `children` aimed at `machine`: as is for the active engine; under its own client's stores for an engine with a

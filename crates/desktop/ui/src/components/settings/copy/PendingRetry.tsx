@@ -38,8 +38,9 @@ function Retry({ onEmpty }: { onEmpty: () => void }) {
     if (busy.current || settings.machines.length === 0) return
     busy.current = true
     void retryPending(runApis(settings), settings.machines)
-      .then((ran) => {
-        if (ran > 0 && readPending().length === 0) notify.success('Pending settings applied on every machine')
+      .then(({ ran, needsPress }) => {
+        if (needsPress.length > 0) notify.warning('Needs your press on that machine', { description: `Open its Settings there to finish: ${needsPress.join(', ')}` })
+        else if (ran > 0 && readPending().length === 0) notify.success('Pending settings applied on every machine')
         if (readPending().length === 0) onEmpty()
       })
       .catch(() => undefined)

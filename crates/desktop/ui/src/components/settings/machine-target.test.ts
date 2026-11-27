@@ -60,11 +60,11 @@ test('227: with P50 picked, a machine tab reads and writes P50 through engine_ca
   const api = fakeApi()
   const button = await mount('machine', api)
   expect(button.dataset.model).toBe('p50-model')
-  expect(api.engine_call).toHaveBeenCalledWith('p50', 'title_model', {}, null)
+  expect(api.engine_call).toHaveBeenCalledWith('p50', 'title_model', {})
   expect(api.title_model).not.toHaveBeenCalled()
   const reads = api.engine_call.mock.calls.filter(([, m]) => m === 'title_model').length
   await act(async () => button.click())
-  await vi.waitFor(() => expect(api.engine_call).toHaveBeenCalledWith('p50', 'set_title_model', { model: 'openai/gpt-6' }, null))
+  await vi.waitFor(() => expect(api.engine_call).toHaveBeenCalledWith('p50', 'set_title_model', { model: 'openai/gpt-6' }))
   expect(api.set_title_model).not.toHaveBeenCalled()
   // The write invalidated P50's queries: the tab re-read it there.
   await vi.waitFor(() => expect(api.engine_call.mock.calls.filter(([, m]) => m === 'title_model').length).toBeGreaterThan(reads))
@@ -113,4 +113,13 @@ test('227: an engine with a client of its own (the hub\'s while this device\'s e
   await act(async () => host.querySelector<HTMLButtonElement>('button[data-model]')!.click())
   await vi.waitFor(() => expect(hub.set_title_model).toHaveBeenCalledWith('openai/gpt-6'))
   expect([mine.title_model, mine.engine_call, hub.engine_call].map((f) => f.mock.calls.length)).toEqual([0, 0, 0])
+})
+
+test('227: a connectedOnly tab (its methods are not forwardable) stays on the connected machine when a forwarded one is picked', () => {
+  const mbp = machine('mbp', '333', { client: 'hub-row', forwarded: false })
+  expect(aimedAt({ scope: 'machine', connectedOnly: true }, p50)).toBeNull()
+  // A machine with a client of its own is reached directly: no forwarding involved.
+  expect(aimedAt({ scope: 'machine', connectedOnly: true }, mbp)).toBe(mbp)
+  expect(aimedAt({ scope: 'machine' }, p50)).toBe(p50)
+  expect(aimedAt({ scope: 'everywhere' }, p50)).toBeNull()
 })

@@ -24,6 +24,8 @@ export type SettingsTab = {
   copyable: boolean
   /** Why a `machine` tab is not copyable. */
   copyNote?: string
+  /** 227: its methods are not forwardable (`engine_call`), so it ignores the machine picker and edits the connected machine only. */
+  connectedOnly?: boolean
 }
 
 /** 188: one entry of the categories column; its tabs fill the section band. */

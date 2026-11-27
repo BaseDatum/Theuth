@@ -6,9 +6,8 @@
 // The engine keeps no queue: close every window and the pending copies are only retried on the next launch.
 
 import { type SettingsNeed, engineCaps, notApplicable } from '@/components/settings/scope'
-import { ENGINE_CALL_ERROR, namedParams, userPressed } from '@/lib/engine-call'
+import { ENGINE_CALL_ERROR, namedParams } from '@/lib/engine-call'
 import type { Api } from '@/rpc/bindings/client'
-import type { PressToken } from '@/rpc/bindings/method.agent.input'
 import type { NodeResult, NodeStatus } from '@/rpc/bindings/method.agent.output'
 import type { Machine } from '@/lib/mesh-machines'
 import { LOCAL } from '@/link/engines'
@@ -57,7 +56,7 @@ export function choices(machines: readonly Machine[], opts: { needs?: readonly S
 
 /**
  * A machine's result row (mock): its mark, its text, whether it is still pending (queued for a retry) and whether it
- * waits for a press ("Apply on <machine>": a setter that needs the owner's press, refused without one).
+ * needs the owner's press on that machine itself (`needs_press`: a forwarded call is never a press; never retried).
  */
 export type ResultRow = { engine: string; name: string; status: NodeStatus | 'skipped'; mark: '✓' | '◷' | '–' | '✗'; text: string; restart: boolean; pending: boolean; press: boolean }
 
@@ -71,7 +70,7 @@ export function resultRow(r: NodeResult | { engine: string; name: string; status
     case 'sealed':
       return { ...base, mark: '◷', text: 'vault locked — applies after unlock', pending: true }
     case 'needs_press':
-      return { ...base, mark: '◷', text: `needs your press — Apply on ${r.name}`, press: true }
+      return { ...base, mark: '◷', text: `needs your press on ${r.name}`, press: true }
     case 'not_applicable':
       return { ...base, mark: '–', text: `skipped — ${r.message || 'not on this machine'}` }
     case 'skipped':
@@ -119,13 +118,13 @@ async function runLocal(api: Api | null, calls: readonly Call[], m: Machine): Pr
 }
 
 /** `calls` on the mesh members `engines` through `engine_call_all`; a machine that did not take one is not sent the next. */
-async function runMesh(api: Api | null, calls: readonly Call[], engines: readonly Machine[], pressed: PressToken | null): Promise<NodeResult[]> {
+async function runMesh(api: Api | null, calls: readonly Call[], engines: readonly Machine[]): Promise<NodeResult[]> {
   const results = new Map<string, NodeResult>(engines.map((m) => [m.id, { engine: m.id, name: m.name, status: api ? 'ok' : 'offline', restart_required: false }]))
   if (!api) return [...results.values()]
   for (const call of calls) {
     const still = engines.filter((m) => results.get(m.id)!.status === 'ok').map((m) => m.id)
     if (still.length === 0) break
-    const answers = await api.engine_call_all(call.method, namedParams(call.method, call.args), still, pressed)
+    const answers = await api.engine_call_all(call.method, namedParams(call.method, call.args), still)
     const seen = new Set<string>()
     for (const a of answers) {
       // Only the engines asked for, once each: an answer for this device's engine (reached directly) is dropped.
@@ -147,7 +146,6 @@ async function runMesh(api: Api | null, calls: readonly Call[], engines: readonl
  * it, and only to machines of its mesh.
  */
 export async function runPlan(apis: RunApis, plan: CopyPlan, engines: readonly Machine[]): Promise<NodeResult[]> {
-  const pressed = userPressed()
   if (plan.kind === 'providers') {
     const self = apis.self
     const api = self && direct(self) ? apis.local : apis.mesh
@@ -172,7 +170,7 @@ export async function runPlan(apis: RunApis, plan: CopyPlan, engines: readonly M
   const locals = engines.filter(direct)
   const [mine, theirs] = await Promise.all([
     Promise.all(locals.map((m) => runLocal(apis.local, plan.calls, m))),
-    runMesh(apis.mesh, plan.calls, engines.filter((m) => !direct(m)), pressed),
+    runMesh(apis.mesh, plan.calls, engines.filter((m) => !direct(m))),
   ])
   const by = new Map([...theirs, ...mine].map((r) => [r.engine, r]))
   return engines.map((m) => by.get(m.id)!)
@@ -222,21 +220,25 @@ export function settlePending(entry: Omit<PendingCopy, 'engines' | 'at'>, result
 }
 
 /**
- * Retry every queued copy on the machines of `machines` that are back (online, not sealed); returns the copies run.
- * A retry carries no press: a machine that answers `needs_press` stays queued (it is never marked failed) until the
- * sheet's "Apply on <machine>" press applies it.
+ * Retry every queued copy on the machines of `machines` that are back (online, not sealed). Returns the copies run and
+ * the machines that answered `needs_press`: those leave the queue (never retried, never marked failed); the change has
+ * to be made on that machine itself.
  */
-export async function retryPending(apis: RunApis, machines: readonly Machine[]): Promise<number> {
+export async function retryPending(apis: RunApis, machines: readonly Machine[]): Promise<{ ran: number; needsPress: string[] }> {
   let ran = 0
+  const needsPress: string[] = []
   for (const entry of readPending()) {
     const back = machines.filter((m) => entry.engines.includes(m.id) && m.online && !m.sealed)
     if (back.length === 0) continue
     ran++
     const results = await runPlan(apis, entry.plan, back)
     const still = new Set(entry.engines.filter((e) => !back.some((m) => m.id === e)))
-    for (const r of results) if (resultRow(r).pending || r.status === 'needs_press') still.add(r.engine)
+    for (const r of results) {
+      if (resultRow(r).pending) still.add(r.engine)
+      if (r.status === 'needs_press') needsPress.push(`${r.name} (${entry.label})`)
+    }
     const rest = readPending().filter((p) => p.id !== entry.id)
     writePending(still.size > 0 ? [...rest, { ...entry, engines: [...still] }] : rest)
   }
-  return ran
+  return { ran, needsPress }
 }

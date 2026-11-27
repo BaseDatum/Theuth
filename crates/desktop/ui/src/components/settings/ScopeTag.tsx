@@ -34,9 +34,25 @@ export function NotHereTag({ missing, engine, className }: { missing: readonly S
 /**
  * The top of a tab's body: its scope tag, and why it does nothing on this engine when it does not apply.
  * 227: with more than one machine, a `machine` tab says which one it edits (`editing`); any other tab, while another
- * machine is picked, says it ignores the pick (`ignoring`: the picked machine's name).
+ * machine is picked, says it ignores the pick (`ignoring`: the picked machine's name). A `machine` tab whose methods are
+ * not forwardable, while a machine it cannot reach is picked, says it stays on the connected machine (`connectedOnly`:
+ * the picked machine's name).
  */
-export function ScopeHeader({ scope, names, missing, editing, ignoring }: { scope: SettingsScope; names: ScopeNames; missing: readonly SettingsNeed[] | null; editing?: string | null; ignoring?: string | null }) {
+export function ScopeHeader({
+  scope,
+  names,
+  missing,
+  editing,
+  ignoring,
+  connectedOnly,
+}: {
+  scope: SettingsScope
+  names: ScopeNames
+  missing: readonly SettingsNeed[] | null
+  editing?: string | null
+  ignoring?: string | null
+  connectedOnly?: string | null
+}) {
   return (
     <div className="mb-3 flex flex-col gap-2">
       <div className="flex items-center gap-2">
@@ -52,6 +68,11 @@ export function ScopeHeader({ scope, names, missing, editing, ignoring }: { scop
           </span>
         )}
       </div>
+      {connectedOnly && (
+        <p role="note" data-connected-only="" className="text-xs text-fg-tertiary">
+          Only on the connected machine: {connectedOnly} cannot be edited here from this app.
+        </p>
+      )}
       {missing && (
         <p role="note" className="rounded-[10px] border border-border-subtle bg-layer-2 px-3 py-2 text-sm text-fg-secondary">
           <span className="font-medium text-foreground">Not on this machine.</span> {notApplicableText(missing, names.engine)}

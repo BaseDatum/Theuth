@@ -136,8 +136,9 @@ function Page({ tab, focus, machines }: { tab: string; focus: string | null; mac
           scope={current.scope}
           names={names}
           missing={notApplicable(current, caps)}
-          editing={machines.machines.length > 1 ? target?.name : null}
+          editing={machines.machines.length > 1 ? (aimed ?? machines.connected)?.name : null}
           ignoring={isRemote(target) ? target.name : null}
+          connectedOnly={current.scope === 'machine' && isRemote(target) && !aimed ? target.name : null}
         />
         <MachineScope machine={aimed}>
           {current.required ? <Capability required={current.required}><current.Component focus={focus} /></Capability> : <current.Component focus={focus} />}

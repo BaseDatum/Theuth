@@ -6,7 +6,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { setterField } from '@/components/settings/copy/fields'
 import { type Choice, choices, readPending, retryPending, settlePending } from '@/components/settings/copy/set-on-all'
 import { SetOnAllSheet } from '@/components/settings/copy/SetOnAllSheet'
-import type { SettingsMachines } from '@/components/settings/machine-target'
+import { type SettingsMachines, usePickedMachine } from '@/components/settings/machine-target'
 import type { Api } from '@/rpc/bindings/client'
 import type { EngineCapsResult, NodeResult } from '@/rpc/bindings/method.agent.output'
 import type { Machine } from '@/lib/mesh-machines'
@@ -76,7 +76,7 @@ test('227: results per machine as the mock: applied, offline/locked pending, ski
   await vi.waitFor(() => expect(sheet().querySelector('[data-result="ok"]')).not.toBeNull())
   // This iPad's engine directly, the mesh through engine_call_all (without it), in parallel; one merged list.
   expect(set_max_tool_rounds).toHaveBeenCalledWith(200)
-  expect(engine_call_all).toHaveBeenCalledWith('set_max_tool_rounds', { rounds: 200 }, ['mbp', 'nyc', 'xeus', 'sfo', 'box'], null)
+  expect(engine_call_all).toHaveBeenCalledWith('set_max_tool_rounds', { rounds: 200 }, ['mbp', 'nyc', 'xeus', 'sfo', 'box'])
   const rows = () => [...sheet().querySelectorAll('[data-result]')].map((li) => li.textContent)
   await vi.waitFor(() =>
     expect(rows()).toEqual([
@@ -95,7 +95,7 @@ test('227: results per machine as the mock: applied, offline/locked pending, ski
   answers[3] = { ...answers[3]!, status: 'ok' }
   await act(async () => [...sheet().querySelectorAll('button')].find((b) => b.textContent === 'Retry pending')!.click())
   await vi.waitFor(() => expect(rows()[4]).toBe('✓xeusapplied'))
-  expect(engine_call_all).toHaveBeenLastCalledWith('set_max_tool_rounds', { rounds: 200 }, ['nyc', 'xeus'], null)
+  expect(engine_call_all).toHaveBeenLastCalledWith('set_max_tool_rounds', { rounds: 200 }, ['nyc', 'xeus'])
   expect(rows()[3]).toBe('◷cloud-nyc1vault locked — applies after unlock')
   expect(readPending()).toMatchObject([{ engines: ['nyc'] }])
 })
@@ -116,41 +116,43 @@ test('227 (b): this device\'s engine outside the mesh is ticked by default and g
   await act(async () => [...sheet().querySelectorAll('button')].find((b) => b.textContent?.startsWith('Apply to 2'))!.click())
   const rows = () => [...sheet().querySelectorAll('[data-result]')].map((li) => li.textContent)
   await vi.waitFor(() => expect(rows()).toEqual(['✗This iPadfailed: disk full', '✓333 · MacBook Proapplied']))
-  expect(engine_call_all).toHaveBeenCalledWith('set_max_tool_rounds', { rounds: 150 }, ['mbp'], null)
+  expect(engine_call_all).toHaveBeenCalledWith('set_max_tool_rounds', { rounds: 150 }, ['mbp'])
 })
 
-test('227: a machine that needs the owner\'s press shows "Apply on <machine>"; that button re-runs it alone, carrying the press', async () => {
-  const engine_call_all = vi.fn(async (_m: string, _p: unknown, engines: string[], pressed: unknown) =>
-    engines.map((engine): NodeResult => ({ engine, name: engine, status: pressed ? 'ok' : engine === 'mbp' ? 'needs_press' : 'ok', restart_required: false })),
+test('227: needs_press means "press it on that machine": Open on <machine> picks it when this app reaches it with its own client, else open theuth there', async () => {
+  const engine_call_all = vi.fn(async (_m: string, _p: unknown, engines: string[]) =>
+    engines.map((engine): NodeResult => ({ engine, name: engine, status: engine === 'mbp' || engine === 'box' ? 'needs_press' : 'ok', restart_required: false })),
   )
   const settings = settingsOf([ipad, mbp, box], engine_call_all, { set_max_tool_rounds: vi.fn(async () => null) })
   const field = setterField('max-tool-rounds', 'Max tool rounds', 90, 'set_max_tool_rounds')!
+  const onClose = vi.fn()
   const host = document.createElement('div')
   document.body.append(host)
-  await act(async () => createRoot(host).render(h(SetOnAllSheet, { request: { field, value: 90, tab: 'loop' }, settings, onClose: () => {} })))
+  await act(async () => createRoot(host).render(h(SetOnAllSheet, { request: { field, value: 90, tab: 'loop' }, settings, onClose })))
   const sheet = () => document.querySelector('[data-set-on-all]')!
   await act(async () => [...sheet().querySelectorAll('button')].find((b) => b.textContent?.startsWith('Apply to'))!.click())
-  const row = (id: string) => sheet().querySelector(`[data-result] [data-apply-on="${id}"]`)?.closest('li')
-  await vi.waitFor(() => expect(row('mbp')?.textContent).toBe('◷333 · MacBook Proneeds your press — Apply on 333 · MacBook ProApply on 333 · MacBook Pro'))
-  // Not queued for the automatic retries: only a press finishes it.
+  const rows = () => [...sheet().querySelectorAll('[data-result]')].map((li) => li.textContent)
+  await vi.waitFor(() =>
+    expect(rows()).toEqual([
+      '✓This iPadapplied',
+      '◷333 · MacBook Proneeds your press on 333 · MacBook ProOpen on 333 · MacBook Pro',
+      '◷boxneeds your press on boxopen theuth on box to finish',
+    ]),
+  )
+  // Never queued for the automatic retries.
   expect(readPending()).toEqual([])
-  Object.defineProperty(navigator, 'userActivation', { value: { isActive: true }, configurable: true })
-  try {
-    await act(async () => sheet().querySelector<HTMLButtonElement>('[data-apply-on="mbp"]')!.click())
-  } finally {
-    Object.defineProperty(navigator, 'userActivation', { value: undefined, configurable: true })
-  }
-  await vi.waitFor(() => expect(sheet().querySelector('[data-apply-on]')).toBeNull())
-  expect(engine_call_all).toHaveBeenLastCalledWith('set_max_tool_rounds', { rounds: 90 }, ['mbp'], { at: expect.any(Number) })
-  expect([...sheet().querySelectorAll('[data-result]')].map((li) => li.textContent)).toEqual(['✓This iPadapplied', '✓333 · MacBook Proapplied', '✓boxapplied'])
+  await act(async () => sheet().querySelector<HTMLButtonElement>('[data-open-on="mbp"]')!.click())
+  expect(usePickedMachine.getState().picked).toBe('mbp')
+  expect(onClose).toHaveBeenCalled()
+  usePickedMachine.setState({ picked: null })
 })
 
-test('227: an automatic retry that meets needs_press keeps the machine queued, never failed', async () => {
+test('227: an automatic retry that meets needs_press drops it from the queue (never retried again, never marked failed) and reports it', async () => {
   const plan = { kind: 'calls' as const, calls: [{ method: 'set_max_tool_rounds', args: [70] }] }
   settlePending({ id: 'loop/max-tool-rounds', label: 'Max tool rounds', display: '70', plan }, [{ engine: 'mbp', name: 'mbp', status: 'offline', restart_required: false }], true)
   const engine_call_all = vi.fn(async (_m: string, _p: unknown, engines: string[]) => engines.map((engine): NodeResult => ({ engine, name: engine, status: 'needs_press', restart_required: false })))
   const settings = settingsOf([ipad, mbp], engine_call_all, {})
-  expect(await retryPending({ mesh: settings.api, local: settings.local, self: ipad }, settings.machines)).toBe(1)
-  expect(engine_call_all).toHaveBeenCalledWith('set_max_tool_rounds', { rounds: 70 }, ['mbp'], null)
-  expect(readPending()).toMatchObject([{ id: 'loop/max-tool-rounds', engines: ['mbp'] }])
+  expect(await retryPending({ mesh: settings.api, local: settings.local, self: ipad }, settings.machines)).toEqual({ ran: 1, needsPress: ['333 · MacBook Pro (Max tool rounds)'] })
+  expect(engine_call_all).toHaveBeenCalledWith('set_max_tool_rounds', { rounds: 70 }, ['mbp'])
+  expect(readPending()).toEqual([])
 })
