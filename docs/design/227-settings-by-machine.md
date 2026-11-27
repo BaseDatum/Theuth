@@ -100,9 +100,22 @@ Contract fill-ins (no change to §1's shapes):
 - `params` by name (object) or position (array); `null` = no params.
 - `settings_values` with `engines: []` = this engine and every paired engine. Getters are called without params;
   `null` where a getter failed or does not apply.
-- Error mapping (`classify`): `-32010` owner unreachable → `-32051`; `-32052`, a message starting "the vault is
-  sealed" (feat/sealed-vault, `crates/secrets/src/envelope.rs`), or "vault is locked" → `-32052`; `-32601` method
-  not found and `-32001` actor not running → `-32053`. `engine_call_all` turns them into `status` per row.
+- Error mapping (`classify`): `-32010` owner unreachable → `-32051`; `-32052` (feat/sealed-vault, final: message "the
+  vault is sealed on <name> — …", data `{engine, methods}`, passed through unchanged), any message starting "the vault
+  is sealed", or "vault is locked" → `-32052`; `-32601` method not found and `-32001` actor not running → `-32053`.
+  `engine_call_all` turns them into `status` per row.
+- The Vault tab does not use `engine_call`: the vault RPCs take `engine` as their first positional param and forward
+  themselves (`rpc_forward::to_peer`); no vault method is on the allowlist.
+- `-32054 "needs_press"` (orchestrator, 2026-11-27; extends §1): a setter that needs the owner's press, called
+  without one (a client-queued retry, an agent), is refused up front — `plugin_approve`, and `set_always_ask` with
+  `on: false` (it would park a human-only card on the target) — and a target's own press refusal ("needs a human
+  press", "needs the owner's press") maps to it. `engine_call_all` rows get `status: "needs_press"` (a sixth
+  status); the UI shows "press to finish". Here the caller's own connection is the press; across the hop, the
+  carried `_press`. Note `plugin_approve` still refuses every forwarded call (plugins' `HumanPress`), so a remote
+  approve answers `needs_press` even when pressed.
+- `SETTINGS_FORWARDABLE` already holds every getter `settings_values` reads (`info`, `subagent_model`,
+  `theuth_agent_model`, `title_*`/`vision_*`/`escalate_*`/`knowledge_harvester_*`, `endless_settings_get`,
+  `search_settings_get`, `list_prompt_sections`, `list_builtins`, `list_tool_categories`, …).
 - `restart_required`: the reply's own `restart_required: true` (`config_flag_set`, plugin flags), or
   `config_flag_set` of a `subsystems.*` key.
 - `engine_caps`: `display`/`interactive_user` from the startup probe `theuth::subsystems::Env` (installed by
