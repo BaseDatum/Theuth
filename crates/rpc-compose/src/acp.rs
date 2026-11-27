@@ -187,8 +187,10 @@ pub async fn serve_mesh(rt: Runtime, module: rpc_core::ModuleFactory) {
         transport.clone(),
         methods(rt.clone(), module).await,
     ));
-    // 224: a peer's terminal attach (`subscribe_pty` with `engine`), on `theuth/pty/1`.
+    // 224: a peer's terminal attach (`subscribe_pty` with `engine`), on `theuth/pty/1`, and
+    // tunnels to this engine's watchable desktop, on `theuth/desktop/1`.
     tokio::spawn(agent::rpc_engine::serve(rt.clone(), transport.clone()));
+    tokio::spawn(agent::rpc_engine::serve_desktop(rt.clone(), transport.clone()));
     let relay = relay(&rt, None, module).await;
     let api = relay
         .ask(Api)

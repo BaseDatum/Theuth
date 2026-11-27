@@ -1,19 +1,24 @@
 //! The escape hatch on any engine of the mesh (224 §cloud nodes): a login
-//! shell PTY and the engine log, here or on a peer by its id, no SSH.
+//! shell PTY, the engine log and the watchable desktop, here or on a peer by
+//! its id, no SSH and no inbound ports.
 //!
-//! `engine_terminal` / `engine_logs` run here when `engine` is unset, empty
-//! or this engine, else forward over `theuth/rpc/1` to that peer
-//! ([`forward::engine_peer`]). The PTY calls (`pty_input`, `pty_resize`,
-//! `pty_screen`, `list_terminals`) take the same trailing `engine`; the
-//! `subscribe_pty` stream for a peer's job rides its own `theuth/pty/1`
-//! stream ([`ALPN_PTY`]): one [`PtyOpen`] line out, one [`PtyAck`] line
-//! back, then one [`PtyChunk`] JSON line per item until `exit` or either
-//! side closes ([`open`], [`serve`]).
+//! `engine_terminal` / `engine_logs` / `engine_desktop` run here when
+//! `engine` is unset, empty or this engine, else forward over `theuth/rpc/1`
+//! to that peer ([`forward::engine_peer`]). The PTY calls (`pty_input`,
+//! `pty_resize`, `pty_screen`, `list_terminals`) take the same trailing
+//! `engine`; the `subscribe_pty` stream for a peer's job rides its own
+//! `theuth/pty/1` stream ([`ALPN_PTY`]): one [`PtyOpen`] line out, one
+//! [`PtyAck`] line back, then one [`PtyChunk`] JSON line per item until
+//! `exit` or either side closes ([`open`], [`serve`]). A peer's desktop is
+//! reached through a loopback listener here whose every connection is piped
+//! over a `theuth/desktop/1` stream ([`ALPN_DESKTOP`]) to the peer's
+//! websockify ([`desktop_access`], [`serve_desktop`]).
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::rpc_forward as forward;
 use crate::rpc_support::{RpcServerExt, attach_pty, owner_root};
@@ -24,7 +29,7 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::{SubscriptionMessage, SubscriptionSink};
 use jsonrpsee::types::ErrorObjectOwned;
 use rpc_core::{Server, ask, failed, lookup};
-use replica::{ALPN_PTY, PeerId, Transport};
+use replica::{ALPN_DESKTOP, ALPN_PTY, PeerId, Transport};
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -64,6 +69,21 @@ pub struct EngineLogs {
     pub path: Option<String>,
 }
 
+/// A noVNC target: connect to `ws_url` (websockify) with VNC `password`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct EngineDesktop {
+    /// `ws://127.0.0.1:<port>/websockify` on the engine answering: the
+    /// desktop's own websockify, or a mesh tunnel to a peer's.
+    pub ws_url: String,
+    /// The VNC password.
+    pub password: String,
+    /// `WIDTHxHEIGHT` of the desktop, when known.
+    pub geometry: Option<String>,
+    /// Mesh id of the engine whose desktop this is.
+    pub engine: String,
+}
+
 /// Engine escape-hatch methods owned by this plugin.
 #[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
@@ -79,6 +99,11 @@ pub trait EngineApi {
     #[method(name = "engine_logs", with_extensions)]
     async fn engine_logs(&self, engine: Option<String>, tail: Option<u32>)
     -> RpcResult<EngineLogs>;
+    /// The watchable desktop of `engine` (a VM cloud node's Xtigervnc behind
+    /// websockify, `<data_dir>/desktop.json`): a peer's is tunnelled over the
+    /// mesh to a loopback port here. Owner only. Errors when it has none.
+    #[method(name = "engine_desktop", with_extensions)]
+    async fn engine_desktop(&self, engine: Option<String>) -> RpcResult<EngineDesktop>;
 }
 
 #[async_trait]
@@ -157,6 +182,25 @@ impl EngineApiServer for Server {
         tokio::task::spawn_blocking(move || read_logs(&dir, n, tools::secrets::redact))
             .await
             .map_err(|e| failed(e.to_string()))
+    }
+
+    async fn engine_desktop(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+    ) -> RpcResult<EngineDesktop> {
+        rpc_core::owner(ext)?;
+        if let Some(peer) = forward::engine_peer(ext, engine.as_deref()).await? {
+            return desktop_via(ext, &peer).await;
+        }
+        let store = ask::<crate::Agents, _>(crate::AGENT_ACTOR, crate::DurableStore).await?;
+        let file = read_desktop(&self.rt.data_dir).map_err(failed)?;
+        Ok(EngineDesktop {
+            ws_url: ws_url(file.port),
+            password: file.password,
+            geometry: file.geometry,
+            engine: store.engine().to_owned(),
+        })
     }
 }
 
@@ -550,6 +594,186 @@ pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>) {
     }
 }
 
+// ---- the desktop over the mesh ----
+
+/// The file cloud-init writes beside the engine's data (`<data_dir>/desktop.json`).
+pub const DESKTOP_FILE: &str = "desktop.json";
+/// A tunnel listener with no new connection for this long closes.
+const TUNNEL_IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// `<data_dir>/desktop.json`: `{"password", "geometry", "port"}`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct DesktopFile {
+    password: String,
+    #[serde(default)]
+    geometry: Option<String>,
+    /// websockify's port on 127.0.0.1.
+    port: u16,
+}
+
+fn read_desktop(data_dir: &Path) -> Result<DesktopFile, String> {
+    let path = data_dir.join(DESKTOP_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err("this engine has no watchable desktop".into());
+        }
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let file: DesktopFile =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if file.port == 0 {
+        return Err(format!("{}: no port", path.display()));
+    }
+    Ok(file)
+}
+
+/// The one address a `theuth/desktop/1` stream may reach: this engine's
+/// websockify on loopback, at the port its own `desktop.json` names.
+fn desktop_target(data_dir: &Path) -> Result<std::net::SocketAddr, String> {
+    read_desktop(data_dir).map(|f| std::net::SocketAddr::from(([127, 0, 0, 1], f.port)))
+}
+
+fn ws_url(port: u16) -> String {
+    format!("ws://127.0.0.1:{port}/websockify")
+}
+
+/// [`EngineDesktop`] of mesh peer `peer` for an in-process caller (cloud
+/// nodes' `cloud_desktop`): its password and geometry, and `ws_url` a
+/// loopback tunnel here to its websockify. `Err`: the peer's error message
+/// (no desktop, not connected, …).
+pub async fn desktop_access(peer: &str) -> Result<EngineDesktop, String> {
+    desktop_via(&Extensions::new(), &PeerId(peer.to_owned()))
+        .await
+        .map_err(|e| e.message().to_owned())
+}
+
+async fn desktop_via(ext: &Extensions, peer: &PeerId) -> RpcResult<EngineDesktop> {
+    let remote: EngineDesktop =
+        forward::call_peer(ext, peer, "engine_desktop", (None::<String>,)).await?;
+    let port = tunnel_port(peer).await.map_err(|e| failed(format!("desktop tunnel: {e}")))?;
+    Ok(EngineDesktop {
+        ws_url: ws_url(port),
+        engine: peer.0.clone(),
+        ..remote
+    })
+}
+
+/// One live loopback listener per peer: its port and last use.
+struct Tunnel {
+    port: u16,
+    touched: Arc<Mutex<Instant>>,
+}
+
+static TUNNELS: LazyLock<Mutex<HashMap<String, Tunnel>>> = LazyLock::new(Default::default);
+
+/// The loopback port tunnelling to `peer`'s desktop: the live listener's, or
+/// a fresh one on 127.0.0.1 that closes after [`TUNNEL_IDLE`] unused.
+async fn tunnel_port(peer: &PeerId) -> std::io::Result<u16> {
+    if let Some(t) = TUNNELS.lock().expect("tunnels").get(&peer.0) {
+        *t.touched.lock().expect("touched") = Instant::now();
+        return Ok(t.port);
+    }
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let touched = Arc::new(Mutex::new(Instant::now()));
+    TUNNELS.lock().expect("tunnels").insert(
+        peer.0.clone(),
+        Tunnel { port, touched: touched.clone() },
+    );
+    let peer = peer.clone();
+    tokio::spawn(async move {
+        let to = peer.clone();
+        let open = move || {
+            let to = to.clone();
+            async move {
+                let t = forward::transport()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("the mesh is not running"))?;
+                t.open(&to, ALPN_DESKTOP).await
+            }
+        };
+        tunnel(listener, open, touched, TUNNEL_IDLE).await;
+        let mut tunnels = TUNNELS.lock().expect("tunnels");
+        if tunnels.get(&peer.0).is_some_and(|t| t.port == port) {
+            tunnels.remove(&peer.0);
+        }
+    });
+    Ok(port)
+}
+
+/// Accept loopback connections until none came (and nobody was handed the
+/// port, `touched`) for `idle`; each is piped both ways through a stream
+/// from `open`. Open connections outlive the listener.
+async fn tunnel<O, F, S>(listener: tokio::net::TcpListener, open: O, touched: Arc<Mutex<Instant>>, idle: Duration)
+where
+    O: Fn() -> F,
+    F: Future<Output = anyhow::Result<S>> + Send + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    loop {
+        let deadline = *touched.lock().expect("touched") + idle;
+        tokio::select! {
+            accepted = listener.accept() => {
+                let Ok((mut tcp, _)) = accepted else { continue };
+                *touched.lock().expect("touched") = Instant::now();
+                let stream = open();
+                tokio::spawn(async move {
+                    match stream.await {
+                        Ok(mut s) => {
+                            let _ = tokio::io::copy_bidirectional(&mut tcp, &mut s).await;
+                        }
+                        Err(e) => tracing::debug!(error = %e, "desktop tunnel open"),
+                    }
+                });
+            }
+            () = tokio::time::sleep_until(deadline.into()) => {
+                if touched.lock().expect("touched").elapsed() >= idle {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The accept side for one stream: pipe it to this engine's websockify
+/// ([`desktop_target`]; nothing else is reachable).
+async fn answer_desktop<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, data_dir: &Path) -> anyhow::Result<()> {
+    let target = desktop_target(data_dir).map_err(anyhow::Error::msg)?;
+    let mut tcp = tokio::net::TcpStream::connect(target).await?;
+    tokio::io::copy_bidirectional(&mut stream, &mut tcp).await?;
+    Ok(())
+}
+
+/// Accept `theuth/desktop/1` streams until shutdown from connected (paired)
+/// peers and pipe each to this engine's websockify.
+pub async fn serve_desktop(rt: Runtime, transport: Arc<dyn Transport>) {
+    loop {
+        let accepted = tokio::select! {
+            () = rt.shutdown.cancelled() => return,
+            a = transport.accept(ALPN_DESKTOP) => a,
+        };
+        match accepted {
+            Ok((peer, stream)) => {
+                if !transport.peers().contains(&peer) {
+                    tracing::warn!(%peer, "desktop stream from an unpaired peer refused");
+                    continue;
+                }
+                let data_dir = rt.data_dir.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = answer_desktop(stream, &data_dir).await {
+                        tracing::debug!(%peer, error = %e, "desktop mesh stream ended");
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "desktop mesh accept");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,5 +927,84 @@ mod tests {
             .expect("the far side ends once the opener is gone")
             .unwrap()
             .unwrap();
+    }
+
+    #[test]
+    fn desktop_json_parses_and_missing_means_no_desktop() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_desktop(dir.path()).unwrap_err(), "this engine has no watchable desktop");
+        let file = dir.path().join(DESKTOP_FILE);
+        std::fs::write(&file, r#"{"password":"abcd1234","geometry":"1440x900","port":6080}"#).unwrap();
+        let d = read_desktop(dir.path()).unwrap();
+        assert_eq!(
+            d,
+            DesktopFile { password: "abcd1234".into(), geometry: Some("1440x900".into()), port: 6080 }
+        );
+        assert_eq!(ws_url(d.port), "ws://127.0.0.1:6080/websockify");
+        std::fs::write(&file, r#"{"password":"p","port":5901}"#).unwrap();
+        assert_eq!(read_desktop(dir.path()).unwrap().geometry, None);
+        for bad in [r#"{"password":"p","port":0}"#, r#"{"password":"p"}"#, "not json", r#"{"password":"p","port":70000}"#] {
+            std::fs::write(&file, bad).unwrap();
+            assert!(read_desktop(dir.path()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn desktop_stream_reaches_only_loopback_at_the_files_port() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(DESKTOP_FILE), r#"{"password":"p","port":6080}"#).unwrap();
+        assert_eq!(desktop_target(dir.path()).unwrap(), "127.0.0.1:6080".parse().unwrap());
+    }
+
+    /// A TCP echo server on loopback; its port.
+    async fn echo() -> u16 {
+        let l = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut c, _)) = l.accept().await {
+                tokio::spawn(async move {
+                    let (mut r, mut w) = c.split();
+                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                });
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn desktop_tunnel_pipes_bytes_both_ways_and_closes_when_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = echo().await;
+        std::fs::write(
+            dir.path().join(DESKTOP_FILE),
+            format!(r#"{{"password":"p","port":{port}}}"#),
+        )
+        .unwrap();
+        let data_dir = dir.path().to_path_buf();
+        // The mesh stream pair is a duplex; the far half is the peer's accept side.
+        let open = move || {
+            let data_dir = data_dir.clone();
+            async move {
+                let (near, far) = tokio::io::duplex(4096);
+                tokio::spawn(async move { answer_desktop(far, &data_dir).await });
+                anyhow::Ok(near)
+            }
+        };
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let local = listener.local_addr().unwrap();
+        let touched = Arc::new(Mutex::new(Instant::now()));
+        let idle = Duration::from_millis(300);
+        let tunnel = tokio::spawn(tunnel(listener, open, touched, idle));
+        let mut c = tokio::net::TcpStream::connect(local).await.unwrap();
+        c.write_all(b"RFB 003.008\n").await.unwrap();
+        let mut got = [0u8; 12];
+        c.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"RFB 003.008\n");
+        drop(c);
+        tokio::time::timeout(Duration::from_secs(5), tunnel)
+            .await
+            .expect("the idle listener closes")
+            .unwrap();
+        assert!(tokio::net::TcpStream::connect(local).await.is_err());
     }
 }
