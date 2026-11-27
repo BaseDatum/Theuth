@@ -269,6 +269,7 @@ def user_data(name, data_dev, ticket, manifest=MANIFEST):
         "__NAME__": check_name(name),
         "__DATA_DEV__": data_dev,
         "__TICKET__": ticket or "",
+        "__DESKTOP__": "1",
         "__MANIFEST__": manifest,
         "__PUBKEY__": (VM_DIR / "pubkey.txt").read_text().strip(),
         "__INSTALL_SH__": base64.b64encode((VM_DIR / "theuth-install.sh").read_bytes()).decode(),

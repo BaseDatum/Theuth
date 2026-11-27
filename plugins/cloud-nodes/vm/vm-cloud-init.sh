@@ -4,7 +4,8 @@
 # double-underscore placeholders below: the node NAME (mesh.name), DATA_DEV (the block device for
 # /data), TICKET (the one-time pairing ticket, or empty), MANIFEST (the release manifest URL),
 # PUBKEY (crates/update/pubkey.txt: Tauri's base64 of the minisign public key file) and
-# INSTALL_SH (base64 of deploy/computer/theuth-install.sh, shared with the engine image).
+# INSTALL_SH (base64 of deploy/computer/theuth-install.sh, shared with the engine image) and
+# DESKTOP (1: the watchable desktop, 0: none).
 # User `engine` (uid 1000) owns /data, so the engine's updater replaces /data/bin/t in place; systemd
 # restarts it (Restart=always) after the updater's exit 75. No `set -x`: the ticket must not reach
 # a log.
@@ -14,6 +15,8 @@ echo "theuth-node: boot $(date -u +%FT%TZ)"
 name='__NAME__'
 dev='__DATA_DEV__'
 ticket='__TICKET__'
+# 1: a watchable desktop (owner default); 0: none. An unfilled placeholder counts as on.
+desktop='__DESKTOP__'
 
 # Keys only, whatever the image defaults to (the firewall has no inbound rule anyway).
 printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' >/etc/ssh/sshd_config.d/00-theuth.conf
@@ -121,6 +124,89 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
+# The watchable desktop (design doc 224 §16.10): Xtigervnc on :0 (a virtual X display that is
+# also the VNC server; RFB on localhost:5900 only), openbox, and websockify on 127.0.0.1:6080 —
+# the same Xtigervnc + websockify stack as the sandbox VM image (deploy/vm), minus XFCE. Nothing
+# listens on a public address; the app reaches it through the mesh (`engine_desktop`). The VNC
+# password is random per node, in /data/desktop.json (0600, engine) for the engine to hand to the
+# owner's viewer, and in vncpasswd form for Xtigervnc.
+units='theuth-engine.service theuth-join.service'
+if [ "$desktop" != 0 ]; then
+	DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+		tigervnc-standalone-server tigervnc-tools openbox websockify dbus-x11 x11-utils \
+		xdg-utils fonts-dejavu-core
+	install -d -o engine -g engine -m 0700 /home/engine/.vnc
+	if [ ! -s /data/desktop.json ]; then
+		pw=$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 8)
+		(umask 077 && printf '{"password":"%s","geometry":"1440x900","port":6080}\n' "$pw" >/data/desktop.json)
+		chown engine:engine /data/desktop.json
+	fi
+	pw=$(sed -n 's/.*"password":"\([A-Za-z0-9]*\)".*/\1/p' /data/desktop.json)
+	(umask 077 && printf '%s' "$pw" | vncpasswd -f >/home/engine/.vnc/passwd)
+	chown engine:engine /home/engine/.vnc/passwd
+	unset pw
+	cat >/etc/systemd/system/theuth-xvnc.service <<'EOF'
+[Unit]
+Description=theuth desktop: Xtigervnc :0 (RFB on localhost:5900)
+
+[Service]
+User=engine
+Group=engine
+Environment=HOME=/home/engine
+ExecStart=/usr/bin/Xtigervnc :0 -rfbauth /home/engine/.vnc/passwd -geometry 1440x900 -depth 24 -localhost -AcceptSetDesktopSize -ac
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+	cat >/etc/systemd/system/theuth-wm.service <<'EOF'
+[Unit]
+Description=theuth desktop: openbox on DISPLAY=:0
+After=theuth-xvnc.service
+Requires=theuth-xvnc.service
+
+[Service]
+User=engine
+Group=engine
+Environment=DISPLAY=:0 HOME=/home/engine
+WorkingDirectory=/home/engine
+ExecStartPre=/bin/sh -c 'for n in $$(seq 100); do xdpyinfo -display :0 >/dev/null 2>&1 && exit 0; sleep 0.1; done; exit 1'
+ExecStart=/usr/bin/dbus-launch --exit-with-session openbox
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+	cat >/etc/systemd/system/theuth-websockify.service <<'EOF'
+[Unit]
+Description=theuth desktop: websockify 127.0.0.1:6080 -> localhost:5900 (reached over the mesh only)
+After=theuth-xvnc.service
+
+[Service]
+User=engine
+Group=engine
+ExecStart=/usr/bin/websockify 127.0.0.1:6080 localhost:5900
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+	mkdir -p /etc/systemd/system/theuth-engine.service.d
+	cat >/etc/systemd/system/theuth-engine.service.d/desktop.conf <<'EOF'
+[Unit]
+After=theuth-wm.service
+Wants=theuth-wm.service
+
+[Service]
+Environment=DISPLAY=:0
+EOF
+	units="theuth-xvnc.service theuth-wm.service theuth-websockify.service $units"
+fi
+
 systemctl daemon-reload
-systemctl enable --now --no-block theuth-engine.service theuth-join.service
+# shellcheck disable=SC2086 # a list of unit names
+systemctl enable --now --no-block $units
 echo "theuth-node: units started $(date -u +%FT%TZ)"

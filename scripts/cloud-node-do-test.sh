@@ -97,6 +97,7 @@ subs = {
     "__NAME__": name,
     "__DATA_DEV__": dev,
     "__TICKET__": ticket,
+    "__DESKTOP__": "1",
     "__MANIFEST__": manifest,
     "__PUBKEY__": pathlib.Path(root, "crates/update/pubkey.txt").read_text().strip(),
     "__INSTALL_SH__": base64.b64encode((c / "theuth-install.sh").read_bytes()).decode(),
