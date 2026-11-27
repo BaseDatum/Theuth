@@ -280,6 +280,11 @@ pub const SHARE_PREFIX: &str = "share/";
 /// `valid_name`.
 pub const PLUGINS_PREFIX: &str = "plugins/";
 
+/// Prefix of cloud-node provider credentials (224 §13.3): `cloud/digitalocean`, `cloud/fly`,
+/// a JSON value (`access_token`, `refresh_token`, …). `mesh/`'s rules: written only through
+/// [`Vault::set_if_version`], never listed, never expandable, one `valid_name` after the prefix.
+pub const CLOUD_PREFIX: &str = "cloud/";
+
 /// 216 D9: the name of the key that MACs `plugins/grants.yaml` ([`Vault::plugins_grants_key`]).
 /// It is kept in this engine's local-only `meta` table, not in a `vault` row, because vault
 /// rows replicate across the mesh and an approval must verify only on the engine that made it.
@@ -289,11 +294,11 @@ pub const PLUGINS_GRANTS_KEY: &str = "plugins/grants-key";
 const PLUGINS_GRANTS_AAD: &[u8] = b"theuth-plugins-grants-key-1";
 
 /// `valid_name`, or one of the `/` families a local caller may write
-/// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`, `sandbox/<vm>/<key>`,
-/// `share/<domain>/<name>/<key>`, `plugins/<name>/<key>`.
+/// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`, `cloud/<provider>`,
+/// `sandbox/<vm>/<key>`, `share/<domain>/<name>/<key>`, `plugins/<name>/<key>`.
 fn writable_name(name: &str) -> bool {
     valid_name(name)
-        || [OAUTH_PREFIX, MESH_PREFIX]
+        || [OAUTH_PREFIX, MESH_PREFIX, CLOUD_PREFIX]
             .iter()
             .any(|p| name.strip_prefix(p).is_some_and(valid_name))
         || [SANDBOX_PREFIX, SHARE_PREFIX, PLUGINS_PREFIX]
@@ -2002,6 +2007,9 @@ mod tests {
         assert!(!writable_name("mesh/a/b"));
         assert!(writable_name("sandbox/lab/vnc"));
         assert!(!writable_name("sandbox/lab/"));
+        assert!(writable_name("cloud/digitalocean"));
+        assert!(!writable_name("cloud/"));
+        assert!(!writable_name("cloud/a/b"));
     }
 
     /// 210 §8.3: `share/<domain>/<name>/<key>` rows follow `sandbox/`'s rules: every segment a

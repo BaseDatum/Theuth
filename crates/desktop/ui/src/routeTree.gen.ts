@@ -34,6 +34,7 @@ import { Route as AttentionIdRouteImport } from './routes/attention.$id'
 import { Route as AutoresearchSlugRouteImport } from './routes/autoresearch.$slug'
 import { Route as AutoresearchNewRouteImport } from './routes/autoresearch.new'
 import { Route as CSessionRouteImport } from './routes/c.$session'
+import { Route as CloudNewRouteImport } from './routes/cloud.new'
 import { Route as DiffSessionRouteImport } from './routes/diff.$session'
 import { Route as FileSessionRouteImport } from './routes/file.$session'
 import { Route as KnowledgeSplatRouteImport } from './routes/knowledge.$'
@@ -191,6 +192,11 @@ const AutoresearchNewRoute = AutoresearchNewRouteImport.update({
 const CSessionRoute = CSessionRouteImport.update({
   id: '/c/$session',
   path: '/c/$session',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CloudNewRoute = CloudNewRouteImport.update({
+  id: '/cloud/new',
+  path: '/cloud/new',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DiffSessionRoute = DiffSessionRouteImport.update({
@@ -383,6 +389,7 @@ export interface FileRoutesByFullPath {
   '/autoresearch/$slug': typeof AutoresearchSlugRoute
   '/autoresearch/new': typeof AutoresearchNewRoute
   '/c/$session': typeof CSessionRoute
+  '/cloud/new': typeof CloudNewRoute
   '/diff/$session': typeof DiffSessionRoute
   '/file/$session': typeof FileSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -442,6 +449,7 @@ export interface FileRoutesByTo {
   '/autoresearch/$slug': typeof AutoresearchSlugRoute
   '/autoresearch/new': typeof AutoresearchNewRoute
   '/c/$session': typeof CSessionRoute
+  '/cloud/new': typeof CloudNewRoute
   '/diff/$session': typeof DiffSessionRoute
   '/file/$session': typeof FileSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -503,6 +511,7 @@ export interface FileRoutesById {
   '/autoresearch/$slug': typeof AutoresearchSlugRoute
   '/autoresearch/new': typeof AutoresearchNewRoute
   '/c/$session': typeof CSessionRoute
+  '/cloud/new': typeof CloudNewRoute
   '/diff/$session': typeof DiffSessionRoute
   '/file/$session': typeof FileSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -565,6 +574,7 @@ export interface FileRouteTypes {
     | '/autoresearch/$slug'
     | '/autoresearch/new'
     | '/c/$session'
+    | '/cloud/new'
     | '/diff/$session'
     | '/file/$session'
     | '/knowledge/$'
@@ -624,6 +634,7 @@ export interface FileRouteTypes {
     | '/autoresearch/$slug'
     | '/autoresearch/new'
     | '/c/$session'
+    | '/cloud/new'
     | '/diff/$session'
     | '/file/$session'
     | '/knowledge/$'
@@ -684,6 +695,7 @@ export interface FileRouteTypes {
     | '/autoresearch/$slug'
     | '/autoresearch/new'
     | '/c/$session'
+    | '/cloud/new'
     | '/diff/$session'
     | '/file/$session'
     | '/knowledge/$'
@@ -741,6 +753,7 @@ export interface RootRouteChildren {
   AgentsNewRoute: typeof AgentsNewRoute
   AskSessionRoute: typeof AskSessionRoute
   CSessionRoute: typeof CSessionRoute
+  CloudNewRoute: typeof CloudNewRoute
   DiffSessionRoute: typeof DiffSessionRoute
   FileSessionRoute: typeof FileSessionRoute
   MeetingsIdRoute: typeof MeetingsIdRoute
@@ -951,6 +964,13 @@ declare module '@tanstack/react-router' {
       path: '/c/$session'
       fullPath: '/c/$session'
       preLoaderRoute: typeof CSessionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cloud/new': {
+      id: '/cloud/new'
+      path: '/cloud/new'
+      fullPath: '/cloud/new'
+      preLoaderRoute: typeof CloudNewRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/diff/$session': {
@@ -1259,6 +1279,7 @@ const rootRouteChildren: RootRouteChildren = {
   AgentsNewRoute: AgentsNewRoute,
   AskSessionRoute: AskSessionRoute,
   CSessionRoute: CSessionRoute,
+  CloudNewRoute: CloudNewRoute,
   DiffSessionRoute: DiffSessionRoute,
   FileSessionRoute: FileSessionRoute,
   MeetingsIdRoute: MeetingsIdRoute,

@@ -4,6 +4,7 @@
 
 mod cookie;
 mod frame;
+mod oauth_do;
 mod relay;
 mod web;
 
@@ -60,6 +61,18 @@ struct Cli {
     /// Hex secret for the browser cookie HMAC; empty or absent → random per start.
     #[arg(long, env = "THEUTH_RELAY_COOKIE_SECRET")]
     cookie_secret: Option<String>,
+    /// DigitalOcean OAuth app client id (cloud-node sign-in); empty or absent → `/oauth/digitalocean/*` answer 503.
+    #[arg(long, env = "THEUTH_DO_OAUTH_CLIENT_ID", hide_env_values = true)]
+    do_oauth_client_id: Option<String>,
+    /// DigitalOcean OAuth app client secret; empty or absent → `/oauth/digitalocean/*` answer 503.
+    #[arg(long, env = "THEUTH_DO_OAUTH_CLIENT_SECRET", hide_env_values = true)]
+    do_oauth_client_secret: Option<String>,
+    /// `redirect_uri` registered with the DigitalOcean OAuth app (self-hosted relays change it).
+    #[arg(long, env = "THEUTH_DO_OAUTH_REDIRECT", default_value = oauth_do::DEFAULT_REDIRECT)]
+    do_oauth_redirect: String,
+    /// DigitalOcean's token endpoint (tests).
+    #[arg(long, env = "THEUTH_DO_OAUTH_TOKEN_URL", default_value = oauth_do::TOKEN_URL, hide = true)]
+    do_oauth_token_url: String,
 }
 
 /// Router state.
@@ -67,6 +80,7 @@ struct Cli {
 pub struct App {
     relay: Arc<Relay>,
     web: Option<Arc<web::Web>>,
+    oauth: Arc<oauth_do::DoOauth>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -111,12 +125,19 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let app = App {
         relay: relay.clone(),
         web: web.clone(),
+        oauth: Arc::new(oauth_do::DoOauth::new(oauth_do::Config::from_parts(
+            cli.do_oauth_client_id,
+            cli.do_oauth_client_secret,
+            cli.do_oauth_redirect,
+            cli.do_oauth_token_url,
+        ))),
     };
 
     let mut router = Router::new()
         .route("/h/{id}", get(socket))
         .route("/healthz", get(|| async { "ok" }))
-        .route("/metrics", get(metrics));
+        .route("/metrics", get(metrics))
+        .merge(oauth_do::routes());
     if web.is_some() {
         router = router.fallback(web::pages);
     }

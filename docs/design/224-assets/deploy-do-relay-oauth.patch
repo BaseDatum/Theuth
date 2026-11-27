@@ -1,0 +1,37 @@
+diff --git a/deploy/do/host/.env.example b/deploy/do/host/.env.example
+--- a/deploy/do/host/.env.example
++++ b/deploy/do/host/.env.example
+@@ -15,3 +15,6 @@
+ PORKBUN_TUNZIP_APIKEY=
+ PORKBUN_TUNZIP_SECRET=
+ THEUTH_RELAY_COOKIE_SECRET=
++# Optional (empty → the relay's Sign in with DigitalOcean routes answer 503; design doc 224).
++THEUTH_DO_OAUTH_CLIENT_ID=
++THEUTH_DO_OAUTH_CLIENT_SECRET=
+diff --git a/deploy/do/host/compose.yaml b/deploy/do/host/compose.yaml
+--- a/deploy/do/host/compose.yaml
++++ b/deploy/do/host/compose.yaml
+@@ -72,6 +72,9 @@
+     environment:
+       # Same value as the cluster Secret theuth-relay/cookie-secret, or every __Host-link cookie is dropped.
+       THEUTH_RELAY_COOKIE_SECRET: ${THEUTH_RELAY_COOKIE_SECRET:?}
++      # Optional: the DigitalOcean OAuth app for cloud-node sign-in (design doc 224); empty → /oauth/digitalocean/* 503.
++      THEUTH_DO_OAUTH_CLIENT_ID: ${THEUTH_DO_OAUTH_CLIENT_ID:-}
++      THEUTH_DO_OAUTH_CLIENT_SECRET: ${THEUTH_DO_OAUTH_CLIENT_SECRET:-}
+     stop_grace_period: 20s
+     networks:
+       theuth: {ipv4_address: 172.30.0.12}
+diff --git a/deploy/do/scripts/deploy.sh b/deploy/do/scripts/deploy.sh
+--- a/deploy/do/scripts/deploy.sh
++++ b/deploy/do/scripts/deploy.sh
+@@ -9,6 +9,10 @@
+ #   PORKBUN_TUNZIP_APIKEY, PORKBUN_TUNZIP_SECRET   one Porkbun key for theuth.io (Caddy DNS-01) and tun.zip (edge)
+ #   THEUTH_RELAY_COOKIE_SECRET                     the cluster Secret theuth/theuth-relay key cookie-secret
+ #   GHCR_PULL_USER, GHCR_PULL_TOKEN                optional: only if the images are private (they are public since 2026-11-26)
++#   THEUTH_DO_OAUTH_CLIENT_ID, THEUTH_DO_OAUTH_CLIENT_SECRET
++#                                                  optional: the DigitalOcean OAuth app behind relay.theuth.io's
++#                                                  Sign in with DigitalOcean (cloud nodes); unset → those routes 503.
++#                                                  Passed through by render_env like every .env.example key.
+ # Non-secret pins (RELAY_IMAGE, …) default to deploy/do/host/.env.example; the same names in the environment win.
+ # SSH_USER (default root).
+ # Remote commands are single-quoted on purpose: they expand on the droplet.

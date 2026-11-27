@@ -1,0 +1,22 @@
+# /data (vault, sessions, config, /data/bin/t) and /workspace. No storageClassName: the cluster's
+# default class unless `--storage-class` patches one in. `t mesh k8s destroy` keeps both unless
+# `--delete-volume`.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: workspace
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi

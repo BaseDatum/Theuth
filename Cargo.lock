@@ -4298,6 +4298,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloudnodes"
+version = "2.22.2"
+dependencies = [
+ "agent",
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "dirs 7.0.0",
+ "futures",
+ "jsonrpsee",
+ "kameo",
+ "mesh",
+ "parking_lot",
+ "platform",
+ "rand 0.10.3",
+ "replica",
+ "reqwest 0.13.5",
+ "rpc-core",
+ "rpc-core-macros",
+ "runtime",
+ "sandbox",
+ "schemars 1.2.3",
+ "secrets",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+ "wire",
+ "zeroize",
+]
+
+[[package]]
 name = "clru"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18730,7 +18766,10 @@ dependencies = [
  "hmac 0.13.0",
  "platform",
  "rand 0.10.3",
+ "reqwest 0.13.5",
  "rustls",
+ "serde",
+ "serde_json",
  "sha2 0.11.1",
  "snow",
  "tokio",
@@ -19185,6 +19224,7 @@ dependencies = [
  "browser",
  "cells",
  "chrono",
+ "cloudnodes",
  "codeindex",
  "computer",
  "decision",
@@ -23953,6 +23993,7 @@ dependencies = [
  "cells",
  "chrono",
  "clap",
+ "cloudnodes",
  "codeindex",
  "computer",
  "decision",

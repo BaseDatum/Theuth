@@ -38,6 +38,18 @@ pub const SCHEMA: &str = "1";
 
 const DOCKERFILE: &str = include_str!("../../../deploy/computer/Dockerfile");
 const DOCKERFILE_DEV: &str = include_str!("../../../deploy/computer/Dockerfile.dev");
+/// The release image's entrypoint and the install/pair script it shares with native VM nodes
+/// (224 §5, §9): the newest signed `t` into /data/bin, then the mesh join.
+const RELEASE_FILES: [(&str, &[u8]); 2] = [
+    (
+        "entrypoint.sh",
+        include_bytes!("../../../deploy/computer/entrypoint.sh"),
+    ),
+    (
+        "theuth-install.sh",
+        include_bytes!("../../../deploy/computer/theuth-install.sh"),
+    ),
+];
 
 enum Image {
     /// A pre-built ref, pulled when absent.
@@ -148,14 +160,14 @@ impl DockerSandbox {
             }
             Image::Release => {
                 let tag = format!("theuth-engine:{}", platform::version::get());
-                (tag, tar_context(DOCKERFILE, None))
+                (tag, tar_context(DOCKERFILE, &RELEASE_FILES))
             }
             Image::Dev(p) => {
                 let t = std::fs::read(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
                 let short = platform::sha256::hex(&t)[..12].to_owned();
                 (
                     format!("theuth-engine:dev-{short}"),
-                    tar_context(DOCKERFILE_DEV, Some(&t)),
+                    tar_context(DOCKERFILE_DEV, &[("t", &t)]),
                 )
             }
         };
@@ -219,8 +231,8 @@ impl DockerSandbox {
     }
 }
 
-/// A build context: `Dockerfile` (+ `t`).
-fn tar_context(dockerfile: &str, t: Option<&[u8]>) -> Vec<u8> {
+/// A build context: `Dockerfile` and `files` (each executable).
+fn tar_context(dockerfile: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut ar = tar::Builder::new(Vec::new());
     let mut add = |name: &str, bytes: &[u8], mode: u32| {
         let mut h = tar::Header::new_gnu();
@@ -230,8 +242,8 @@ fn tar_context(dockerfile: &str, t: Option<&[u8]>) -> Vec<u8> {
         ar.append_data(&mut h, name, bytes).expect("in-memory tar");
     };
     add("Dockerfile", dockerfile.as_bytes(), 0o644);
-    if let Some(t) = t {
-        add("t", t, 0o755);
+    for (name, bytes) in files {
+        add(name, bytes, 0o755);
     }
     ar.into_inner().expect("in-memory tar")
 }
@@ -444,14 +456,19 @@ mod tests {
                 .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
                 .collect()
         };
-        assert_eq!(names(tar_context(DOCKERFILE, None)), ["Dockerfile"]);
         assert_eq!(
-            names(tar_context(DOCKERFILE_DEV, Some(b"ELF"))),
+            names(tar_context(DOCKERFILE, &RELEASE_FILES)),
+            ["Dockerfile", "entrypoint.sh", "theuth-install.sh"]
+        );
+        assert_eq!(
+            names(tar_context(DOCKERFILE_DEV, &[("t", b"ELF")])),
             ["Dockerfile", "t"]
         );
         assert_eq!(names(tar_file("t", b"ELF", 0o755)), ["t"]);
         assert!(
             DOCKERFILE.contains("minisign -Vq")
+                && DOCKERFILE.contains("COPY entrypoint.sh")
+                && DOCKERFILE.contains("COPY theuth-install.sh")
                 && DOCKERFILE_DEV.contains("COPY t /usr/local/bin/t")
         );
     }

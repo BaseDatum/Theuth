@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: theuth-engine
+  policyTypes: [Ingress, Egress]
+  egress:
+    # DNS, wherever the cluster resolver lives (kube-dns, node-local-dns).
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Everything else (the mesh relay, direct UDP paths, model APIs) except the cluster.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32

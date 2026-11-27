@@ -400,12 +400,45 @@ pub async fn route<T: DeserializeOwned>(
 }
 
 /// The mesh transport, when the replica plugin runs and the mesh is up.
-async fn transport() -> Option<Arc<dyn Transport>> {
+pub(crate) async fn transport() -> Option<Arc<dyn Transport>> {
     replica::actor()?
         .ask(replica::GetTransport)
         .await
         .ok()
         .flatten()
+}
+
+/// Where a call naming engine `engine` runs: `None` here (`engine` unset,
+/// empty, this engine `me`, or the request was itself `forwarded`), else
+/// that peer. The pure decision behind [`engine_peer`].
+pub fn engine_target(engine: Option<&str>, forwarded: bool, me: &str) -> Option<PeerId> {
+    let engine = engine.filter(|e| !e.is_empty())?;
+    (!forwarded && engine != me).then(|| PeerId(engine.to_owned()))
+}
+
+/// [`engine_target`] for this request: the peer an `engine` parameter names,
+/// `None` to run here.
+pub async fn engine_peer(ext: &Extensions, engine: Option<&str>) -> RpcResult<Option<PeerId>> {
+    let forwarded = ext.get::<Forwarded>().is_some();
+    if forwarded || engine.is_none_or(str::is_empty) {
+        return Ok(None);
+    }
+    let store = rpc_core::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+    Ok(engine_target(engine, forwarded, store.engine()))
+}
+
+/// [`to_peer`] where the peer must answer: one it cannot reach from here is
+/// [`OWNER_UNREACHABLE`].
+pub async fn call_peer<T: DeserializeOwned>(
+    ext: &Extensions,
+    peer: &PeerId,
+    method: &str,
+    params: impl Serialize,
+) -> RpcResult<T> {
+    match to_peer(ext, peer, method, params).await? {
+        Some(v) => Ok(v),
+        None => Err(unreachable(peer.0.clone(), "not connected").await),
+    }
 }
 
 /// 183 §5.6 (W-10, W-12): a call aimed at engine `engine` by id. `Ok(None)`:
@@ -418,20 +451,9 @@ pub async fn to_engine<T: DeserializeOwned>(
     method: &str,
     params: impl Serialize,
 ) -> RpcResult<Option<T>> {
-    let Some(engine) = engine.filter(|e| !e.is_empty()) else {
-        return Ok(None);
-    };
-    if ext.get::<Forwarded>().is_some() {
-        return Ok(None);
-    }
-    let store = rpc_core::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
-    if engine == store.engine() {
-        return Ok(None);
-    }
-    let peer = PeerId(engine.to_owned());
-    match to_peer(ext, &peer, method, params).await? {
-        Some(v) => Ok(Some(v)),
-        None => Err(unreachable(peer.0, "not connected").await),
+    match engine_peer(ext, engine).await? {
+        Some(peer) => call_peer(ext, &peer, method, params).await.map(Some),
+        None => Ok(None),
     }
 }
 

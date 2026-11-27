@@ -70,6 +70,7 @@ fn plugins() -> Vec<Box<dyn Plugin>> {
         Box::new(webprofile::WebProfilePlugin),
         Box::new(tasks::TasksPlugin),
         Box::new(sandbox::SandboxPlugin),
+        Box::new(cloudnodes::CloudPlugin),
         Box::new(share::SharePlugin::engine()),
         Box::new(plugins::PluginsPlugin),
         Box::new(a2a::A2aPlugin),

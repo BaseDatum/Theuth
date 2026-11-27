@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { CLASS } from '@/components/chat/NewChatPane'
+import { CloudNodesSettings } from '@/components/cloud/CloudNodesSettings'
 import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
 import { Editable } from '@/components/settings/Link'
 import { VaultWarning, usePairFlow } from '@/components/settings/PairDialog'
@@ -104,6 +105,7 @@ export function MachinesTab() {
   return (
     <>
       <Machines s={s} onUnpair={setUnpair} />
+      <CloudNodesSettings />
       <NearbyList on={s.nearby} onPair={pairing.start} />
       <PairString />
       <OverSsh />

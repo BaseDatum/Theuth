@@ -3,6 +3,7 @@
 
 mod bench_models;
 mod external_backends;
+mod k8s_cli;
 mod link_cli;
 mod logs;
 mod mcp;
@@ -255,17 +256,25 @@ enum MeshCmd {
     /// This engine, its peers and who holds the hub lease.
     Status,
     /// Print a pairing string for `t mesh add` on another engine.
-    Pair,
+    Pair {
+        /// A ticket for an engine made elsewhere (cloud node, Kubernetes; design doc 224 §4):
+        /// the bare string, without the vault key (the joiner gets the keyring inside the
+        /// token-checked connection). One-time, valid 5 minutes.
+        #[arg(long)]
+        remote: bool,
+    },
     /// Pair with the engine behind a pairing string (mutual and transitive) —
     /// or make one first: `--ssh user@host [--key NAME | --system-ssh]` installs
     /// `t` over SSH, `--docker [--name N] [--image I | --local-t PATH]` runs it
     /// in a container here, `--vm [--name N] [--cpus N] [--memory 4G] [--disk 20G]
     /// [--share HOST[:GUEST][:ro]]… [--no-desktop] [--network public,host[,private]]
     /// [--image REF | --bootstrap] [--local-t PATH]` makes a sandbox VM (design
-    /// doc 79); all end paired (design doc 67 §13).
+    /// doc 79), `--k8s [--context C] [--namespace N] [--storage-class S]
+    /// [--deny-cluster-network]` a Deployment in a cluster (design doc 224 §7);
+    /// all end paired (design doc 67 §13).
     Add {
         /// The string `t mesh pair` printed on the other engine.
-        #[arg(required_unless_present_any = ["ssh", "docker", "vm"])]
+        #[arg(required_unless_present_any = ["ssh", "docker", "vm", "k8s"])]
         pairing: Option<String>,
         /// Make an engine on this SSH host (`[user@]host[:port]`, or an `~/.ssh/config` alias with --system-ssh).
         #[arg(long, value_name = "TARGET", conflicts_with_all = ["pairing", "docker", "vm"])]
@@ -287,10 +296,10 @@ enum MeshCmd {
         /// Make a sandbox VM on this machine (an isolated Linux desktop, design doc 79); the engine does the work.
         #[arg(long, conflicts_with_all = ["pairing", "ssh", "docker"])]
         vm: bool,
-        /// Engine and record name; default: the SSH host, `engine` for docker, `vm-1` for a VM.
+        /// Engine and record name; default: the SSH host, `engine` for docker and --k8s, `vm-1` for a VM.
         #[arg(long, value_name = "N")]
         name: Option<String>,
-        /// --docker: a pre-built image ref instead of building deploy/computer/Dockerfile; --vm: the OCI image.
+        /// --docker: a pre-built image ref instead of building deploy/computer/Dockerfile; --vm: the OCI image; --k8s: default ghcr.io/basedatum/theuth/engine:<this version>.
         #[arg(long, value_name = "I", conflicts_with_all = ["local_t", "bootstrap", "ssh"])]
         image: Option<String>,
         /// --docker / --vm: a locally built Linux `t` to install instead of the image's.
@@ -317,6 +326,13 @@ enum MeshCmd {
         /// --vm: our `theuth-vm-base:trixie` systemd base plus a first-boot install script instead of the published image.
         #[arg(long, requires = "vm")]
         bootstrap: bool,
+        #[command(flatten)]
+        k8s: Box<k8s_cli::K8sArgs>,
+    },
+    /// Engines in Kubernetes made by `t mesh add --k8s` (design doc 224 §7); kubectl only, no engine needed.
+    K8s {
+        #[command(subcommand)]
+        cmd: k8s_cli::K8sCmd,
     },
     /// Leave an engine out of the mesh.
     Remove {
@@ -443,7 +459,18 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
     let r: Result<serde_json::Value, ClientError> = match cmd {
         Cmd::Mesh { cmd } => match cmd {
             MeshCmd::Status => client.request("mesh_status", rpc_params![]).await,
-            MeshCmd::Pair => client.request("mesh_pairing_string", rpc_params![]).await,
+            MeshCmd::Pair { remote: false } => {
+                client.request("mesh_pairing_string", rpc_params![]).await
+            }
+            MeshCmd::Pair { remote: true } => {
+                let s: String = client.request("mesh_pairing_string", rpc_params![]).await?;
+                let ticket = mesh::pairing::without_vault_key(&s).ok_or_else(|| {
+                    anyhow::anyhow!("the engine returned a malformed pairing string")
+                })?;
+                println!("{ticket}");
+                return Ok(());
+            }
+            MeshCmd::K8s { .. } => unreachable!("t mesh k8s runs without an engine"),
             MeshCmd::Add {
                 pairing: Some(pairing),
                 ..
@@ -468,6 +495,13 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                 )?;
                 return sandbox_create(client, spec).await;
             }
+            MeshCmd::Add {
+                pairing: None,
+                k8s,
+                name,
+                image,
+                ..
+            } if k8s.k8s => return k8s_cli::add(&client, &k8s, name, image).await,
             MeshCmd::Add {
                 pairing: None,
                 ssh,
@@ -1689,6 +1723,14 @@ async fn run() -> anyhow::Result<()> {
             std::process::exit(code);
         }
         Some(Cmd::Plugin { cmd }) => return plugin_cli::run(&data_dir, &config, cmd).await,
+        Some(Cmd::Mesh {
+            cmd: MeshCmd::K8s { cmd },
+        }) => return k8s_cli::run(cmd).await,
+        Some(Cmd::Mesh {
+            cmd: MeshCmd::Add {
+                k8s, name, image, ..
+            },
+        }) if k8s.k8s && k8s.dry_run => return k8s_cli::dry_run(&k8s, name, image).await,
         Some(cmd) => return cmd_67(&data_dir, &config, cmd).await,
         None => {}
     }
@@ -2125,6 +2167,7 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
         autoresearch::rpc_module(server.clone()),
         cells::rpc_module(server.clone()),
         share::rpc_module(server.clone()),
+        cloudnodes::rpc_module(server.clone()),
         sandbox::rpc_module(server),
     ]).expect("production RPC descriptors");
     let discovery = rpc_core::Discovery {
@@ -2277,6 +2320,9 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(webprofile::WebProfilePlugin),
         Box::new(tasks::TasksPlugin),
         Box::new(sandbox::SandboxPlugin),
+        // 224: cloud nodes (records, provider credentials in the vault, create jobs that pair
+        // over the mesh); after secrets and mesh.
+        Box::new(cloudnodes::CloudPlugin),
         // 210: public web sharing; after mesh (identity, endpoint, vault) and replica (shares table).
         Box::new(share::SharePlugin::engine()),
         // 216: external plugins; after roster (attention Source), before update.

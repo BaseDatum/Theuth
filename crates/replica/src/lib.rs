@@ -56,6 +56,10 @@ pub const ALPN_ARTIFACTS: &str = "theuth/artifacts/1";
 pub const ALPN_DOCS: &str = "theuth/docs/1";
 /// Stream ALPN: double training bundles to a GPU node and results back (126 §8.4, `double::mesh`).
 pub const ALPN_DOUBLE: &str = "theuth/double/1";
+/// Stream ALPN: one PTY job's `subscribe_pty` items relayed from the engine running it (224, `agent::rpc_engine`).
+pub const ALPN_PTY: &str = "theuth/pty/1";
+/// Stream ALPN: a loopback tunnel's connection to a node's watchable desktop (websockify), 224 `agent::rpc_engine`.
+pub const ALPN_DESKTOP: &str = "theuth/desktop/1";
 
 /// `ask` → `()`: the mesh hands over its transport once the endpoint is up.
 /// Replaces any earlier one.
