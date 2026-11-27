@@ -72,6 +72,9 @@ services:
     environment:
       # Same value as the cluster Secret theuth-relay/cookie-secret, or every __Host-link cookie is dropped.
       THEUTH_RELAY_COOKIE_SECRET: ${THEUTH_RELAY_COOKIE_SECRET:?}
+      # Optional: the DigitalOcean OAuth app for cloud-node sign-in (design doc 224); empty → /oauth/digitalocean/* 503.
+      THEUTH_DO_OAUTH_CLIENT_ID: ${THEUTH_DO_OAUTH_CLIENT_ID:-}
+      THEUTH_DO_OAUTH_CLIENT_SECRET: ${THEUTH_DO_OAUTH_CLIENT_SECRET:-}
     stop_grace_period: 20s
     networks:
       theuth: {ipv4_address: 172.30.0.12}

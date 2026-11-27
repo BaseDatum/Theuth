@@ -9,6 +9,10 @@
 #   PORKBUN_TUNZIP_APIKEY, PORKBUN_TUNZIP_SECRET   one Porkbun key for theuth.io (Caddy DNS-01) and tun.zip (edge)
 #   THEUTH_RELAY_COOKIE_SECRET                     the cluster Secret theuth/theuth-relay key cookie-secret
 #   GHCR_PULL_USER, GHCR_PULL_TOKEN                optional: only if the images are private (they are public since 2026-11-26)
+#   THEUTH_DO_OAUTH_CLIENT_ID, THEUTH_DO_OAUTH_CLIENT_SECRET
+#                                                  optional: the DigitalOcean OAuth app behind relay.theuth.io's
+#                                                  Sign in with DigitalOcean (cloud nodes); unset → those routes 503.
+#                                                  Passed through by render_env like every .env.example key.
 # Non-secret pins (RELAY_IMAGE, …) default to deploy/do/host/.env.example; the same names in the environment win.
 # SSH_USER (default root).
 # Remote commands are single-quoted on purpose: they expand on the droplet.
