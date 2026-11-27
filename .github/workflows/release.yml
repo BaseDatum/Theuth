@@ -117,7 +117,7 @@ jobs:
       prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -291,7 +291,7 @@ jobs:
 
       - name: Cache Cargo registry (Rust fallback only)
         if: steps.bindings_cache.outputs.hit != 'true' && steps.bindings_cache.outputs.has_fixtures != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/cache
@@ -318,7 +318,7 @@ jobs:
 
       - name: Cache Bun packages
         if: steps.bindings_cache.outputs.hit != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-linux-x86_64-${{ hashFiles('crates/desktop/ui/bun.lock') }}
@@ -365,7 +365,7 @@ jobs:
         run: sccache --show-stats || true
 
       - name: Upload TypeScript bindings artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ts-bindings
           path: crates/desktop/ui/src/rpc/bindings
@@ -379,7 +379,7 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
@@ -412,7 +412,7 @@ jobs:
           echo "LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib" >> "$GITHUB_ENV"
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/cache
@@ -437,7 +437,7 @@ jobs:
           fi
 
       - name: Cache microsandbox and ONNX Runtime artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             target/release/.microsandbox-runtime-cache
@@ -446,21 +446,21 @@ jobs:
           restore-keys: macos-aarch64-runtime-
 
       - name: Cache Bun packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-macos-aarch64-${{ hashFiles('crates/desktop/ui/bun.lock') }}
           restore-keys: bun-macos-aarch64-
 
       - name: Cache SwiftPM companion packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: crates/desktop/companion/.build/xcode/SourcePackages
           key: swiftpm-macos-aarch64-${{ hashFiles('crates/desktop/companion/Package.swift', 'crates/desktop/companion/Package.resolved') }}
           restore-keys: swiftpm-macos-aarch64-
 
       - name: Download TypeScript bindings
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ts-bindings
           path: crates/desktop/ui/src/rpc/bindings
@@ -563,7 +563,7 @@ jobs:
           rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8" 
 
       - name: Upload macOS release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-macos-aarch64
           path: |
@@ -597,7 +597,7 @@ jobs:
           df -h /
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
@@ -637,7 +637,7 @@ jobs:
           tool: tauri-cli@2.12.6,just,sccache@0.20.1
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/cache
@@ -662,21 +662,21 @@ jobs:
           fi
 
       - name: Cache microsandbox runtime artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/release/.microsandbox-runtime-cache
           key: linux-${{ matrix.arch }}-runtime-${{ hashFiles('Cargo.lock') }}
           restore-keys: linux-${{ matrix.arch }}-runtime-
 
       - name: Cache Bun packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-linux-${{ matrix.arch }}-${{ hashFiles('crates/desktop/ui/bun.lock') }}
           restore-keys: bun-linux-${{ matrix.arch }}-
 
       - name: Download TypeScript bindings
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ts-bindings
           path: crates/desktop/ui/src/rpc/bindings
@@ -728,7 +728,7 @@ jobs:
           [[ "$OUT" == *"theuth-app-parser $HELPER_HASH"* ]] || { echo "::error::$HELPER --version did not print expected hash"; exit 1; }
 
       - name: Upload Linux release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-linux-${{ matrix.arch }}
           path: |
@@ -756,7 +756,7 @@ jobs:
             rust_target: aarch64-pc-windows-msvc
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
@@ -766,7 +766,7 @@ jobs:
           targets: ${{ matrix.rust_target }}
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
           cache: true
@@ -872,7 +872,7 @@ jobs:
           if ($env:ARCH -eq 'x86_64') { & nasm -v }
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/cache
@@ -898,7 +898,7 @@ jobs:
           }
 
       - name: Cache microsandbox and ONNX Runtime artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             target/release/.microsandbox-runtime-cache
@@ -908,14 +908,14 @@ jobs:
           restore-keys: windows-${{ matrix.arch }}-runtime-
 
       - name: Cache Bun packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-windows-${{ matrix.arch }}-${{ hashFiles('crates/desktop/ui/bun.lock') }}
           restore-keys: bun-windows-${{ matrix.arch }}-
 
       - name: Download TypeScript bindings
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ts-bindings
           path: crates/desktop/ui/src/rpc/bindings
@@ -953,7 +953,7 @@ jobs:
           }
 
       - name: Upload Windows release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-windows-${{ matrix.arch }}
           path: |
@@ -973,12 +973,12 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Download all platform release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           merge-multiple: true
@@ -1174,7 +1174,7 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
           # Full history is required so `git rev-list --count HEAD` produces a monotonic CFBundleVersion.
@@ -1205,7 +1205,7 @@ jobs:
           tool: tauri-cli@2.12.6,just,sccache@0.20.1
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/cache
@@ -1236,14 +1236,14 @@ jobs:
           fi
 
       - name: Cache Bun packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-ios-aarch64-${{ hashFiles('crates/desktop/ui/bun.lock') }}
           restore-keys: bun-ios-aarch64-
 
       - name: Download TypeScript bindings
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ts-bindings
           path: crates/desktop/ui/src/rpc/bindings
@@ -1299,7 +1299,7 @@ jobs:
         run: sccache --show-stats || true
 
       - name: Upload iOS IPA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-ipa
           path: crates/desktop/gen/apple/build/arm64/*.ipa
@@ -1364,13 +1364,13 @@ jobs:
           df -h /
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Download TypeScript bindings for relay web UI
         if: matrix.name == 'relay'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ts-bindings
           path: crates/desktop/ui/src/rpc/bindings
@@ -1390,13 +1390,13 @@ jobs:
           echo "version=${IROH_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1404,7 +1404,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ matrix.image }}
           tags: |
@@ -1418,7 +1418,7 @@ jobs:
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
 
       - name: Build and push ${{ matrix.image }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
@@ -1465,7 +1465,7 @@ jobs:
           df -h /
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
@@ -1483,13 +1483,13 @@ jobs:
           echo "manifest=${THEUTH_S3_PUBLIC_BASE_URL%/}/${MANIFEST_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1497,7 +1497,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ matrix.image }}
           tags: |
@@ -1510,7 +1510,7 @@ jobs:
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
 
       - name: Build and push ${{ matrix.image }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
