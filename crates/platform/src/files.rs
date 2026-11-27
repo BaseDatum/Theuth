@@ -306,8 +306,31 @@ mod imp {
         }
     }
 
+    /// Probe real NTFS write access instead of `FILE_ATTRIBUTE_READONLY`,
+    /// which on Windows directories is an Explorer metadata flag, not an ACL check.
     pub fn writable(dir: &Path) -> bool {
-        std::fs::metadata(dir).is_ok_and(|m| m.is_dir() && !m.permissions().readonly())
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        if !dir.is_dir() {
+            return false;
+        }
+        let probe = dir.join(format!(
+            ".theuth-write-probe-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(file) => {
+                drop(file);
+                let _ = std::fs::remove_file(&probe);
+                true
+            }
+            Err(_) => false,
+        }
     }
 }
 
@@ -387,5 +410,23 @@ mod tests {
         assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&p).unwrap(), b"first");
         assert!(writable(&d));
+    }
+
+    #[test]
+    fn writable_probes_dir_and_rejects_missing_path() {
+        let d = scratch("writable");
+        assert!(!writable(&d), "non-existent path must not be writable");
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(writable(&d), "fresh temp dir must be writable");
+        assert_eq!(
+            std::fs::read_dir(&d).unwrap().count(),
+            0,
+            "writable probe must leave no stray files"
+        );
+        assert!(
+            !writable(&d.join("missing")),
+            "missing child path must not be writable"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Notarize + staple a packaged theuth DMG. Not run by `just package-macos`.
+# Notarize + staple a packaged theuth DMG and its sibling theuth.app. Not run by `just package-macos`.
 #
 #   THEUTH_SIGN_IDENTITY="Developer ID Application: …" just package-macos
 #   just notarize-macos
@@ -42,8 +42,26 @@ fi
 
 echo "==> submitting $DMG"
 xcrun notarytool submit "$DMG" "${AUTH[@]}" --wait
-echo "==> stapling ticket"
+echo "==> stapling ticket (DMG)"
 xcrun stapler staple "$DMG"
-echo "==> gatekeeper assessment"
+echo "==> gatekeeper assessment (DMG)"
 spctl --assess --type open --context context:primary-signature -vv "$DMG"
-echo "done: $DMG is notarized and stapled"
+
+# Apple's notary service registers tickets for both the DMG and the signed
+# theuth.app inside it (by CDHash), so stapling the sibling .app here attaches
+# its notarization ticket before package-update-macos.sh archives .app.tar.gz —
+# no second notary submission needed. Do NOT staple nested LoginItems
+# (Theuth Companion.app) inside theuth.app after signing, as modifying a nested
+# bundle would invalidate the outer app's sealed signature.
+APP="$(dirname "$DMG")/theuth.app"
+if [[ -d "$APP" ]]; then
+  echo "==> stapling ticket ($APP)"
+  xcrun stapler staple "$APP"
+  xcrun stapler validate "$APP"
+  echo "==> verifying signature + gatekeeper assessment ($APP)"
+  codesign --verify --deep --strict "$APP"
+  spctl --assess --type execute -vv "$APP"
+  echo "done: $DMG and $APP are notarized and stapled"
+else
+  echo "done: $DMG is notarized and stapled"
+fi

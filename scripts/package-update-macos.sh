@@ -46,6 +46,13 @@ CLI_TGZ="$DIST/theuth_${VERSION}_${KEY}.tar.gz"
 DIST_DMG="$DIST/theuth_${VERSION}_${KEY}.dmg"
 rm -f "$APP_TGZ" "$CLI_TGZ" "$DIST_DMG"
 
+# Release builds are stapled by `notarize-macos.sh` so the extracted `.app`
+# carries its notarization ticket offline. Warn (do not fail) when unstapled
+# so local ad-hoc dev packaging still works.
+if ! xcrun stapler validate -q "$APP" 2>/dev/null; then
+  echo "warning: $APP has no stapled notarization ticket (run 'just notarize-macos' before release)" >&2
+fi
+
 echo "==> [1/3] $APP_TGZ"
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$APP_TGZ" -C "$BUNDLE_DIR" theuth.app
 

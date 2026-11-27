@@ -121,6 +121,16 @@ impl Quit {
         true
     }
 
+    /// Cancel a pending quit and reset `restart` (`update::Pending.restart`) so a later normal Quit
+    /// exits instead of relaunching. Leaves `restart` untouched when no quit is cancellable.
+    fn cancel_with_restart(&self, restart: &AtomicBool) -> bool {
+        if !self.cancel() {
+            return false;
+        }
+        restart.store(false, SeqCst);
+        true
+    }
+
     /// The ack timer of `round` ran out: the worker starts unless the sheet holds it or a later request owns the timer.
     fn timer_due(&self, round: u64) -> bool {
         self.round.load(SeqCst) == round && self.requested.load(SeqCst) && !self.held.load(SeqCst)
@@ -188,7 +198,10 @@ fn listen_hold(app: &AppHandle) {
         });
         let handle = app.clone();
         app.listen(CANCEL, move |_| {
-            if handle.state::<Quit>().cancel() {
+            if handle
+                .state::<Quit>()
+                .cancel_with_restart(&handle.state::<update::Pending>().restart)
+            {
                 tracing::info!("quit cancelled from the pre-quit sheet");
                 log_err(
                     tray_restore(&handle),
@@ -336,9 +349,12 @@ mod tests {
 
     use super::*;
 
-    /// Survives the hang-up and never exits on its own within a test. Unix: the `echo` is the fake's ready signal.
+    /// Survives the hang-up and SIGTERM and never exits on its own within a test. Unix: the `echo` is the fake's ready signal.
     #[cfg(unix)]
-    const STUBBORN: (&str, &[&str]) = ("/bin/sh", &["-c", "trap '' HUP; echo; exec /bin/sleep 30"]);
+    const STUBBORN: (&str, &[&str]) = (
+        "/bin/sh",
+        &["-c", "trap '' HUP TERM; echo; exec /bin/sleep 30"],
+    );
     #[cfg(windows)]
     const STUBBORN: (&str, &[&str]) = ("ping", &["-n", "30", "127.0.0.1"]);
     /// Exits at the hang-up (Unix: `sleep` dies of SIGHUP) or by itself (Windows has no hang-up).
@@ -521,5 +537,29 @@ mod tests {
         assert!(!quit.cancel());
         let round = quit.begin().unwrap();
         assert!(quit.timer_due(round));
+    }
+
+    /// Cancelling an "Install and restart" quit from the pre-quit sheet clears `update::Pending.restart`
+    /// so a later normal Quit exits instead of relaunching; a late cancel once the worker runs leaves it.
+    #[test]
+    fn cancel_resets_pending_restart_only_when_cancelled() {
+        let quit = Quit::default();
+        let pending = update::Pending::default();
+        pending.restart.store(true, SeqCst);
+        assert!(!quit.cancel_with_restart(&pending.restart));
+        assert!(pending.restart.load(SeqCst));
+
+        let _ = quit.begin().unwrap();
+        assert!(quit.hold());
+        assert!(quit.cancel_with_restart(&pending.restart));
+        assert!(!pending.restart.load(SeqCst));
+
+        pending.restart.store(true, SeqCst);
+        let _ = quit.begin().unwrap();
+        let (p, _progress, exits) = plan(None, None, LONG, LONG);
+        assert!(quit.start(|| p));
+        assert!(!quit.cancel_with_restart(&pending.restart));
+        assert!(pending.restart.load(SeqCst));
+        exits.recv_timeout(WAIT).expect("exit");
     }
 }

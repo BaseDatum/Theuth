@@ -907,11 +907,12 @@ fn last_lines(text: &str, n: usize) -> String {
 }
 
 impl Daemon {
-    /// Hang up (Unix: drop the master, SIGHUP once every fd is closed; Windows has
-    /// no line to hang up — stdin is already null), give the daemon `grace` to exit
-    /// on its own (the webview called RPC `shutdown` first), then kill. On Windows the
-    /// kill is the whole Job Object, and dropping its handle afterwards kills
-    /// whatever a clean daemon exit left behind. `true` when it had to kill.
+    /// Hang up (Unix: drop the master and send `SIGTERM` to the daemon's process group,
+    /// because the `drain` thread still holds its duplicated master fd so dropping `master`
+    /// alone does not deliver `SIGHUP`; Windows has no line to hang up — stdin is already
+    /// null), give the daemon `grace` to exit on its own (the webview called RPC `shutdown`
+    /// first), then kill. On Windows the kill is the whole Job Object, and dropping its handle
+    /// afterwards kills whatever a clean daemon exit left behind. `true` when it had to kill.
     pub fn stop(self, grace: Duration) -> bool {
         let Daemon {
             #[cfg(unix)]
@@ -922,6 +923,15 @@ impl Daemon {
         } = self;
         #[cfg(unix)]
         drop(master);
+        if !matches!(exited(&mut child), Ok(None)) {
+            return false;
+        }
+        #[cfg(unix)]
+        if let Some(pid) = child.process_id()
+            && let Ok(tree) = platform::process::ProcessTree::adopt(pid)
+        {
+            let _ = tree.signal(platform::process::Signal::Term);
+        }
         let deadline = Instant::now() + grace;
         loop {
             if !matches!(exited(&mut child), Ok(None)) {
@@ -1238,5 +1248,41 @@ mod tests {
             (t.since_seq, t.since_hb),
             (Duration::from_secs(1), Duration::from_secs(1))
         );
+    }
+
+    /// Dropping `master` alone does not deliver `SIGHUP` while `drain` still holds its cloned
+    /// master reader fd; `Daemon::stop` must still stop the daemon promptly via `SIGTERM`.
+    #[cfg(unix)]
+    #[test]
+    fn stop_signals_daemon_while_pty_reader_is_open() {
+        let pair = native_pty_system()
+            .openpty(PtySize::default())
+            .expect("openpty");
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "echo; exec /bin/sleep 30"]);
+        let child = pair.slave.spawn_command(cmd).expect("spawn");
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().expect("pty reader");
+        let mut first = [0u8; 1];
+        reader.read_exact(&mut first).expect("ready byte");
+        // Mirror production `drain`: keep the cloned master fd open while draining output,
+        // so unread PTY bytes (like `\n` after `\r`) never stall macOS `ttywait` on exit.
+        let drainer = std::thread::spawn(move || {
+            let mut buf = [0u8; 256];
+            while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+        });
+        let daemon = Daemon {
+            master: pair.master,
+            child,
+        };
+        let t0 = Instant::now();
+        let forced = daemon.stop(Duration::from_secs(5));
+        assert!(!forced, "daemon should exit on SIGTERM without force-kill");
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "stop took {:?} despite SIGTERM",
+            t0.elapsed()
+        );
+        drainer.join().expect("drain thread");
     }
 }
