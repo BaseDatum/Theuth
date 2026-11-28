@@ -12,6 +12,7 @@ import type { SettingsTab } from '@/components/settings/types'
 import { forEngine, isEngineCallError } from '@/lib/engine-call'
 import { type Machine, useMeshMachines } from '@/lib/mesh-machines'
 import type { Api } from '@/rpc/bindings/client'
+import { type Discovery, supports } from '@/rpc/discovery'
 import { type ConnectionApi, connectionOfApi, createConnection } from '@/store/connection'
 import { type Stores, StoresProvider, scope } from '@/store/engine-scope'
 
@@ -115,6 +116,88 @@ export function unreachableText(e: unknown, name: string): string {
  */
 export const aimedAt = (tab: Pick<SettingsTab, 'scope' | 'connectedOnly'>, target: Machine | null): Machine | null =>
   tab.scope !== 'machine' || (tab.connectedOnly && target?.forwarded) ? null : target
+
+export type TabBinding = {
+  /** Machine to pass to `MachineScope` (for `machine`-scoped tabs). */
+  aimed: Machine | null
+  /** Engine scope id to wrap the body in (`StoresProvider`) for hub-served `everywhere` Network tabs (or before `mesh_status` resolves). */
+  scopeClient: string | null
+  /** True while the paired hub's discovery is still connecting or discovering. */
+  loading: boolean
+}
+
+export type TabBindingInput = {
+  categoryId: string
+  tab: Pick<SettingsTab, 'id' | 'scope' | 'required' | 'connectedOnly'>
+  target: Machine | null
+  picked: string | null
+  machines: readonly Machine[]
+  active: string
+  meshClient: string
+  discovery: Discovery
+  hubDiscovery?: Discovery
+}
+
+const isPending = (d: Discovery): boolean => d.phase === 'connecting' || d.phase === 'discovering'
+
+/** Whether `discovery` itself can serve a Network tab (`devices` needs `link_status` for NodeSide; others use `tab.required`). */
+function activeServesNetworkTab(tab: Pick<SettingsTab, 'id' | 'required'>, discovery: Discovery): boolean {
+  const req = tab.required ?? (tab.id === 'devices' ? { methods: ['link_status'] as const } : undefined)
+  return !req || supports(discovery, req)
+}
+
+/**
+ * How SettingsPage binds a tab's body when a paired hub (`meshClient`) differs from the active engine:
+ * - Non-Network tabs, `meshClient === active`, or tabs the active engine already serves: standard `aimedAt(tab, target)`.
+ * - `everywhere` Network tabs (`machines`, `devices`): wrap in `StoresProvider stores={scope(meshClient)}` (`aimed: null`).
+ * - `machine` Network tabs (`machine`, `messaging`, `vms`): when `picked === null` (default) and the hub can serve it,
+ *   aim at the hub's own machine (`client === meshClient && !forwarded`), running directly on the hub without `engine_call`.
+ *   An explicit user pick (`picked !== null`, including This iPhone) is never overridden.
+ */
+export function resolveTabBinding({
+  categoryId,
+  tab,
+  target,
+  picked,
+  machines,
+  active,
+  meshClient,
+  discovery,
+  hubDiscovery,
+}: TabBindingInput): TabBinding {
+  const defaultAimed = aimedAt(tab, target)
+  if (categoryId !== 'network' || meshClient === active || !hubDiscovery || activeServesNetworkTab(tab, discovery)) {
+    return { aimed: defaultAimed, scopeClient: null, loading: false }
+  }
+  if (tab.scope === 'everywhere') {
+    const loading = !!tab.required && isPending(hubDiscovery)
+    return { aimed: null, scopeClient: loading ? null : meshClient, loading }
+  }
+  if (tab.scope === 'machine' && picked === null) {
+    if (isPending(hubDiscovery)) {
+      return { aimed: null, scopeClient: null, loading: true }
+    }
+    if (!tab.required || supports(hubDiscovery, tab.required)) {
+      const hubMachine = machines.find((m) => m.client === meshClient && !m.forwarded) ?? null
+      return hubMachine
+        ? { aimed: hubMachine, scopeClient: null, loading: false }
+        : { aimed: null, scopeClient: meshClient, loading: false }
+    }
+  }
+  return { aimed: defaultAimed, scopeClient: null, loading: false }
+}
+
+/**
+ * The machine `MachinePicker` shows as selected: while `picked === null` and the open Network tab binds to the hub
+ * (via `aimed` or `scopeClient`), highlight that hub machine so the picker matches the controls shown. Explicit picks
+ * (`picked !== null`) and other categories keep `target`.
+ */
+export function pickerTargetFor(binding: TabBinding, picked: string | null, machines: readonly Machine[], target: Machine | null): Machine | null {
+  if (picked !== null) return target
+  if (binding.aimed) return binding.aimed
+  if (binding.scopeClient) return machines.find((m) => m.client === binding.scopeClient && !m.forwarded) ?? target
+  return target
+}
 
 /**
  * `children` aimed at `machine`: as is for the active engine; under its own client's stores for an engine with a

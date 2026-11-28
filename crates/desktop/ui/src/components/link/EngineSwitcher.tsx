@@ -18,7 +18,20 @@ import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngineTree,
 import { retryPair } from '@/link/nodes'
 import { useConnection } from '@/store/connection'
 import { Capability } from '@/rpc/capabilities'
+import { type Discovery, supports } from '@/rpc/discovery'
 import { scope } from '@/store/engine-scope'
+
+const MACHINE_REQUIRED = {
+  methods: ['config_flag_get', 'config_flag_set', 'mesh_rename', 'mesh_set_hub', 'mesh_set_nearby', 'mesh_status', 'sessions_status', 'vault_rotate', 'vault_rotation'],
+} as const
+
+/** Where "Manage…" lands: desktop stays on `machine`; elsewhere `machine` when active or a paired hub serves it (or is still discovering), else `devices`. */
+export function manageSettingsTab(desktopLocal: boolean, discovery: Discovery, hubDiscovery?: Discovery): 'machine' | 'devices' {
+  if (desktopLocal) return 'machine'
+  if (supports(discovery, MACHINE_REQUIRED)) return 'machine'
+  if (hubDiscovery && (hubDiscovery.phase === 'connecting' || hubDiscovery.phase === 'discovering' || supports(hubDiscovery, MACHINE_REQUIRED))) return 'machine'
+  return 'devices'
+}
 
 const DOT: Record<Presence, string> = {
   online: 'bg-success',
@@ -157,7 +170,15 @@ export function EngineSwitcher({ className, compact = false }: { className?: str
         <DropdownMenuItem onSelect={() => void navigate({ to: '/link' })}>
           <Plus /> Pair with a mesh…
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void navigate({ to: '/settings/$tab', params: { tab: isIos() ? 'devices' : 'machine' }, search: {} })}>
+        <DropdownMenuItem
+          onSelect={() => {
+            const firstMesh = engines.find((h) => h.kind === 'mesh' && h.pairedAt > 0)?.id ?? null
+            const activeDiscovery = scope(active).connection.getState().discovery
+            const hubDiscovery = active === LOCAL && firstMesh ? scope(firstMesh).connection.getState().discovery : undefined
+            const tab = manageSettingsTab(hasLocal() && !isIos(), activeDiscovery, hubDiscovery)
+            void navigate({ to: '/settings/$tab', params: { tab }, search: {} })
+          }}
+        >
           <Settings2 /> Manage…
         </DropdownMenuItem>
       </DropdownMenuContent>

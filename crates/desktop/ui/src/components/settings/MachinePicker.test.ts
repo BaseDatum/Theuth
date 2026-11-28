@@ -59,3 +59,38 @@ test('227: the sidebar variant on iPad/desktop; one machine (or an engine withou
   document.body.innerHTML = ''
   expect((await mount(false, [MACHINES[1]!])).querySelector('[data-machine-picker]')).toBeNull()
 })
+
+test('explicitly selecting the connected machine records its id so default null pick stays distinct', async () => {
+  const host = await mount(true)
+  const trigger = host.querySelector<HTMLButtonElement>('[data-machine-picker]')!
+  await act(async () => {
+    trigger.focus()
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  })
+  const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+  // items[1] is `mbp` (the connected machine in MACHINES).
+  await act(async () => items[1]!.click())
+  expect(usePickedMachine.getState().picked).toBe('mbp')
+})
+
+test('when selected overrides settings.target (hub-bound Network tab with picked === null), picker highlights hub and tapping This iPhone explicitly picks it', async () => {
+  const phone = machine('local', 'This iPhone', { kind: 'local', connected: true, client: 'local', forwarded: false, path: null })
+  const hub = machine('mbp', '333 · MacBook Pro', { kind: 'hub', hub: true, connected: false, client: 'hub-row', forwarded: false, path: null })
+  const settings: SettingsMachines = { machines: [phone, hub], target: phone, connected: phone, api: {} as Api, local: null, meshClient: 'hub-row', qc: new QueryClient(), tab: null, open: () => {} }
+  const host = document.createElement('div')
+  document.body.append(host)
+  await act(async () => createRoot(host).render(h(SettingsMachinesProvider, { value: settings }, h(MachinePicker, { selected: hub }))))
+  const trigger = host.querySelector<HTMLButtonElement>('[data-machine-picker]')!
+  expect(trigger.textContent).toBe('333 · MacBook Prohub')
+  await act(async () => {
+    trigger.focus()
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  })
+  const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+  expect(items.map((i) => [i.textContent, i.getAttribute('aria-current')])).toEqual([
+    ['This iPhonelocal', null],
+    ['333 · MacBook Prohub ✓', 'true'],
+  ])
+  await act(async () => items[0]!.click())
+  expect(usePickedMachine.getState().picked).toBe('local')
+})

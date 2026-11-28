@@ -55,32 +55,53 @@ export type SettingsTabId = (typeof TAB_IDS)[number]
 /** 188 S4: whether the tab can work here (no `visible`: everywhere). */
 export const isShown = (tab: SettingsTab): boolean => tab.visible?.() ?? true
 
+/** Whether a connection's discovery is still in flight (connecting or discovering). */
+export const discoveryPending = (d: Discovery): boolean => d.phase === 'connecting' || d.phase === 'discovering'
+
+/**
+ * Whether `tab` in `category` is shown for `discovery` — and for Network tabs when a paired hub differs from the
+ * active engine, also when `hubDiscovery` supports it or is still loading (so Network tabs stay visible while the hub
+ * connects, and their body can show a loading state).
+ */
+export function tabShown(category: SettingsCategory, tab: SettingsTab, discovery?: Discovery, hubDiscovery?: Discovery): boolean {
+  if (!isShown(tab)) return false
+  if (!discovery || !tab.required) return true
+  if (supports(discovery, tab.required)) return true
+  if (category.id !== 'network' || !hubDiscovery) return false
+  return discoveryPending(hubDiscovery) || supports(hubDiscovery, tab.required)
+}
+
 /** The category's tabs shown here, in band order; empty when the whole category is hidden. */
-export const shownTabs = (category: SettingsCategory, discovery?: Discovery): SettingsTab[] => category.tabs.filter(tab => isShown(tab) && (!discovery || !tab.required || supports(discovery, tab.required)))
+export const shownTabs = (category: SettingsCategory, discovery?: Discovery, hubDiscovery?: Discovery): SettingsTab[] =>
+  category.tabs.filter((tab) => tabShown(category, tab, discovery, hubDiscovery))
 
 /** The categories with at least one shown tab, in column order. */
-export const shownCategories = (discovery?: Discovery): SettingsCategory[] => CATEGORIES.filter(category => shownTabs(category, discovery).length > 0)
+export const shownCategories = (discovery?: Discovery, hubDiscovery?: Discovery): SettingsCategory[] =>
+  CATEGORIES.filter((category) => shownTabs(category, discovery, hubDiscovery).length > 0)
 
 /** Per-machine Settings: a `device` tab is this client's, so the nav lists it under "This <device>", not its category. */
 export const isDeviceTab = (tab: SettingsTab): boolean => tab.scope === 'device'
 
 /** The category's shown tabs the nav lists under it: the device tabs sit in their own group. */
-export const navTabs = (category: SettingsCategory, discovery?: Discovery): SettingsTab[] => shownTabs(category, discovery).filter(tab => !isDeviceTab(tab))
+export const navTabs = (category: SettingsCategory, discovery?: Discovery, hubDiscovery?: Discovery): SettingsTab[] =>
+  shownTabs(category, discovery, hubDiscovery).filter((tab) => !isDeviceTab(tab))
 
 /** The categories column without the device tabs, in column order; a category left with none leaves the column. */
-export const navCategories = (discovery?: Discovery): SettingsCategory[] => CATEGORIES.filter(category => navTabs(category, discovery).length > 0)
+export const navCategories = (discovery?: Discovery, hubDiscovery?: Discovery): SettingsCategory[] =>
+  CATEGORIES.filter((category) => navTabs(category, discovery, hubDiscovery).length > 0)
 
 /** The "This <device>" group: every shown device tab, in column order. */
-export const deviceTabs = (discovery?: Discovery): SettingsTab[] => CATEGORIES.flatMap(category => shownTabs(category, discovery).filter(isDeviceTab))
+export const deviceTabs = (discovery?: Discovery): SettingsTab[] => CATEGORIES.flatMap((category) => shownTabs(category, discovery).filter(isDeviceTab))
 
 /** The tabs of the band over `tab`: the device group for a device tab, else its category's nav tabs. */
-export const bandTabs = ({ category, tab }: Placed, discovery?: Discovery): SettingsTab[] => (isDeviceTab(tab) ? deviceTabs(discovery) : navTabs(category, discovery))
+export const bandTabs = ({ category, tab }: Placed, discovery?: Discovery, hubDiscovery?: Discovery): SettingsTab[] =>
+  isDeviceTab(tab) ? deviceTabs(discovery) : navTabs(category, discovery, hubDiscovery)
 
 /** Where `/settings/<id>` of a known tab lands: the tab itself when shown, else its category's first shown tab, else Appearance. */
-export function shownTab(id: string, discovery?: Discovery): string {
+export function shownTab(id: string, discovery?: Discovery, hubDiscovery?: Discovery): string {
   const placed = placeOf(id)
-  if (!placed || (isShown(placed.tab) && (!discovery || !placed.tab.required || supports(discovery, placed.tab.required)))) return id
-  return shownTabs(placed.category, discovery)[0]?.id ?? 'appearance'
+  if (!placed || tabShown(placed.category, placed.tab, discovery, hubDiscovery)) return id
+  return shownTabs(placed.category, discovery, hubDiscovery)[0]?.id ?? 'appearance'
 }
 
 /**

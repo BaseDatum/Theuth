@@ -32,6 +32,7 @@ import type { LinkEvent } from "@/rpc/bindings/event.link_2eevents.output"
 import type { PairingPayload } from "@/rpc/bindings/method.nodes.output"
 import { RpcError } from '@/rpc/client'
 import { useConnection } from '@/store/connection'
+import { useScope } from '@/store/engine-scope'
 import { on } from '@/store/sessions'
 
 const KEY = ['link'] as const
@@ -45,13 +46,14 @@ const DEVICE_EVENTS = ['DevicePaired', 'DevicesChanged', 'LinkRevoked'] as const
 const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.message('Copied'))
 
 /**
- * 188 Settings › Network › Devices: phones and browsers pair with a mesh here. On a desktop node: the mesh's devices
- * (69 §3–§4), then the relay with both identities, then the other meshes this app reaches. On a bare device or iOS:
- * "Pair with a mesh" and the meshes it reaches.
+ * 188 Settings › Network › Devices: when the scoped engine supports `link_status` (desktop local node, or a paired
+ * device bound to its mesh hub), shows the mesh's devices (69 §3–§4), the relay with both identities, and the meshes
+ * this app reaches. Otherwise (unpaired phone/browser): "Pair with a mesh" and the meshes it reaches.
  */
 export function DevicesTab() {
   const navigate = useNavigate()
-  if (!hasLocal() || isIos()) {
+  const canLink = useQuerySupport(['link_status'])
+  if (!canLink) {
     return (
       <>
         <Section
@@ -80,7 +82,7 @@ function NodeSide() {
   const canQuery1 = useQuerySupport(["link_status"])
   const api = useApi()
   const qc = useQueryClient()
-  const active = useEngines((s) => s.active)
+  const scopeId = useScope().id
   const nodeName = useConnection((s) => s.info?.name)
   const status = useQuery({ enabled: canQuery1, queryKey: KEY, queryFn: () => api.link_status(), retry: false })
   const keys = [KEY]
@@ -110,7 +112,7 @@ function NodeSide() {
 
   return (
     <>
-      {active !== LOCAL && <p className="pb-2 text-[13px] text-fg-secondary">Managing Link of {nodeName ?? s.name}</p>}
+      {scopeId !== LOCAL && <p className="pb-2 text-[13px] text-fg-secondary">Managing Link of {nodeName ?? s.name}</p>}
       <Devices online={new Set(s.devices.filter((d) => d.online).map((d) => d.id))} />
 
       <Section title="Relay" actions={<Switch checked={s.enabled} disabled={enable.isPending} onCheckedChange={(v) => enable.mutate({ enabled: v, relay: null })} />}>
