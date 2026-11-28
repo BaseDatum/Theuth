@@ -259,6 +259,17 @@ pub enum CreateReq {
         /// The new document's home.
         home: Option<mesh::EngineId>,
     },
+    /// `CreateDeck` (229): a pure-Yjs collaborative Deck, never imported through the helper.
+    Deck {
+        /// Display title.
+        title: String,
+        /// Optional description.
+        description: String,
+        /// Who created it.
+        by: Principal,
+        /// The new document's home.
+        home: Option<mesh::EngineId>,
+    },
     /// `NotebookCreate`.
     Notebook {
         /// Display title.
@@ -825,6 +836,20 @@ async fn create(
         CreateReq::Whiteboard { title, by, home } => {
             let m = crate::wb::CreateWhiteboard {
                 title: Some(title),
+                by,
+                home: homing(home),
+            };
+            serde_json::to_value(actor.ask(Relayed(m)).await.map_err(reason_of)?)
+        }
+        CreateReq::Deck {
+            title,
+            description,
+            by,
+            home,
+        } => {
+            let m = crate::deck::CreateDeckHomed {
+                title: Some(title),
+                description: Some(description),
                 by,
                 home: homing(home),
             };

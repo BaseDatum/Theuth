@@ -32,6 +32,10 @@ use db::VecRow;
 use db::{BlockRow, Index, Lexical, State};
 
 /// Kinds the index walks (§7.1).
+///
+/// `DocKind::Deck` is intentionally excluded: Decks are live interactive dashboards
+/// discovered via `deck_list`/`deck_read` with runtime data in SQLite rather than
+/// note/notebook block search (`nb_search` / `TheuthKind::Notes`).
 pub const INDEXABLE: [DocKind; 6] = [
     DocKind::Note,
     DocKind::Board,
@@ -401,6 +405,9 @@ impl Indexer {
                 .await
                 .map_err(anyhow::Error::msg)?;
             return Ok(whiteboard_blocks(&o.text));
+        }
+        if kind == DocKind::Deck {
+            return Ok(Vec::new());
         }
         let outline = self
             .actor

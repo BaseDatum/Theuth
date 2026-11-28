@@ -406,14 +406,59 @@ impl DocumentActor {
     ) -> Result<(), String> {
         let max = self.cfg.max_doc_bytes;
         let store = self.store.clone();
-        let o = self.load(doc)?;
-        if o.bytes + update.len() > max {
-            return Err(format!(
-                "DocTooLarge: document would exceed {max} bytes ({} + {})",
-                o.bytes,
-                update.len()
-            ));
+        let mut force_snapshot_after = false;
+        {
+            let o = self.load(doc)?;
+            if o.bytes + update.len() > max {
+                let log_count = o.log_count;
+                let is_deck = o.meta.kind == DocKind::Deck;
+                if log_count > 0 {
+                    let _ = self.snapshot(doc, None);
+                }
+                let o = self.load(doc)?;
+                if o.bytes + update.len() > max {
+                    if is_deck {
+                        // Allow Deck compaction/archiving updates that bring or move the compacted
+                        // Y.Doc state within/toward `max_doc_bytes` so an oversized Deck is never bricked.
+                        let pre_state = o
+                            .doc
+                            .transact()
+                            .encode_state_as_update_v1(&StateVector::default());
+                        let scratch = yrs::Doc::new();
+                        let u_check =
+                            Update::decode_v1(&update).map_err(|e| format!("bad update: {e}"))?;
+                        if let Ok(pre_u) = Update::decode_v1(&pre_state) {
+                            let _ = scratch.transact_mut().apply_update(pre_u);
+                        }
+                        scratch
+                            .transact_mut()
+                            .apply_update(u_check)
+                            .map_err(|e| format!("apply update: {e}"))?;
+                        let post_len = scratch
+                            .transact()
+                            .encode_state_as_update_v1(&StateVector::default())
+                            .len();
+                        if post_len <= max || post_len < pre_state.len() {
+                            force_snapshot_after = true;
+                        } else {
+                            return Err(format!(
+                                "DocTooLarge: document would exceed {max} bytes ({} + {}, compacted {})",
+                                o.bytes,
+                                update.len(),
+                                post_len
+                            ));
+                        }
+                    } else {
+                        return Err(format!(
+                            "DocTooLarge: document would exceed {max} bytes ({} + {})",
+                            o.bytes,
+                            update.len()
+                        ));
+                    }
+                }
+            }
         }
+        let o = self.load(doc)?;
         let u = Update::decode_v1(&update).map_err(|e| format!("bad update: {e}"))?;
         // 184 §4.7, §16: a client update that changes neither the Doc's state vector nor its
         // delete set (a catch-all echoing the delete set, a re-sent update) is a no-op: no log
@@ -514,6 +559,11 @@ impl DocumentActor {
         // 218 R8: a whiteboard past 2 MiB bakes its old answered ink (a separate write).
         if whiteboard && by != Principal::Helper {
             self.wb_bake_if_due(doc);
+        }
+        if force_snapshot_after
+            && let Err(e) = self.snapshot(doc, None)
+        {
+            tracing::warn!(doc = %doc, error = %e, "post-compaction snapshot failed");
         }
         Ok(())
     }
@@ -859,7 +909,9 @@ impl DocumentActor {
             tracing::warn!(doc = %doc, error = %e, "snapshot at unload failed; log kept");
         }
         if let Some(o) = self.open.remove(doc) {
-            self.helper.close(doc).log("close");
+            if !o.meta.kind.is_pure_yjs() {
+                self.helper.close(doc).log("close");
+            }
             self.homes.insert(doc.clone(), o.meta.home.clone());
             // A quiet period still running at unload is over: the owner hears now, nothing is lost.
             if o.notify_due.is_some() && !o.exporting && o.export_due.is_none() {
@@ -914,12 +966,29 @@ impl DocumentActor {
     pub(crate) async fn delete_doc(&mut self, doc: &DocId) -> Result<(), String> {
         self.drop_claim(doc);
         self.homes.remove(doc);
-        let meta = match self.open.remove(doc) {
+        let changed = match self.open.remove(doc) {
             Some(o) => {
-                self.helper.close(doc).log("close");
-                Some(o.meta)
+                if !o.meta.kind.is_pure_yjs() {
+                    self.helper.close(doc).log("close");
+                }
+                Some(DocumentChanged::of(&o.meta, true))
             }
-            None => self.store.read_meta(doc).ok(),
+            None => match self.store.read_meta(doc) {
+                Ok(meta) => Some(DocumentChanged::of(&meta, true)),
+                Err(_) => self
+                    .store
+                    .summary(doc)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|row| DocumentChanged {
+                        doc: row.id,
+                        kind: row.kind,
+                        title: row.title,
+                        updated_ms: row.updated_ms,
+                        deleted: true,
+                    }),
+            },
         };
         if let Some(subs) = self.subs.remove(doc) {
             for s in subs {
@@ -929,8 +998,8 @@ impl DocumentActor {
             }
         }
         self.store.delete(doc).await.map_err(|e| format!("{e:#}"))?;
-        if let Some(meta) = meta {
-            self.rt.publish(DocumentChanged::of(&meta, true)).await;
+        if let Some(ev) = changed {
+            self.rt.publish(ev).await;
         }
         Ok(())
     }
@@ -1153,6 +1222,12 @@ impl DocumentActor {
         let update = unb64(&m.update)?;
         self.admit(&m.doc, &m.by, true).await?;
         self.source_writable(&m.doc, &m.by)?;
+        {
+            let o = self.load(&m.doc)?;
+            if o.meta.kind == DocKind::Deck {
+                crate::deck::validate_raw_update(&o.doc, &update, &m.by)?;
+            }
+        }
         Ok(self.apply(&m.doc, update, m.by, false, Vec::new()).await?)
     }
 }
@@ -2508,18 +2583,29 @@ impl Message<Restore> for DocumentActor {
         let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
             return reply;
         };
-        if let Some(kind) = self.open.get(&m.doc).map(|o| o.meta.kind) {
-            if kind == DocKind::Whiteboard {
-                tx.send(Err(
-                    "restoring a snapshot is not available for whiteboards; use undo on the canvas"
-                        .into(),
-                ));
-                return reply;
-            }
-            if kind == DocKind::Deck {
-                tx.send(Err("restoring a whole-document snapshot is not available for Decks; inspect per-section history instead".into()));
-                return reply;
-            }
+        let kind = match self.open.get(&m.doc) {
+            Some(o) => o.meta.kind,
+            None => match self.store.read_meta(&m.doc) {
+                Ok(meta) => meta.kind,
+                Err(e) => {
+                    tx.send(Err(format!("{e:#}")));
+                    return reply;
+                }
+            },
+        };
+        if kind == DocKind::Whiteboard {
+            tx.send(Err(
+                "restoring a snapshot is not available for whiteboards; use undo on the canvas"
+                    .into(),
+            ));
+            return reply;
+        }
+        if kind == DocKind::Deck {
+            tx.send(Err(
+                "restoring a whole-document snapshot is not available for Decks; inspect per-section history instead"
+                    .into(),
+            ));
+            return reply;
         }
         let bytes = match self.store.read_snapshot(&m.doc, &m.snapshot) {
             Ok(b) => b,
@@ -2821,6 +2907,9 @@ impl Message<HelperEvent> for DocumentActor {
                 let ids: Vec<DocId> = self.open.keys().cloned().collect();
                 for id in ids {
                     let o = &self.open[&id];
+                    if o.meta.kind.is_pure_yjs() {
+                        continue;
+                    }
                     let state = o
                         .doc
                         .transact()

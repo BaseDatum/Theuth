@@ -731,3 +731,158 @@ async fn create_tool_result_carries_the_chat_card() {
     assert_eq!(lines[1..], [format!("theuth://whiteboards/{doc}").as_str(), "0 cards"]);
     stop(actor).await;
 }
+
+/// 229: `CardKind::Deck` validates `deck`/`section`/`snapshot_id` tokens against control chars and
+/// invalid characters, emits `snapshot <id>` in `wb_outline` + `wb_card`, updates in place with
+/// zero version churn, never auto-fits geometry (`fit == false`), and causes zero helper calls or
+/// read-side Y.Doc churn.
+#[tokio::test]
+async fn deck_card_validation_outline_and_zero_geometry_version_churn() {
+    let _g = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (actor, helper_calls) = start(dir.path()).await;
+    let wb = create(&actor, "Deck Canvas").await;
+    let w = Whiteboards::new(actor.clone());
+    let s = uuid::Uuid::now_v7();
+    let doc = wb.doc.to_string();
+
+    // Control characters and invalid characters must be rejected in deck, section, and snapshot_id.
+    for (label, source) in [
+        ("newline in deck", json!({"t": "deck", "deck": "deck_a\nfake"})),
+        ("space in deck", json!({"t": "deck", "deck": "deck a"})),
+        ("newline in section", json!({"t": "deck", "deck": "deck_abc", "section": "s1\n# injected"})),
+        ("control char in section", json!({"t": "deck", "deck": "deck_abc", "section": "s1\x00x"})),
+        ("punctuation in section", json!({"t": "deck", "deck": "deck_abc", "section": "s1<tag>"})),
+        ("newline in snapshot_id", json!({"t": "deck", "deck": "deck_abc", "snapshot_id": "snap_1\r\n2"})),
+        ("space in snapshot_id", json!({"t": "deck", "deck": "deck_abc", "snapshot_id": "snap 1"})),
+    ] {
+        let out = call(
+            &WbPlaceTool(w.clone()),
+            json!({
+                "whiteboard": doc,
+                "kind": "deck",
+                "title": "Bad Ref",
+                "source": source,
+            }),
+            s,
+        )
+        .await;
+        assert!(
+            out.is_error,
+            "expected validation error for {label}, got ok: {}",
+            out.content
+        );
+    }
+
+    // Valid Deck card with explicit size, section, and pinned snapshot_id.
+    let placed = call(
+        &WbPlaceTool(w.clone()),
+        json!({
+            "whiteboard": doc,
+            "kind": "deck",
+            "title": "Revenue Deck",
+            "w": 720.0,
+            "h": 460.0,
+            "source": {
+                "t": "deck",
+                "deck": "deck_rev_01",
+                "section": "s1",
+                "snapshot_id": "snap_019abc"
+            }
+        }),
+        s,
+    )
+    .await;
+    let placed_v = ok(&placed);
+    let alias = placed_v["card"].as_str().unwrap().to_owned();
+    let before_snap = snapshot(&actor, &wb.doc).await;
+    let card_before = before_snap
+        .cards
+        .iter()
+        .find(|c| c.title == "Revenue Deck")
+        .unwrap()
+        .clone();
+    assert_eq!(card_before.kind, model::CardKind::Deck);
+    assert!(card_before.kind.in_place());
+    assert!(!card_before.kind.fits_content());
+    assert!(card_before.snap.is_none());
+    assert_eq!((card_before.w, card_before.h), (720.0, 460.0));
+    assert_eq!(card_before.versions.len(), 1);
+
+    // Outline must surface deck, section, AND snapshot_id.
+    let text_outline = outline(&actor, &wb.doc).await;
+    assert!(text_outline.contains("deck deck_rev_01"), "{text_outline}");
+    assert!(text_outline.contains("section s1"), "{text_outline}");
+    assert!(text_outline.contains("snapshot snap_019abc"), "{text_outline}");
+
+    // wb_card returns pinned snapshot details and deck_read hint without mutating the doc.
+    let card_out = call(
+        &WbCardTool(w.clone()),
+        json!({"whiteboard": doc, "card": alias}),
+        s,
+    )
+    .await;
+    assert!(!card_out.is_error, "{}", card_out.content);
+    assert!(card_out.content.contains("live Deck deck_rev_01"), "{}", card_out.content);
+    assert!(card_out.content.contains("pinned snapshot snap_019abc"), "{}", card_out.content);
+    assert!(card_out.content.contains("deck_read(\"deck_rev_01\")"), "{}", card_out.content);
+
+    // wb_read and wb_outline must produce zero geometry/version churn.
+    let read_out = call(&WbReadTool(w.clone()), json!({"whiteboard": doc}), s).await;
+    assert!(!read_out.is_error, "{}", read_out.content);
+    let after_read_snap = snapshot(&actor, &wb.doc).await;
+    assert_eq!(before_snap.cards, after_read_snap.cards);
+
+    // wb_update replaces Deck source IN PLACE (version stays 1, geometry [x,y,w,h] unchanged).
+    let updated = call(
+        &WbUpdateTool(w.clone()),
+        json!({
+            "whiteboard": doc,
+            "card": alias,
+            "source": {
+                "t": "deck",
+                "deck": "deck_rev_01",
+                "section": "s2",
+                "snapshot_id": "snap_019def"
+            },
+            "note": "switch to s2"
+        }),
+        s,
+    )
+    .await;
+    let upd_v = ok(&updated);
+    assert_eq!(upd_v["version"].as_u64(), Some(1), "Deck updates must stay in place (v1)");
+
+    let after_upd_snap = snapshot(&actor, &wb.doc).await;
+    let card_after = after_upd_snap
+        .cards
+        .iter()
+        .find(|c| c.id == card_before.id)
+        .unwrap();
+    assert_eq!(card_after.versions.len(), 1, "no version churn on Deck card update");
+    assert_eq!(
+        (card_after.x, card_after.y, card_after.w, card_after.h),
+        (card_before.x, card_before.y, 720.0, 460.0),
+        "zero geometry churn on Deck card update"
+    );
+    assert!(card_after.snap.is_none());
+    assert!(matches!(
+        &card_after.versions[0].source,
+        model::Source::Deck { deck, section, snapshot_id }
+            if deck == "deck_rev_01"
+                && section.as_deref() == Some("s2")
+                && snapshot_id.as_deref() == Some("snap_019def")
+    ));
+
+    let text_outline2 = outline(&actor, &wb.doc).await;
+    assert!(text_outline2.contains("section s2"), "{text_outline2}");
+    assert!(text_outline2.contains("snapshot snap_019def"), "{text_outline2}");
+    assert_eq!(
+        helper_calls.load(Ordering::SeqCst),
+        0,
+        "whiteboard Deck card operations must never touch the BlockNote helper"
+    );
+
+    stop(actor).await;
+}
+

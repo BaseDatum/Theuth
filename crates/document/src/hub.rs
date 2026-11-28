@@ -423,7 +423,9 @@ impl DocumentActor {
         }
         let one_shot = match &req {
             CreateReq::Create { binding, .. } => binding.keyless(),
-            CreateReq::Notebook { .. } | CreateReq::Whiteboard { .. } => true,
+            CreateReq::Notebook { .. } | CreateReq::Whiteboard { .. } | CreateReq::Deck { .. } => {
+                true
+            }
             CreateReq::Ensure { .. } => false,
         };
         let (me, key) = (self.actor_ref(), (client.clone(), id.clone()));

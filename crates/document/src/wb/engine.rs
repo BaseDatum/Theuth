@@ -1300,37 +1300,64 @@ pub(crate) fn check_source(
             section,
             snapshot_id,
         } => {
-            let id = deck.trim();
-            if id.is_empty()
-                || id.len() > 64
-                || !id
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-            {
+            let valid_token = |raw: &str| -> Option<String> {
+                if raw.chars().any(|c| c.is_control()) {
+                    return None;
+                }
+                let s = raw.trim();
+                if s.is_empty()
+                    || s.len() > 64
+                    || !s
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                {
+                    return None;
+                }
+                Some(s.to_owned())
+            };
+            let Some(id) = valid_token(deck) else {
                 return Err(format!(
                     "a deck card takes a deck id (deck_list lists them); {} is not one",
-                    outline::quote(id, 80)
+                    outline::quote(deck.trim(), 80)
                 ));
-            }
-            *deck = id.to_owned();
+            };
+            *deck = id;
             if let Some(sec) = section {
+                if sec.chars().any(|c| c.is_control()) {
+                    return Err(format!(
+                        "deck card section reference {} contains invalid characters (allowed: [A-Za-z0-9_-])",
+                        outline::quote(sec, 80)
+                    ));
+                }
                 let s = sec.trim();
                 if s.is_empty() {
                     *section = None;
-                } else if s.len() > 64 {
-                    return Err("deck card section reference exceeds 64 chars".into());
+                } else if let Some(clean) = valid_token(s) {
+                    *sec = clean;
                 } else {
-                    *sec = s.to_owned();
+                    return Err(format!(
+                        "deck card section reference {} must be 1..=64 chars of [A-Za-z0-9_-]",
+                        outline::quote(s, 80)
+                    ));
                 }
             }
             if let Some(snap) = snapshot_id {
+                if snap.chars().any(|c| c.is_control()) {
+                    return Err(format!(
+                        "deck card snapshot_id reference {} contains invalid characters (allowed: [A-Za-z0-9_-])",
+                        outline::quote(snap, 80)
+                    ));
+                }
                 let s = snap.trim();
                 if s.is_empty() {
                     *snapshot_id = None;
-                } else if s.len() > 64 {
-                    return Err("deck card snapshot_id reference exceeds 64 chars".into());
+                } else if let Some(clean) = valid_token(s) {
+                    *snap = clean;
                 } else {
-                    *snap = s.to_owned();
+                    return Err(format!(
+                        "deck card snapshot_id reference {} must be 1..=64 chars of [A-Za-z0-9_-]",
+                        outline::quote(s, 80)
+                    ));
                 }
             }
         }

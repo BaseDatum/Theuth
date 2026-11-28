@@ -190,10 +190,29 @@ fn extras(c: &Card) -> Vec<String> {
         Source::Web { url } => host(url).map(|h| vec![h.to_owned()]).unwrap_or_default(),
         Source::View { path } => vec![path.clone()],
         Source::Task { task } => vec![format!("task {task}")],
-        Source::Deck { deck, section, .. } => {
-            let mut v = vec![format!("deck {deck}")];
+        Source::Deck {
+            deck,
+            section,
+            snapshot_id,
+        } => {
+            let clean = |s: &str| -> String {
+                s.chars()
+                    .filter(|c| !c.is_control())
+                    .take(64)
+                    .collect()
+            };
+            let mut v = vec![format!("deck {}", clean(deck))];
             if let Some(s) = section {
-                v.push(format!("section {s}"));
+                let s = clean(s);
+                if !s.is_empty() {
+                    v.push(format!("section {s}"));
+                }
+            }
+            if let Some(snap) = snapshot_id {
+                let snap = clean(snap);
+                if !snap.is_empty() {
+                    v.push(format!("snapshot {snap}"));
+                }
             }
             v
         }
@@ -466,12 +485,25 @@ pub fn source_summary(c: &Card) -> (String, Option<String>) {
             section,
             snapshot_id,
         } => {
+            let clean = |s: &str| -> String {
+                s.chars()
+                    .filter(|c| !c.is_control())
+                    .take(64)
+                    .collect()
+            };
+            let deck = clean(deck);
             let mut detail = format!("live Deck {deck}");
             if let Some(s) = section {
-                detail.push_str(&format!(" (section {s})"));
+                let s = clean(s);
+                if !s.is_empty() {
+                    detail.push_str(&format!(" (section {s})"));
+                }
             }
             if let Some(snap) = snapshot_id {
-                detail.push_str(&format!(" (pinned snapshot {snap})"));
+                let snap = clean(snap);
+                if !snap.is_empty() {
+                    detail.push_str(&format!(" (pinned snapshot {snap})"));
+                }
             }
             (detail, Some(format!("deck_read(\"{deck}\")")))
         }

@@ -246,7 +246,7 @@ mod tests {
         }
     }
 
-    const KINDS: [CardKind; 11] = [
+    const KINDS: [CardKind; 13] = [
         CardKind::Page,
         CardKind::Diagram,
         CardKind::Note,
@@ -258,6 +258,8 @@ mod tests {
         CardKind::Sticky,
         CardKind::Session,
         CardKind::View,
+        CardKind::Task,
+        CardKind::Deck,
     ];
 
     #[test]
@@ -267,7 +269,7 @@ mod tests {
             let mut s = Snapshot::default();
             let n = (rng.next() % 30) as usize;
             for i in 0..n {
-                let kind = KINDS[(rng.next() % 10) as usize];
+                let kind = KINDS[(rng.next() as usize) % KINDS.len()];
                 let (w, h) = default_size(kind, Some("phone"));
                 let mut c = card(
                     &format!("C{round:03}{i:03}"),
@@ -299,7 +301,7 @@ mod tests {
                 });
             }
             s.cards.sort_by(|a, b| a.id.cmp(&b.id));
-            let kind = KINDS[(rng.next() % 10) as usize];
+            let kind = KINDS[(rng.next() as usize) % KINDS.len()];
             let (w, h) = default_size(kind, None);
             let near = (n > 0 && rng.next().is_multiple_of(2))
                 .then(|| s.cards[(rng.next() as usize) % n].id.clone());
