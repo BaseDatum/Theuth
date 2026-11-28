@@ -95,14 +95,14 @@ export function TabBand({
       data-tauri-drag-region={(!insideTile && mac) || undefined}
       data-tour={tour}
       className={cn(
-        'flex shrink-0 items-center gap-1 border-b border-border-subtle px-3 max-lg:h-auto',
+        'flex min-w-0 shrink-0 items-center gap-1 overflow-x-auto border-b border-border-subtle px-3 max-lg:h-auto @max-[900px]/settings:h-auto',
         insideTile ? 'h-10 max-lg:min-h-10' : 'h-[52px] max-lg:min-h-[52px]',
         !insideTile && inset && mac && cornerPad(sidebar),
       )}
     >
       {!insideTile && <SidebarLead />}
       <Tabs value={value} onValueChange={onValueChange} className="h-full min-w-0 flex-1 gap-0 max-lg:h-auto">
-        <TabsList variant="line" className="w-full gap-0 rounded-none bg-transparent p-0 group-data-[orientation=horizontal]/tabs:h-full max-lg:flex-wrap max-lg:group-data-[orientation=horizontal]/tabs:h-auto">
+        <TabsList variant="line" className="w-full gap-0 rounded-none bg-transparent p-0 group-data-[orientation=horizontal]/tabs:h-full max-lg:flex-wrap max-lg:group-data-[orientation=horizontal]/tabs:h-auto @max-[900px]/settings:flex-wrap @max-[900px]/settings:group-data-[orientation=horizontal]/tabs:h-auto">
           {tabs.map((tab) =>
             draggable ? (
               <DraggableTabTrigger key={tab.id} {...tab} insideTile={insideTile} />
@@ -114,13 +114,13 @@ export function TabBand({
                 aria-label={tab.label}
                 data-dim={tab.dim || undefined}
                 className={cn(
-                  'h-full flex-1 rounded-none text-fg-tertiary hover:text-foreground data-[state=active]:text-foreground dark:text-fg-tertiary dark:hover:text-foreground group-data-[orientation=horizontal]/tabs:after:bottom-0 max-lg:min-w-10 max-lg:flex-auto',
+                  'h-full min-w-0 flex-1 rounded-none text-fg-tertiary hover:text-foreground data-[state=active]:text-foreground dark:text-fg-tertiary dark:hover:text-foreground group-data-[orientation=horizontal]/tabs:after:bottom-0 max-lg:min-w-10 max-lg:flex-auto',
                   insideTile ? 'max-lg:h-10' : 'max-lg:h-[52px]',
                   tab.dim && 'opacity-60',
                 )}
               >
                 <tab.icon />
-                <span className="hidden md:inline">{tab.label}</span>
+                <span className="hidden min-w-0 truncate md:inline">{tab.label}</span>
                 {tab.tag && <span className="hidden md:inline-flex">{tab.tag}</span>}
               </TabsTrigger>
             ),

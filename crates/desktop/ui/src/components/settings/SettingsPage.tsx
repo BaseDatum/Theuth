@@ -197,7 +197,7 @@ function Page({ tab, focus, progress, machines }: { tab: string; focus: string |
   return (
     <article data-settings-page="" className="flex min-h-0 min-w-0 flex-1">
       <Categories current={category} currentTab={current} caps={caps} names={names} hubDiscovery={hubDiscovery} pickerTarget={pickerTarget} />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="@container/settings flex min-w-0 flex-1 flex-col">
         {band}
         {body}
       </div>
@@ -232,7 +232,7 @@ function Categories({
   const insideTile = useInsideTile()
   const device = deviceTabs(discovery)
   return (
-    <nav aria-label="Settings categories" className="flex w-[208px] shrink-0 flex-col border-r border-border-subtle">
+    <nav aria-label="Settings categories" className="flex w-[240px] shrink-0 flex-col border-r border-border-subtle">
       {/* With the rail closed this column meets the window's left edge, so it clears the traffic lights, not the band. */}
       <div
         data-tauri-drag-region={(!insideTile && mac) || undefined}
