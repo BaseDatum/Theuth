@@ -94687,7 +94687,8 @@
           "timed_out",
           "waiting_approval",
           "paused",
-          "execution_error"
+          "execution_error",
+          "conflict"
         ],
         "type": "string"
       },
@@ -94932,6 +94933,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "revision_sha256": {
+            "description": "Canonical SHA-256 digest over `(code, declared_actions, mode, interval_secs, schedule_cron)`.\nBound into `deck_script_approve(deck_id, rev, expected_digest)` to prevent mid-review swap.",
+            "type": "string"
+          },
           "schedule_cron": {
             "type": [
               "string",
@@ -94947,6 +94952,7 @@
           "rev",
           "code",
           "code_sha256",
+          "revision_sha256",
           "declared_actions",
           "mode",
           "status",
@@ -95709,7 +95715,8 @@
           "timed_out",
           "waiting_approval",
           "paused",
-          "execution_error"
+          "execution_error",
+          "conflict"
         ],
         "type": "string"
       },
@@ -95954,6 +95961,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "revision_sha256": {
+            "description": "Canonical SHA-256 digest over `(code, declared_actions, mode, interval_secs, schedule_cron)`.\nBound into `deck_script_approve(deck_id, rev, expected_digest)` to prevent mid-review swap.",
+            "type": "string"
+          },
           "schedule_cron": {
             "type": [
               "string",
@@ -95969,6 +95980,7 @@
           "rev",
           "code",
           "code_sha256",
+          "revision_sha256",
           "declared_actions",
           "mode",
           "status",
@@ -153986,6 +153998,16 @@
             "type": "integer"
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "expected_digest",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "expectedDigest"
+          ]
         }
       ],
       "result": {
@@ -154556,6 +154578,19 @@
             ]
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "clear_data_key",
+          "required": false,
+          "schema": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "clearDataKey"
+          ]
         }
       ],
       "result": {
