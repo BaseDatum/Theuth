@@ -137,36 +137,55 @@ export function useInvalidateTasks() {
 const LIVE_MS = 250
 const LIVE_MAX_MS = 1000
 
+const liveTasksRegistry = new WeakMap<ReturnType<typeof useQueryClient>, { refs: number; stop(): void }>()
+
 /**
  * 214 D5: every task list (and open task) refetches shortly after a task changes anywhere — an agent planning in a
  * chat, another window, the board. `tasks.changed@1` names every committed write; `tasks.activity@1` is the fallback
- * an older engine still sends. Listening by topic key only, so no generated event module is imported.
+ * an older engine still sends. Ref-counted per QueryClient so mounting at root and inside views never double-subscribes.
  */
 export function useLiveTasks(): void {
   const qc = useQueryClient()
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let first = 0
-    const fire = () => {
-      timer = undefined
-      first = 0
-      void qc.invalidateQueries({ queryKey: keys.tasks })
+    let entry = liveTasksRegistry.get(qc)
+    if (!entry) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let first = 0
+      const fire = () => {
+        timer = undefined
+        first = 0
+        void qc.invalidateQueries({ queryKey: keys.tasks })
+      }
+      const bump = () => {
+        const now = Date.now()
+        if (first === 0) first = now
+        clearTimeout(timer)
+        timer = setTimeout(fire, Math.max(0, Math.min(LIVE_MS, first + LIVE_MAX_MS - now)))
+      }
+      const offs = [
+        on('tasks.changed@1', 'TaskChanged', bump),
+        on('tasks.activity@1', 'ActivityAppended', (e) => {
+          if (/^(task_|child_|escalation_)/.test(e.entry.kind)) bump()
+        }),
+      ]
+      entry = {
+        refs: 0,
+        stop() {
+          clearTimeout(timer)
+          for (const off of offs) off()
+        },
+      }
+      liveTasksRegistry.set(qc, entry)
     }
-    const bump = () => {
-      const now = Date.now()
-      if (first === 0) first = now
-      clearTimeout(timer)
-      timer = setTimeout(fire, Math.max(0, Math.min(LIVE_MS, first + LIVE_MAX_MS - now)))
-    }
-    const offs = [
-      on('tasks.changed@1', 'TaskChanged', bump),
-      on('tasks.activity@1', 'ActivityAppended', (e) => {
-        if (/^(task_|child_|escalation_)/.test(e.entry.kind)) bump()
-      }),
-    ]
+    entry.refs++
     return () => {
-      clearTimeout(timer)
-      for (const off of offs) off()
+      const cur = liveTasksRegistry.get(qc)
+      if (!cur) return
+      cur.refs--
+      if (cur.refs <= 0) {
+        cur.stop()
+        liveTasksRegistry.delete(qc)
+      }
     }
   }, [qc])
 }

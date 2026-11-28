@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import { type ComponentProps, type ReactNode, useEffect, useState } from 'react'
 import { useStore } from 'zustand'
+import { useCloseOnCanvas } from '@/components/chat/floating/useCloseOnCanvas'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { usePointerCoarse } from '@/lib/mobile'
 import { useDark } from '@/lib/theme'
@@ -39,6 +40,8 @@ import type { InkColour, InkTool } from './canvas/model'
 import { pickInkTool } from './canvas/input'
 import type { Mode, WbStore } from './canvas/store'
 import { INK_COLOURS, inkCss } from './ink/colour'
+
+export { useCloseOnCanvas }
 
 export type AddKind = 'sticky' | 'note' | 'artifact' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'view' | 'tasks' | 'clipboard'
 
@@ -323,17 +326,6 @@ export function Cluster(p: ClusterProps) {
       <ClusterActions {...p} side="left" sep={<Sep />} onHeld={setActionsHeld} />
     </div>
   )
-}
-
-/** A menu over the canvas closes on a press on the canvas. Radix defers an outside press to its click, and React Flow's
- *  d3-zoom stops the canvas's mousedown, so Radix reads the press as handled and leaves the menu open. */
-export function useCloseOnCanvas(open: boolean, close: () => void) {
-  useEffect(() => {
-    if (!open) return
-    const press = (e: PointerEvent) => e.target instanceof Element && e.target.closest('.wb-canvas') && close()
-    document.addEventListener('pointerdown', press, true)
-    return () => document.removeEventListener('pointerdown', press, true)
-  }, [open, close])
 }
 
 /** The composer's tools button: shows the active tool (Hand included) and opens the ink panel with the cluster's

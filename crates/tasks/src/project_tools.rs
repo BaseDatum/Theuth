@@ -303,6 +303,7 @@ mod tests {
                         attachments: vec![],
                         priority: None,
                         blockers: vec![],
+                        accent: None,
                     },
                     "user",
                     None,

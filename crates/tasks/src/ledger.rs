@@ -837,6 +837,12 @@ impl Ledger {
         if input.priority.is_some() && !is_user(created_by) {
             return Err(PRIORITY_IS_THE_USERS.into());
         }
+        let accent = input
+            .accent
+            .as_deref()
+            .map(parse_accent)
+            .transpose()?
+            .flatten();
         let now = self.now();
         let parent = match &input.parent {
             Some(p) => Some(
@@ -904,7 +910,7 @@ impl Ledger {
             priority: input.priority.unwrap_or_default(),
             // 182 D2: before the mesh named us, `set_engine` stamps it.
             home,
-            accent: None,
+            accent,
             id,
         };
         t.thread = self
@@ -976,6 +982,7 @@ impl Ledger {
             attachments: vec![],
             priority: None,
             blockers: vec![],
+            accent: None,
         };
         let mut t = self
             .create(input, "system", None, WakeReason::Schedule)
@@ -3499,6 +3506,7 @@ pub(crate) mod tests {
                         attachments: vec![],
                         priority: None,
                         blockers: vec![],
+                        accent: None,
                     },
                     "user",
                     None,
@@ -3642,6 +3650,7 @@ pub(crate) mod tests {
             attachments: vec![],
             priority: Some(Priority::Low),
             blockers: vec![],
+            accent: None,
         };
         let e = r
             .ledger
@@ -3821,6 +3830,7 @@ pub(crate) mod tests {
             attachments: vec![],
             priority: None,
             blockers: vec![],
+            accent: None,
         };
         let t = r
             .ledger
@@ -4197,6 +4207,7 @@ pub(crate) mod tests {
                     ],
                     priority: None,
                     blockers: vec![],
+                    accent: None,
                 },
                 "user",
                 None,
@@ -4295,6 +4306,7 @@ pub(crate) mod tests {
                         attachments: vec![],
                         priority: None,
                         blockers: vec![],
+                        accent: None,
                     },
                     "agent:lead",
                     None,
@@ -4461,6 +4473,7 @@ pub(crate) mod tests {
                     attachments: vec![],
                     priority: None,
                     blockers: vec![],
+                    accent: None,
                 },
                 "user",
                 None,
@@ -4486,6 +4499,7 @@ pub(crate) mod tests {
                     attachments: vec![],
                     priority: None,
                     blockers: vec![],
+                    accent: None,
                 },
                 "user",
                 None,
@@ -7512,6 +7526,7 @@ pub(crate) mod tests {
             attachments: vec![],
             priority: Some(Priority::Low),
             blockers: vec![],
+            accent: None,
         };
         let ranked = r
             .ledger
@@ -7888,6 +7903,7 @@ pub(crate) mod tests {
                     attachments: vec![],
                     priority: None,
                     blockers: vec![],
+                    accent: None,
                 },
                 "user",
                 None,
@@ -8242,6 +8258,7 @@ pub(crate) mod tests {
             attachments: vec![],
             priority: None,
             blockers: blockers.iter().map(|b| (*b).to_owned()).collect(),
+            accent: None,
         }
     }
 
@@ -8500,5 +8517,48 @@ pub(crate) mod tests {
             )
             .await;
         assert!(drain().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_validates_and_applies_accent() {
+        let r = rig().await;
+        // Valid accent (mixed case + surrounding spaces) is normalized and stored atomically.
+        let mut input = planned("coloured", None, &[]);
+        input.accent = Some(" Lapis ".into());
+        let t = r
+            .ledger
+            .create(input, "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        assert_eq!(t.accent.as_deref(), Some("lapis"));
+        let reloaded = r.ledger.load(&t.id).await.unwrap();
+        assert_eq!(reloaded.accent.as_deref(), Some("lapis"));
+
+        // `"none"` and `""` normalize to `None`.
+        let mut clear = planned("cleared", None, &[]);
+        clear.accent = Some("none".into());
+        let t_none = r
+            .ledger
+            .create(clear, "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        assert_eq!(t_none.accent, None);
+
+        // Invalid accent is refused before anything is written.
+        let mut bad = planned("bad colour", None, &[]);
+        bad.accent = Some("teal".into());
+        let err = r
+            .ledger
+            .create(bad, "user", None, WakeReason::Assigned)
+            .await
+            .unwrap_err();
+        assert!(err.contains("unknown accent"), "{err}");
+        let all = r
+            .ledger
+            .store
+            .list(&TaskFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2, "refused create must not persist a task");
     }
 }

@@ -2248,6 +2248,7 @@ impl Roster {
             attachments: vec![],
             priority: None,
             blockers: vec![],
+            accent: None,
         };
         if let Some(t) = budget::crossed(&f.budget, before, after) {
             let pct = if t == budget::Threshold::Warn {
@@ -2512,7 +2513,7 @@ impl Message<DeliverWake> for Roster {
         // The charter, journal and manual lead the desk's system prompt
         // (`Identities`, 70 DESK-PROTOCOL); the input is the wake, plus the
         // fit-check roster on an assignment (70 (e)).
-        let mut text = desk::wake_text(&m.wake, m.task.as_ref());
+        let mut text = desk::wake_text_in(&m.wake, m.task.as_ref(), Some(&self.rt.data_dir));
         if matches!(
             m.wake.reason,
             tasks::WakeReason::Assigned | tasks::WakeReason::Reassigned
@@ -5745,6 +5746,7 @@ mod tests {
                 attachments: vec![],
                 priority: None,
                 blockers: vec![],
+                accent: None,
             },
             created_by: "user".into(),
             session: None,

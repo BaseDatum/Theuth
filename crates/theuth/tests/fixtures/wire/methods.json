@@ -712,6 +712,7 @@
   "task_decide",
   "task_events",
   "task_get",
+  "task_graph_send_context",
   "task_move",
   "task_move_home",
   "task_move_home_waiting",

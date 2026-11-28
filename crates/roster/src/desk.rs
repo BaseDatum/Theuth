@@ -256,6 +256,16 @@ pub fn child_identity(f: &AgentFile, task: Option<&tasks::Task>) -> String {
 /// 67 §7.3's scoped wake, as one input: the header line, then the task
 /// record the desk needs to act without another lookup.
 pub fn wake_text(wake: &tasks::Wake, task: Option<&tasks::Task>) -> String {
+    wake_text_in(wake, task, None)
+}
+
+/// [`wake_text`] with `data_dir` in scope so `Kind::File` attachments under `attachments/`
+/// carry a resolved path note for immediate `read_file` access.
+pub fn wake_text_in(
+    wake: &tasks::Wake,
+    task: Option<&tasks::Task>,
+    data_dir: Option<&Path>,
+) -> String {
     let mut s = String::from("Wake: ");
     match (task, &wake.task) {
         (Some(t), _) => s.push_str(&format!("task {} — {}.", t.id, t.title.trim())),
@@ -324,6 +334,12 @@ pub fn wake_text(wake: &tasks::Wake, task: Option<&tasks::Task>) -> String {
             for r in &t.attachments {
                 s.push('\n');
                 s.push_str(&agent::attach::marker(r));
+                if r.kind == agent::attach::Kind::File
+                    && r.id.starts_with("attachments/")
+                    && let Some(dir) = data_dir
+                {
+                    s.push_str(&format!("\n  path: {}", dir.join(&r.id).display()));
+                }
             }
         }
         s.push_str("\n</task>");
@@ -1061,6 +1077,27 @@ Attached (read with the tool for the kind, see Attachments):\n\
 chose with task_note, then remove the `left:decision:d7` blocker with task_update.\n</task>"
             ),
             "{text}"
+        );
+        let with_file = tasks::Task {
+            attachments: vec![agent::attach::AttachRef {
+                kind: agent::attach::Kind::File,
+                id: "attachments/deadbeef12345678.pdf".into(),
+                title: "spec.pdf".into(),
+                meta: "pdf · 420 KB".into(),
+            }],
+            external: vec![],
+            ..task
+        };
+        let file_text = wake_text_in(
+            &manual,
+            Some(&with_file),
+            Some(Path::new("/tmp/theuth-data")),
+        );
+        assert!(
+            file_text.contains(
+                "[attached file attachments/deadbeef12345678.pdf \"spec.pdf\" · pdf · 420 KB]\n  path: /tmp/theuth-data/attachments/deadbeef12345678.pdf\n</task>"
+            ),
+            "{file_text}"
         );
     }
 

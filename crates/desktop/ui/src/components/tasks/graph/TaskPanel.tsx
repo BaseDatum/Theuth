@@ -1,9 +1,12 @@
 // 214 D7: the task graph's inline editor — the right edge of the canvas, never a route change. Every field saves on its
 // own (`task_update`, serialised per task; a state move through `task_move`; done through the shared close path); text
 // saves on blur.
+import { useMutation } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ExternalLink, X } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
+import { notify as toast } from '@/lib/notify'
+import { errorText } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,16 +15,33 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { isPopout, openPopout } from '@/lib/popout'
+import { useApi } from '@/lib/rpc'
 import type { Priority, Task, TaskState } from '@/rpc/bindings/method.roster.output'
+import { AttachmentsEditor } from '../Attachments'
 import { ProjectCombobox } from '../NewTaskSheet'
 import { OwnerSelect } from '../OwnerSelect'
 import { AccentField, ChildrenList, ParentBreadcrumb, ParentField } from '../HierarchyFields'
-import { TaskPicker } from '../TaskPicker'
+import { TaskChips } from '../TaskChips'
 import { ownerText, parseBlocker, parseOwner, shortId, STATES } from '../helpers'
-import { useAgents, useCloseDone, useMoveTask, useTask, useTaskUpdate } from '../queries'
+import { useAgents, useCloseDone, useInvalidateTasks, useMoveTask, useTask, useTasks, useTaskUpdate } from '../queries'
 import { dependents, PANEL_W, STATE_TONE } from './model'
 
 const PRIORITIES: readonly Priority[] = ['urgent', 'high', 'medium', 'low']
+
+/** Every task `id` waits on, directly or transitively (cycle-safe): none of them may be blocked by `id`. */
+function transitiveBlockers(tasks: readonly Pick<Task, 'id' | 'blockers'>[], id: string): Set<string> {
+  const byId = new Map(tasks.map((t) => [t.id, t.blockers]))
+  const out = new Set<string>()
+  const stack = [id]
+  while (stack.length) {
+    for (const raw of byId.get(stack.pop()!) ?? []) {
+      if (out.has(raw) || raw === id) continue
+      out.add(raw)
+      stack.push(raw)
+    }
+  }
+  return out
+}
 
 /**
  * A text field over a record value. Focused, it is the user's draft; on blur a changed draft is saved and shown as
@@ -124,17 +144,28 @@ export function TaskPanel({ id, known, onSelect, onClose }: { id: string; known:
 }
 
 function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task[]; onSelect(id: string): void }) {
+  const api = useApi()
+  const invalidate = useInvalidateTasks()
+  const all = useTasks()
+  const allTasks = all.data ?? known
   const agents = useAgents()
   const move = useMoveTask()
   const patch = useTaskUpdate(t.id)
+  const patchOther = useMutation({
+    mutationFn: ({ id, blockers }: { id: string; blockers: string[] }) => api.task_update(id, { blockers }),
+    onSuccess: (updated) => {
+      invalidate(t.id)
+      invalidate(updated.id)
+    },
+    onError: (e) => toast.error(errorText(e)),
+  })
   const close = useCloseDone()
-  const busy = patch.isPending || move.isPending || close.isPending
+  const busy = patch.isPending || patchOther.isPending || move.isPending || close.isPending
   const [closing, setClosing] = useState(false)
-  const [picking, setPicking] = useState(false)
   const title = useDraft(t.title, (v, settled) => (v.trim() ? patch.mutate({ title: v.trim() }, { onSettled: settled }) : settled()))
   const brief = useDraft(t.brief, (v, settled) => patch.mutate({ brief: v }, { onSettled: settled }))
   const doneWhen = useDraft(t.done_when ?? '', (v, settled) => patch.mutate({ done_when: v.trim() || null }, { onSettled: settled }))
-  const byId = new Map(known.map((x) => [x.id, x]))
+  const byId = new Map(allTasks.map((x) => [x.id, x]))
   const setState = (s: TaskState) => {
     if (s === t.state) return
     if (s === 'done') return setClosing(true)
@@ -145,7 +176,22 @@ function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task
   // Built from the latest saved record at send time (calls queue per task), so quick edits never drop one another.
   const addBlocker = (id: string) => patch.mutate((latest) => ({ blockers: [...new Set([...(latest ?? t).blockers, id])] }))
   const removeBlocker = (raw: string) => patch.mutate((latest) => ({ blockers: (latest ?? t).blockers.filter((x) => x !== raw) }))
-  const blocks = t.blocks.map((b) => byId.get(b)).filter((x): x is Task => x !== undefined)
+
+  const taskBlockers = t.blockers.filter((raw) => parseBlocker(raw).kind === 'task')
+  const blockedByTasks = taskBlockers.flatMap((id) => {
+    const found = byId.get(id)
+    return found ? [found] : []
+  })
+  const unresolvedBlockers = t.blockers.filter((raw) => {
+    const b = parseBlocker(raw)
+    return b.kind !== 'task' || !byId.has(b.id)
+  })
+  const blocksTasks = t.blocks.flatMap((id) => {
+    const found = byId.get(id)
+    return found ? [found] : []
+  })
+  const waitingOnMe = dependents(allTasks, t.id)
+  const waitedByMe = transitiveBlockers(allTasks, t.id)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 text-sm">
@@ -236,55 +282,48 @@ function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task
         <Textarea id="tp-done-when" rows={3} placeholder="What has to be true to close it" className="text-[13px]" {...doneWhen.field} />
         <Conflict draft={doneWhen} />
       </Field>
+      <Field label={t.attachments.length ? `Attachments ${t.attachments.length}` : 'Attachments'}>
+        <AttachmentsEditor value={t.attachments} onChange={(attachments) => patch.mutate({ attachments })} disabled={busy} />
+      </Field>
       <Field label={`Blocked by ${t.blockers.length}`}>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {t.blockers.map((raw) => {
-            const b = parseBlocker(raw)
-            const other = b.kind === 'task' ? byId.get(b.id) : undefined
-            return (
-              <Badge key={raw} variant="secondary" className="max-w-full gap-1 pr-1">
-                {other ? (
-                  <button type="button" className="truncate hover:underline" onClick={() => onSelect(other.id)}>
-                    {other.title}
-                  </button>
-                ) : (
+        <TaskChips
+          title="Blocked by"
+          tasks={blockedByTasks}
+          project={t.project}
+          exclude={[t.id, ...t.blockers, ...t.blocks, ...waitingOnMe]}
+          disabled={busy}
+          onAdd={(b) => addBlocker(b.id)}
+          onRemove={(b) => removeBlocker(b.id)}
+          onOpen={onSelect}
+        />
+        {unresolvedBlockers.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {unresolvedBlockers.map((raw) => {
+              const b = parseBlocker(raw)
+              return (
+                <Badge key={raw} variant="secondary" className="max-w-full gap-1 pr-1">
                   <span className="truncate font-mono">{b.kind === 'task' ? `task ${shortId(b.id)}` : raw}</span>
-                )}
-                <button type="button" aria-label={`Remove blocker ${other?.title ?? raw}`} className="rounded-full hover:bg-layer-2" onClick={() => removeBlocker(raw)}>
-                  <X className="size-3" />
-                </button>
-              </Badge>
-            )
-          })}
-          <Button type="button" variant="outline" size="xs" onClick={() => setPicking(true)}>
-            Add blocker…
-          </Button>
-        </div>
-        {picking && (
-          <TaskPicker
-            open
-            onOpenChange={setPicking}
-            title="Blocked by"
-            project={t.project}
-            // Every task that already waits on this one (transitively) would close a cycle.
-            exclude={[t.id, ...t.blockers, ...t.blocks, ...dependents(known, t.id)]}
-            onPick={(b) => addBlocker(b.id)}
-          />
+                  <button type="button" aria-label={`Remove blocker ${raw}`} className="rounded-full hover:bg-layer-2" disabled={busy} onClick={() => removeBlocker(raw)}>
+                    <X className="size-3" />
+                  </button>
+                </Badge>
+              )
+            })}
+          </div>
         )}
       </Field>
-      {blocks.length > 0 && (
-        <Field label={`Blocks ${t.blocks.length}`}>
-          <div className="flex flex-wrap gap-1.5">
-            {blocks.map((b) => (
-              <Badge key={b.id} variant="outline" className="max-w-full">
-                <button type="button" className="truncate hover:underline" onClick={() => onSelect(b.id)}>
-                  {b.title}
-                </button>
-              </Badge>
-            ))}
-          </div>
-        </Field>
-      )}
+      <Field label={`Blocks ${t.blocks.length}`}>
+        <TaskChips
+          title="Blocks"
+          tasks={blocksTasks}
+          project={t.project}
+          exclude={[t.id, ...t.blocks, ...taskBlockers, ...waitedByMe]}
+          disabled={busy}
+          onAdd={(b) => patchOther.mutate({ id: b.id, blockers: [...new Set([...b.blockers, t.id])] })}
+          onRemove={(b) => patchOther.mutate({ id: b.id, blockers: b.blockers.filter((x) => x !== t.id) })}
+          onOpen={onSelect}
+        />
+      </Field>
     </div>
   )
 }

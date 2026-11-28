@@ -592,6 +592,9 @@ pub struct TaskCreate {
     /// with an open blocker is created `blocked`.
     #[serde(default)]
     pub blockers: Vec<String>,
+    /// Accent colour: a name from [`ACCENTS`]; `""` or `"none"` clears it.
+    #[serde(default)]
+    pub accent: Option<String>,
 }
 
 impl TaskCreate {
@@ -717,6 +720,7 @@ mod tests {
             attachments: vec![],
             priority: None,
             blockers: vec![],
+            accent: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["where"], "build-A");

@@ -7998,6 +7998,18 @@ impl Turn {
                 self.persist(ChatMessage::user(text)).await;
             }
         }
+        // Ephemeral task-graph view context sent by the floating Task Graph composer before this turn.
+        if chat
+            && round == 0
+            && !self
+                .state
+                .history
+                .last()
+                .is_some_and(|(_, m)| text_of(&m.content).starts_with("<task_graph"))
+            && let Some(text) = crate::task_graph::inject(self.shared.id)
+        {
+            self.persist(ChatMessage::user(text)).await;
+        }
         // 10 §4.2: hints at turn start against the input, then every `hint_rounds`
         // rounds against what was appended since; each id once per epoch. 06 §1.5:
         // the session's toolset may cap the lines or (`Some(0)`) drop hints entirely.
