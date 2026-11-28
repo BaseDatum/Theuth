@@ -252,7 +252,7 @@ test('SSH stageRows, placeChip, NodeRow (no Resize), and DestroyBody (no droplet
   expect(rows[1]?.label).toContain('Uploading and installing theuth 2.31.2 (signed)')
 
   const n = sshNode()
-  expect(placeChip(n)).toBe('☁︎ SSH · prod-box')
+  expect(placeChip(n)).toBe('SSH · prod-box')
 
   const rowHtml = html(
     createElement(NodeRow, {
@@ -265,7 +265,7 @@ test('SSH stageRows, placeChip, NodeRow (no Resize), and DestroyBody (no droplet
       onOpen: () => {},
     }),
   )
-  expect(rowHtml).toContain('☁︎ SSH · prod-box')
+  expect(rowHtml).toContain('SSH · prod-box')
   expect(rowHtml).not.toContain('Resize')
 
   const keepHtml = html(createElement(AlertDialog, { open: true }, createElement(DestroyBody, { node: n, perGb: null, keep: true, onKeep: () => {} })))

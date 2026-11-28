@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { useApi } from '@/lib/rpc'
 import { isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
-import { isIos, openExternal } from '@/lib/platform'
+import { isIos, isIpad, openExternal } from '@/lib/platform'
 import { closeAuthBrowser, onAuthBrowserDismissed, openAuthBrowser } from '@/lib/tauri'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
@@ -31,6 +31,7 @@ import {
   DesktopFooter,
   DoneView,
   K8sConfigure,
+  type LocalDevice,
   PhoneConfigureStep,
   PhoneProviderStep,
   ProgressView,
@@ -55,6 +56,8 @@ export type WizardInitial = {
   advancedOpen?: boolean
   /** The vault field as typed (the fixture's screenshots). */
   vault?: { password: string; confirm: string }
+  /** Device form factor for the first-run choose step (defaults to `isIpad()`). */
+  device?: LocalDevice
 }
 
 /** Seed wizard configure fields from an existing node so "Destroy and retry" keeps the original choices. */
@@ -422,7 +425,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
       <h2 className="mt-1 text-[19px] leading-tight font-semibold">{heading}</h2>
       {detail && <p className="text-sm text-fg-secondary">{detail}</p>}
       {phone && (
-        <div className="mt-auto pt-4">
+        <div className="mt-auto pt-4 md:mt-6 md:pt-0">
           <Button className="h-11 w-full rounded-[10px] text-[15px] font-semibold" onClick={onClose}>
             Close
           </Button>
@@ -485,12 +488,16 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   if (phone) {
     const first: WizardStep = entry === 'first-run' ? 'choose' : 'provider'
     const canBack = effectiveStep === 'configure' || (effectiveStep === 'provider' && first === 'choose')
+    const device: LocalDevice = initial?.device ?? (isIpad() ? 'ipad' : 'iphone')
+    const localLabel = device === 'ipad' ? 'Just this iPad' : 'Just this iPhone'
     let body
     if (effectiveStep === 'choose')
       body = (
         <ChooseStep
           fromPrice={fromPrice(providersQ.data ?? [], true, Object.fromEntries(qc.getQueriesData<SizeList>({ queryKey: ['cloud', 'sizes'] }).flatMap(([key, data]) => (data ? [[key[2], data]] : []))))}
           choice={choice}
+          device={device}
+          localLabel={localLabel}
           onChoice={setChoice}
           onContinue={() => (choice === 'cloud' ? setStep('provider') : onDone ? onDone(null) : onClose())}
         />
@@ -513,22 +520,27 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     else if (effectiveStep === 'progress') body = progressView
     else body = doneView
     return (
-      <div data-cloud-wizard={entry} className="flex min-h-full flex-col bg-background px-4 pt-[calc(var(--safe-top)+8px)] pb-[calc(var(--safe-bottom)+16px)] text-foreground">
-        <header className="flex h-9 shrink-0 items-center justify-between">
-          {canBack ? (
-            <Button variant="ghost" size="icon-sm" aria-label="Back" className="-ml-2" onClick={back}>
-              <ChevronLeft className="size-5" />
-            </Button>
-          ) : (
-            <span />
-          )}
-          {(effectiveStep !== 'done' || !!initial?.node) && (
-            <Button variant="ghost" size="icon-sm" aria-label="Close" className="-mr-2" onClick={onClose}>
-              <X className="size-5" />
-            </Button>
-          )}
-        </header>
-        <div className="flex flex-1 flex-col gap-2.5">{body}</div>
+      <div
+        data-cloud-wizard={entry}
+        className="flex min-h-full w-full min-w-0 max-w-full flex-col bg-background text-foreground md:items-center md:px-6 md:pt-[max(2.5rem,calc(var(--safe-top)+1rem))] md:pb-[max(2.5rem,calc(var(--safe-bottom)+1rem))]"
+      >
+        <div className="flex w-full min-w-0 max-w-full flex-1 flex-col px-4 pt-[calc(var(--safe-top)+8px)] pb-[calc(var(--safe-bottom)+16px)] md:my-auto md:max-w-[500px] md:flex-none md:rounded-2xl md:border md:border-border-subtle md:bg-elevated md:px-7 md:pt-5 md:pb-7 md:shadow-lg">
+          <header className="flex h-9 shrink-0 items-center justify-between">
+            {canBack ? (
+              <Button variant="ghost" size="icon-sm" aria-label="Back" className="-ml-2" onClick={back}>
+                <ChevronLeft className="size-5" />
+              </Button>
+            ) : (
+              <span />
+            )}
+            {(effectiveStep !== 'done' || !!initial?.node) && (
+              <Button variant="ghost" size="icon-sm" aria-label="Close" className="-mr-2" onClick={onClose}>
+                <X className="size-5" />
+              </Button>
+            )}
+          </header>
+          <div className="flex min-w-0 flex-1 flex-col gap-3 md:flex-none">{body}</div>
+        </div>
       </div>
     )
   }

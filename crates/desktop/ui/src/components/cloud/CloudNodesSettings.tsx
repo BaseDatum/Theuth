@@ -3,7 +3,7 @@
 // Provider errors from `cloud_list` show inline here; every other status goes to the status bar (`notify`).
 
 import { useNavigate } from '@tanstack/react-router'
-import { Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
+import { Cloud, Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@/components/chat/TerminalViewer'
 import { Empty, Section, useAction } from '@/components/settings/shared'
@@ -79,10 +79,10 @@ function Status({ node, bootstrapping = false }: { node: CloudNode; bootstrappin
   )
 }
 
-/** `☁︎ DigitalOcean · London`, `☁︎ Kubernetes · rwx-dev`, `☁︎ SSH · prod-box`. */
+/** `DigitalOcean · London`, `Kubernetes · rwx-dev`, `SSH · prod-box`. */
 export function placeChip(n: CloudNode): string {
   const where = n.provider === 'kubernetes' ? n.k8s?.context : n.provider === 'ssh' ? n.ssh?.host : (n.region_label ?? n.region)
-  return `☁︎ ${PROVIDER_LABEL[n.provider]}${where ? ` · ${where}` : ''}`
+  return `${PROVIDER_LABEL[n.provider]}${where ? ` · ${where}` : ''}`
 }
 
 /**
@@ -343,8 +343,9 @@ export function NodeRow({
       <ProviderBadge kind={node.provider} className="size-6 text-[10px]" />
       <div className="flex min-w-0 flex-1 items-center gap-x-2">
         <span className="shrink-0 text-sm font-semibold">{node.name}</span>
-        <span title={placeChip(node)} className="min-w-0 truncate rounded-full bg-layer-2 px-2 py-0.5 text-[11px] whitespace-nowrap">
-          {placeChip(node)}
+        <span title={placeChip(node)} className="inline-flex min-w-0 items-center gap-1 rounded-full bg-layer-2 px-2 py-0.5 text-[11px] whitespace-nowrap">
+          <Cloud className="size-3 shrink-0 text-fg-secondary" aria-hidden />
+          <span className="truncate">{placeChip(node)}</span>
         </span>
       </div>
       <Status node={node} bootstrapping={bootstrapping} />

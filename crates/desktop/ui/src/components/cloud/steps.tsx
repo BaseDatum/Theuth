@@ -2,7 +2,7 @@
 // and the RPCs, the fixture and the tests render these directly. Layout follows the approved mockup
 // (docs/design/224-hosted-nodes.md): the phone's five screens and the desktop dialog's provider grid / 3-column configure.
 
-import { Check, ChevronDown, Loader2 } from 'lucide-react'
+import { Check, ChevronDown, Cloud, Loader2, Smartphone, Tablet, TriangleAlert } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Tag } from '@/components/costs/ui'
 import { Button } from '@/components/ui/button'
@@ -20,10 +20,10 @@ import {
   SIZE_USE,
   billedLine,
   costLine,
+  countryCode,
   createLabel,
   desktopBlocked,
   etaText,
-  flag,
   k8sLine,
   localQuote,
   offered,
@@ -81,31 +81,124 @@ function Primary({ children, disabled, onClick, busy }: { children: ReactNode; d
 // ---- ① choose (phone first run) ----
 
 export type Choice = 'cloud' | 'local'
+export type LocalDevice = 'iphone' | 'ipad'
 
-export function ChooseStep({ fromPrice, choice, onChoice, onContinue }: { fromPrice: string | null; choice: Choice; onChoice: (c: Choice) => void; onContinue: () => void }) {
+function ChoiceChip({ children }: { children: ReactNode }) {
+  return <span className="inline-flex items-center rounded-full border border-border-subtle bg-background/70 px-2.5 py-0.5 text-[11px] font-medium text-fg-secondary">{children}</span>
+}
+
+function ChoiceCard({
+  selected,
+  icon,
+  title,
+  summary,
+  detail,
+  chips,
+  onSelect,
+}: {
+  selected: boolean
+  icon: ReactNode
+  title: string
+  summary: string
+  detail: string
+  chips: ReactNode
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onSelect}
+      className={cn(
+        'group flex w-full min-w-0 max-w-full cursor-pointer items-start gap-3.5 rounded-xl border p-4 text-left whitespace-normal transition-[border-color,background-color,box-shadow] duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none',
+        selected
+          ? 'border-fg-accent bg-layer-3/55 shadow-[inset_0_0_0_1px_var(--fg-accent)]'
+          : 'border-border-subtle bg-elevated hover:border-border-strong hover:bg-layer-2/70 md:bg-layer-2/60 md:hover:bg-layer-2',
+      )}
+    >
+      <span
+        aria-hidden
+        className={cn(
+          'mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl border transition-colors',
+          selected ? 'border-fg-accent/35 bg-elevated text-fg-accent' : 'border-border-subtle bg-layer-2 text-fg-secondary md:bg-elevated',
+        )}
+      >
+        {icon}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex min-w-0 items-start justify-between gap-2">
+          <span className="min-w-0 text-[15px] leading-snug font-semibold text-foreground">{title}</span>
+          <span
+            aria-hidden
+            className={cn(
+              'mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border transition-colors',
+              selected ? 'border-fg-accent bg-fg-accent text-primary-foreground' : 'border-border-strong bg-transparent',
+            )}
+          >
+            {selected && <Check className="size-3" strokeWidth={3} />}
+          </span>
+        </span>
+        <span className="text-[13px] leading-snug text-foreground/90">{summary}</span>
+        <span className="text-xs leading-relaxed text-fg-secondary">{detail}</span>
+        <span className="mt-1.5 flex flex-wrap gap-1.5">{chips}</span>
+      </span>
+    </button>
+  )
+}
+
+export function ChooseStep({
+  fromPrice,
+  choice,
+  onChoice,
+  onContinue,
+  device = 'iphone',
+  localLabel = device === 'ipad' ? 'Just this iPad' : 'Just this iPhone',
+}: {
+  fromPrice: string | null
+  choice: Choice
+  onChoice: (c: Choice) => void
+  onContinue: () => void
+  device?: LocalDevice
+  localLabel?: string
+}) {
+  const LocalIcon = device === 'ipad' ? Tablet : Smartphone
   return (
     <>
-      <Title>Where should theuth run?</Title>
-      <button type="button" aria-pressed={choice === 'cloud'} onClick={() => onChoice('cloud')} className="text-left">
-        <Card selected={choice === 'cloud'}>
-          <div className="text-[15px] font-semibold">☁︎ An always-on cloud node</div>
-          <ul className="my-1.5 list-disc pl-4 text-[13px] leading-snug">
-            <li className="my-1">Keeps working when your phone sleeps or is offline</li>
-            <li className="my-1">Runs long tasks, schedules and routines all night</li>
-            <li className="my-1">Full tools: shell, git, browser, local MCP servers</li>
-            <li className="my-1">Your phone, laptop and iPad all share one memory</li>
-          </ul>
-          {fromPrice && <Chip>{fromPrice}</Chip>}
-          <Chip>your own account</Chip>
-        </Card>
-      </button>
-      <button type="button" aria-pressed={choice === 'local'} onClick={() => onChoice('local')} className="text-left">
-        <Card selected={choice === 'local'}>
-          <div className="text-[15px] font-semibold">📱 Just this iPhone</div>
-          <Muted className="mt-0.5">Free. Pauses when the app closes. Tools limited by iOS.</Muted>
-        </Card>
-      </button>
-      <div className="mt-auto flex flex-col gap-2 pt-2">
+      <div className="mb-1 flex min-w-0 flex-col gap-1.5">
+        <h2 className="text-2xl leading-tight font-semibold tracking-tight text-foreground">Where should theuth run?</h2>
+        <p className="text-sm leading-relaxed text-fg-secondary">Choose where your agents, tools and memory live.</p>
+      </div>
+      <div className="flex min-w-0 flex-col gap-3">
+        <ChoiceCard
+          selected={choice === 'cloud'}
+          icon={<Cloud className="size-5" />}
+          title="An always-on cloud node"
+          summary="Keeps working when this device sleeps or is offline."
+          detail="Runs overnight routines with full tools (shell, git, browser, MCP) and shares one memory across your devices."
+          chips={
+            <>
+              {fromPrice && <ChoiceChip>{fromPrice}</ChoiceChip>}
+              <ChoiceChip>your own account</ChoiceChip>
+            </>
+          }
+          onSelect={() => onChoice('cloud')}
+        />
+        <ChoiceCard
+          selected={choice === 'local'}
+          icon={<LocalIcon className="size-5" />}
+          title={localLabel}
+          summary="Runs locally on this device and pauses when the app closes."
+          detail={device === 'ipad' ? 'Start right away with no cloud setup. Tools are limited by iPadOS.' : 'Start right away with no cloud setup. Tools are limited by iOS.'}
+          chips={
+            <>
+              <ChoiceChip>free</ChoiceChip>
+              <ChoiceChip>instant setup</ChoiceChip>
+            </>
+          }
+          onSelect={() => onChoice('local')}
+        />
+      </div>
+      <div className="mt-auto flex flex-col gap-2.5 pt-4 md:mt-6 md:pt-0">
         <Primary onClick={onContinue}>Continue</Primary>
         <Muted className="text-center">You can add a cloud node later</Muted>
       </div>
@@ -295,7 +388,7 @@ export function PhoneProviderStep(props: {
       <ProviderCards providers={props.providers} phone selected={props.selected} k8sContexts={null} onSelect={props.onSelect} />
       {p && <ConnectPanel p={p} connect={props.connect} onToken={props.onToken} onPasteInstead={props.onPasteInstead} onCancel={props.onCancel} />}
       <Muted>The bill is from your own provider. theuth never holds your card.</Muted>
-      <div className="mt-auto pt-2">
+      <div className="mt-auto pt-2 md:mt-4 md:pt-0">
         {!props.connect.waiting && (
           <Primary disabled={blocked} busy={props.busy} onClick={props.onNext}>
             {providerAction(p, props.connect)}
@@ -388,11 +481,15 @@ function RegionSelect({ regions, value, onChange, big }: { regions: readonly Reg
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {regions.map((r) => (
-          <SelectItem key={r.id} value={r.id}>
-            {flag(r.country)} {r.label} <span className="text-fg-tertiary">({r.id})</span>
-          </SelectItem>
-        ))}
+        {regions.map((r) => {
+          const code = countryCode(r.country)
+          return (
+            <SelectItem key={r.id} value={r.id}>
+              {code && <span className="mr-1.5 inline-block rounded bg-layer-2 px-1 py-0.5 font-mono text-[10px] font-medium text-fg-secondary">{code}</span>}
+              {r.label} <span className="text-fg-tertiary">({r.id})</span>
+            </SelectItem>
+          )
+        })}
       </SelectContent>
     </Select>
   )
@@ -513,7 +610,7 @@ export function PhoneConfigureStep(c: ConfigureProps) {
         <div className="text-[13px] font-semibold">{costLine(c.quote) ?? (c.sizes ? <PriceNote kind={c.provider.provider} className="text-xs font-normal" /> : <Skeleton className="h-4 w-32" />)}</div>
         <Muted>{summaryLine(c.spec.desktop)}</Muted>
       </Card>
-      <div className="mt-auto pt-2">
+      <div className="mt-auto pt-2 md:mt-4 md:pt-0">
         <Primary disabled={!!c.nameError || (!!c.vault && vaultError(c.vault.password, c.vault.confirm) !== null)} busy={c.busy} onClick={c.onCreate}>
           {createLabel(c.spec, c.quote)}
         </Primary>
@@ -694,8 +791,11 @@ export function K8sConfigure({
             </span>
           </label>
           {info?.enforces_network_policy === false && (
-            <Muted className="mt-1 pl-6 text-warning">
-              ⚠ This cluster runs {info.cni ?? 'a CNI that'}, which {FLANNEL_WARNING}
+            <Muted className="mt-1 flex items-start gap-1.5 pl-6 text-warning">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              <span>
+                This cluster runs {info.cni ?? 'a CNI that'}, which {FLANNEL_WARNING}
+              </span>
             </Muted>
           )}
         </Card>
@@ -788,7 +888,9 @@ export function DoneView({
 }) {
   return (
     <>
-      <div className="mt-5 text-center text-[40px] leading-none">☁︎</div>
+      <div className="mx-auto mt-5 flex size-14 items-center justify-center rounded-2xl border border-border-subtle bg-layer-2 text-fg-accent">
+        <Cloud className="size-7" aria-hidden />
+      </div>
       <Title className="text-center">{bootstrapping ? `${name} joined your mesh` : `${name} is ready`}</Title>
       <Muted className="text-center text-[13px]">{doneText(entry, name)}</Muted>
       {bootstrapping ? (
@@ -808,7 +910,7 @@ export function DoneView({
         <div className="text-sm font-semibold">Next: connect a model</div>
         <Muted>Sign in with Claude, ChatGPT or Gemini. The key lives on your node, encrypted.</Muted>
       </Card>
-      <div className="mt-auto flex flex-col gap-2 pt-2">
+      <div className="mt-auto flex flex-col gap-2 pt-2 md:mt-4 md:pt-0">
         <Primary onClick={onModel}>Connect a model</Primary>
         <Button variant="outline" className="h-11 w-full rounded-[10px] text-[15px] font-semibold" onClick={onLaptop}>
           Add my laptop too

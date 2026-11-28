@@ -152,10 +152,10 @@ export function defaultName(user: string | null, taken: readonly string[] = []):
   for (let i = 2; ; i++) if (!taken.includes(`${base}-${i}`)) return `${base}-${i}`
 }
 
-/** 🇬🇧 from `GB`. */
-export function flag(country: string): string {
+/** Two-letter ISO country code (`GB` from `gb`); empty when not a two-letter code. */
+export function countryCode(country: string): string {
   if (!/^[A-Za-z]{2}$/.test(country)) return ''
-  return String.fromCodePoint(...[...country.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65))
+  return country.toUpperCase()
 }
 
 // ---- progress ----

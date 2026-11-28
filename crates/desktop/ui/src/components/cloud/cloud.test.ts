@@ -8,11 +8,11 @@ import { AlertDialog } from '@/components/ui/alert-dialog'
 import { CloudNodeWizard, specFromNode } from './CloudNodeWizard'
 import { CloudNodesSection, DestroyBody, dispatchTerminalOpen, NodeRow } from './CloudNodesSettings'
 import { Route as CloudNewRoute } from '@/routes/cloud.new'
-import { DESKTOP_NOTE, checkName, createLabel, defaultMemory, defaultName, desktopBlocked, destroySaving, etaText, fromPrice, localQuote, sizesOf, stageRows, statusOf, userOf } from './format'
+import { DESKTOP_NOTE, checkName, countryCode, createLabel, defaultMemory, defaultName, desktopBlocked, destroySaving, etaText, fromPrice, localQuote, sizesOf, stageRows, statusOf, userOf } from './format'
 import { NodeDesktopView } from './NodeDesktop'
 import { applyCloudEvent, cloudKeys } from './queries'
 import { nearestRegion } from './region'
-import { ConnectPanel, DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PhoneProviderStep, PriceNote, ProviderCards, VAULT_LABEL } from './steps'
+import { ChooseStep, ConnectPanel, DesktopToggle, FLANNEL_WARNING, K8sConfigure, PhoneConfigureStep, PhoneProviderStep, PriceNote, ProviderCards, VAULT_LABEL } from './steps'
 import type { CloudList, CloudNode, K8sInfo, ProviderInfo, Region, SizeList } from './types'
 import { peerSyncQueryKey } from '@/lib/peer-sync'
 import type { PeerSync } from '@/rpc/bindings/method.sessionsync.receiver'
@@ -237,6 +237,28 @@ test('first run: no price before sign-in; the chip only from live prices of a co
   const providers = wizard('add-to-mesh', {}, null)
   expect(providers).toContain('Pick a provider')
   expect(providers).not.toMatch(/\$\d/)
+})
+
+test('ChooseStep adapts local label and copy for iPad vs iPhone without emoji, and countryCode returns plain ISO codes', () => {
+  const iphoneDefault = html(createElement(ChooseStep, { fromPrice: 'from $12/mo', choice: 'cloud', onChoice: () => {}, onContinue: () => {} }))
+  expect(iphoneDefault).toContain('Just this iPhone')
+  expect(iphoneDefault).toContain('from $12/mo')
+  expect(iphoneDefault).toContain('when this device sleeps or is offline')
+  expect(iphoneDefault).toContain('aria-pressed="true"')
+  expect(iphoneDefault).toContain('aria-pressed="false"')
+  expect(iphoneDefault).not.toMatch(/\p{Extended_Pictographic}|\p{Emoji_Presentation}/u)
+
+  const ipadWizard = wizard('first-run', { device: 'ipad' }, null)
+  expect(ipadWizard).toContain('Just this iPad')
+  expect(ipadWizard).toContain('iPadOS')
+  expect(ipadWizard).not.toContain('iPhone')
+  expect(ipadWizard).not.toContain('your phone')
+  expect(ipadWizard).toContain('md:max-w-[500px]')
+
+  expect(countryCode('gb')).toBe('GB')
+  expect(countryCode('US')).toBe('US')
+  expect(countryCode('')).toBe('')
+  expect(countryCode('USA')).toBe('')
 })
 
 test('vault protection and the sealed status appear only where the engine has the sealed vault', () => {

@@ -19,7 +19,7 @@ describe('mac-stray-key-text', () => {
   })
 
   test('keeps normal text, accents, emoji, tabs, newlines and mixed strings', () => {
-    for (const s of ['', null, undefined, 'a', 'é', '🎉', '\t', '\n', '\r', '\r\n', 'a\u001cb']) {
+    for (const s of ['', null, undefined, 'a', 'é', '🎉', '\t', '\n', '\r', '\r\n', 'a\u001cb']) { // no-emoji: allow
       expect(isStrayControlText(s)).toBe(false)
     }
     expect(stripStrayControlText('hi\u001c\t\nthere\uF703')).toBe('hi\t\nthere')

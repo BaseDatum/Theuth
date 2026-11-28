@@ -114,7 +114,7 @@ test('the master password is optional, else 12+ characters typed twice', () => {
   expect(vaultError('otter-lantern-quarry', 'otter-lantern')).toBe('The passwords do not match')
   expect(vaultError('otter-lantern-quarry', 'otter-lantern-quarry')).toBeNull()
   // Characters, not UTF-16 units: twelve emoji are twelve characters.
-  expect(vaultError('🦦'.repeat(12), '🦦'.repeat(12))).toBeNull()
+  expect(vaultError('🦦'.repeat(12), '🦦'.repeat(12))).toBeNull() // no-emoji: allow
 })
 
 test('Create waits for a valid master password or none; the button keeps naming the price', async () => {

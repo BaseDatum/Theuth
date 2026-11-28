@@ -22,6 +22,7 @@ const OUT = resolve(import.meta.dir, '../../../../docs/design/224-assets')
 
 const STATES = [
   'phone-choose',
+  'ipad-choose',
   'phone-provider',
   'phone-configure',
   'phone-configure-desktop-off',
@@ -110,7 +111,9 @@ async function launch(): Promise<{ port: number; stop: () => Promise<void> }> {
 
 async function shot(port: number, state: string): Promise<string> {
   const phone = state.startsWith('phone-')
-  const [width, height] = phone ? [390, 844] : [1100, 720]
+  const ipad = state.startsWith('ipad-')
+  const touch = phone || ipad
+  const [width, height] = phone ? [390, 844] : ipad ? [820, 1180] : [1100, 720]
   const target = (await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json()) as { id: string; webSocketDebuggerUrl: string }
   const page = await cdp(target.webSocketDebuggerUrl)
   const errors: string[] = []
@@ -119,8 +122,8 @@ async function shot(port: number, state: string): Promise<string> {
   })
   await page.send('Runtime.enable')
   await page.send('Page.enable')
-  await page.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 2, mobile: phone })
-  if (phone) await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
+  await page.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 2, mobile: touch })
+  if (touch) await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
   await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: DARK ? 'dark' : 'light' }, { name: 'prefers-reduced-motion', value: 'reduce' }] })
   await page.send('Page.navigate', { url: `${UI}/src/dev/cloud-fixture.html?state=${state}${DARK ? '&theme=dark' : ''}` })
   // Rendered when the fixture's root has content and the network is quiet for a moment.

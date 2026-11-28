@@ -6,6 +6,7 @@
 import '@/styles.css'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router'
+import { Smartphone } from 'lucide-react'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { AddCloudNodeEntry } from '@/components/cloud/AddCloudNodeEntry'
@@ -25,7 +26,8 @@ const query = new URLSearchParams(location.search)
 const dark = query.get('theme') === 'dark'
 document.documentElement.classList.toggle('dark', dark)
 const state = query.get('state')
-const phone = state?.startsWith('phone-') ?? false
+const ipad = state?.startsWith('ipad-') ?? false
+const phone = (state?.startsWith('phone-') ?? false) || ipad
 /** States where the engine advertises the sealed vault and `cloud_create(spec, vault_password)` (design 225). */
 const VAULT = state === 'phone-configure-vault' || state === 'desktop-configure-vault' || state === 'settings-machines' || state === 'vault-password'
 
@@ -46,7 +48,7 @@ const PROVIDERS: ProviderInfo[] = [
     beta: false,
     desktop_only: false,
     // Signed in from the configure step on (the phone got there through Sign in with DigitalOcean).
-    connected: state !== 'desktop-provider' && state !== 'phone-provider' && state !== 'phone-choose',
+    connected: state !== 'desktop-provider' && state !== 'phone-provider' && state !== 'phone-choose' && state !== 'ipad-choose',
     source: phone ? 'oauth' : 'imported',
     discovered: phone ? [] : [{ id: 'doctl:default', label: 'doctl login', detail: 'context "default"', path: '~/Library/Application Support/doctl/config.yaml' }],
     oauth: true,
@@ -144,7 +146,7 @@ const NODES: CloudNode[] =
     ? [{ ...SKY, state: 'creating', stage: 'vault', vault: 'pending', path: 'direct', version: null }]
     : state === 'phone-done'
       ? [SKY]
-      : state?.startsWith('phone-') || state?.startsWith('desktop-')
+      : state?.startsWith('phone-') || state?.startsWith('ipad-') || state?.startsWith('desktop-')
         ? []
         : [
             SKY,
@@ -252,17 +254,18 @@ if (state === 'phone-progress' || state === 'desktop-progress')
   qc.setQueryData(cloudKeys.progress('sky-cloud'), { stage: 'vault', pct: 95, eta_secs: 10, lines: ['droplet 4821 active', 'volume attached', 'installing theuth 2.31.2', 'Joined the mesh; connecting', 'Protecting the vault'] })
 
 if (phone) {
-  // The iOS shell as `main.tsx` marks it, with an iPhone's safe areas.
+  // The iOS shell as `main.tsx` marks it, with iPhone / iPad safe areas.
   document.documentElement.dataset.container = 'ios'
-  document.documentElement.style.setProperty('--safe-top', '47px')
-  document.documentElement.style.setProperty('--safe-bottom', '34px')
+  document.documentElement.style.setProperty('--safe-top', ipad ? '24px' : '47px')
+  document.documentElement.style.setProperty('--safe-bottom', ipad ? '20px' : '34px')
 }
 
 // ---- screens ----
 
 const LONDON = { provider: 'digitalocean' as const, region: 'lon1', name: 'sky-cloud' }
 const WIZARD: Record<string, { entry: WizardEntry; initial: WizardInitial }> = {
-  'phone-choose': { entry: 'first-run', initial: {} },
+  'phone-choose': { entry: 'first-run', initial: { device: 'iphone' } },
+  'ipad-choose': { entry: 'first-run', initial: { device: 'ipad' } },
   'phone-provider': { entry: 'first-run', initial: { step: 'provider', spec: { provider: 'digitalocean' } } },
   'phone-configure': { entry: 'first-run', initial: { step: 'configure', spec: LONDON } },
   'phone-configure-desktop-off': { entry: 'first-run', initial: { step: 'configure', spec: { ...LONDON, desktop: false } } },
@@ -316,7 +319,9 @@ function Engines() {
     <div className="flex min-h-dvh flex-col gap-2.5 bg-background px-4 pt-[calc(var(--safe-top)+12px)] text-foreground">
       <div className="text-sm font-semibold">Engines</div>
       <Card className="flex items-center gap-2.5">
-        <span className="grid size-7 place-items-center rounded-[7px] bg-layer-3">📱</span>
+        <span className="grid size-7 place-items-center rounded-[7px] bg-layer-3 text-fg-secondary">
+          <Smartphone className="size-4" aria-hidden />
+        </span>
         <div>
           <div className="text-sm font-semibold">This iPhone</div>
           <div className="text-xs text-fg-secondary">local</div>
@@ -369,8 +374,9 @@ function DesktopDialog({ name }: { name: string }) {
   return w?.entry === 'desktop-dialog' ? <CloudNodeWizard entry={w.entry} initial={w.initial} onClose={() => undefined} /> : null
 }
 
-const STATES: { name: string; label: string; phone: boolean }[] = [
+const STATES: { name: string; label: string; kind: 'phone' | 'ipad' | 'desktop' }[] = [
   ['phone-choose', '① Choose (first run)'],
+  ['ipad-choose', '① Choose (iPad first run)'],
   ['phone-provider', '② Pick a provider'],
   ['phone-configure', '③ Your node (desktop on: 4 GB recommended)'],
   ['phone-configure-desktop-off', '③ Desktop off: 2 GB'],
@@ -392,7 +398,11 @@ const STATES: { name: string; label: string; phone: boolean }[] = [
   ['logs', 'View logs'],
   ['desktop-view', 'View desktop'],
   ['vault-password', 'Set a node’s master password'],
-].map(([name, label]) => ({ name: name as string, label: label as string, phone: (name as string).startsWith('phone-') }))
+].map(([name, label]) => ({
+  name: name as string,
+  label: label as string,
+  kind: (name as string).startsWith('phone-') ? 'phone' : (name as string).startsWith('ipad-') ? 'ipad' : 'desktop',
+}))
 
 function Gallery() {
   const src = (name: string) => `${location.pathname}?state=${name}${dark ? '&theme=dark' : ''}`
@@ -405,15 +415,23 @@ function Gallery() {
         </a>
       </header>
       <section className="mb-10 flex flex-wrap gap-6">
-        {STATES.filter((s) => s.phone).map((s) => (
+        {STATES.filter((s) => s.kind === 'phone').map((s) => (
           <figure key={s.name} className="flex flex-col gap-1.5">
             <figcaption className="text-xs text-fg-tertiary">{s.label}</figcaption>
             <iframe title={s.label} src={src(s.name)} width={390} height={844} className="rounded-[36px] border-[6px] border-border-strong" />
           </figure>
         ))}
       </section>
+      <section className="mb-10 flex flex-wrap gap-6">
+        {STATES.filter((s) => s.kind === 'ipad').map((s) => (
+          <figure key={s.name} className="flex flex-col gap-1.5">
+            <figcaption className="text-xs text-fg-tertiary">{s.label}</figcaption>
+            <iframe title={s.label} src={src(s.name)} width={820} height={1180} className="rounded-[28px] border-[6px] border-border-strong" />
+          </figure>
+        ))}
+      </section>
       <section className="flex flex-col gap-6">
-        {STATES.filter((s) => !s.phone).map((s) => (
+        {STATES.filter((s) => s.kind === 'desktop').map((s) => (
           <figure key={s.name} className="flex flex-col gap-1.5">
             <figcaption className="text-xs text-fg-tertiary">{s.label}</figcaption>
             <iframe title={s.label} src={src(s.name)} width={1100} height={720} className="border border-border-subtle" />
