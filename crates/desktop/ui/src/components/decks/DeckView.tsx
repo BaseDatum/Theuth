@@ -68,11 +68,22 @@ export function sectionPayload(activeData: unknown, dataKey?: string | null): un
 }
 
 function isConflictError(err: unknown): boolean {
-  if (err instanceof RpcError && err.code === -32010) return true
-  if (typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === -32010) {
-    return true
-  }
-  return false
+  const code =
+    err instanceof RpcError
+      ? err.code
+      : typeof err === 'object' && err !== null && 'code' in err
+        ? (err as { code?: unknown }).code
+        : undefined
+  if (code !== -32010) return false
+  const data =
+    err instanceof RpcError
+      ? err.data
+      : typeof err === 'object' && err !== null && 'data' in err
+        ? (err as { data?: unknown }).data
+        : undefined
+  if (typeof data !== 'object' || data === null) return false
+  const rec = data as Record<string, unknown>
+  return typeof rec.section_id === 'string' && typeof rec.actual_rev === 'number'
 }
 
 function formatScriptSchedule(script: ScriptRevision): string {

@@ -76,7 +76,7 @@ function element(id: string, raw: unknown): Element {
   if (type === 'ActionButton') {
     const { action, args_json } = props as { action: string; args_json?: string }
     if (!action.trim()) throw new SpecError(`${at}/props/action`, 'action must not be empty')
-    if (args_json !== undefined && args_json.trim() !== '') {
+    if (args_json !== undefined) {
       let parsed: unknown
       try {
         parsed = JSON.parse(args_json)

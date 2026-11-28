@@ -116,8 +116,9 @@ function makeRequestId(): string {
 }
 
 /** Query the list of Decks; refreshes on coarse `decks.changed@1` events. */
-export function useDecksList(limit = 50) {
+export function useDecksList(limit = 50, enabled = true) {
   const client = useConnection((s) => s.client)
+  const api = useConnection((s) => s.api)
   const qc = useQueryClient()
   useEffect(() => {
     return onTopic('decks.changed@1', () => {
@@ -125,9 +126,10 @@ export function useDecksList(limit = 50) {
     })
   }, [qc])
   return useQuery({
-    enabled: Boolean(client),
+    enabled: Boolean((api || client) && enabled),
     queryKey: [...decksKey, limit],
-    queryFn: () => callDeck<DeckSummary[]>(client!, 'deck_list', [limit]),
+    queryFn: () =>
+      api?.deck_list ? api.deck_list(limit) : callDeck<DeckSummary[]>(client!, 'deck_list', [limit]),
     staleTime: 10_000,
   })
 }
@@ -135,15 +137,17 @@ export function useDecksList(limit = 50) {
 /** Create a new Deck (or the Workspace Pulse example Deck). */
 export function useCreateDeck() {
   const client = useConnection((s) => s.client)
+  const api = useConnection((s) => s.api)
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (opts?: { title?: string; description?: string; example?: boolean }) => {
-      if (!client) throw new Error('RPC client unavailable')
-      return callDeck<DeckDetail>(client, 'deck_create', [
-        opts?.title ?? null,
-        opts?.description ?? null,
-        opts?.example ?? false,
-      ])
+      if (!api?.deck_create && !client) throw new Error('RPC client unavailable')
+      const title = opts?.title ?? null
+      const description = opts?.description ?? null
+      const example = opts?.example ?? false
+      return api?.deck_create
+        ? api.deck_create(title, description, example)
+        : callDeck<DeckDetail>(client!, 'deck_create', [title, description, example])
     },
     onSuccess: (detail) => {
       void qc.invalidateQueries({ queryKey: decksKey })
@@ -213,16 +217,20 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const qc = useQueryClient()
 
   const detailQuery = useQuery({
-    enabled: Boolean(client && deckId),
+    enabled: Boolean((api || client) && deckId),
     queryKey: deckDetailKey(deckId),
-    queryFn: () => callDeck<DeckDetail>(client!, 'deck_get', [deckId]),
+    queryFn: () =>
+      api?.deck_get ? api.deck_get(deckId) : callDeck<DeckDetail>(client!, 'deck_get', [deckId]),
     staleTime: 10_000,
   })
 
   const pinnedQuery = useQuery({
-    enabled: Boolean(client && deckId && pinnedSnapshotId),
+    enabled: Boolean((api || client) && deckId && pinnedSnapshotId),
     queryKey: deckPinnedSnapshotKey(deckId, pinnedSnapshotId ?? ''),
-    queryFn: () => callDeck<DeckSnapshot | null>(client!, 'deck_snapshot_get', [deckId, pinnedSnapshotId]),
+    queryFn: () =>
+      api?.deck_snapshot_get
+        ? api.deck_snapshot_get(deckId, pinnedSnapshotId!)
+        : callDeck<DeckSnapshot | null>(client!, 'deck_snapshot_get', [deckId, pinnedSnapshotId]),
     staleTime: 60_000,
   })
 
@@ -474,7 +482,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
 
   const invokeAction = useCallback(
     async (action: string, args: Record<string, unknown>): Promise<InteractResponse | null> => {
-      if (!client || !deckId) return null
+      if ((!api?.deck_interact && !client) || !deckId) return null
       const targetDeckId = deckId
       const safeArgs = args ?? {}
       const expectedRev = effectiveRuntimeRef.current?.active_rev ?? null
@@ -489,14 +497,16 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
           : makeRequestId()
       retryRequestRef.current = { key: retryKey, requestId }
       try {
-        const res = await callDeck<InteractResponse>(client, 'deck_interact', [
-          targetDeckId,
-          action,
-          safeArgs,
-          requestId,
-          expectedRev,
-          30_000,
-        ])
+        const res = api?.deck_interact
+          ? await api.deck_interact(targetDeckId, action, safeArgs, requestId, expectedRev, 30_000)
+          : await callDeck<InteractResponse>(client!, 'deck_interact', [
+              targetDeckId,
+              action,
+              safeArgs,
+              requestId,
+              expectedRev,
+              30_000,
+            ])
         // Definite server response received: clear cached retry request_id.
         if (retryRequestRef.current?.requestId === requestId) {
           retryRequestRef.current = null
@@ -520,18 +530,20 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
         }
       }
     },
-    [client, deckId],
+    [api, client, deckId],
   )
 
   const controlRuntime = useCallback(
     async (op: RuntimeControlOp) => {
-      if (!client || !deckId) return
+      if ((!api?.deck_runtime_control && !client) || !deckId) return
       if (controlInFlightRef.current) return
       controlInFlightRef.current = true
       setControlBusy(true)
       const targetDeckId = deckId
       try {
-        const st = await callDeck<DeckRuntimeStatus>(client, 'deck_runtime_control', [targetDeckId, op])
+        const st = api?.deck_runtime_control
+          ? await api.deck_runtime_control(targetDeckId, op)
+          : await callDeck<DeckRuntimeStatus>(client!, 'deck_runtime_control', [targetDeckId, op])
         if (deckIdRef.current === targetDeckId) {
           setRuntime((prev) => (shouldApplyRuntimeStatus(prev, st) ? st : prev))
           setPendingApproval(st.pending_approval ?? null)
@@ -551,12 +563,12 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
         }
       }
     },
-    [client, deckId, qc],
+    [api, client, deckId, qc],
   )
 
   const approveScript = useCallback(
     async (rev: number, expectedDigest: string, andStart = false): Promise<ScriptRevision | null> => {
-      if (!client || !deckId) return null
+      if ((!api?.deck_script_approve && !client) || !deckId) return null
       const digest = expectedDigest.trim()
       if (!digest) {
         notify.error('Cannot approve script without canonical revision digest')
@@ -565,10 +577,14 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       const targetDeckId = deckId
       let approved: ScriptRevision | null = null
       try {
-        // Sends canonical 3-arg `(deck_id, rev, expected_digest)` matching updated `crates/decks/src/rpc.rs`.
-        approved = await callDeck<ScriptRevision>(client, 'deck_script_approve', [targetDeckId, rev, digest])
+        // Sends canonical 3-arg `(deck_id, rev, expected_digest)` matching `crates/decks/src/rpc.rs`.
+        approved = api?.deck_script_approve
+          ? await api.deck_script_approve(targetDeckId, rev, digest)
+          : await callDeck<ScriptRevision>(client!, 'deck_script_approve', [targetDeckId, rev, digest])
         if (andStart) {
-          const st = await callDeck<DeckRuntimeStatus>(client, 'deck_runtime_control', [targetDeckId, 'start'])
+          const st = api?.deck_runtime_control
+            ? await api.deck_runtime_control(targetDeckId, 'start')
+            : await callDeck<DeckRuntimeStatus>(client!, 'deck_runtime_control', [targetDeckId, 'start'])
           if (deckIdRef.current === targetDeckId) {
             setRuntime((prev) => (shouldApplyRuntimeStatus(prev, st) ? st : prev))
             setPendingApproval(st.pending_approval ?? null)
@@ -586,19 +602,17 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
         }
       }
     },
-    [client, deckId, qc],
+    [api, client, deckId, qc],
   )
 
   const rejectScript = useCallback(
     async (rev: number, reason?: string): Promise<ScriptRevision | null> => {
-      if (!client || !deckId) return null
+      if ((!api?.deck_script_reject && !client) || !deckId) return null
       const targetDeckId = deckId
       try {
-        const rejected = await callDeck<ScriptRevision>(client, 'deck_script_reject', [
-          targetDeckId,
-          rev,
-          reason ?? null,
-        ])
+        const rejected = api?.deck_script_reject
+          ? await api.deck_script_reject(targetDeckId, rev, reason ?? null)
+          : await callDeck<ScriptRevision>(client!, 'deck_script_reject', [targetDeckId, rev, reason ?? null])
         void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
         void qc.invalidateQueries({ queryKey: decksKey })
         notify(`Rejected script rev ${rev}`)
@@ -608,17 +622,17 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
         return null
       }
     },
-    [client, deckId, qc],
+    [api, client, deckId, qc],
   )
 
   const resolveApproval = useCallback(
     async (approved: boolean) => {
-      if ((!api && !client) || !pendingApproval) return
+      if ((!api?.resolve_approval && !client) || !pendingApproval) return
       const targetDeckId = deckId
       const target = pendingApproval
       const decision = approved ? 'allow' : 'deny'
       try {
-        if (api) {
+        if (api?.resolve_approval) {
           await api.resolve_approval(target.approval_id, decision)
         } else {
           await client!.call('resolve_approval', [target.approval_id, decision])
@@ -642,21 +656,26 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       data_key?: string | null
       index?: number | null
     }) => {
-      if (!client) throw new Error('RPC client unavailable')
+      if (!api?.deck_section_add && !client) throw new Error('RPC client unavailable')
       const targetDeckId = deckId
-      const sec = await callDeck<DeckSection>(client, 'deck_section_add', [
-        targetDeckId,
-        input.kind,
-        input.title,
-        input.content,
-        input.col_span ?? 12,
-        input.data_key ?? null,
-        input.index ?? null,
-      ])
+      const colSpan = input.col_span ?? 12
+      const dataKey = input.data_key ?? null
+      const index = input.index ?? null
+      const sec = api?.deck_section_add
+        ? await api.deck_section_add(targetDeckId, input.kind, input.title, input.content, colSpan, dataKey, index)
+        : await callDeck<DeckSection>(client!, 'deck_section_add', [
+            targetDeckId,
+            input.kind,
+            input.title,
+            input.content,
+            colSpan,
+            dataKey,
+            index,
+          ])
       void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
       return sec
     },
-    [client, deckId, qc],
+    [api, client, deckId, qc],
   )
 
   const sectionPatch = useCallback(
@@ -669,67 +688,101 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       data_key?: string | null
       summary?: string | null
     }) => {
-      if (!client) throw new Error('RPC client unavailable')
+      if (!api?.deck_section_patch && !client) throw new Error('RPC client unavailable')
       const targetDeckId = deckId
-      const sec = await callDeck<DeckSection>(client, 'deck_section_patch', [
-        targetDeckId,
-        input.section_id,
-        input.expected_rev ?? null,
-        input.title ?? null,
-        input.content ?? null,
-        input.col_span ?? null,
-        input.data_key ?? null,
-        input.summary ?? null,
-      ])
+      // Wire contract distinguishes omitted (`data_key: null, clear_data_key: null`),
+      // explicit clear (`data_key: null, clear_data_key: true`), and set (`data_key: s, clear_data_key: false`).
+      const trimmedDataKey = typeof input.data_key === 'string' ? input.data_key.trim() : null
+      const clearingDataKey = input.data_key === null || trimmedDataKey === ''
+      const wireDataKey = clearingDataKey ? null : trimmedDataKey
+      const clearDataKey = clearingDataKey ? true : input.data_key !== undefined ? false : null
+      const expectedRev = input.expected_rev ?? null
+      const title = input.title ?? null
+      const content = input.content ?? null
+      const colSpan = input.col_span ?? null
+      const summary = input.summary ?? null
+      const sec = api?.deck_section_patch
+        ? await api.deck_section_patch(
+            targetDeckId,
+            input.section_id,
+            expectedRev,
+            title,
+            content,
+            colSpan,
+            wireDataKey,
+            summary,
+            clearDataKey,
+          )
+        : await callDeck<DeckSection>(client!, 'deck_section_patch', [
+            targetDeckId,
+            input.section_id,
+            expectedRev,
+            title,
+            content,
+            colSpan,
+            wireDataKey,
+            summary,
+            clearDataKey,
+          ])
       void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
       return sec
     },
-    [client, deckId, qc],
+    [api, client, deckId, qc],
   )
 
   const sectionMove = useCallback(
     async (section_id: string, to_index: number) => {
-      if (!client) throw new Error('RPC client unavailable')
+      if (!api?.deck_section_move && !client) throw new Error('RPC client unavailable')
       const targetDeckId = deckId
-      const order = await callDeck<string[]>(client, 'deck_section_move', [targetDeckId, section_id, to_index])
+      const order = api?.deck_section_move
+        ? await api.deck_section_move(targetDeckId, section_id, to_index)
+        : await callDeck<string[]>(client!, 'deck_section_move', [targetDeckId, section_id, to_index])
       void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
       return order
     },
-    [client, deckId, qc],
+    [api, client, deckId, qc],
   )
 
   const sectionArchive = useCallback(
     async (section_id: string, archived: boolean, expected_rev?: number | null) => {
-      if (!client) throw new Error('RPC client unavailable')
+      if (!api?.deck_section_archive && !client) throw new Error('RPC client unavailable')
       const targetDeckId = deckId
-      const sec = await callDeck<DeckSection>(client, 'deck_section_archive', [
-        targetDeckId,
-        section_id,
-        archived,
-        expected_rev ?? null,
-      ])
+      const sec = api?.deck_section_archive
+        ? await api.deck_section_archive(targetDeckId, section_id, archived, expected_rev ?? null)
+        : await callDeck<DeckSection>(client!, 'deck_section_archive', [
+            targetDeckId,
+            section_id,
+            archived,
+            expected_rev ?? null,
+          ])
       void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
       return sec
     },
-    [client, deckId, qc],
+    [api, client, deckId, qc],
   )
 
   const sectionHistory = useCallback(
     async (section_id: string) => {
-      if (!client) throw new Error('RPC client unavailable')
-      return callDeck<SectionRevision[]>(client, 'deck_section_history', [deckId, section_id])
+      if (!api?.deck_section_history && !client) throw new Error('RPC client unavailable')
+      return api?.deck_section_history
+        ? api.deck_section_history(deckId, section_id)
+        : callDeck<SectionRevision[]>(client!, 'deck_section_history', [deckId, section_id])
     },
-    [client, deckId],
+    [api, client, deckId],
   )
 
   const focusSection = useCallback(
     async (section_id: string | null) => {
-      if (!client) return
+      if (!api?.deck_focus && !client) return
       const targetDeckId = deckId
-      await callDeck<void>(client, 'deck_focus', [targetDeckId, section_id])
+      if (api?.deck_focus) {
+        await api.deck_focus(targetDeckId, section_id)
+      } else {
+        await callDeck<void>(client!, 'deck_focus', [targetDeckId, section_id])
+      }
       void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
     },
-    [client, deckId, qc],
+    [api, client, deckId, qc],
   )
 
   const effectiveSnapshot = pinnedSnapshotId

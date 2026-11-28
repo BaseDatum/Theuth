@@ -128,6 +128,12 @@ test('Deck interactive components (ActionButton, StreamControls, ResultBanner) m
   expect(err(btn({ label: 'Bad', action: 'go', args_json: '{broken' }))).toBe(
     '/elements/b/props/args_json: args_json must be a JSON object',
   )
+  expect(err(btn({ label: 'Bad', action: 'go', args_json: '' }))).toBe(
+    '/elements/b/props/args_json: args_json must be a JSON object',
+  )
+  expect(err(btn({ label: 'Bad', action: 'go', args_json: '   ' }))).toBe(
+    '/elements/b/props/args_json: args_json must be a JSON object',
+  )
   expect(err(btn({ label: 'Bad', action: 'go', args_json: '[1,2]' }))).toBe(
     '/elements/b/props/args_json: args_json must be a JSON object',
   )

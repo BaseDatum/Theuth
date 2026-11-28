@@ -383,6 +383,7 @@ describe('useDeckLive pure helpers & hook contracts (B3, B6, H7, H8, M2, L1)', (
     el.remove()
     document.body.innerHTML = ''
     rpcMock.client = null
+    rpcMock.api = null
   })
 
   it('fences run_epoch/seq ordering and selects the newer of liveFrame vs lastSnapshot (including null payloads)', () => {
@@ -516,13 +517,34 @@ describe('useDeckLive pure helpers & hook contracts (B3, B6, H7, H8, M2, L1)', (
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: deckDetailKey('deck-a') })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: decksKey })
 
-    // H8: sectionPatch sends data_key directly (NOT wrapped in [data_key])
+    // H8: sectionPatch sends 9-arg wire contract distinguishing set vs omitted vs explicit clear data_key
     callMock.mockClear()
     await act(async () => {
       await latest.sectionPatch({ section_id: 'sec-1', expected_rev: 3, data_key: 'metrics' })
     })
     expect(callMock).toHaveBeenCalledWith('deck_section_patch', [
-      'deck-a', 'sec-1', 3, null, null, null, 'metrics', null,
+      'deck-a', 'sec-1', 3, null, null, null, 'metrics', null, false,
+    ])
+    callMock.mockClear()
+    await act(async () => {
+      await latest.sectionPatch({ section_id: 'sec-1', expected_rev: 3, title: 'Renamed', summary: 'title only' })
+    })
+    expect(callMock).toHaveBeenCalledWith('deck_section_patch', [
+      'deck-a', 'sec-1', 3, 'Renamed', null, null, null, 'title only', null,
+    ])
+    callMock.mockClear()
+    await act(async () => {
+      await latest.sectionPatch({ section_id: 'sec-1', expected_rev: 3, data_key: null, summary: 'clear null' })
+    })
+    expect(callMock).toHaveBeenCalledWith('deck_section_patch', [
+      'deck-a', 'sec-1', 3, null, null, null, null, 'clear null', true,
+    ])
+    callMock.mockClear()
+    await act(async () => {
+      await latest.sectionPatch({ section_id: 'sec-1', expected_rev: 3, data_key: '', summary: 'clear empty' })
+    })
+    expect(callMock).toHaveBeenCalledWith('deck_section_patch', [
+      'deck-a', 'sec-1', 3, null, null, null, null, 'clear empty', true,
     ])
 
     // L1: invokeAction uses effectiveRuntime.active_rev (7), reuses request_id on retry after transport error,
@@ -832,7 +854,13 @@ describe('DeckView Phase 2: H12 chrome/title/popout, Medium #1/#2/#8/#11/#12, an
     const refetch = vi.fn()
     const sectionPatch = vi
       .fn()
-      .mockRejectedValueOnce(new RpcError(-32010, 'Conflict: expected rev 3, current is rev 4'))
+      .mockRejectedValueOnce(
+        new RpcError(-32010, 'section_conflict: section sec-1 is at rev 4 (expected 3)', {
+          section_id: 'sec-1',
+          expected_rev: 3,
+          actual_rev: 4,
+        }),
+      )
       .mockResolvedValueOnce(makeDetail().doc.sections[0]!)
     const detailV3 = makeDetail('deck-c')
     const stateV3 = makeLiveStateStub(detailV3, { sectionPatch, refetch })

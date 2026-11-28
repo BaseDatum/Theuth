@@ -1,3 +1,4 @@
+import { jsonrepair } from 'jsonrepair'
 import { useMemo } from 'react'
 import type { CustomRendererProps } from 'streamdown'
 import { BareSurface } from '@/components/chat/surface/bare'
@@ -110,13 +111,18 @@ export function interpolateDeckJsonTemplate(template: string, data: unknown): st
     const parsed = JSON.parse(template)
     return JSON.stringify(interpolateJsonAst(parsed, data))
   } catch {
-    // Fallback for malformed/in-progress JSON templates: escape per-placeholder safely without crashing.
-    return template.replace(PLACEHOLDER_RE, (_m, rawPath: string, fallback?: string) => {
-      const val = lookupPath(data, rawPath.trim())
-      const text = formatPlaceholderValue(val, fallback)
-      const encoded = JSON.stringify(text)
-      return encoded === undefined ? '' : encoded.slice(1, -1)
-    })
+    try {
+      const repaired = JSON.parse(jsonrepair(template))
+      return JSON.stringify(interpolateJsonAst(repaired, data))
+    } catch {
+      // Fallback for severely malformed/in-progress JSON templates: escape per-placeholder safely without crashing.
+      return template.replace(PLACEHOLDER_RE, (_m, rawPath: string, fallback?: string) => {
+        const val = lookupPath(data, rawPath.trim())
+        const text = formatPlaceholderValue(val, fallback)
+        const encoded = JSON.stringify(text)
+        return encoded === undefined ? '' : encoded.slice(1, -1)
+      })
+    }
   }
 }
 

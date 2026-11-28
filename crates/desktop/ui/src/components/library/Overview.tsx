@@ -5,8 +5,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEffect } from 'react'
-import { decksKey } from '@/components/decks/useDeckLive'
-import type { DeckSummary } from '@/components/decks/types'
+import { useDecksList } from '@/components/decks/useDeckLive'
 import { useNotebooks } from '@/components/notebooks/useNotebooks'
 import { useNotes } from '@/components/notes/useNotes'
 import { useChecklistShown, useGuidesHere } from '@/components/onboarding/visibility'
@@ -32,16 +31,17 @@ export const LIBRARY_PURPOSE: Readonly<Partial<Record<Tab, string>>> = {
 
 /**
  * Item counts per tab; `undefined` = not known. Every list is read from the cache its own page fills; the small ones
- * (skills, notes, notebooks) are fetched too, but only while the strip is up (`fetch`).
+ * (skills, notes, notebooks, decks) are fetched too, but only while the strip is up (`fetch`).
  */
 function useCounts(fetch: boolean): Partial<Record<Tab, number>> {
   const api = useApi()
   const canSkills = useQuerySupport(['list_skills'])
+  const canDecks = useQuerySupport(['deck_list'])
   // The same keys and functions as the pages' own queries, so a page refetch never runs anything else.
   const artifacts = useQuery({ queryKey: queryKeys.artifacts, queryFn: () => api.list_artifacts(null, null), enabled: false }).data
   const knowledge = useQuery({ queryKey: queryKeys.knowledgeList, queryFn: () => api.knowledge_list(null, null, null, 100000), enabled: false }).data
   const secrets = useQuery({ queryKey: queryKeys.secrets, queryFn: () => api.list_secrets(), enabled: false }).data
-  const decks = useQuery<DeckSummary[]>({ queryKey: decksKey, queryFn: async () => [], enabled: false }).data
+  const decks = useDecksList(50, fetch && canDecks).data
   const skills = useQuery({ enabled: fetch && canSkills, queryKey: queryKeys.skills, queryFn: () => api.list_skills() }).data
   const notes = useNotes(fetch).data
   const notebooks = useNotebooks(false, fetch).data

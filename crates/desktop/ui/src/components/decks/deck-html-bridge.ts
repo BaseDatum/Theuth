@@ -298,9 +298,14 @@ function buildBridgeScriptSource(nonce: string): string {
   }
   document.addEventListener("click", function(ev) {
     var target = ev.target;
-    var el = target && target.closest ? target.closest("a[href], area[href]") : null;
+    var el = target && target.closest ? target.closest("a, area") : null;
     if (!el) return;
-    var href = (el.getAttribute("href") || "").trim();
+    var href = (
+      el.getAttribute("href") ||
+      (el.getAttributeNS && el.getAttributeNS("http://www.w3.org/1999/xlink", "href")) ||
+      el.getAttribute("xlink:href") ||
+      ""
+    ).trim();
     if (href && href.charAt(0) !== "#") {
       ev.preventDefault();
       ev.stopImmediatePropagation();
@@ -530,8 +535,15 @@ function stripDangerousTagsOnce(html: string): string {
       } else if (src.startsWith('<!--->', lt)) {
         i = lt + 6
       } else {
-        const close = src.indexOf('-->', lt + 4)
-        i = close === -1 ? len : close + 3
+        const closeStandard = src.indexOf('-->', lt + 4)
+        const closeBang = src.indexOf('--!>', lt + 4)
+        if (closeStandard === -1 && closeBang === -1) {
+          i = len
+        } else if (closeBang !== -1 && (closeStandard === -1 || closeBang < closeStandard)) {
+          i = closeBang + 4
+        } else {
+          i = closeStandard + 3
+        }
       }
       continue
     }
@@ -586,9 +598,9 @@ function stripDangerousTagsOnce(html: string): string {
 }
 
 function stripDangerousTagsFallback(html: string): string {
-  // Run to a small fixed point so nested tag reconstruction like `<ba<base>se>` can never survive.
+  // Run to a bounded fixed point so deeply nested tag reconstruction like `<ba<base>se>` can never survive.
   let cur = html
-  for (let pass = 0; pass < 4; pass++) {
+  for (let pass = 0; pass < 64; pass++) {
     const next = stripDangerousTagsOnce(cur)
     if (next === cur) break
     cur = next

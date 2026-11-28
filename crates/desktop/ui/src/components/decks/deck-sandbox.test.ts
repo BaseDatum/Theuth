@@ -180,6 +180,8 @@ describe('Deck HTML strict CSP, parser hardening & guest intent bridge', () => {
           '<base data-x=">" href="https://evil.test/">',
           '<base/href="https://evil.test/">',
           '<ba<base>se href="https://evil.test/">',
+          '<ba<ba<ba<ba<ba<base>se>se>se>se>se href="https://evil.test/">',
+          '<!-- comment closed with bang --!><base href="https://evil.test/">',
           '<noscript><p title="</noscript><meta http-equiv=refresh content=\'0;url=https://evil.test\'>"></p></noscript>',
           '<meta name="viewport" content="width=device-width">',
           '</head><body><a href="https://evil.test">go</a><script>const s = "<base href=x>";</script></body></html>',
@@ -195,7 +197,8 @@ describe('Deck HTML strict CSP, parser hardening & guest intent bridge', () => {
         expect(doc).not.toContain('default-src *')
         expect(doc).toContain('<meta name="viewport" content="width=device-width">')
         expect(doc).toContain('const s = "<base href=x>";')
-        expect(doc).toContain('a[href], area[href]')
+        expect(doc).toContain('closest("a, area")')
+        expect(doc).toContain('http://www.w3.org/1999/xlink')
         expect(doc).toContain('addEventListener("submit"')
       })
 
@@ -590,6 +593,29 @@ describe('DeckSurfaceSection prototype safety & ActionButton args_json injection
       role: 'viewer',
     })
     expect('injected' in parsedArgs).toBe(false)
+
+    // Minor malformed JSON (trailing comma) must repair into an AST rather than falling back to
+    // raw string interpolation that would break ActionButton.args_json escaping.
+    const trailingCommaSpec = `{
+      "root": "btn",
+      "elements": {
+        "btn": {
+          "type": "ActionButton",
+          "props": {
+            "label": "Triage {{id}}",
+            "action": "triage",
+            "args_json": "{\\"id\\":\\"{{id}}\\",\\"role\\":\\"viewer\\"}",
+          },
+        },
+      },
+    }`
+    const repairedInterpolated = JSON.parse(interpolateDeckJsonTemplate(trailingCommaSpec, hostileData))
+    const repairedArgs = JSON.parse(repairedInterpolated.elements.btn.props.args_json)
+    expect(repairedArgs).toEqual({
+      id: 'inc-1","role":"admin","injected":true,"x":"',
+      role: 'viewer',
+    })
+    expect('injected' in repairedArgs).toBe(false)
   })
 })
 
@@ -636,9 +662,10 @@ describe('Deck interactive json-render components isolation & L1 control/args ha
     document.body.innerHTML = ''
   })
 
-  it('rejects malformed or non-object args_json in parseActionArgs instead of silently falling back to {}', () => {
+  it('rejects malformed, empty, or non-object args_json in parseActionArgs instead of silently falling back to {}', () => {
     expect(parseActionArgs(undefined)).toEqual({ ok: true, args: {} })
-    expect(parseActionArgs('  ')).toEqual({ ok: true, args: {} })
+    expect(parseActionArgs('').ok).toBe(false)
+    expect(parseActionArgs('  ').ok).toBe(false)
     expect(parseActionArgs('{"a":1}')).toEqual({ ok: true, args: { a: 1 } })
     expect(parseActionArgs('{bad').ok).toBe(false)
     expect(parseActionArgs('[1,2]').ok).toBe(false)

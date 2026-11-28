@@ -658,7 +658,8 @@ const components: Components<typeof catalog> = {
 export function parseActionArgs(
   raw: string | undefined,
 ): { ok: true; args: Record<string, unknown> } | { ok: false; error: string } {
-  if (!raw || !raw.trim()) return { ok: true, args: {} }
+  if (raw === undefined) return { ok: true, args: {} }
+  if (!raw.trim()) return { ok: false, error: 'Invalid action args_json: expected a JSON object' }
   try {
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
