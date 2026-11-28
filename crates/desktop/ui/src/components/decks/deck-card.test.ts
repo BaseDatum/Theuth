@@ -10,6 +10,7 @@ vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<object>()),
   Link: ({ to, params, children, ...rest }: { to: string; params?: { id: string }; children: ReactNode }) =>
     h('a', { href: params ? to.replace('$id', params.id) : to, ...rest }, children),
+  useNavigate: () => vi.fn(),
 }))
 
 const liveStore = vi.hoisted(() => {
@@ -260,5 +261,151 @@ describe('whiteboard Deck card', () => {
       w: 560,
       h: 420,
     })
+  })
+
+  it('captures nodrag/nopan/nowheel and stops Enter/Delete/Backspace (while letting Escape bubble) when entered (H11)', async () => {
+    const { default: DeckCardBody } = await import('./DeckCardBody')
+    const windowKeys: string[] = []
+    const onWindowKeyDown = (e: KeyboardEvent) => {
+      windowKeys.push(e.key)
+    }
+    // Mirror Canvas.tsx:958 which listens on `window.addEventListener('keydown', ...)`
+    window.addEventListener('keydown', onWindowKeyDown)
+
+    try {
+      // Interactive (entered) mode
+      await act(async () => {
+        root.render(h(DeckCardBody, { deckId: 'deck-pulse-1', interactive: true, liveState: makeLiveState(null) }))
+      })
+      const wrapper = el.querySelector<HTMLElement>('[data-deck-card="deck-pulse-1"]')!
+      expect(wrapper.className).toContain('nodrag')
+      expect(wrapper.className).toContain('nopan')
+      expect(wrapper.className).toContain('nowheel')
+
+      const inner = wrapper.querySelector<HTMLElement>('[data-deck-view]')!
+      for (const key of ['Enter', 'Delete', 'Backspace', 'Escape']) {
+        await act(async () => {
+          inner.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+        })
+      }
+      expect(windowKeys).toEqual(['Escape'])
+
+      // Non-interactive (unentered) mode does not swallow keys or attach nodrag
+      windowKeys.length = 0
+      await act(async () => {
+        root.render(h(DeckCardBody, { deckId: 'deck-pulse-1', interactive: false, liveState: makeLiveState(null) }))
+      })
+      const passive = el.querySelector<HTMLElement>('[data-deck-card="deck-pulse-1"]')!
+      expect(passive.className).not.toContain('nodrag')
+      await act(async () => {
+        passive.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      })
+      expect(windowKeys).toEqual(['Enter'])
+    } finally {
+      window.removeEventListener('keydown', onWindowKeyDown)
+    }
+  })
+
+  it('renders CardSheet without duplicate title header (hideHeader) and validates Source::Deck control characters (Medium #11, #15)', async () => {
+    const { CardSheet } = await import('@/components/whiteboard/CardSheet')
+    const doc = new Y.Doc()
+    const cardId = addCard(doc, {
+      kind: 'deck',
+      title: 'Workspace Pulse (Example)',
+      x: 0,
+      y: 0,
+      w: 560,
+      h: 420,
+      source: { t: 'deck', deck: 'deck-pulse-1', section: 's1' },
+    })
+    const card = readBoard(doc).cards[cardId]!
+
+    await act(async () => {
+      root.render(
+        h(CardSheet, {
+          card,
+          phone: false,
+          blobUrl: async () => null,
+          onClose: () => {},
+          onSession: () => {},
+        }),
+      )
+    })
+    for (let i = 0; i < 40 && !el.querySelector('[data-deck-view]'); i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25))
+      })
+    }
+    expect(el.querySelector('[data-deck-view="deck-pulse-1"]')).not.toBeNull()
+    expect(el.querySelector('[data-deck-slim-toolbar]')).not.toBeNull()
+    // CardSheet owns the dialog <h2> title; DeckView suppresses its duplicate <h1>
+    expect(el.querySelectorAll('h1')).toHaveLength(0)
+
+    // Medium #15: readBoard rejects control chars / blank deck id and strips invalid optional section/snapshot_id
+    const badDoc = new Y.Doc()
+    addCard(badDoc, {
+      kind: 'deck',
+      title: 'Bad Deck',
+      x: 0,
+      y: 0,
+      w: 400,
+      h: 300,
+      source: { t: 'deck', deck: 'bad\nid' },
+    })
+    const cleanedId = addCard(badDoc, {
+      kind: 'deck',
+      title: 'Cleanable Deck',
+      x: 0,
+      y: 0,
+      w: 400,
+      h: 300,
+      source: { t: 'deck', deck: 'deck-ok', section: 'bad\x00sec', snapshot_id: 'snap-1' },
+    })
+    const parsed = readBoard(badDoc)
+    const badCard = Object.values(parsed.cards).find((c) => c.title === 'Bad Deck')!
+    expect(badCard.versions).toHaveLength(0)
+    expect(parsed.cards[cleanedId]!.versions[0]!.source).toEqual({
+      t: 'deck',
+      deck: 'deck-ok',
+      snapshot_id: 'snap-1',
+    })
+  })
+
+  it('shows Open in pane and non-destructive archive tooltip on selected Deck CardNode toolbar (Medium #11, Low)', async () => {
+    const HOST: CanvasHost = {
+      doc: 'wb-toolbar',
+      blobUrl: async () => null,
+      blobPut: async () => {},
+      capture: async () => null,
+      describePoint: async () => null,
+      liveBudget: 8,
+    }
+    const doc = new Y.Doc()
+    const cardId = addCard(doc, {
+      kind: 'deck',
+      title: 'Pulse Board Card',
+      x: 0,
+      y: 0,
+      w: 560,
+      h: 420,
+      source: { t: 'deck', deck: 'deck-pulse-1', section: 's1' },
+    })
+    const store = createWhiteboardStore()
+    store.getState().set({ selection: [cardId] })
+
+    await act(async () => {
+      root.render(h(Canvas, { provider: { doc } as never, store, host: HOST }))
+    })
+    for (let i = 0; i < 40 && !document.body.querySelector('[role="toolbar"]'); i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25))
+      })
+    }
+    const toolbar = document.body.querySelector('[role="toolbar"]')
+    expect(toolbar).not.toBeNull()
+    expect(toolbar!.textContent).toContain('Open in pane')
+    const archiveBtn = toolbar!.querySelector<HTMLButtonElement>('button[aria-label="Remove from board (the deck stays)"]')
+    expect(archiveBtn).not.toBeNull()
+    expect(archiveBtn!.getAttribute('title')).toBe('Remove from board (the deck stays)')
   })
 })

@@ -118,11 +118,13 @@ export type LiveFrame = {
   emitted_at: string
 }
 
+export type ToolRisk = 'read_only' | 'mutating' | 'destructive'
+
 export type PendingApproval = {
   approval_id: string
   session_id: string
   tool: string
-  risk: string
+  risk: ToolRisk
   args: unknown
 }
 
@@ -144,17 +146,53 @@ export type DeckRuntimeStatus = {
   pending_approval?: PendingApproval | null
 }
 
+export type InteractErrorCode =
+  | 'no_approved_script'
+  | 'revision_mismatch'
+  | 'undeclared_action'
+  | 'invalid_args'
+  | 'busy'
+  | 'timed_out'
+  | 'waiting_approval'
+  | 'paused'
+  | 'execution_error'
+  | 'conflict'
+
 export type InteractResponse = {
   request_id: string
   action: string
   ok: boolean
   result?: unknown
   error?: string | null
-  error_code?: string | null
+  error_code?: InteractErrorCode | null
   private: boolean
   cached: boolean
   run_epoch: number
   script_rev: number
+}
+
+/** Build `/decks/<encodedId>` while preserving optional `?section` and `?snapshot` query params. */
+export function deckRoutePath(deckId: string, section?: string | null, snapshotId?: string | null): string {
+  const base = `/decks/${encodeURIComponent(deckId)}`
+  const params = new URLSearchParams()
+  if (section) params.set('section', section)
+  if (snapshotId) params.set('snapshot', snapshotId)
+  const qs = params.toString()
+  return qs ? `${base}?${qs}` : base
+}
+
+/** Safely convert an epoch-ms timestamp to ISO-8601; returns `null` for non-finite or out-of-range values instead of throwing `RangeError`. */
+export function safeIsoTimestamp(ms: unknown): string | null {
+  if (ms === null || ms === undefined || ms === '') return null
+  const n = typeof ms === 'number' ? ms : Number(ms)
+  if (!Number.isFinite(n)) return null
+  const d = new Date(n)
+  if (Number.isNaN(d.getTime())) return null
+  try {
+    return d.toISOString()
+  } catch {
+    return null
+  }
 }
 
 export type DeckSummary = {

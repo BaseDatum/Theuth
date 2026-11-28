@@ -1,15 +1,143 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Layers, Plus, Sparkles } from 'lucide-react'
+import { Layers, MoreHorizontal, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { type KeyboardEvent, useState } from 'react'
+import { useViewDrag } from '@/components/chat/Panes'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
+import { notify } from '@/lib/notify'
 import { cn } from '@/lib/utils'
-import { useCreateDeck, useDecksList } from './useDeckLive'
+import { useConnection } from '@/store/connection'
+import { type DeckSummary, safeIsoTimestamp } from './types'
+import { decksKey, useCreateDeck, useDecksList } from './useDeckLive'
 
 export const DECKS_BLURB =
   'Collaborative live dashboards with independent sections, review-gated Monty streams, and interactive controls.'
+
+function DeckRow({ d }: { d: DeckSummary }) {
+  const api = useConnection((s) => s.api)
+  const qc = useQueryClient()
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const title = d.title || 'Untitled Deck'
+  const drag = useViewDrag(`/decks/${encodeURIComponent(d.id)}`, title)
+  const iso = safeIsoTimestamp(d.updated_ms)
+
+  const rename = useMutation({
+    mutationFn: async (t: string) => {
+      if (!api) throw new Error('Not connected')
+      await api.doc_rename(d.id, t)
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: decksKey }),
+    onError: (e) => notify.error(e instanceof Error ? e.message : String(e)),
+  })
+
+  const del = useMutation({
+    mutationFn: async () => {
+      if (!api) throw new Error('Not connected')
+      await api.doc_delete(d.id)
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: decksKey })
+      notify(`Deleted ${title}`)
+    },
+    onError: (e) => notify.error(e instanceof Error ? e.message : String(e)),
+  })
+
+  const commit = () => {
+    const t = renaming?.trim()
+    setRenaming(null)
+    if (t && t !== d.title) rename.mutate(t)
+  }
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') e.currentTarget.blur()
+    else if (e.key === 'Escape') {
+      setRenaming(null)
+      e.currentTarget.blur()
+    }
+  }
+
+  return (
+    <li className="group flex items-center gap-2 rounded-[10px] px-2.5 hover:bg-layer-2">
+      <Layers className="size-4 shrink-0 text-fg-tertiary" />
+      {renaming !== null ? (
+        <input
+          autoFocus
+          aria-label="Deck title"
+          className="min-w-0 flex-1 bg-transparent py-2.5 text-sm outline-none"
+          value={renaming}
+          onChange={(e) => setRenaming(e.target.value)}
+          onBlur={commit}
+          onKeyDown={onKeyDown}
+        />
+      ) : (
+        <Link
+          to="/decks/$id"
+          params={{ id: d.id }}
+          {...drag}
+          className="flex min-w-0 flex-1 items-center gap-2.5 py-2.5 text-sm"
+          data-deck-row={d.id}
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="truncate font-medium">{title}</span>
+              <span
+                className={cn(
+                  'rounded-full px-1.5 py-0.5 text-[10px]',
+                  d.state === 'streaming'
+                    ? 'bg-success/15 text-success'
+                    : d.state === 'waiting_approval' || d.pending_rev
+                      ? 'bg-warning/15 text-warning'
+                      : 'bg-layer-2 text-fg-tertiary',
+                )}
+              >
+                {d.pending_rev && !d.active_rev ? 'pending review' : d.state}
+              </span>
+              {d.stale && <span className="text-[10px] text-warning">stale</span>}
+            </div>
+            {d.description && (
+              <p className="truncate text-xs text-fg-tertiary">{d.description}</p>
+            )}
+          </div>
+          <span className="shrink-0 text-xs text-fg-tertiary">
+            {d.section_count} {d.section_count === 1 ? 'section' : 'sections'}
+          </span>
+          {iso && (
+            <span className="shrink-0 text-xs text-fg-tertiary">
+              {ago(iso)}
+            </span>
+          )}
+        </Link>
+      )}
+      {api && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Actions for ${title}`}
+              className="opacity-0 group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100"
+            >
+              <MoreHorizontal />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => setRenaming(d.title)}>
+              <Pencil /> Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" disabled={del.isPending} onSelect={() => del.mutate()}>
+              <Trash2 /> Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </li>
+  )
+}
 
 export function DecksList() {
   const navigate = useNavigate()
@@ -73,47 +201,13 @@ export function DecksList() {
               </div>
             </div>
           )}
-          <ul className="space-y-1">
-            {list.data?.map((d) => (
-              <li key={d.id} className="rounded-[10px] px-2.5 hover:bg-layer-2">
-                <Link
-                  to="/decks/$id"
-                  params={{ id: d.id }}
-                  className="flex min-w-0 items-center gap-2.5 py-2.5 text-sm"
-                  data-deck-row={d.id}
-                >
-                  <Layers className="size-4 shrink-0 text-fg-tertiary" />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate font-medium">{d.title || 'Untitled Deck'}</span>
-                      <span
-                        className={cn(
-                          'rounded-full px-1.5 py-0.5 text-[10px]',
-                          d.state === 'streaming'
-                            ? 'bg-success/15 text-success'
-                            : d.state === 'waiting_approval' || d.pending_rev
-                              ? 'bg-warning/15 text-warning'
-                              : 'bg-layer-2 text-fg-tertiary',
-                        )}
-                      >
-                        {d.pending_rev && !d.active_rev ? 'pending review' : d.state}
-                      </span>
-                      {d.stale && <span className="text-[10px] text-warning">stale</span>}
-                    </div>
-                    {d.description && (
-                      <p className="truncate text-xs text-fg-tertiary">{d.description}</p>
-                    )}
-                  </div>
-                  <span className="shrink-0 text-xs text-fg-tertiary">
-                    {d.section_count} {d.section_count === 1 ? 'section' : 'sections'}
-                  </span>
-                  <span className="shrink-0 text-xs text-fg-tertiary">
-                    {ago(new Date(Number(d.updated_ms)).toISOString())}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
+          {list.data && list.data.length > 0 && (
+            <ul className="space-y-1">
+              {list.data.map((d) => (
+                <DeckRow key={d.id} d={d} />
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </article>

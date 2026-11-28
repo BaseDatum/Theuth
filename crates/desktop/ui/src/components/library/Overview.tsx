@@ -5,6 +5,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEffect } from 'react'
+import { decksKey } from '@/components/decks/useDeckLive'
+import type { DeckSummary } from '@/components/decks/types'
 import { useNotebooks } from '@/components/notebooks/useNotebooks'
 import { useNotes } from '@/components/notes/useNotes'
 import { useChecklistShown, useGuidesHere } from '@/components/onboarding/visibility'
@@ -22,6 +24,7 @@ export const LIBRARY_PURPOSE: Readonly<Partial<Record<Tab, string>>> = {
   '/knowledge': 'What agents learned, as linked notes',
   '/skills': 'Playbooks agents follow for a task',
   '/notes': 'Your notes and boards, shared with agents',
+  '/decks': 'Live dashboards with review-gated streams',
   '/notebooks': 'Sources and chats around one topic',
   '/meetings': 'Recordings, transcripts and briefs',
   '/secrets': 'Keys and tokens agents may use',
@@ -38,6 +41,7 @@ function useCounts(fetch: boolean): Partial<Record<Tab, number>> {
   const artifacts = useQuery({ queryKey: queryKeys.artifacts, queryFn: () => api.list_artifacts(null, null), enabled: false }).data
   const knowledge = useQuery({ queryKey: queryKeys.knowledgeList, queryFn: () => api.knowledge_list(null, null, null, 100000), enabled: false }).data
   const secrets = useQuery({ queryKey: queryKeys.secrets, queryFn: () => api.list_secrets(), enabled: false }).data
+  const decks = useQuery<DeckSummary[]>({ queryKey: decksKey, queryFn: async () => [], enabled: false }).data
   const skills = useQuery({ enabled: fetch && canSkills, queryKey: queryKeys.skills, queryFn: () => api.list_skills() }).data
   const notes = useNotes(fetch).data
   const notebooks = useNotebooks(false, fetch).data
@@ -45,6 +49,7 @@ function useCounts(fetch: boolean): Partial<Record<Tab, number>> {
     '/artifacts': artifacts?.length,
     '/knowledge': knowledge?.length,
     '/secrets': secrets?.secrets.length,
+    '/decks': decks?.length,
     '/skills': skills?.length,
     '/notes': notes?.length,
     '/notebooks': notebooks?.length,

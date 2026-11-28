@@ -457,6 +457,94 @@ describe('DeckHtmlSection Tauri pagePut lifecycle & double-execution prevention 
     expect(iframe.hasAttribute('src')).toBe(false)
     expect(iframe.getAttribute('srcdoc')).toContain("default-src 'none'")
   })
+
+  it('delivers data only after matching-nonce opaque-origin ready and rotates nonce on html edits', async () => {
+    tauriEnv.tauri = false
+    const onAction = vi.fn()
+    await act(async () => {
+      root.render(
+        h(DeckHtmlSection, {
+          sectionId: 'sec-live',
+          title: 'Live Viz',
+          html: '<p>v1</p>',
+          data: { count: 42 },
+          onAction,
+        }),
+      )
+    })
+
+    const iframe1 = el.querySelector('iframe')!
+    const nonceMatch1 = /var NONCE = "([^"]+)"/.exec(iframe1.getAttribute('srcdoc') ?? '')
+    expect(nonceMatch1).not.toBeNull()
+    const nonce1 = nonceMatch1![1]!
+
+    const makeMsg = (source: unknown, origin: string, data: unknown) => {
+      const ev = new MessageEvent('message', { origin, data })
+      Object.defineProperty(ev, 'source', { value: source, configurable: true })
+      return ev
+    }
+
+    const postMessage1 = vi.fn()
+    Object.defineProperty(iframe1, 'contentWindow', { value: { postMessage: postMessage1 }, configurable: true })
+
+    // Non-opaque origin is ignored by the mounted window listener
+    await act(async () => {
+      window.dispatchEvent(
+        makeMsg(iframe1.contentWindow, 'https://evil.example', {
+          channel: DECK_BRIDGE_CHANNEL,
+          nonce: nonce1,
+          kind: 'ready',
+        }),
+      )
+    })
+    expect(postMessage1).not.toHaveBeenCalled()
+
+    // Opaque 'null' origin with matching nonce triggers ready + data delivery
+    await act(async () => {
+      window.dispatchEvent(
+        makeMsg(iframe1.contentWindow, 'null', {
+          channel: DECK_BRIDGE_CHANNEL,
+          nonce: nonce1,
+          kind: 'ready',
+        }),
+      )
+    })
+    expect(postMessage1).toHaveBeenCalledWith(
+      { channel: DECK_BRIDGE_CHANNEL, nonce: nonce1, kind: 'data', payload: { count: 42 } },
+      '*',
+    )
+
+    // Updating html rotates the nonce and ignores messages bearing the old nonce
+    await act(async () => {
+      root.render(
+        h(DeckHtmlSection, {
+          sectionId: 'sec-live',
+          title: 'Live Viz',
+          html: '<p>v2</p>',
+          data: { count: 99 },
+          onAction,
+        }),
+      )
+    })
+    const iframe2 = el.querySelector('iframe')!
+    const nonceMatch2 = /var NONCE = "([^"]+)"/.exec(iframe2.getAttribute('srcdoc') ?? '')
+    expect(nonceMatch2).not.toBeNull()
+    const nonce2 = nonceMatch2![1]!
+    expect(nonce2).not.toBe(nonce1)
+
+    const postMessage2 = vi.fn()
+    Object.defineProperty(iframe2, 'contentWindow', { value: { postMessage: postMessage2 }, configurable: true })
+    await act(async () => {
+      window.dispatchEvent(
+        makeMsg(iframe2.contentWindow, 'null', {
+          channel: DECK_BRIDGE_CHANNEL,
+          nonce: nonce1,
+          kind: 'ready',
+        }),
+      )
+    })
+    expect(postMessage2).not.toHaveBeenCalled()
+  })
 })
 
 describe('DeckSurfaceSection prototype safety & ActionButton args_json injection defense (H8)', () => {

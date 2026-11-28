@@ -181,7 +181,7 @@ export const excerptProps = z.strictObject({
   symbol: str.optional(),
 })
 
-/** The 57 components (v0 + 123's 19) with their zod prop schemas; containers declare `slots: ['default']`. */
+/** The 60 components (v0 + 123's 19 + 229's 3 Deck interactive) with their zod prop schemas; containers declare `slots: ['default']`. */
 export const catalog = defineCatalog(schema, {
   components: {
     Card: { props: z.strictObject({ title: str.optional(), description: str.optional() }), slots: ['default'] },

@@ -123,7 +123,7 @@ function Body({ card, source, blobUrl, onSession }: { card: Card; source: Source
       return (
         <div className="relative h-full">
           <Suspense fallback={null}>
-            <DeckSheetView deckId={source.deck} section={source.section} snapshotId={source.snapshot_id} />
+            <DeckSheetView deckId={source.deck} section={source.section} snapshotId={source.snapshot_id} hideHeader />
           </Suspense>
         </div>
       )

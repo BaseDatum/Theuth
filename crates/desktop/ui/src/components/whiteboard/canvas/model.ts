@@ -152,11 +152,14 @@ function readSource(v: unknown, kind: CardKind): Source | null {
     case 'view': return str(s.path) !== undefined ? { t: 'view', path: s.path as string } : null
     case 'task': return str(s.task) ? { t: 'task', task: s.task as string } : null
     case 'deck': {
-      const deck = str(s.deck)
-      if (!deck) return null
+      const hasCtrl = (v: string) => /[\x00-\x1f\x7f]/.test(v)
+      const deck = str(s.deck)?.trim()
+      if (!deck || hasCtrl(deck)) return null
       const out: Extract<Source, { t: 'deck' }> = { t: 'deck', deck }
-      if (str(s.section)) out.section = s.section as string
-      if (str(s.snapshot_id)) out.snapshot_id = s.snapshot_id as string
+      const section = str(s.section)?.trim()
+      if (section && !hasCtrl(section)) out.section = section
+      const snapshotId = str(s.snapshot_id)?.trim()
+      if (snapshotId && !hasCtrl(snapshotId)) out.snapshot_id = snapshotId
       return out
     }
   }

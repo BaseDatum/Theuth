@@ -279,7 +279,7 @@ export function LiveBody({ card, source, editing }: { card: Card; source: Source
       // Live Deck card by reference only: streams frames/snapshots without mutating the whiteboard Y.Doc.
       return (
         <Suspense fallback={<Pending />}>
-          <DeckCardBody deckId={source.deck} section={source.section} snapshotId={source.snapshot_id} />
+          <DeckCardBody deckId={source.deck} section={source.section} snapshotId={source.snapshot_id} interactive={editing} />
         </Suspense>
       )
   }

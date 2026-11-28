@@ -15,5 +15,5 @@ export const Route = createFileRoute('/decks_/$id')({
 function Page() {
   const { id } = Route.useParams()
   const { section, snapshot } = Route.useSearch()
-  return <DeckView deckId={id} section={section} snapshotId={snapshot} />
+  return <DeckView key={id} deckId={id} section={section} snapshotId={snapshot} />
 }

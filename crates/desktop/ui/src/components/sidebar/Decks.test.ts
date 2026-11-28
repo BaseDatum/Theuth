@@ -114,4 +114,74 @@ describe('Decks sidebar rail & popover', () => {
     expect(() => deckIdFromPath('/decks/%E0%A4%A')).not.toThrow()
     expect(deckIdFromPath('/decks/%E0%A4%A')).toBe('%E0%A4%A')
   })
+
+  it('omits empty <ul>, shows loading/error states, handles invalid timestamps, and wraps ArrowDown/ArrowUp/Home/End focus (Medium #10)', async () => {
+    // Empty list omits <ul> and displays loading/error states when applicable
+    const emptyHtml = renderToString(
+      h(DecksMenu, { rows: [], isPending: true, onNew: () => {}, onPick: () => {} }),
+    )
+    expect(emptyHtml).not.toContain('<ul')
+    expect(emptyHtml).toContain('data-decks-loading')
+
+    const errHtml = renderToString(
+      h(DecksMenu, { rows: [], isError: true, errorMessage: 'RPC offline', onNew: () => {}, onPick: () => {} }),
+    )
+    expect(errHtml).not.toContain('<ul')
+    expect(errHtml).toContain('RPC offline')
+
+    // Invalid updated_ms does not throw RangeError
+    const badTsRow: DeckSummary = { ...deck(0), updated_ms: Number.NaN }
+    expect(() =>
+      renderToString(h(DecksMenu, { rows: [badTsRow], onNew: () => {}, onPick: () => {} })),
+    ).not.toThrow()
+
+    // Mounted keyboard navigation across [data-rail-item] rows
+    await act(async () => {
+      root.render(
+        h(DecksMenu, {
+          rows: [deck(0), deck(1)],
+          onNew: () => {},
+          onNewExample: () => {},
+          onPick: () => {},
+        }),
+      )
+    })
+    const menu = el.querySelector<HTMLElement>('[data-decks-menu]')!
+    const items = [...menu.querySelectorAll<HTMLElement>('[data-rail-item]')]
+    expect(items.length).toBe(5) // New, Example, deck-0, deck-1, All decks
+
+    items[0]!.focus()
+    expect(document.activeElement).toBe(items[0])
+
+    await act(async () => {
+      items[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+    })
+    expect(document.activeElement).toBe(items[1])
+
+    await act(async () => {
+      items[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }))
+    })
+    expect(document.activeElement).toBe(items[items.length - 1])
+
+    // ArrowDown from last wraps to first
+    await act(async () => {
+      items[items.length - 1]!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }),
+      )
+    })
+    expect(document.activeElement).toBe(items[0])
+
+    // ArrowUp from first wraps to last
+    await act(async () => {
+      items[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }))
+    })
+    expect(document.activeElement).toBe(items[items.length - 1])
+
+    await act(async () => {
+      items[items.length - 1]!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }),
+      )
+    })
+    expect(document.activeElement).toBe(items[0])
+  })
 })

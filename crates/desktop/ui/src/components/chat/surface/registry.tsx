@@ -682,9 +682,28 @@ function DeckActionButtonView({
     confirm?: string
   }
 }) {
+  const snap = useSnapshot()
   const deck = useDeckInteractContext()
   const inert = deck === null
   const parsed = parseActionArgs(props.args_json)
+  if (snap) {
+    return (
+      <span
+        className={cn(
+          'inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-medium',
+          props.tone === 'danger'
+            ? 'border-destructive/40 bg-destructive/10 text-destructive'
+            : props.tone === 'primary'
+              ? 'border-fg-accent/40 bg-fg-accent/10 text-fg-primary'
+              : 'border-border-subtle bg-layer-1 text-fg-secondary',
+        )}
+        data-deck-action={props.action}
+        data-deck-snapshot="true"
+      >
+        {props.label}
+      </span>
+    )
+  }
   const hasScript = Boolean(deck?.scriptRev)
   const pinned = Boolean(deck?.pinned)
   const disabled = inert || !hasScript || pinned || !parsed.ok || Boolean(props.disabled) || Boolean(deck?.busy)
@@ -729,19 +748,42 @@ function DeckStreamControlsView({
 }: {
   props: { title?: string; show_run_once?: boolean }
 }) {
+  const snap = useSnapshot()
   const deck = useDeckInteractContext()
   const inert = deck === null
   const state = deck?.runtimeState ?? 'stopped'
+  if (snap) {
+    return (
+      <div
+        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-layer-1 px-3 py-2 text-xs"
+        data-deck-stream-controls
+        data-deck-snapshot="true"
+      >
+        <span className="font-medium text-fg-primary">{props.title || 'Stream Runtime'}</span>
+        <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] font-medium capitalize text-fg-secondary">
+          {state.replace('_', ' ')}
+        </span>
+      </div>
+    )
+  }
   const busy = Boolean(deck?.busy)
   const pinned = Boolean(deck?.pinned)
   const hasScript = Boolean(deck?.scriptRev)
   const controls = deckControlAvailability(state, hasScript)
   const locked = inert || busy || pinned
+  const lockTitle = inert
+    ? 'Stream controls are inactive outside a Deck'
+    : pinned
+      ? 'Stream controls are disabled while viewing a pinned snapshot'
+      : !hasScript
+        ? 'Approve a Deck script before controlling the stream'
+        : undefined
   return (
     <div
       className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-layer-1 px-3 py-2 text-xs"
       data-deck-stream-controls
       data-deck-inert={inert ? 'true' : undefined}
+      title={lockTitle}
     >
       <div className="flex items-center gap-2">
         <span className="font-medium text-fg-primary">{props.title || 'Stream Runtime'}</span>
@@ -771,6 +813,7 @@ function DeckStreamControlsView({
             variant="default"
             data-deck-control="resume"
             disabled={locked || !controls.resume}
+            title={lockTitle ?? 'Resume stream'}
             onClick={() => deck && void deck.controlRuntime('resume')}
           >
             <Play className="mr-1 size-3" /> Resume
@@ -782,6 +825,7 @@ function DeckStreamControlsView({
             variant="outline"
             data-deck-control="pause"
             disabled={locked || !controls.pause}
+            title={lockTitle ?? 'Pause stream'}
             onClick={() => deck && void deck.controlRuntime('pause')}
           >
             <Pause className="mr-1 size-3" /> Pause
@@ -793,6 +837,7 @@ function DeckStreamControlsView({
             variant="default"
             data-deck-control="start"
             disabled={locked || !controls.start}
+            title={lockTitle ?? 'Start stream'}
             onClick={() => deck && void deck.controlRuntime('start')}
           >
             <Play className="mr-1 size-3" /> Start
@@ -804,6 +849,7 @@ function DeckStreamControlsView({
           variant="outline"
           data-deck-control="stop"
           disabled={locked || !controls.stop}
+          title={lockTitle ?? 'Stop stream'}
           onClick={() => deck && void deck.controlRuntime('stop')}
         >
           <Square className="mr-1 size-3" /> Stop
@@ -815,6 +861,7 @@ function DeckStreamControlsView({
             variant="ghost"
             data-deck-control="run_once"
             disabled={locked || !controls.runOnce}
+            title={lockTitle ?? 'Run script once'}
             onClick={() => deck && void deck.controlRuntime('run_once')}
           >
             <RefreshCw className="mr-1 size-3" /> Run once
@@ -830,6 +877,7 @@ function DeckResultBannerView({
 }: {
   props: { title?: string; empty_text?: string; action_filter?: string }
 }) {
+  const snap = useSnapshot()
   const deck = useDeckInteractContext()
   const inert = deck === null
   const result = deck?.lastResult
@@ -838,7 +886,10 @@ function DeckResultBannerView({
     <div
       className="rounded-lg border border-border-subtle bg-layer-1 px-3 py-2 text-xs"
       data-deck-result-banner
-      data-deck-inert={inert ? 'true' : undefined}
+      data-deck-inert={!snap && inert ? 'true' : undefined}
+      data-deck-snapshot={snap ? 'true' : undefined}
+      role={!snap && !inert ? 'status' : undefined}
+      aria-live={!snap && !inert ? 'polite' : undefined}
     >
       <div className="mb-1 flex items-center justify-between gap-2">
         <span className="font-medium text-fg-primary">{props.title || 'Action Result'}</span>
@@ -851,7 +902,11 @@ function DeckResultBannerView({
       </div>
       {!matches ? (
         <div className="text-fg-tertiary">
-          {inert ? 'Deck action results are inactive outside a Deck.' : props.empty_text || 'Run an action to see your private result here.'}
+          {snap
+            ? props.empty_text || 'Action results appear here in a live Deck.'
+            : inert
+              ? 'Deck action results are inactive outside a Deck.'
+              : props.empty_text || 'Run an action to see your private result here.'}
         </div>
       ) : result.ok ? (
         <pre className="m-0 max-h-40 overflow-auto rounded bg-layer-2 p-2 font-mono text-[11px] text-fg-primary">

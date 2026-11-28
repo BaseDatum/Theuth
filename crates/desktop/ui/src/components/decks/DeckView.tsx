@@ -2,11 +2,13 @@ import { Link } from '@tanstack/react-router'
 import {
   AlertTriangle,
   Archive,
+  ArchiveRestore,
   ArrowDown,
   ArrowUp,
   Check,
   Code2,
   ExternalLink,
+  Focus,
   History,
   Layers,
   Pause,
@@ -20,14 +22,22 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { DeckInteractContextValue } from '@/components/chat/surface/deck-context'
+import { SidebarLead } from '@/components/nav/SectionBand'
+import { useInsideTile } from '@/components/tiles/tile-context'
 import { Button } from '@/components/ui/button'
+import { useOptionalSidebar } from '@/components/ui/sidebar'
+import { isMacDesktop } from '@/lib/hotkeys'
 import { notify } from '@/lib/notify'
-import { isPopout, openPopout } from '@/lib/popout'
+import { canPopout, isPopout, openPopout } from '@/lib/popout'
+import { cornerPad } from '@/lib/sidebar-corner'
 import { cn } from '@/lib/utils'
+import { RpcError } from '@/rpc/client'
 import { DeckHtmlSection } from './DeckHtmlSection'
 import { DeckSurfaceSection, lookupPath } from './DeckSurfaceSection'
 import {
   deckControlAvailability,
+  deckRoutePath,
+  safeIsoTimestamp,
   type DeckSection,
   type RuntimeState,
   type ScriptRevision,
@@ -46,10 +56,23 @@ const STATE_STYLE: Record<RuntimeState, string> = {
   error: 'bg-danger/15 text-danger',
 }
 
-function sectionPayload(activeData: unknown, dataKey?: string | null): unknown {
+/**
+ * Extracts a section's subscribed slice from live/snapshot `activeData`.
+ * When `dataKey` is explicitly set and absent in `activeData`, returns `null` rather than
+ * leaking the entire Deck payload into a scoped section.
+ */
+export function sectionPayload(activeData: unknown, dataKey?: string | null): unknown {
   if (!dataKey) return activeData
   const sub = lookupPath(activeData, dataKey)
-  return sub === undefined ? activeData : sub
+  return sub === undefined ? null : sub
+}
+
+function isConflictError(err: unknown): boolean {
+  if (err instanceof RpcError && err.code === -32010) return true
+  if (typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === -32010) {
+    return true
+  }
+  return false
 }
 
 function formatScriptSchedule(script: ScriptRevision): string {
@@ -57,6 +80,11 @@ function formatScriptSchedule(script: ScriptRevision): string {
   if (script.interval_secs != null) parts.push(`every ${script.interval_secs}s`)
   if (script.schedule_cron) parts.push(`cron: ${script.schedule_cron}`)
   return parts.length > 0 ? parts.join(' · ') : 'manual / on-demand'
+}
+
+function formatHistoryTime(at: number): string {
+  const iso = safeIsoTimestamp(at)
+  return iso ? new Date(iso).toLocaleTimeString() : '—'
 }
 
 function SectionItem({
@@ -85,6 +113,8 @@ function SectionItem({
   const [draftTitle, setDraftTitle] = useState(section.title)
   const [draftContent, setDraftContent] = useState(section.content)
   const [saving, setSaving] = useState(false)
+  const [conflictMessage, setConflictMessage] = useState<string | null>(null)
+  const [mutating, setMutating] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [history, setHistory] = useState<SectionRevision[] | null>(null)
 
@@ -96,17 +126,27 @@ function SectionItem({
     setEditBaseRev(section.rev)
     setDraftTitle(section.title)
     setDraftContent(section.content)
+    setConflictMessage(null)
     setEditing(true)
   }
 
   const cancelEdit = () => {
     setEditing(false)
     setEditBaseRev(null)
+    setConflictMessage(null)
   }
 
-  const saveEdit = async () => {
+  const reloadLatestIntoEditor = () => {
+    setEditBaseRev(section.rev)
+    setDraftTitle(section.title)
+    setDraftContent(section.content)
+    setConflictMessage(null)
+  }
+
+  const saveEdit = async (overrideBaseRev?: number) => {
     setSaving(true)
-    const baseRev = editBaseRev ?? section.rev
+    setConflictMessage(null)
+    const baseRev = overrideBaseRev ?? editBaseRev ?? section.rev
     try {
       await state.sectionPatch({
         section_id: section.id,
@@ -117,26 +157,56 @@ function SectionItem({
       })
       setEditing(false)
       setEditBaseRev(null)
+      setConflictMessage(null)
     } catch (e) {
-      notify.error(e instanceof Error ? e.message : String(e))
+      if (isConflictError(e)) {
+        setConflictMessage(
+          e instanceof Error
+            ? e.message
+            : `Section changed on the server while you were editing rev ${baseRev}.`,
+        )
+        void state.refetch()
+      } else {
+        notify.error(e instanceof Error ? e.message : String(e))
+      }
     } finally {
       setSaving(false)
     }
   }
 
   const handleMove = async (toIndex: number) => {
+    if (mutating) return
+    setMutating(true)
     try {
       await state.sectionMove(section.id, toIndex)
     } catch (e) {
       notify.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setMutating(false)
     }
   }
 
   const handleArchive = async () => {
+    if (mutating) return
+    setMutating(true)
     try {
       await state.sectionArchive(section.id, true, section.rev)
     } catch (e) {
       notify.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  const handleFocus = async () => {
+    if (mutating) return
+    setMutating(true)
+    try {
+      await state.focusSection(focused ? null : section.id)
+    } catch (e) {
+      notify.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setMutating(false)
     }
   }
 
@@ -180,6 +250,19 @@ function SectionItem({
           <div className="flex items-center gap-0.5">
             <button
               type="button"
+              aria-label={focused ? `Unfocus ${section.title}` : `Focus ${section.title}`}
+              aria-pressed={focused}
+              disabled={mutating}
+              className={cn(
+                'rounded p-1 hover:bg-layer-2 hover:text-fg-primary disabled:opacity-40',
+                focused ? 'text-fg-accent' : 'text-fg-tertiary',
+              )}
+              onClick={() => void handleFocus()}
+            >
+              <Focus className="size-3.5" />
+            </button>
+            <button
+              type="button"
               aria-label={`Edit ${section.title}`}
               className="rounded p-1 text-fg-tertiary hover:bg-layer-2 hover:text-fg-primary"
               onClick={editing ? cancelEdit : startEdit}
@@ -198,7 +281,8 @@ function SectionItem({
               <button
                 type="button"
                 aria-label={`Move ${section.title} up`}
-                className="rounded p-1 text-fg-tertiary hover:bg-layer-2 hover:text-fg-primary"
+                disabled={mutating}
+                className="rounded p-1 text-fg-tertiary hover:bg-layer-2 hover:text-fg-primary disabled:opacity-40"
                 onClick={() => void handleMove(index - 1)}
               >
                 <ArrowUp className="size-3.5" />
@@ -208,7 +292,8 @@ function SectionItem({
               <button
                 type="button"
                 aria-label={`Move ${section.title} down`}
-                className="rounded p-1 text-fg-tertiary hover:bg-layer-2 hover:text-fg-primary"
+                disabled={mutating}
+                className="rounded p-1 text-fg-tertiary hover:bg-layer-2 hover:text-fg-primary disabled:opacity-40"
                 onClick={() => void handleMove(index + 1)}
               >
                 <ArrowDown className="size-3.5" />
@@ -217,7 +302,8 @@ function SectionItem({
             <button
               type="button"
               aria-label={`Archive ${section.title}`}
-              className="rounded p-1 text-fg-tertiary hover:bg-layer-2 hover:text-danger"
+              disabled={mutating}
+              className="rounded p-1 text-fg-tertiary hover:bg-layer-2 hover:text-danger disabled:opacity-40"
               onClick={() => void handleArchive()}
             >
               <Archive className="size-3.5" />
@@ -228,10 +314,38 @@ function SectionItem({
 
       {editing ? (
         <div className="space-y-2">
-          {editHasRemoteChange && (
-            <div className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] text-warning">
-              Section updated concurrently to rev {section.rev} while you were editing rev {editBaseRev}. Saving will
-              verify against rev {editBaseRev}.
+          {(conflictMessage || editHasRemoteChange) && (
+            <div
+              className="space-y-1.5 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-[11px] text-warning"
+              data-deck-edit-conflict
+            >
+              <p>
+                {conflictMessage ??
+                  `Section updated concurrently to rev ${section.rev} while you were editing rev ${editBaseRev}. Saving will verify against rev ${editBaseRev}.`}
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-deck-conflict-reload
+                  disabled={saving}
+                  onClick={reloadLatestIntoEditor}
+                >
+                  Reload latest (rev {section.rev})
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  data-deck-conflict-overwrite
+                  disabled={saving}
+                  onClick={() => {
+                    setEditBaseRev(section.rev)
+                    void saveEdit(section.rev)
+                  }}
+                >
+                  Overwrite with my changes
+                </Button>
+              </div>
             </div>
           )}
           <input
@@ -289,7 +403,7 @@ function SectionItem({
                   <span>
                     <strong className="text-fg-primary">r{h.rev}</strong> · {h.summary} ({h.by})
                   </span>
-                  <span>{new Date(h.at).toLocaleTimeString()}</span>
+                  <span>{formatHistoryTime(h.at)}</span>
                 </li>
               ))}
           </ul>
@@ -305,8 +419,10 @@ export type DeckViewProps = {
   section?: string
   /** Optional pinned durable snapshot id (used by whiteboard cards). */
   snapshotId?: string
-  /** Compact embedded mode (e.g., whiteboard card or sheet). */
+  /** Compact embedded mode (e.g., whiteboard card). */
   embedded?: boolean
+  /** Omit the full-page title bar (used inside `CardSheet`, which supplies its own header). */
+  hideHeader?: boolean
   /** Optional pre-supplied live state (used in unit tests). */
   liveState?: DeckLiveState
 }
@@ -315,17 +431,30 @@ export type DeckViewProps = {
  * Shared collaborative Deck renderer used by both the full-page `/decks/$id` route
  * and embedded whiteboard Deck cards.
  */
-export function DeckView({ deckId, section, snapshotId, embedded = false, liveState }: DeckViewProps) {
+export function DeckView({
+  deckId,
+  section,
+  snapshotId,
+  embedded = false,
+  hideHeader = false,
+  liveState,
+}: DeckViewProps) {
   const hookState = useDeckLive(liveState ? '' : deckId, snapshotId)
   const state = liveState ?? hookState
+  const sidebar = useOptionalSidebar()
+  const insideTile = useInsideTile()
+  const mac = isMacDesktop()
 
   const [showScript, setShowScript] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
   const [newKind, setNewKind] = useState<SectionKind>('note')
   const [newTitle, setNewTitle] = useState('')
   const [newSpan, setNewSpan] = useState(6)
   const [newContent, setNewContent] = useState('')
   const [scriptActionBusy, setScriptActionBusy] = useState(false)
+  const [approvalBusy, setApprovalBusy] = useState(false)
+  const [restoringId, setRestoringId] = useState<string | null>(null)
 
   const detail = state.detail
   const rt = state.runtime
@@ -349,6 +478,12 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
       return prev
     })
   }, [deckId, latestPending])
+
+  // Sync window/document title in standalone full-page view (H12).
+  useEffect(() => {
+    if (embedded || insideTile || hideHeader || !detail) return
+    document.title = detail.doc.title || 'Decks'
+  }, [embedded, insideTile, hideHeader, detail])
 
   const pinned = Boolean(snapshotId)
 
@@ -391,6 +526,7 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
   if (!detail) return null
 
   const allSections = detail.doc.sections
+  const archivedSections = detail.doc.archived_sections ?? []
   const visibleSections = section
     ? allSections.filter((s) => s.id === section || s.alias === section)
     : allSections
@@ -407,6 +543,11 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
         latestPending.revision_sha256 !== activePendingReview.revision_sha256 ||
         latestPending.code_sha256 !== activePendingReview.code_sha256),
   )
+
+  const preservedSearch = {
+    ...(section ? { section } : {}),
+    ...(snapshotId ? { snapshot: snapshotId } : {}),
+  }
 
   const handleApproveReviewed = async (andStart: boolean) => {
     if (embedded || !activePendingReview) return
@@ -433,17 +574,28 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
     }
   }
 
+  const handleResolveApproval = async (approved: boolean) => {
+    if (approvalBusy) return
+    setApprovalBusy(true)
+    try {
+      await state.resolveApproval(approved)
+    } finally {
+      setApprovalBusy(false)
+    }
+  }
+
   const handleAddSection = async () => {
     if (!newTitle.trim()) {
       notify.error('Section title is required')
       return
     }
+    const clampedSpan = Math.max(1, Math.min(12, Math.trunc(newSpan) || 6))
     try {
       await state.sectionAdd({
         kind: newKind,
         title: newTitle.trim(),
         content: newContent,
-        col_span: newSpan,
+        col_span: clampedSpan,
       })
       setNewTitle('')
       setNewContent('')
@@ -453,6 +605,112 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
     }
   }
 
+  const handleRestoreArchived = async (sec: DeckSection) => {
+    if (restoringId) return
+    setRestoringId(sec.id)
+    try {
+      await state.sectionArchive(sec.id, false, sec.rev)
+    } catch (e) {
+      notify.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRestoringId(null)
+    }
+  }
+
+  const renderRuntimeControls = () => (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {!pinned && controls.start && (
+        <Button
+          size="sm"
+          variant="default"
+          data-deck-chrome-control="start"
+          disabled={state.controlBusy}
+          onClick={() => void state.controlRuntime('start')}
+        >
+          <Play className="size-3.5" /> Start
+        </Button>
+      )}
+      {!pinned && controls.pause && (
+        <Button
+          size="sm"
+          variant="outline"
+          data-deck-chrome-control="pause"
+          disabled={state.controlBusy}
+          onClick={() => void state.controlRuntime('pause')}
+        >
+          <Pause className="size-3.5" /> Pause
+        </Button>
+      )}
+      {!pinned && controls.resume && (
+        <Button
+          size="sm"
+          variant="default"
+          data-deck-chrome-control="resume"
+          disabled={state.controlBusy}
+          onClick={() => void state.controlRuntime('resume')}
+        >
+          <Play className="size-3.5" /> Resume
+        </Button>
+      )}
+      {!pinned && controls.stop && (
+        <Button
+          size="sm"
+          variant="ghost"
+          data-deck-chrome-control="stop"
+          disabled={state.controlBusy}
+          onClick={() => void state.controlRuntime('stop')}
+        >
+          <Square className="size-3.5" /> Stop
+        </Button>
+      )}
+      {!pinned && controls.runOnce && (
+        <Button
+          size="sm"
+          variant="ghost"
+          data-deck-chrome-control="run_once"
+          disabled={state.controlBusy}
+          onClick={() => void state.controlRuntime('run_once')}
+        >
+          <RefreshCw className="size-3.5" /> Run once
+        </Button>
+      )}
+      {pinned && (
+        <Link
+          to="/decks/$id"
+          params={{ id: deckId }}
+          search={section ? { section } : {}}
+          data-deck-view-live
+          className="inline-flex items-center rounded-md border border-border-subtle px-2 py-1 text-xs font-medium text-fg-secondary hover:bg-layer-2 hover:text-fg-primary"
+        >
+          View live
+        </Link>
+      )}
+      <Button size="sm" variant="outline" onClick={() => setShowAdd((v) => !v)}>
+        <Plus className="size-3.5" /> Section
+      </Button>
+      <Button size="sm" variant="outline" onClick={() => setShowScript((v) => !v)} className="relative">
+        <Code2 className="size-3.5" /> Script
+        {latestPending && (
+          <span className="ml-1 size-2 rounded-full bg-warning" aria-label="pending script review" />
+        )}
+      </Button>
+      {!hideHeader && canPopout() && !isPopout() && !insideTile && (
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-label="Open in window"
+          onClick={() => {
+            void openPopout({ kind: 'page', path: deckRoutePath(deckId, section, snapshotId) }).catch((e) =>
+              notify.error(e instanceof Error ? e.message : String(e)),
+            )
+          }}
+        >
+          <ExternalLink className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  )
+
   return (
     <div
       className={cn('flex min-h-0 flex-1 flex-col', embedded ? 'h-full overflow-y-auto p-2.5' : 'h-full overflow-hidden')}
@@ -460,18 +718,12 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
       data-deck-embedded={embedded || undefined}
     >
       {/* Top chrome */}
-      <header
-        className={cn(
-          'flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle',
-          embedded ? 'pb-2 mb-2' : 'px-4 py-2.5',
-        )}
-      >
-        <Layers className="size-4 shrink-0 text-fg-secondary" />
-        <div className="min-w-0 flex-1">
+      {hideHeader ? (
+        <div
+          className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-4 py-2"
+          data-deck-slim-toolbar
+        >
           <div className="flex items-center gap-2">
-            <h1 className={cn('truncate font-semibold', embedded ? 'text-xs' : 'text-sm')}>
-              {detail.doc.title}
-            </h1>
             <span
               className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', STATE_STYLE[rtState])}
               data-deck-runtime-state={rtState}
@@ -489,102 +741,82 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
               </span>
             )}
           </div>
-          {!embedded && detail.doc.description && (
-            <p className="truncate text-xs text-fg-tertiary">{detail.doc.description}</p>
-          )}
+          {!embedded && renderRuntimeControls()}
         </div>
-
-        {!embedded && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {controls.start && (
-              <Button
-                size="sm"
-                variant="default"
-                data-deck-chrome-control="start"
-                disabled={state.controlBusy}
-                onClick={() => void state.controlRuntime('start')}
+      ) : (
+        <header
+          data-tauri-drag-region={(!embedded && !insideTile && mac) || undefined}
+          className={cn(
+            'flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle',
+            embedded ? 'pb-2 mb-2' : 'px-4 py-2.5',
+            !embedded && !insideTile && mac && sidebar && cornerPad(sidebar),
+          )}
+        >
+          {!embedded && !insideTile && sidebar && <SidebarLead />}
+          <Layers className="size-4 shrink-0 text-fg-secondary" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h1 className={cn('truncate font-semibold', embedded ? 'text-xs' : 'text-sm')}>
+                {detail.doc.title}
+              </h1>
+              <span
+                className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', STATE_STYLE[rtState])}
+                data-deck-runtime-state={rtState}
               >
-                <Play className="size-3.5" /> Start
-              </Button>
-            )}
-            {controls.pause && (
-              <Button
-                size="sm"
-                variant="outline"
-                data-deck-chrome-control="pause"
-                disabled={state.controlBusy}
-                onClick={() => void state.controlRuntime('pause')}
-              >
-                <Pause className="size-3.5" /> Pause
-              </Button>
-            )}
-            {controls.resume && (
-              <Button
-                size="sm"
-                variant="default"
-                data-deck-chrome-control="resume"
-                disabled={state.controlBusy}
-                onClick={() => void state.controlRuntime('resume')}
-              >
-                <Play className="size-3.5" /> Resume
-              </Button>
-            )}
-            {controls.stop && (
-              <Button
-                size="sm"
-                variant="ghost"
-                data-deck-chrome-control="stop"
-                disabled={state.controlBusy}
-                onClick={() => void state.controlRuntime('stop')}
-              >
-                <Square className="size-3.5" /> Stop
-              </Button>
-            )}
-            {controls.runOnce && (
-              <Button
-                size="sm"
-                variant="ghost"
-                data-deck-chrome-control="run_once"
-                disabled={state.controlBusy}
-                onClick={() => void state.controlRuntime('run_once')}
-              >
-                <RefreshCw className="size-3.5" /> Run once
-              </Button>
-            )}
-            <Button size="sm" variant="outline" onClick={() => setShowAdd((v) => !v)}>
-              <Plus className="size-3.5" /> Section
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setShowScript((v) => !v)} className="relative">
-              <Code2 className="size-3.5" /> Script
-              {latestPending && (
-                <span className="ml-1 size-2 rounded-full bg-warning" aria-label="pending script review" />
+                {rtState}
+              </span>
+              {rt?.stale && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-medium text-warning">
+                  <AlertTriangle className="size-3" /> stale
+                </span>
               )}
-            </Button>
-            {!isPopout() && (
-              <Button
-                size="sm"
-                variant="ghost"
-                aria-label="Open in window"
-                onClick={() => openPopout({ kind: 'page', path: `/decks/${encodeURIComponent(deckId)}` })}
-              >
-                <ExternalLink className="size-3.5" />
-              </Button>
+              {snapshotId && (
+                <span className="rounded-full bg-layer-2 px-2 py-0.5 font-mono text-[10px] text-fg-tertiary">
+                  pinned:{snapshotId.slice(0, 8)}
+                </span>
+              )}
+            </div>
+            {!embedded && detail.doc.description && (
+              <p className="truncate text-xs text-fg-tertiary">{detail.doc.description}</p>
             )}
           </div>
-        )}
-        {embedded && (
-          <Link
-            to="/decks/$id"
-            params={{ id: deckId }}
-            className="text-[11px] text-fg-tertiary hover:text-fg-primary"
-          >
-            Open →
-          </Link>
-        )}
-      </header>
+
+          {!embedded && renderRuntimeControls()}
+          {embedded && (
+            <Link
+              to="/decks/$id"
+              params={{ id: deckId }}
+              search={preservedSearch}
+              className="text-[11px] text-fg-tertiary hover:text-fg-primary"
+            >
+              Open →
+            </Link>
+          )}
+        </header>
+      )}
 
       {/* Main scrollable content */}
       <div className={cn('min-h-0 flex-1 space-y-3', embedded ? '' : 'overflow-y-auto p-4')}>
+        {/* Live stream closed / connection notice (Medium #12) */}
+        {state.subscriptionClosed && (
+          <div
+            className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+            data-deck-stream-closed={state.subscriptionClosed}
+          >
+            {state.subscriptionClosed === 'deck_deleted'
+              ? 'This Deck was deleted; live updates have ended.'
+              : `Live stream closed (${state.subscriptionClosed}). Reconnecting…`}
+          </div>
+        )}
+        {state.subscriptionError && !state.subscriptionClosed && (
+          <div
+            className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+            data-deck-stream-error
+          >
+            Live stream disconnected: {state.subscriptionError} — retrying…
+          </div>
+        )}
+
         {/* Pending script approval gate banner */}
         {activePendingReview && (
           <div
@@ -601,6 +833,7 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
                 <Link
                   to="/decks/$id"
                   params={{ id: deckId }}
+                  search={preservedSearch}
                   className="inline-flex items-center gap-1 rounded-md border border-warning/50 bg-background/80 px-2 py-1 text-[11px] font-medium text-fg-primary hover:bg-background"
                 >
                   Open full Deck to review &amp; approve →
@@ -736,10 +969,21 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
                 {state.pendingApproval.risk})
               </div>
               <div className="flex items-center gap-1.5">
-                <Button size="sm" onClick={() => void state.resolveApproval(true)}>
+                <Button
+                  size="sm"
+                  data-deck-tool-approve="allow"
+                  disabled={approvalBusy}
+                  onClick={() => void handleResolveApproval(true)}
+                >
                   Allow
                 </Button>
-                <Button size="sm" variant="destructive" onClick={() => void state.resolveApproval(false)}>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  data-deck-tool-approve="deny"
+                  disabled={approvalBusy}
+                  onClick={() => void handleResolveApproval(false)}
+                >
                   Deny
                 </Button>
               </div>
@@ -791,7 +1035,10 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
                 max={12}
                 aria-label="Column span"
                 value={newSpan}
-                onChange={(e) => setNewSpan(Number(e.target.value) || 6)}
+                onChange={(e) => {
+                  const parsed = Math.trunc(Number(e.target.value))
+                  setNewSpan(Number.isFinite(parsed) ? Math.max(1, Math.min(12, parsed)) : 6)
+                }}
                 className="rounded-md border border-border-subtle bg-background px-2 py-1"
               />
             </div>
@@ -853,8 +1100,27 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
 
         {/* Collaborative Sections Grid */}
         {visibleSections.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border-subtle p-6 text-center text-xs text-fg-tertiary">
-            No sections yet. Add a native json-render, note, or sandboxed HTML section.
+          <div
+            className="rounded-xl border border-dashed border-border-subtle p-6 text-center text-xs text-fg-tertiary"
+            data-deck-empty-sections
+          >
+            {section ? (
+              <div className="space-y-2">
+                <p>Section &ldquo;{section}&rdquo; not found.</p>
+                {!embedded && (
+                  <Link
+                    to="/decks/$id"
+                    params={{ id: deckId }}
+                    search={snapshotId ? { snapshot: snapshotId } : {}}
+                    className="inline-block text-fg-secondary underline hover:text-fg-primary"
+                  >
+                    Show all sections
+                  </Link>
+                )}
+              </div>
+            ) : (
+              'No sections yet. Add a native json-render, note, or sandboxed HTML section.'
+            )}
           </div>
         ) : (
           <div className={cn(embedded ? 'space-y-2.5' : 'grid grid-cols-12 gap-3')}>
@@ -872,6 +1138,47 @@ export function DeckView({ deckId, section, snapshotId, embedded = false, liveSt
                 state={state}
               />
             ))}
+          </div>
+        )}
+
+        {/* Archived sections panel (Low: restore archived sections) */}
+        {!embedded && archivedSections.length > 0 && (
+          <div className="rounded-xl border border-border-subtle bg-layer-1/40 p-3 text-xs" data-deck-archived-panel>
+            <button
+              type="button"
+              className="flex w-full items-center justify-between font-medium text-fg-secondary hover:text-fg-primary"
+              aria-expanded={showArchived}
+              onClick={() => setShowArchived((v) => !v)}
+            >
+              <span>Archived sections ({archivedSections.length})</span>
+              <span className="text-[11px] text-fg-tertiary">{showArchived ? 'Hide' : 'Show'}</span>
+            </button>
+            {showArchived && (
+              <ul className="mt-2 space-y-1.5">
+                {archivedSections.map((sec) => (
+                  <li
+                    key={sec.id}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-border-subtle bg-background/70 px-2.5 py-1.5"
+                    data-deck-archived-section={sec.id}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="mr-1.5 rounded bg-layer-2 px-1 py-0.5 font-mono text-[10px] text-fg-tertiary">
+                        {sec.alias}
+                      </span>
+                      <span className="font-medium text-fg-primary">{sec.title}</span>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={restoringId === sec.id}
+                      onClick={() => void handleRestoreArchived(sec)}
+                    >
+                      <ArchiveRestore className="size-3.5" /> Restore
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </div>

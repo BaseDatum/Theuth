@@ -221,3 +221,57 @@ test('Sequence highlight: the active step goes accent 2.4 with an accent dot, ev
   expect(rest.match(/stroke="#111" stroke-width="1.25"/g)).toHaveLength(2)
   expect(rest).not.toContain('cursor:pointer')
 })
+
+test('Deck widgets (ActionButton, StreamControls, ResultBanner) render static snapshot fallbacks, inert tooltips, and active ARIA live region (Medium #9)', async () => {
+  const { SnapshotContext } = await import('@/lib/snapshot-mode')
+  const { DeckInteractContext } = await import('./deck-context')
+
+  // Outside Deck context (inert): StreamControls explains why controls are disabled
+  const inertControls = render('StreamControls', { title: 'Pulse Stream', show_run_once: true })
+  expect(inertControls).toContain('data-deck-inert="true"')
+  expect(inertControls).toContain('Stream controls are inactive outside a Deck')
+
+  // Snapshot mode (channel picture): static non-interactive rendering with no buttons
+  const spec = JSON.stringify({
+    root: 'root',
+    elements: {
+      root: { type: 'Stack', props: { gap: 'sm' }, children: ['btn', 'ctrl', 'res'] },
+      btn: { type: 'ActionButton', props: { label: 'Triage', action: 'triage', tone: 'primary' } },
+      ctrl: { type: 'StreamControls', props: { title: 'Runtime', show_run_once: true } },
+      res: { type: 'ResultBanner', props: { title: 'Output' } },
+    },
+  })
+  const snapHtml = renderToStaticMarkup(
+    createElement(
+      SnapshotContext.Provider,
+      { value: { appearance: 'light', width: 640, root: {} as HTMLElement, fail: () => {} } },
+      createElement(JsonRenderFence, { code: spec, isIncomplete: false, language: 'json-render' }),
+    ),
+  )
+  expect(snapHtml).toContain('data-deck-snapshot="true"')
+  expect(snapHtml).toContain('Triage')
+  expect(snapHtml).toContain('Runtime')
+  expect(snapHtml).not.toContain('<button')
+
+  // Inside live Deck context: ResultBanner exposes ARIA status live region
+  const liveHtml = renderToStaticMarkup(
+    createElement(
+      DeckInteractContext.Provider,
+      {
+        value: {
+          deckId: 'd1',
+          scriptRev: 1,
+          runtimeState: 'streaming',
+          stale: false,
+          busy: false,
+          lastResult: null,
+          invokeAction: async () => null,
+          controlRuntime: async () => {},
+        },
+      },
+      createElement(JsonRenderFence, { code: spec, isIncomplete: false, language: 'json-render' }),
+    ),
+  )
+  expect(liveHtml).toContain('role="status"')
+  expect(liveHtml).toContain('aria-live="polite"')
+})

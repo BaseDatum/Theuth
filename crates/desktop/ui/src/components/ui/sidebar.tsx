@@ -113,6 +113,17 @@ function useSidebar(): SidebarContextProps {
   return all
 }
 
+/** Same as `useSidebar`, returning `null` when rendered outside a `SidebarProvider` (e.g., CardSheet or standalone tests). */
+function useOptionalSidebar(): SidebarContextProps | null {
+  const actions = React.useContext(SidebarActionsContext)
+  const isMobile = React.useContext(SidebarMobileContext)
+  const state = React.useContext(SidebarStateContext)
+  return React.useMemo(
+    () => (actions && state && isMobile !== null ? { ...state, ...actions, isMobile } : null),
+    [actions, state, isMobile],
+  )
+}
+
 /** `toggleSidebar`, `setOpen`, `setOpenMobile`, `setWidth`: referentially stable, never re-renders on a toggle. */
 function useSidebarActions(): SidebarActions {
   const actions = React.useContext(SidebarActionsContext)
@@ -936,6 +947,7 @@ export {
   SidebarRail,
   SidebarSeparator,
   SidebarTrigger,
+  useOptionalSidebar,
   useSidebar,
   useSidebarActions,
   useSidebarIsMobile,

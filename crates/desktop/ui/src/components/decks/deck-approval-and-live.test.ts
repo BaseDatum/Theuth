@@ -25,8 +25,28 @@ import {
 
 vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<object>()),
-  Link: ({ to, params, children, ...rest }: { to: string; params?: { id: string }; children: ReactNode }) =>
-    h('a', { href: params ? to.replace('$id', params.id) : to, ...rest }, children),
+  Link: ({
+    to,
+    params,
+    search,
+    children,
+    ...rest
+  }: {
+    to: string
+    params?: { id: string }
+    search?: Record<string, string | undefined>
+    children: ReactNode
+  }) => {
+    const base = params ? to.replace('$id', encodeURIComponent(params.id)) : to
+    const qs = new URLSearchParams()
+    if (search) {
+      for (const [k, v] of Object.entries(search)) {
+        if (v !== undefined && v !== '') qs.set(k, v)
+      }
+    }
+    const q = qs.toString()
+    return h('a', { href: q ? `${base}?${q}` : base, ...rest }, children)
+  },
 }))
 
 const rpcMock = vi.hoisted(() => ({
@@ -34,11 +54,19 @@ const rpcMock = vi.hoisted(() => ({
     call: ReturnType<typeof vi.fn>
     stream: ReturnType<typeof vi.fn>
   } | null,
+  api: null as {
+    resolve_approval?: ReturnType<typeof vi.fn>
+  } | null,
   notify: Object.assign(vi.fn(), { error: vi.fn() }),
+  canPopout: true,
+  isPopout: false,
+  mac: false,
+  openPopout: vi.fn(async () => {}),
 }))
 
 vi.mock('@/store/connection', () => ({
-  useConnection: <T,>(sel: (s: { client: typeof rpcMock.client }) => T) => sel({ client: rpcMock.client }),
+  useConnection: <T,>(sel: (s: { client: typeof rpcMock.client; api: typeof rpcMock.api }) => T) =>
+    sel({ client: rpcMock.client, api: rpcMock.api }),
 }))
 
 vi.mock('@/store/sessions', async (importOriginal) => ({
@@ -50,7 +78,26 @@ vi.mock('@/lib/notify', () => ({
   notify: rpcMock.notify,
 }))
 
-import { DeckView } from './DeckView'
+vi.mock('@/lib/popout', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  canPopout: () => rpcMock.canPopout,
+  isPopout: () => rpcMock.isPopout,
+  openPopout: (...args: unknown[]) => rpcMock.openPopout(...(args as [])),
+}))
+
+vi.mock('@/lib/hotkeys', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  isMacDesktop: () => rpcMock.mac,
+}))
+
+vi.mock('@/components/nav/SectionBand', () => ({
+  SidebarLead: () => h('div', { 'data-mock-sidebar-lead': 'true' }),
+}))
+
+import { DeckView, sectionPayload } from './DeckView'
+import { InsideTileCtx } from '@/components/tiles/tile-context'
+import { SidebarProvider } from '@/components/ui/sidebar'
+import { RpcError } from '@/rpc/client'
 
 function makeScript(overrides: Partial<ScriptRevision> = {}): ScriptRevision {
   return {
@@ -570,5 +617,414 @@ describe('useDeckLive pure helpers & hook contracts (B3, B6, H7, H8, M2, L1)', (
       vi.advanceTimersByTime(500)
     })
     expect(streamMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('invalidates detail+list on stream active_rev/pending_rev changes (H1), preserves live runtime over equal-epoch refetch & clears older liveFrame on durable snapshot (H2), and exposes subscriptionClosed/subscriptionError/ref-counted actionBusy + typed api.resolve_approval (Medium #12)', async () => {
+    vi.useFakeTimers()
+    const detail1 = makeDetail('deck-live', {
+      runtime: {
+        ...makeDetail('deck-live').runtime,
+        state: 'stopped',
+        run_epoch: 2,
+        active_rev: 1,
+        pending_rev: null,
+        step_count: 1,
+      },
+    })
+    let streamCb: ((ev: DeckRuntimeEvent) => void) | null = null
+    let resolveAct1!: (v: InteractResponse) => void
+    let resolveAct2!: (v: InteractResponse) => void
+    const unsub = vi.fn(async () => {})
+    const resolveApprovalApi = vi.fn(async () => {})
+    rpcMock.api = { resolve_approval: resolveApprovalApi }
+
+    const callMock = vi.fn(async (method: string, params: unknown[]) => {
+      if (method === 'deck_get') return detail1
+      if (method === 'deck_interact') {
+        const action = params[1] as string
+        return new Promise<InteractResponse>((res) => {
+          if (action === 'a1') resolveAct1 = res
+          else resolveAct2 = res
+        })
+      }
+      return {}
+    })
+    const streamMock = vi.fn(async (_sub: string, _params: unknown[], _unsub: string, cb: (ev: DeckRuntimeEvent) => void) => {
+      streamCb = cb
+      return unsub
+    })
+    rpcMock.client = { call: callMock, stream: streamMock }
+
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+    let latest!: DeckLiveState
+
+    function Harness({ deckId, pinned }: { deckId: string; pinned?: string }) {
+      latest = useDeckLive(deckId, pinned)
+      return null
+    }
+
+    await act(async () => {
+      root.render(h(QueryClientProvider, { client: qc }, h(Harness, { deckId: 'deck-live' })))
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    expect(latest.detail?.doc.doc_id).toBe('deck-live')
+
+    // Stream sync advances runtime to streaming + pending_rev: 2 -> triggers H1 invalidation
+    invalidateSpy.mockClear()
+    await act(async () => {
+      streamCb?.({
+        type: 'sync',
+        status: {
+          ...detail1.runtime,
+          state: 'streaming',
+          run_epoch: 2,
+          active_rev: 1,
+          pending_rev: 2,
+          step_count: 5,
+          pending_approval: {
+            session_id: 'sess-live',
+            approval_id: 'appr-live',
+            tool: 'shell',
+            args: { cmd: 'ls' },
+            risk: 'mutating',
+          },
+        },
+        live_frame: {
+          deck_id: 'deck-live',
+          script_rev: 1,
+          run_epoch: 2,
+          seq: 4,
+          data: { phase: 'live-4' },
+          emitted_at: '2026-11-28T00:00:04Z',
+        },
+      })
+    })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: deckDetailKey('deck-live') })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: decksKey })
+    expect(latest.runtime?.state).toBe('streaming')
+    expect(latest.pendingApproval?.approval_id).toBe('appr-live')
+
+    // H2: equal-epoch stale deck_get refetch must NOT clobber newer live stream runtime/pendingApproval
+    await act(async () => {
+      latest.refetch()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(latest.runtime?.state).toBe('streaming')
+    expect(latest.pendingApproval?.approval_id).toBe('appr-live')
+
+    // Medium #12: resolveApproval prefers typed api.resolve_approval when available
+    await act(async () => {
+      await latest.resolveApproval(true)
+    })
+    expect(resolveApprovalApi).toHaveBeenCalledWith('appr-live', 'allow')
+
+    // H2: durable snapshot with order >= liveFrame clears older liveFrame so activeData shows snapshot
+    await act(async () => {
+      streamCb?.({
+        type: 'snapshot',
+        snapshot: {
+          snapshot_id: 'snap-4',
+          deck_id: 'deck-live',
+          script_rev: 1,
+          run_epoch: 2,
+          seq: 4,
+          data: { phase: 'durable-4' },
+          created_at: '2026-11-28T00:00:05Z',
+        },
+      })
+    })
+    expect(latest.liveFrame).toBeNull()
+    expect(latest.activeData).toEqual({ phase: 'durable-4' })
+
+    // Medium #12: ref-counted actionBusy stays true until BOTH overlapping distinct actions complete
+    let p1!: Promise<InteractResponse | null>
+    let p2!: Promise<InteractResponse | null>
+    await act(async () => {
+      p1 = latest.invokeAction('a1', { x: 1 })
+      p2 = latest.invokeAction('a2', { x: 2 })
+    })
+    expect(latest.actionBusy).toBe(true)
+    await act(async () => {
+      resolveAct1({
+        request_id: 'r1', action: 'a1', ok: true, result: 1, error: null, error_code: null,
+        private: true, cached: false, run_epoch: 2, script_rev: 1,
+      })
+      await p1
+    })
+    expect(latest.actionBusy).toBe(true)
+    await act(async () => {
+      resolveAct2({
+        request_id: 'r2', action: 'a2', ok: true, result: 2, error: null, error_code: null,
+        private: true, cached: false, run_epoch: 2, script_rev: 1,
+      })
+      await p2
+    })
+    expect(latest.actionBusy).toBe(false)
+
+    // Medium #12: closed event with reason 'deck_deleted' sets subscriptionClosed, invalidates, and does NOT reconnect
+    invalidateSpy.mockClear()
+    streamMock.mockClear()
+    await act(async () => {
+      streamCb?.({ type: 'closed', reason: 'deck_deleted' })
+    })
+    expect(latest.subscriptionClosed).toBe('deck_deleted')
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: decksKey })
+    await act(async () => {
+      vi.advanceTimersByTime(5_000)
+    })
+    expect(streamMock).not.toHaveBeenCalled()
+
+    // Medium #12: subscribe rejection surfaces subscriptionError
+    rpcMock.client = {
+      call: callMock,
+      stream: vi.fn(async () => {
+        throw new Error('ws unavailable')
+      }),
+    }
+    await act(async () => {
+      root.render(h(QueryClientProvider, { client: qc }, h(Harness, { deckId: 'deck-err' })))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(latest.subscriptionError).toBe('ws unavailable')
+  })
+})
+
+describe('DeckView Phase 2: H12 chrome/title/popout, Medium #1/#2/#8/#11/#12, and Low UX', () => {
+  let el: HTMLDivElement
+  let root: Root
+  let qc: QueryClient
+
+  beforeEach(() => {
+    el = document.createElement('div')
+    document.body.append(el)
+    root = createRoot(el)
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    rpcMock.notify.mockReset()
+    rpcMock.notify.error.mockReset()
+    rpcMock.openPopout.mockReset()
+    rpcMock.openPopout.mockResolvedValue(undefined)
+    rpcMock.canPopout = true
+    rpcMock.isPopout = false
+    rpcMock.mac = false
+    document.title = 'Initial Title'
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    qc.clear()
+    el.remove()
+    document.body.innerHTML = ''
+  })
+
+  it('sectionPayload returns null (never leaks full activeData) when explicit data_key is missing (Medium #8)', () => {
+    const activeData = { metrics: { cpu: 80 }, secrets_hint: 'do-not-leak' }
+    expect(sectionPayload(activeData, null)).toBe(activeData)
+    expect(sectionPayload(activeData, undefined)).toBe(activeData)
+    expect(sectionPayload(activeData, 'metrics')).toEqual({ cpu: 80 })
+    expect(sectionPayload(activeData, 'missing.slice')).toBeNull()
+  })
+
+  it('handles -32010 edit conflict with Reload latest and Overwrite recovery controls (Medium #1)', async () => {
+    const refetch = vi.fn()
+    const sectionPatch = vi
+      .fn()
+      .mockRejectedValueOnce(new RpcError(-32010, 'Conflict: expected rev 3, current is rev 4'))
+      .mockResolvedValueOnce(makeDetail().doc.sections[0]!)
+    const detailV3 = makeDetail('deck-c')
+    const stateV3 = makeLiveStateStub(detailV3, { sectionPatch, refetch })
+
+    await act(async () => {
+      root.render(h(QueryClientProvider, { client: qc }, h(DeckView, { deckId: 'deck-c', liveState: stateV3 })))
+    })
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[aria-label="Edit Ops Notes"]')!.click()
+    })
+    await act(async () => {
+      const saveBtn = [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('Save (rev 3'))!
+      saveBtn.click()
+    })
+
+    // Conflict banner shown and refetch triggered (instead of swallowing or closing editor)
+    expect(refetch).toHaveBeenCalledTimes(1)
+    expect(el.querySelector('[data-deck-edit-conflict]')).not.toBeNull()
+    expect(el.querySelector('[data-deck-conflict-reload]')).not.toBeNull()
+
+    // Server detail updates to rev 4 -> clicking Overwrite rebases expected_rev to 4 and retries
+    const detailV4 = makeDetail('deck-c')
+    detailV4.doc.sections[0]!.rev = 4
+    detailV4.doc.sections[0]!.content = 'Remote rev 4 content'
+    const stateV4 = makeLiveStateStub(detailV4, { sectionPatch, refetch })
+    await act(async () => {
+      root.render(h(QueryClientProvider, { client: qc }, h(DeckView, { deckId: 'deck-c', liveState: stateV4 })))
+    })
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-deck-conflict-overwrite]')!.click()
+    })
+    expect(sectionPatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ section_id: 'sec-1', expected_rev: 4 }),
+    )
+  })
+
+  it('guards Allow/Deny tool approval buttons with busy state (Medium #2)', async () => {
+    let resolvePending!: () => void
+    const resolveApproval = vi.fn(() => new Promise<void>((res) => { resolvePending = res }))
+    const detail = makeDetail('deck-appr')
+    detail.runtime.pending_approval = {
+      session_id: 'sess-appr',
+      approval_id: 'a-1',
+      tool: 'shell',
+      args: { cmd: 'echo hi' },
+      risk: 'mutating',
+    }
+    const state = makeLiveStateStub(detail, { resolveApproval })
+
+    await act(async () => {
+      root.render(h(QueryClientProvider, { client: qc }, h(DeckView, { deckId: 'deck-appr', liveState: state })))
+    })
+    const allowBtn = el.querySelector<HTMLButtonElement>('[data-deck-tool-approve="allow"]')!
+    const denyBtn = el.querySelector<HTMLButtonElement>('[data-deck-tool-approve="deny"]')!
+    expect(allowBtn.disabled).toBe(false)
+
+    await act(async () => {
+      allowBtn.click()
+    })
+    expect(allowBtn.disabled).toBe(true)
+    expect(denyBtn.disabled).toBe(true)
+
+    await act(async () => {
+      resolvePending()
+    })
+    expect(resolveApproval).toHaveBeenCalledTimes(1)
+    expect(allowBtn.disabled).toBe(false)
+  })
+
+  it('enforces H12 desktop chrome (cornerPad, drag region, SidebarLead, document.title, popout guards + query preservation) and Medium #11/#12/Low UI details', async () => {
+    rpcMock.mac = true
+    const focusSection = vi.fn(async () => {})
+    const sectionArchive = vi.fn(async () => makeDetail().doc.sections[0]!)
+    const detail = makeDetail('deck-full')
+    detail.doc.title = 'Incident Ops'
+    detail.doc.archived_sections = [
+      { ...detail.doc.sections[0]!, id: 'sec-arch', alias: 's9', title: 'Old Chart', archived: true, rev: 5 },
+    ]
+    const state = makeLiveStateStub(detail, {
+      focusSection,
+      sectionArchive,
+      subscriptionClosed: 'deck_deleted',
+    })
+
+    // Full-page inside SidebarProvider on macOS
+    await act(async () => {
+      root.render(
+        h(
+          QueryClientProvider,
+          { client: qc },
+          h(
+            SidebarProvider,
+            { defaultOpen: false },
+            h(DeckView, { deckId: 'deck-full', section: 's1', snapshotId: 'snap-99', liveState: state }),
+          ),
+        ),
+      )
+    })
+
+    const header = el.querySelector('header')!
+    expect(header.hasAttribute('data-tauri-drag-region')).toBe(true)
+    expect(el.querySelector('[data-mock-sidebar-lead]')).not.toBeNull()
+    expect(document.title).toBe('Incident Ops')
+
+    // Pinned snapshot hides live runtime Start/Stop/Run once controls and offers View live link
+    expect(el.querySelector('[data-deck-chrome-control]')).toBeNull()
+    const viewLive = el.querySelector<HTMLAnchorElement>('[data-deck-view-live]')!
+    expect(viewLive.getAttribute('href')).toBe('/decks/deck-full?section=s1')
+
+    // Subscription closed banner rendered (Medium #12)
+    expect(el.querySelector('[data-deck-stream-closed="deck_deleted"]')?.textContent).toContain('deleted')
+
+    // Popout button preserves ?section and ?snapshot and catches rejection with notify.error
+    rpcMock.openPopout.mockRejectedValueOnce(new Error('popout blocked'))
+    const popoutBtn = el.querySelector<HTMLButtonElement>('button[aria-label="Open in window"]')!
+    await act(async () => {
+      popoutBtn.click()
+      await Promise.resolve()
+    })
+    expect(rpcMock.openPopout).toHaveBeenCalledWith({
+      kind: 'page',
+      path: '/decks/deck-full?section=s1&snapshot=snap-99',
+    })
+    expect(rpcMock.notify.error).toHaveBeenCalledWith('popout blocked')
+
+    // Focus toggle button wires state.focusSection (Low)
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[aria-label="Focus Ops Notes"]')!.click()
+    })
+    expect(focusSection).toHaveBeenCalledWith('sec-1')
+
+    // Archived sections panel restores archived section (Low)
+    const archivedToggle = el.querySelector<HTMLButtonElement>('[data-deck-archived-panel] button')!
+    await act(async () => {
+      archivedToggle.click()
+    })
+    const restoreBtn = el.querySelector<HTMLButtonElement>('[data-deck-archived-section="sec-arch"] button')!
+    await act(async () => {
+      restoreBtn.click()
+    })
+    expect(sectionArchive).toHaveBeenCalledWith('sec-arch', false, 5)
+
+    // Inside a tile: suppresses drag region, SidebarLead, popout button, and document.title mutation
+    document.title = 'Shell Title'
+    await act(async () => {
+      root.render(
+        h(
+          QueryClientProvider,
+          { client: qc },
+          h(
+            InsideTileCtx.Provider,
+            { value: true },
+            h(
+              SidebarProvider,
+              { defaultOpen: false },
+              h(DeckView, { deckId: 'deck-full', liveState: state }),
+            ),
+          ),
+        ),
+      )
+    })
+    expect(el.querySelector('header')!.hasAttribute('data-tauri-drag-region')).toBe(false)
+    expect(el.querySelector('[data-mock-sidebar-lead]')).toBeNull()
+    expect(el.querySelector('button[aria-label="Open in window"]')).toBeNull()
+    expect(document.title).toBe('Shell Title')
+
+    // canPopout() === false (iOS) hides popout button
+    rpcMock.canPopout = false
+    await act(async () => {
+      root.render(h(QueryClientProvider, { client: qc }, h(DeckView, { deckId: 'deck-full', liveState: state })))
+    })
+    expect(el.querySelector('button[aria-label="Open in window"]')).toBeNull()
+
+    // Embedded mode preserves ?section and ?snapshot on Open → link, and unmatched ?section shows "not found"
+    await act(async () => {
+      root.render(
+        h(
+          QueryClientProvider,
+          { client: qc },
+          h(DeckView, {
+            deckId: 'deck-full',
+            section: 'missing-sec',
+            snapshotId: 'snap-7',
+            embedded: true,
+            liveState: state,
+          }),
+        ),
+      )
+    })
+    const openLink = [...el.querySelectorAll<HTMLAnchorElement>('a')].find((a) => a.textContent?.includes('Open →'))!
+    expect(openLink.getAttribute('href')).toBe('/decks/deck-full?section=missing-sec&snapshot=snap-7')
+    expect(el.querySelector('[data-deck-empty-sections]')?.textContent).toContain('Section “missing-sec” not found.')
   })
 })

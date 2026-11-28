@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { notify } from '@/lib/notify'
+import { receiveResult } from '@/rpc/bindings/receive'
 import { useConnection } from '@/store/connection'
 import { onTopic } from '@/store/sessions'
 import { generateDeckNonce } from './deck-html-bridge'
@@ -28,6 +29,15 @@ export const deckPinnedSnapshotKey = (id: string, snapshotId: string) =>
 const RECONNECT_BASE_MS = 500
 const RECONNECT_MAX_MS = 15_000
 
+async function callDeck<T>(
+  client: { call<R>(method: string, params: unknown[]): Promise<R> },
+  method: string,
+  params: unknown[],
+): Promise<T> {
+  const raw = await client.call<unknown>(method, params)
+  return receiveResult(method, raw) as T
+}
+
 /** Compare two Deck stream records by `(run_epoch, seq)`. */
 export function compareStreamOrder(
   a: { run_epoch: number; seq: number },
@@ -44,6 +54,23 @@ export function shouldApplyRuntimeStatus(
 ): boolean {
   if (!prev) return true
   return next.run_epoch >= prev.run_epoch
+}
+
+/**
+ * Merge a `deck_get` detail refetch runtime against live stream state monotonically (H2):
+ * once the live stream has synced (`hasSynced`), an equal-epoch refetch must not overwrite
+ * newer live stream state unless the fetched `step_count` is strictly newer.
+ */
+export function mergeDetailRuntime(
+  prev: DeckRuntimeStatus | null,
+  next: DeckRuntimeStatus,
+  hasSynced: boolean,
+): DeckRuntimeStatus {
+  if (!prev) return next
+  if (next.run_epoch > prev.run_epoch) return next
+  if (next.run_epoch < prev.run_epoch) return prev
+  if (!hasSynced) return next
+  return next.step_count > prev.step_count ? next : prev
 }
 
 /** True when `next` is not older than `prev` by `(run_epoch, seq)` and meets `minRunEpoch`. */
@@ -100,7 +127,7 @@ export function useDecksList(limit = 50) {
   return useQuery({
     enabled: Boolean(client),
     queryKey: [...decksKey, limit],
-    queryFn: () => client!.call<DeckSummary[]>('deck_list', [limit]),
+    queryFn: () => callDeck<DeckSummary[]>(client!, 'deck_list', [limit]),
     staleTime: 10_000,
   })
 }
@@ -112,7 +139,7 @@ export function useCreateDeck() {
   return useMutation({
     mutationFn: async (opts?: { title?: string; description?: string; example?: boolean }) => {
       if (!client) throw new Error('RPC client unavailable')
-      return client.call<DeckDetail>('deck_create', [
+      return callDeck<DeckDetail>(client, 'deck_create', [
         opts?.title ?? null,
         opts?.description ?? null,
         opts?.example ?? false,
@@ -140,6 +167,10 @@ export type DeckLiveState = {
   lastResult: InteractResponse | null
   actionBusy: boolean
   controlBusy: boolean
+  /** Latest transient `deck_subscribe` connection error while reconnecting, cleared on `sync`. */
+  subscriptionError?: string | null
+  /** Reason reported by a `closed` stream event (e.g. `lagged` or `deck_deleted`), cleared on `sync`. */
+  subscriptionClosed?: string | null
   refetch(): void
   invokeAction(action: string, args: Record<string, unknown>): Promise<InteractResponse | null>
   controlRuntime(op: RuntimeControlOp): Promise<void>
@@ -178,19 +209,20 @@ export type DeckLiveState = {
  */
 export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLiveState {
   const client = useConnection((s) => s.client)
+  const api = useConnection((s) => s.api)
   const qc = useQueryClient()
 
   const detailQuery = useQuery({
     enabled: Boolean(client && deckId),
     queryKey: deckDetailKey(deckId),
-    queryFn: () => client!.call<DeckDetail>('deck_get', [deckId]),
+    queryFn: () => callDeck<DeckDetail>(client!, 'deck_get', [deckId]),
     staleTime: 10_000,
   })
 
   const pinnedQuery = useQuery({
     enabled: Boolean(client && deckId && pinnedSnapshotId),
     queryKey: deckPinnedSnapshotKey(deckId, pinnedSnapshotId ?? ''),
-    queryFn: () => client!.call<DeckSnapshot | null>('deck_snapshot_get', [deckId, pinnedSnapshotId]),
+    queryFn: () => callDeck<DeckSnapshot | null>(client!, 'deck_snapshot_get', [deckId, pinnedSnapshotId]),
     staleTime: 60_000,
   })
 
@@ -200,16 +232,21 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const [hasSynced, setHasSynced] = useState(false)
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null)
   const [lastResult, setLastResult] = useState<InteractResponse | null>(null)
-  const [actionBusy, setActionBusy] = useState(false)
+  const [actionBusyCount, setActionBusyCount] = useState(0)
   const [controlBusy, setControlBusy] = useState(false)
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null)
+  const [subscriptionClosed, setSubscriptionClosed] = useState<string | null>(null)
 
   const deckIdRef = useRef(deckId)
   deckIdRef.current = deckId
-  const actionInFlightRef = useRef(false)
+  const hasSyncedRef = useRef(hasSynced)
+  hasSyncedRef.current = hasSynced
+  const inFlightActionKeysRef = useRef(new Set<string>())
   const controlInFlightRef = useRef(false)
   const retryRequestRef = useRef<{ key: string; requestId: string } | null>(null)
+  const lastSeenRevsRef = useRef<{ deckId: string; activeRev: number | null; pendingRev: number | null } | null>(null)
 
-  // Reset all per-Deck state immediately whenever `deckId` changes to prevent cross-Deck state bleed (H7).
+  // Reset all per-Deck state immediately whenever `deckId` or `pinnedSnapshotId` changes (H2).
   useEffect(() => {
     setRuntime(null)
     setLastSnapshot(null)
@@ -217,29 +254,44 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
     setHasSynced(false)
     setPendingApproval(null)
     setLastResult(null)
-    setActionBusy(false)
+    setActionBusyCount(0)
     setControlBusy(false)
-    actionInFlightRef.current = false
+    setSubscriptionError(null)
+    setSubscriptionClosed(null)
+    inFlightActionKeysRef.current.clear()
     controlInFlightRef.current = false
     retryRequestRef.current = null
-  }, [deckId])
+    lastSeenRevsRef.current = null
+  }, [deckId, pinnedSnapshotId])
 
-  // Seed state from detail fetch when first loaded or refreshed (guarded by deckId and run_epoch/seq).
+  // Seed state from detail fetch monotonically without clobbering synced live stream state (H2).
   useEffect(() => {
     const d = detailQuery.data
     if (!d || d.doc.doc_id !== deckId) return
-    setRuntime((prev) => (shouldApplyRuntimeStatus(prev, d.runtime) ? d.runtime : prev))
-    setPendingApproval(d.runtime.pending_approval ?? null)
+    lastSeenRevsRef.current = {
+      deckId,
+      activeRev: d.runtime.active_rev ?? d.active_script?.rev ?? null,
+      pendingRev: d.runtime.pending_rev ?? d.pending_script?.rev ?? null,
+    }
+    const synced = hasSyncedRef.current
+    const prevRt = effectiveRuntimeRef.current
+    const mergedRt = mergeDetailRuntime(prevRt, d.runtime, synced)
+    const adoptedDetail = mergedRt === d.runtime
+    setRuntime((prev) => mergeDetailRuntime(prev, d.runtime, synced))
+    if (!synced || adoptedDetail) {
+      setPendingApproval(d.runtime.pending_approval ?? null)
+    }
     if (d.last_snapshot) {
       const nextSnap = d.last_snapshot
       setLastSnapshot((prev) => (shouldApplyStreamItem(prev, nextSnap) ? nextSnap : prev))
+      setLiveFrame((prev) => (prev && compareStreamOrder(nextSnap, prev) >= 0 ? null : prev))
     }
     if (d.live_frame) {
       const nextFrame = d.live_frame
       setLiveFrame((prev) =>
         shouldApplyStreamItem(prev, nextFrame, d.runtime.run_epoch) ? nextFrame : prev,
       )
-    } else if (d.runtime.state === 'stopped') {
+    } else if (adoptedDetail && d.runtime.state === 'stopped') {
       setLiveFrame(null)
     } else {
       setLiveFrame((prev) => (prev && prev.run_epoch < d.runtime.run_epoch ? null : prev))
@@ -262,7 +314,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const effectiveRuntimeRef = useRef(effectiveRuntime)
   effectiveRuntimeRef.current = effectiveRuntime
 
-  // Bounded per-Deck live stream subscription with run_epoch/seq fencing and exponential-backoff reconnect (H7, M2).
+  // Bounded per-Deck live stream subscription with run_epoch/seq fencing and exponential-backoff reconnect (H1, H2, M12).
   useEffect(() => {
     if (!client || !deckId || pinnedSnapshotId) return
     let active = true
@@ -287,6 +339,31 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       }, delay)
     }
 
+    // H1: invalidate detail/list queries whenever stream `sync`/`status` reports a pending_rev or active_rev change.
+    const checkScriptRevisionChange = (status: DeckRuntimeStatus) => {
+      const nextActive = status.active_rev ?? null
+      const nextPending = status.pending_rev ?? null
+      const prev = lastSeenRevsRef.current
+      if (prev && prev.deckId === deckId) {
+        if (prev.activeRev !== nextActive || prev.pendingRev !== nextPending) {
+          lastSeenRevsRef.current = { deckId, activeRev: nextActive, pendingRev: nextPending }
+          void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
+          void qc.invalidateQueries({ queryKey: decksKey })
+        }
+      } else {
+        lastSeenRevsRef.current = { deckId, activeRev: nextActive, pendingRev: nextPending }
+        const cached = qc.getQueryData<DeckDetail>(deckDetailKey(deckId))
+        if (cached && cached.doc.doc_id === deckId) {
+          const cachedActive = cached.runtime.active_rev ?? cached.active_script?.rev ?? null
+          const cachedPending = cached.runtime.pending_rev ?? cached.pending_script?.rev ?? null
+          if (cachedActive !== nextActive || cachedPending !== nextPending) {
+            void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
+            void qc.invalidateQueries({ queryKey: decksKey })
+          }
+        }
+      }
+    }
+
     const handleEvent = (ev: DeckRuntimeEvent) => {
       if (!active || deckIdRef.current !== deckId || !ev || typeof ev !== 'object') return
       switch (ev.type) {
@@ -294,11 +371,14 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
           const wasReconnect = attempt > 0
           attempt = 0
           setHasSynced(true)
+          setSubscriptionError(null)
+          setSubscriptionClosed(null)
           setRuntime(ev.status)
           setPendingApproval(ev.status.pending_approval ?? null)
           // Unconditionally apply sync snapshot/frame (even when omitted/null) so stale data is cleared.
           setLastSnapshot(ev.last_snapshot ?? null)
           setLiveFrame(ev.live_frame ?? null)
+          checkScriptRevisionChange(ev.status)
           if (wasReconnect) {
             void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
           }
@@ -313,6 +393,8 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
         case 'snapshot': {
           if (ev.snapshot.deck_id && ev.snapshot.deck_id !== deckId) return
           setLastSnapshot((prev) => (shouldApplyStreamItem(prev, ev.snapshot) ? ev.snapshot : prev))
+          // H2: clear any older/equal transient liveFrame so it can never shadow the newer durable snapshot.
+          setLiveFrame((prev) => (prev && compareStreamOrder(ev.snapshot, prev) >= 0 ? null : prev))
           break
         }
         case 'status': {
@@ -325,6 +407,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
           })
           if (applied || shouldApplyRuntimeStatus(effectiveRuntimeRef.current, ev.status)) {
             setPendingApproval(ev.status.pending_approval ?? null)
+            checkScriptRevisionChange(ev.status)
             if (ev.status.state === 'stopped') {
               setLiveFrame(null)
             } else {
@@ -340,10 +423,17 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
           setPendingApproval((prev) => (prev?.approval_id === ev.approval_id ? null : prev))
           break
         case 'closed': {
+          const reason = ev.reason || 'closed'
+          setSubscriptionClosed(reason)
           const prevUnsub = unsub
           unsub = null
           if (prevUnsub) void prevUnsub().catch(() => {})
-          scheduleReconnect()
+          if (reason === 'deck_deleted') {
+            void qc.invalidateQueries({ queryKey: decksKey })
+            void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
+          } else {
+            scheduleReconnect()
+          }
           break
         }
       }
@@ -362,9 +452,11 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
           void u().catch(() => {})
         } else {
           unsub = u
+          setSubscriptionError(null)
         }
-      } catch {
-        // Subscription may fail transiently or when reconnecting; retry with exponential backoff.
+      } catch (e) {
+        if (!active) return
+        setSubscriptionError(e instanceof Error ? e.message : String(e))
         scheduleReconnect()
       }
     }
@@ -383,20 +475,21 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const invokeAction = useCallback(
     async (action: string, args: Record<string, unknown>): Promise<InteractResponse | null> => {
       if (!client || !deckId) return null
-      if (actionInFlightRef.current) return null
-      actionInFlightRef.current = true
-      setActionBusy(true)
       const targetDeckId = deckId
       const safeArgs = args ?? {}
       const expectedRev = effectiveRuntimeRef.current?.active_rev ?? null
       const retryKey = JSON.stringify([targetDeckId, action, safeArgs, expectedRev])
+      // Prevent duplicate rapid double-clicks for the same action/args while allowing ref-counted overlap.
+      if (inFlightActionKeysRef.current.has(retryKey)) return null
+      inFlightActionKeysRef.current.add(retryKey)
+      setActionBusyCount((c) => c + 1)
       const requestId =
         retryRequestRef.current && retryRequestRef.current.key === retryKey
           ? retryRequestRef.current.requestId
           : makeRequestId()
       retryRequestRef.current = { key: retryKey, requestId }
       try {
-        const res = await client.call<InteractResponse>('deck_interact', [
+        const res = await callDeck<InteractResponse>(client, 'deck_interact', [
           targetDeckId,
           action,
           safeArgs,
@@ -421,9 +514,9 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
         notify.error(msg)
         return null
       } finally {
-        actionInFlightRef.current = false
+        inFlightActionKeysRef.current.delete(retryKey)
         if (deckIdRef.current === targetDeckId) {
-          setActionBusy(false)
+          setActionBusyCount((c) => Math.max(0, c - 1))
         }
       }
     },
@@ -438,7 +531,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       setControlBusy(true)
       const targetDeckId = deckId
       try {
-        const st = await client.call<DeckRuntimeStatus>('deck_runtime_control', [targetDeckId, op])
+        const st = await callDeck<DeckRuntimeStatus>(client, 'deck_runtime_control', [targetDeckId, op])
         if (deckIdRef.current === targetDeckId) {
           setRuntime((prev) => (shouldApplyRuntimeStatus(prev, st) ? st : prev))
           setPendingApproval(st.pending_approval ?? null)
@@ -472,9 +565,10 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       const targetDeckId = deckId
       let approved: ScriptRevision | null = null
       try {
-        approved = await client.call<ScriptRevision>('deck_script_approve', [targetDeckId, rev, digest])
+        // Sends canonical 3-arg `(deck_id, rev, expected_digest)` matching updated `crates/decks/src/rpc.rs`.
+        approved = await callDeck<ScriptRevision>(client, 'deck_script_approve', [targetDeckId, rev, digest])
         if (andStart) {
-          const st = await client.call<DeckRuntimeStatus>('deck_runtime_control', [targetDeckId, 'start'])
+          const st = await callDeck<DeckRuntimeStatus>(client, 'deck_runtime_control', [targetDeckId, 'start'])
           if (deckIdRef.current === targetDeckId) {
             setRuntime((prev) => (shouldApplyRuntimeStatus(prev, st) ? st : prev))
             setPendingApproval(st.pending_approval ?? null)
@@ -500,7 +594,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       if (!client || !deckId) return null
       const targetDeckId = deckId
       try {
-        const rejected = await client.call<ScriptRevision>('deck_script_reject', [
+        const rejected = await callDeck<ScriptRevision>(client, 'deck_script_reject', [
           targetDeckId,
           rev,
           reason ?? null,
@@ -519,17 +613,24 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
 
   const resolveApproval = useCallback(
     async (approved: boolean) => {
-      if (!client || !pendingApproval) return
+      if ((!api && !client) || !pendingApproval) return
+      const targetDeckId = deckId
       const target = pendingApproval
       const decision = approved ? 'allow' : 'deny'
       try {
-        await client.call('resolve_approval', [target.approval_id, decision])
-        setPendingApproval((prev) => (prev?.approval_id === target.approval_id ? null : prev))
+        if (api) {
+          await api.resolve_approval(target.approval_id, decision)
+        } else {
+          await client!.call('resolve_approval', [target.approval_id, decision])
+        }
+        if (deckIdRef.current === targetDeckId) {
+          setPendingApproval((prev) => (prev?.approval_id === target.approval_id ? null : prev))
+        }
       } catch (e) {
         notify.error(e instanceof Error ? e.message : String(e))
       }
     },
-    [client, pendingApproval],
+    [api, client, deckId, pendingApproval],
   )
 
   const sectionAdd = useCallback(
@@ -542,8 +643,9 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       index?: number | null
     }) => {
       if (!client) throw new Error('RPC client unavailable')
-      const sec = await client.call<DeckSection>('deck_section_add', [
-        deckId,
+      const targetDeckId = deckId
+      const sec = await callDeck<DeckSection>(client, 'deck_section_add', [
+        targetDeckId,
         input.kind,
         input.title,
         input.content,
@@ -551,7 +653,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
         input.data_key ?? null,
         input.index ?? null,
       ])
-      void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
+      void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
       return sec
     },
     [client, deckId, qc],
@@ -568,8 +670,9 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       summary?: string | null
     }) => {
       if (!client) throw new Error('RPC client unavailable')
-      const sec = await client.call<DeckSection>('deck_section_patch', [
-        deckId,
+      const targetDeckId = deckId
+      const sec = await callDeck<DeckSection>(client, 'deck_section_patch', [
+        targetDeckId,
         input.section_id,
         input.expected_rev ?? null,
         input.title ?? null,
@@ -578,7 +681,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
         input.data_key ?? null,
         input.summary ?? null,
       ])
-      void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
+      void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
       return sec
     },
     [client, deckId, qc],
@@ -587,8 +690,9 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const sectionMove = useCallback(
     async (section_id: string, to_index: number) => {
       if (!client) throw new Error('RPC client unavailable')
-      const order = await client.call<string[]>('deck_section_move', [deckId, section_id, to_index])
-      void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
+      const targetDeckId = deckId
+      const order = await callDeck<string[]>(client, 'deck_section_move', [targetDeckId, section_id, to_index])
+      void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
       return order
     },
     [client, deckId, qc],
@@ -597,13 +701,14 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const sectionArchive = useCallback(
     async (section_id: string, archived: boolean, expected_rev?: number | null) => {
       if (!client) throw new Error('RPC client unavailable')
-      const sec = await client.call<DeckSection>('deck_section_archive', [
-        deckId,
+      const targetDeckId = deckId
+      const sec = await callDeck<DeckSection>(client, 'deck_section_archive', [
+        targetDeckId,
         section_id,
         archived,
         expected_rev ?? null,
       ])
-      void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
+      void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
       return sec
     },
     [client, deckId, qc],
@@ -612,7 +717,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const sectionHistory = useCallback(
     async (section_id: string) => {
       if (!client) throw new Error('RPC client unavailable')
-      return client.call<SectionRevision[]>('deck_section_history', [deckId, section_id])
+      return callDeck<SectionRevision[]>(client, 'deck_section_history', [deckId, section_id])
     },
     [client, deckId],
   )
@@ -620,8 +725,9 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const focusSection = useCallback(
     async (section_id: string | null) => {
       if (!client) return
-      await client.call('deck_focus', [deckId, section_id])
-      void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
+      const targetDeckId = deckId
+      await callDeck<void>(client, 'deck_focus', [targetDeckId, section_id])
+      void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
     },
     [client, deckId, qc],
   )
@@ -654,8 +760,10 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
     activeData,
     pendingApproval,
     lastResult,
-    actionBusy,
+    actionBusy: actionBusyCount > 0,
     controlBusy,
+    subscriptionError,
+    subscriptionClosed,
     refetch: () => void detailQuery.refetch(),
     invokeAction,
     controlRuntime,
