@@ -1,12 +1,13 @@
 import { jsonrepair } from 'jsonrepair'
 import { useMemo } from 'react'
-import type { CustomRendererProps } from 'streamdown'
 import { BareSurface } from '@/components/chat/surface/bare'
 import { DeckInteractContext, type DeckInteractContextValue } from '@/components/chat/surface/deck-context'
-import { JsonRenderFence } from '@/components/chat/surface/JsonRenderFence'
+import { JsonRenderFence, type JsonRenderFenceProps } from '@/components/chat/surface/JsonRenderFence'
 
 const FORBIDDEN_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype'])
 const PLACEHOLDER_RE = /\{\{([^}|]+?)(?:\|([^}]*))?\}\}/g
+const EXACT_PLACEHOLDER_RE = /^\{\{([^}|]+?)(?:\|([^}]*))?\}\}$/
+const MAX_STRUCTURED_DEPTH = 16
 
 /** Look up a dotted own-property path like `metrics.arr` inside an arbitrary JSON value. */
 export function lookupPath(data: unknown, path: string): unknown {
@@ -24,6 +25,39 @@ export function lookupPath(data: unknown, path: string): unknown {
     }
   }
   return cur
+}
+
+function sanitizeStructuredValue(
+  value: unknown,
+  depth = 0,
+  ancestors = new Set<object>(),
+): unknown {
+  if (depth > MAX_STRUCTURED_DEPTH) return null
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value !== 'object') return null
+  if (ancestors.has(value)) return null
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      const out: unknown[] = []
+      for (let i = 0; i < value.length; i++) {
+        out.push(sanitizeStructuredValue(value[i], depth + 1, ancestors))
+      }
+      return out
+    }
+    const obj = value as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(obj)) {
+      if (FORBIDDEN_PATH_SEGMENTS.has(key)) continue
+      const v = obj[key]
+      if (v === undefined || typeof v === 'function' || typeof v === 'symbol') continue
+      out[key] = sanitizeStructuredValue(v, depth + 1, ancestors)
+    }
+    return out
+  } finally {
+    ancestors.delete(value)
+  }
 }
 
 function formatPlaceholderValue(val: unknown, fallback?: string): string {
@@ -47,6 +81,14 @@ function interpolateString(input: string, data: unknown): string {
 
 function interpolateJsonAst(node: unknown, data: unknown): unknown {
   if (typeof node === 'string') {
+    const exact = EXACT_PLACEHOLDER_RE.exec(node)
+    if (exact) {
+      const val = lookupPath(data, exact[1]!.trim())
+      if (val !== undefined && val !== null) {
+        return sanitizeStructuredValue(val)
+      }
+      return exact[2] ?? ''
+    }
     return interpolateString(node, data)
   }
   if (Array.isArray(node)) {
@@ -104,7 +146,9 @@ function interpolateActionButtonProps(
  * Interpolate `{{path|default}}` placeholders inside a Deck `json-render` template.
  * Parses the template as a JSON AST first (including nested `ActionButton.props.args_json`)
  * so untrusted live data can never inject JSON structure or arbitrary action parameters,
- * and safely guards against prototype lookups and non-JSON values.
+ * returns prototype-sanitized structured JSON (arrays/objects/numbers/booleans) for exact
+ * whole-string placeholders while keeping embedded placeholders string-safe, and safely
+ * guards against prototype lookups and non-JSON values.
  */
 export function interpolateDeckJsonTemplate(template: string, data: unknown): string {
   try {
@@ -127,6 +171,7 @@ export function interpolateDeckJsonTemplate(template: string, data: unknown): st
 }
 
 type Props = {
+  sectionId?: string
   template: string
   data: unknown
   context: DeckInteractContextValue
@@ -138,11 +183,18 @@ type Props = {
  * inside `DeckInteractContext.Provider` so Deck interactive components (`ActionButton`,
  * `StreamControls`, `ResultBanner`) are live here while remaining inert in ordinary chat fences.
  */
-export function DeckSurfaceSection({ template, data, context, bare }: Props) {
+export function DeckSurfaceSection({ sectionId, template, data, context, bare }: Props) {
   const code = useMemo(() => interpolateDeckJsonTemplate(template, data), [template, data])
+  const disclosureScope = sectionId ? `deck-section:${sectionId}` : undefined
   const fenceProps = useMemo(
-    () => ({ code, isIncomplete: false, language: 'json-render' }) as unknown as CustomRendererProps,
-    [code],
+    () =>
+      ({
+        code,
+        isIncomplete: false,
+        language: 'json-render',
+        disclosureScope,
+      }) as unknown as JsonRenderFenceProps,
+    [code, disclosureScope],
   )
   return (
     <DeckInteractContext.Provider value={context}>

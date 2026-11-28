@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { InvokeActionOptions } from '@/components/chat/surface/deck-context'
 import { notify } from '@/lib/notify'
 import { receiveResult } from '@/rpc/bindings/receive'
 import { useConnection } from '@/store/connection'
@@ -108,6 +109,98 @@ export function selectLatestDeckData(
   return null
 }
 
+/**
+ * Select the display payload for one specific Deck section without letting sibling
+ * section-scoped frames/snapshots clobber it, while preserving global unscoped updates
+ * and strict `(run_epoch, seq)` ordering.
+ */
+export function selectSectionDeckData(
+  section: { id: string; alias?: string | null },
+  opts: {
+    isPinned: boolean
+    pinnedSnapshot?: DeckSnapshot | null
+    globalFrame?: LiveFrame | null
+    globalSnapshot?: DeckSnapshot | null
+    sectionFrames?: Record<string, LiveFrame>
+    sectionSnapshots?: Record<string, DeckSnapshot>
+    fallbackData?: unknown
+  },
+): unknown {
+  if (opts.isPinned) {
+    return opts.pinnedSnapshot ? opts.pinnedSnapshot.data : (opts.fallbackData ?? null)
+  }
+
+  type Candidate = {
+    run_epoch: number
+    seq: number
+    data: unknown
+    scoped: boolean
+    isFrame: boolean
+  }
+  const candidates: Candidate[] = []
+  const push = (
+    item: { run_epoch: number; seq: number; data: unknown } | null | undefined,
+    scoped: boolean,
+    isFrame: boolean,
+  ) => {
+    if (item) {
+      candidates.push({
+        run_epoch: item.run_epoch,
+        seq: item.seq,
+        data: item.data,
+        scoped,
+        isFrame,
+      })
+    }
+  }
+
+  push(opts.globalSnapshot, false, false)
+  push(opts.globalFrame, false, true)
+
+  const keys =
+    section.alias && section.alias !== section.id ? [section.id, section.alias] : [section.id]
+  for (const key of keys) {
+    push(opts.sectionSnapshots?.[key], true, false)
+    push(opts.sectionFrames?.[key], true, true)
+  }
+
+  if (candidates.length === 0) {
+    return opts.fallbackData ?? null
+  }
+
+  let best = candidates[0]!
+  for (let i = 1; i < candidates.length; i++) {
+    const cur = candidates[i]!
+    const ord = compareStreamOrder(cur, best)
+    if (ord > 0) {
+      best = cur
+    } else if (ord === 0) {
+      if (cur.scoped && !best.scoped) {
+        best = cur
+      } else if (cur.scoped === best.scoped && cur.isFrame && !best.isFrame) {
+        best = cur
+      }
+    }
+  }
+  return best.data
+}
+
+function pruneFramesByEpoch(
+  map: Record<string, LiveFrame>,
+  minEpoch: number,
+): Record<string, LiveFrame> {
+  let changed = false
+  const next: Record<string, LiveFrame> = {}
+  for (const [key, frame] of Object.entries(map)) {
+    if (frame.run_epoch >= minEpoch) {
+      next[key] = frame
+    } else {
+      changed = true
+    }
+  }
+  return changed ? next : map
+}
+
 function makeRequestId(): string {
   if (typeof globalThis !== 'undefined' && globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
     return globalThis.crypto.randomUUID()
@@ -165,6 +258,16 @@ export type DeckLiveState = {
   runtime: DeckRuntimeStatus | null
   lastSnapshot: DeckSnapshot | null
   liveFrame: LiveFrame | null
+  /** Unscoped (global) durable snapshot, if any. */
+  globalSnapshot?: DeckSnapshot | null
+  /** Unscoped (global) transient live frame, if any. */
+  globalFrame?: LiveFrame | null
+  /** Section-scoped durable snapshots indexed by section id or alias. */
+  sectionSnapshots?: Record<string, DeckSnapshot>
+  /** Section-scoped transient live frames indexed by section id or alias. */
+  sectionFrames?: Record<string, LiveFrame>
+  /** Monotonic counter bumped on every applied frame, snapshot, sync, or runtime data change. */
+  dataVersion?: number
   /** Active display payload: pinned snapshot if pinned, else newer of live frame vs durable last-good snapshot. */
   activeData: unknown
   pendingApproval: PendingApproval | null
@@ -176,7 +279,11 @@ export type DeckLiveState = {
   /** Reason reported by a `closed` stream event (e.g. `lagged` or `deck_deleted`), cleared on `sync`. */
   subscriptionClosed?: string | null
   refetch(): void
-  invokeAction(action: string, args: Record<string, unknown>): Promise<InteractResponse | null>
+  invokeAction(
+    action: string,
+    args: Record<string, unknown>,
+    opts?: InvokeActionOptions,
+  ): Promise<InteractResponse | null>
   controlRuntime(op: RuntimeControlOp): Promise<void>
   approveScript(rev: number, expectedDigest: string, andStart?: boolean): Promise<ScriptRevision | null>
   rejectScript(rev: number, reason?: string): Promise<ScriptRevision | null>
@@ -237,6 +344,11 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const [runtime, setRuntime] = useState<DeckRuntimeStatus | null>(null)
   const [lastSnapshot, setLastSnapshot] = useState<DeckSnapshot | null>(null)
   const [liveFrame, setLiveFrame] = useState<LiveFrame | null>(null)
+  const [globalSnapshot, setGlobalSnapshot] = useState<DeckSnapshot | null>(null)
+  const [globalFrame, setGlobalFrame] = useState<LiveFrame | null>(null)
+  const [sectionSnapshots, setSectionSnapshots] = useState<Record<string, DeckSnapshot>>({})
+  const [sectionFrames, setSectionFrames] = useState<Record<string, LiveFrame>>({})
+  const [dataVersion, setDataVersion] = useState(0)
   const [hasSynced, setHasSynced] = useState(false)
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null)
   const [lastResult, setLastResult] = useState<InteractResponse | null>(null)
@@ -259,6 +371,11 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
     setRuntime(null)
     setLastSnapshot(null)
     setLiveFrame(null)
+    setGlobalSnapshot(null)
+    setGlobalFrame(null)
+    setSectionSnapshots({})
+    setSectionFrames({})
+    setDataVersion((v) => v + 1)
     setHasSynced(false)
     setPendingApproval(null)
     setLastResult(null)
@@ -289,20 +406,61 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
     if (!synced || adoptedDetail) {
       setPendingApproval(d.runtime.pending_approval ?? null)
     }
+    let changed = false
     if (d.last_snapshot) {
       const nextSnap = d.last_snapshot
+      changed = true
       setLastSnapshot((prev) => (shouldApplyStreamItem(prev, nextSnap) ? nextSnap : prev))
       setLiveFrame((prev) => (prev && compareStreamOrder(nextSnap, prev) >= 0 ? null : prev))
+      const secKey = nextSnap.section?.trim() || null
+      if (secKey) {
+        setSectionSnapshots((prev) =>
+          shouldApplyStreamItem(prev[secKey] ?? null, nextSnap)
+            ? { ...prev, [secKey]: nextSnap }
+            : prev,
+        )
+        setSectionFrames((prev) => {
+          const existing = prev[secKey]
+          if (!existing || compareStreamOrder(nextSnap, existing) < 0) return prev
+          const copy = { ...prev }
+          delete copy[secKey]
+          return copy
+        })
+      } else {
+        setGlobalSnapshot((prev) => (shouldApplyStreamItem(prev, nextSnap) ? nextSnap : prev))
+        setGlobalFrame((prev) => (prev && compareStreamOrder(nextSnap, prev) >= 0 ? null : prev))
+      }
     }
     if (d.live_frame) {
       const nextFrame = d.live_frame
+      changed = true
       setLiveFrame((prev) =>
         shouldApplyStreamItem(prev, nextFrame, d.runtime.run_epoch) ? nextFrame : prev,
       )
+      const secKey = nextFrame.section?.trim() || null
+      if (secKey) {
+        setSectionFrames((prev) =>
+          shouldApplyStreamItem(prev[secKey] ?? null, nextFrame, d.runtime.run_epoch)
+            ? { ...prev, [secKey]: nextFrame }
+            : prev,
+        )
+      } else {
+        setGlobalFrame((prev) =>
+          shouldApplyStreamItem(prev, nextFrame, d.runtime.run_epoch) ? nextFrame : prev,
+        )
+      }
     } else if (adoptedDetail && d.runtime.state === 'stopped') {
+      changed = true
       setLiveFrame(null)
+      setGlobalFrame(null)
+      setSectionFrames({})
     } else {
       setLiveFrame((prev) => (prev && prev.run_epoch < d.runtime.run_epoch ? null : prev))
+      setGlobalFrame((prev) => (prev && prev.run_epoch < d.runtime.run_epoch ? null : prev))
+      setSectionFrames((prev) => pruneFramesByEpoch(prev, d.runtime.run_epoch))
+    }
+    if (changed) {
+      setDataVersion((v) => v + 1)
     }
   }, [deckId, detailQuery.data])
 
@@ -384,8 +542,17 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
           setRuntime(ev.status)
           setPendingApproval(ev.status.pending_approval ?? null)
           // Unconditionally apply sync snapshot/frame (even when omitted/null) so stale data is cleared.
-          setLastSnapshot(ev.last_snapshot ?? null)
-          setLiveFrame(ev.live_frame ?? null)
+          const snap = ev.last_snapshot ?? null
+          const frame = ev.live_frame ?? null
+          setLastSnapshot(snap)
+          setLiveFrame(frame)
+          const snapSec = snap?.section?.trim() || null
+          const frameSec = frame?.section?.trim() || null
+          setGlobalSnapshot(snap && !snapSec ? snap : null)
+          setSectionSnapshots(snap && snapSec ? { [snapSec]: snap } : {})
+          setGlobalFrame(frame && !frameSec ? frame : null)
+          setSectionFrames(frame && frameSec ? { [frameSec]: frame } : {})
+          setDataVersion((v) => v + 1)
           checkScriptRevisionChange(ev.status)
           if (wasReconnect) {
             void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
@@ -395,14 +562,46 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
         case 'live_frame': {
           if (ev.frame.deck_id && ev.frame.deck_id !== deckId) return
           const minEpoch = effectiveRuntimeRef.current?.run_epoch
+          if (minEpoch !== undefined && ev.frame.run_epoch < minEpoch) return
+          const secKey = ev.frame.section?.trim() || null
           setLiveFrame((prev) => (shouldApplyStreamItem(prev, ev.frame, minEpoch) ? ev.frame : prev))
+          if (secKey) {
+            setSectionFrames((prev) =>
+              shouldApplyStreamItem(prev[secKey] ?? null, ev.frame, minEpoch)
+                ? { ...prev, [secKey]: ev.frame }
+                : prev,
+            )
+          } else {
+            setGlobalFrame((prev) => (shouldApplyStreamItem(prev, ev.frame, minEpoch) ? ev.frame : prev))
+          }
+          setDataVersion((v) => v + 1)
           break
         }
         case 'snapshot': {
           if (ev.snapshot.deck_id && ev.snapshot.deck_id !== deckId) return
+          const secKey = ev.snapshot.section?.trim() || null
           setLastSnapshot((prev) => (shouldApplyStreamItem(prev, ev.snapshot) ? ev.snapshot : prev))
           // H2: clear any older/equal transient liveFrame so it can never shadow the newer durable snapshot.
           setLiveFrame((prev) => (prev && compareStreamOrder(ev.snapshot, prev) >= 0 ? null : prev))
+          if (secKey) {
+            setSectionSnapshots((prev) =>
+              shouldApplyStreamItem(prev[secKey] ?? null, ev.snapshot)
+                ? { ...prev, [secKey]: ev.snapshot }
+                : prev,
+            )
+            setSectionFrames((prev) => {
+              const existing = prev[secKey]
+              if (!existing || compareStreamOrder(ev.snapshot, existing) < 0) return prev
+              const copy = { ...prev }
+              delete copy[secKey]
+              return copy
+            })
+          } else {
+            setGlobalSnapshot((prev) => (shouldApplyStreamItem(prev, ev.snapshot) ? ev.snapshot : prev))
+            setGlobalFrame((prev) => (prev && compareStreamOrder(ev.snapshot, prev) >= 0 ? null : prev))
+            setSectionFrames((prev) => pruneFramesByEpoch(prev, ev.snapshot.run_epoch))
+          }
+          setDataVersion((v) => v + 1)
           break
         }
         case 'status': {
@@ -418,9 +617,14 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
             checkScriptRevisionChange(ev.status)
             if (ev.status.state === 'stopped') {
               setLiveFrame(null)
+              setGlobalFrame(null)
+              setSectionFrames({})
             } else {
               setLiveFrame((prev) => (prev && prev.run_epoch < ev.status.run_epoch ? null : prev))
+              setGlobalFrame((prev) => (prev && prev.run_epoch < ev.status.run_epoch ? null : prev))
+              setSectionFrames((prev) => pruneFramesByEpoch(prev, ev.status.run_epoch))
             }
+            setDataVersion((v) => v + 1)
           }
           break
         }
@@ -481,47 +685,70 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   }, [client, deckId, pinnedSnapshotId, qc])
 
   const invokeAction = useCallback(
-    async (action: string, args: Record<string, unknown>): Promise<InteractResponse | null> => {
-      if ((!api?.deck_interact && !client) || !deckId) return null
+    async (
+      action: string,
+      args: Record<string, unknown>,
+      opts?: InvokeActionOptions,
+    ): Promise<InteractResponse | null> => {
+      if ((!api?.deck_interact && !client) || !deckId) {
+        if (opts?.throwOnError) throw new Error('RPC client unavailable')
+        return null
+      }
       const targetDeckId = deckId
       const safeArgs = args ?? {}
-      const expectedRev = effectiveRuntimeRef.current?.active_rev ?? null
-      const retryKey = JSON.stringify([targetDeckId, action, safeArgs, expectedRev])
+      const expectedRev =
+        opts?.expectedRev !== undefined ? opts.expectedRev : (effectiveRuntimeRef.current?.active_rev ?? null)
+      const timeoutMs = opts?.timeoutMs ?? 30_000
+      const explicitRequestId = opts?.requestId?.trim() || undefined
+      const retryKey = explicitRequestId
+        ? `req:${targetDeckId}:${explicitRequestId}`
+        : JSON.stringify([targetDeckId, action, safeArgs, expectedRev])
       // Prevent duplicate rapid double-clicks for the same action/args while allowing ref-counted overlap.
-      if (inFlightActionKeysRef.current.has(retryKey)) return null
+      if (inFlightActionKeysRef.current.has(retryKey)) {
+        if (opts?.throwOnError) throw new Error(`Action "${action}" is already in flight`)
+        return null
+      }
       inFlightActionKeysRef.current.add(retryKey)
       setActionBusyCount((c) => c + 1)
       const requestId =
-        retryRequestRef.current && retryRequestRef.current.key === retryKey
+        explicitRequestId ??
+        (retryRequestRef.current && retryRequestRef.current.key === retryKey
           ? retryRequestRef.current.requestId
-          : makeRequestId()
-      retryRequestRef.current = { key: retryKey, requestId }
+          : makeRequestId())
+      if (!explicitRequestId) {
+        retryRequestRef.current = { key: retryKey, requestId }
+      }
       try {
         const res = api?.deck_interact
-          ? await api.deck_interact(targetDeckId, action, safeArgs, requestId, expectedRev, 30_000)
+          ? await api.deck_interact(targetDeckId, action, safeArgs, requestId, expectedRev, timeoutMs)
           : await callDeck<InteractResponse>(client!, 'deck_interact', [
               targetDeckId,
               action,
               safeArgs,
               requestId,
               expectedRev,
-              30_000,
+              timeoutMs,
             ])
         // Definite server response received: clear cached retry request_id.
-        if (retryRequestRef.current?.requestId === requestId) {
+        if (!explicitRequestId && retryRequestRef.current?.requestId === requestId) {
           retryRequestRef.current = null
         }
-        if (deckIdRef.current === targetDeckId) {
+        if (deckIdRef.current === targetDeckId && !opts?.privateOnly) {
           setLastResult(res)
         }
-        if (!res.ok && res.error) {
+        if (!res.ok && res.error && !opts?.silent) {
           notify.error(`${action}: ${res.error}`)
         }
         return res
       } catch (e) {
         // Keep `retryRequestRef` on transport/timeout failure so an immediate retry reuses `request_id`.
         const msg = e instanceof Error ? e.message : String(e)
-        notify.error(msg)
+        if (!opts?.silent) {
+          notify.error(msg)
+        }
+        if (opts?.throwOnError) {
+          throw e instanceof Error ? e : new Error(msg)
+        }
         return null
       } finally {
         inFlightActionKeysRef.current.delete(retryKey)
@@ -549,9 +776,14 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
           setPendingApproval(st.pending_approval ?? null)
           if (st.state === 'stopped') {
             setLiveFrame(null)
+            setGlobalFrame(null)
+            setSectionFrames({})
           } else {
             setLiveFrame((prev) => (prev && prev.run_epoch < st.run_epoch ? null : prev))
+            setGlobalFrame((prev) => (prev && prev.run_epoch < st.run_epoch ? null : prev))
+            setSectionFrames((prev) => pruneFramesByEpoch(prev, st.run_epoch))
           }
+          setDataVersion((v) => v + 1)
         }
         void qc.invalidateQueries({ queryKey: decksKey })
       } catch (e) {
@@ -785,16 +1017,46 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
     [api, client, deckId, qc],
   )
 
+  const detailSnap = detailForDeck?.last_snapshot ?? null
+  const detailFrame = detailForDeck?.live_frame ?? null
+  const detailSnapSec = detailSnap?.section?.trim() || null
+  const detailFrameSec = detailFrame?.section?.trim() || null
+
   const effectiveSnapshot = pinnedSnapshotId
     ? (pinnedQuery.data ?? null)
     : hasSynced
       ? lastSnapshot
-      : (lastSnapshot ?? detailForDeck?.last_snapshot ?? null)
+      : (lastSnapshot ?? detailSnap)
   const effectiveFrame = pinnedSnapshotId
     ? null
     : hasSynced
       ? liveFrame
-      : (liveFrame ?? detailForDeck?.live_frame ?? null)
+      : (liveFrame ?? detailFrame)
+  const effectiveGlobalSnapshot = pinnedSnapshotId
+    ? null
+    : hasSynced
+      ? globalSnapshot
+      : (globalSnapshot ?? (detailSnap && !detailSnapSec ? detailSnap : null))
+  const effectiveGlobalFrame = pinnedSnapshotId
+    ? null
+    : hasSynced
+      ? globalFrame
+      : (globalFrame ?? (detailFrame && !detailFrameSec ? detailFrame : null))
+  const effectiveSectionSnapshots = pinnedSnapshotId
+    ? {}
+    : hasSynced || Object.keys(sectionSnapshots).length > 0
+      ? sectionSnapshots
+      : detailSnap && detailSnapSec
+        ? { [detailSnapSec]: detailSnap }
+        : {}
+  const effectiveSectionFrames = pinnedSnapshotId
+    ? {}
+    : hasSynced || Object.keys(sectionFrames).length > 0
+      ? sectionFrames
+      : detailFrame && detailFrameSec
+        ? { [detailFrameSec]: detailFrame }
+        : {}
+
   const activeData = selectLatestDeckData(
     pinnedQuery.data ?? null,
     effectiveFrame,
@@ -810,6 +1072,11 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
     runtime: effectiveRuntime,
     lastSnapshot: effectiveSnapshot,
     liveFrame: effectiveFrame,
+    globalSnapshot: effectiveGlobalSnapshot,
+    globalFrame: effectiveGlobalFrame,
+    sectionSnapshots: effectiveSectionSnapshots,
+    sectionFrames: effectiveSectionFrames,
+    dataVersion,
     activeData,
     pendingApproval,
     lastResult,

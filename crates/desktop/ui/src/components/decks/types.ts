@@ -1,4 +1,4 @@
-export type SectionKind = 'json_render' | 'note' | 'html'
+export type SectionKind = 'json_render' | 'note' | 'html' | 'openui'
 
 export type ScriptMode = 'oneshot' | 'streaming' | 'hybrid'
 

@@ -33,6 +33,21 @@ const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 export const GUEST_ACTION_WINDOW_MS = 2_000
 export const GUEST_ACTION_MAX_PER_WINDOW = 5
 
+export const DECK_HTML_MIN_HEIGHT = 140
+export const DECK_HTML_MAX_HEIGHT = 960
+export const DECK_HTML_COMPACT_MIN_HEIGHT = 120
+export const DECK_HTML_COMPACT_MAX_HEIGHT = 420
+
+const REQUEST_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/
+
+/** Clamp a guest-reported iframe height to safe host bounds. */
+export function clampDeckHtmlHeight(height: unknown, compact = false): number | null {
+  if (typeof height !== 'number' || !Number.isFinite(height) || height <= 0) return null
+  const min = compact ? DECK_HTML_COMPACT_MIN_HEIGHT : DECK_HTML_MIN_HEIGHT
+  const max = compact ? DECK_HTML_COMPACT_MAX_HEIGHT : DECK_HTML_MAX_HEIGHT
+  return Math.max(min, Math.min(max, Math.round(height)))
+}
+
 /**
  * Narrow guest-to-host intent protocol for Deck HTML sections.
  * Runtime stream controls (`start`/`pause`/`resume`/`stop`/`run_once`) are strictly
@@ -40,7 +55,8 @@ export const GUEST_ACTION_MAX_PER_WINDOW = 5
  */
 export type DeckGuestIntent =
   | { kind: 'ready' }
-  | { kind: 'action'; action: string; args: Record<string, unknown> }
+  | { kind: 'resize'; height: number }
+  | { kind: 'action'; action: string; args: Record<string, unknown>; requestId?: string }
 
 /** Generate a cryptographically random 128-bit hex nonce (never falls back to `Math.random`). */
 export function generateDeckNonce(): string {
@@ -192,13 +208,27 @@ export function parseDeckGuestIntent(raw: unknown, expectedNonce: string): DeckG
     return { kind: 'ready' }
   }
 
+  if (msg.kind === 'resize') {
+    if (typeof msg.height !== 'number' || !Number.isFinite(msg.height) || msg.height <= 0) {
+      return null
+    }
+    return { kind: 'resize', height: Math.round(msg.height) }
+  }
+
   if (msg.kind === 'action') {
     if (typeof msg.action !== 'string') return null
     const action = msg.action.trim()
     if (!action || action.length > 120 || !/^[a-zA-Z0-9_.-]+$/.test(action)) return null
+    let requestId: string | undefined
+    if (msg.requestId !== undefined) {
+      if (typeof msg.requestId !== 'string' || !REQUEST_ID_RE.test(msg.requestId)) return null
+      requestId = msg.requestId
+    }
     const cleanArgs = sanitizePlainJsonObject(msg.args === undefined ? {} : msg.args)
     if (!cleanArgs) return null
-    return { kind: 'action', action, args: cleanArgs }
+    return requestId
+      ? { kind: 'action', action, args: cleanArgs, requestId }
+      : { kind: 'action', action, args: cleanArgs }
   }
 
   // `control` and any other intent kinds are strictly rejected from guest HTML.
@@ -236,16 +266,24 @@ export type DeckHtmlMessageContext = {
   userActivationActive: boolean
   /** True when viewing a pinned historical snapshot (blocks all guest actions). */
   pinned?: boolean
+  /** False when embedded in a non-interactive card preview (blocks all guest actions). */
+  interactive?: boolean
+  /** True when rendered in compact/embedded card layout (tighter height clamp). */
+  compact?: boolean
   /** Optional rate-limit predicate; returns true to permit the action. */
   allowAction?: () => boolean
   onReady: () => void
-  onAction?: (action: string, args: Record<string, unknown>) => void
+  onResize?: (height: number) => void
+  onAction?: (action: string, args: Record<string, unknown>, requestId?: string) => void
+  /** Notified when an otherwise authenticated action intent with `requestId` is denied by host guards. */
+  onActionDenied?: (requestId: string, reason: string) => void
 }
 
 /**
  * Pure host-side bridge dispatcher for Deck HTML iframes.
  * Enforces opaque origin (`'null'`), exact iframe `contentWindow` source, matching per-revision nonce,
- * and for `action` intents: non-pinned view, trusted focus + active user activation, and rate-limiting.
+ * bounded height-sync, and for `action` intents: non-pinned & interactive view, trusted focus +
+ * active user activation, and rate-limiting.
  */
 export function handleDeckHtmlMessage(
   ev: { source: unknown; origin?: unknown; data: unknown },
@@ -262,11 +300,45 @@ export function handleDeckHtmlMessage(
     return true
   }
 
+  if (intent.kind === 'resize') {
+    const clamped = clampDeckHtmlHeight(intent.height, ctx.compact)
+    if (clamped === null) return false
+    ctx.onResize?.(clamped)
+    return true
+  }
+
   if (intent.kind === 'action') {
-    if (ctx.pinned || !ctx.onAction) return false
-    if (!ctx.focused || !ctx.userActivationActive) return false
-    if (ctx.allowAction && !ctx.allowAction()) return false
-    ctx.onAction(intent.action, intent.args)
+    if (ctx.pinned) {
+      if (intent.requestId) {
+        ctx.onActionDenied?.(intent.requestId, 'Deck is pinned to a historical snapshot')
+      }
+      return false
+    }
+    if (ctx.interactive === false) {
+      if (intent.requestId) {
+        ctx.onActionDenied?.(intent.requestId, 'Deck section is not interactive')
+      }
+      return false
+    }
+    if (!ctx.onAction) {
+      if (intent.requestId) {
+        ctx.onActionDenied?.(intent.requestId, 'Deck actions are unavailable')
+      }
+      return false
+    }
+    if (!ctx.focused || !ctx.userActivationActive) {
+      if (intent.requestId) {
+        ctx.onActionDenied?.(intent.requestId, 'Action requires active focus and user gesture')
+      }
+      return false
+    }
+    if (ctx.allowAction && !ctx.allowAction()) {
+      if (intent.requestId) {
+        ctx.onActionDenied?.(intent.requestId, 'Action rate limit exceeded')
+      }
+      return false
+    }
+    ctx.onAction(intent.action, intent.args, intent.requestId)
     return true
   }
 
@@ -284,15 +356,50 @@ function buildBridgeScriptSource(nonce: string): string {
   var NONCE = ${safeNonce};
   var CH = ${safeChannel};
   var listeners = [];
+  var themeListeners = [];
   var hasPayload = false;
   var lastPayload = undefined;
+  var currentTheme = "light";
+  var hasTheme = false;
   var readySent = false;
+  var reqSeq = 0;
+  var pending = Object.create(null);
+  var pendingCount = 0;
+  var lastHeight = 0;
+  var resizeQueued = false;
+  function postHeightNow() {
+    resizeQueued = false;
+    try {
+      if (!window.parent) return;
+      var de = document.documentElement;
+      var body = document.body;
+      var h = Math.ceil(Math.max(de ? de.scrollHeight : 0, body ? body.scrollHeight : 0));
+      if (h > 0 && h !== lastHeight) {
+        lastHeight = h;
+        window.parent.postMessage({ channel: CH, nonce: NONCE, kind: "resize", height: h }, "*");
+      }
+    } catch (_) {}
+  }
+  function scheduleHeight() {
+    if (resizeQueued) return;
+    resizeQueued = true;
+    var raf = typeof window.requestAnimationFrame === "function" ? window.requestAnimationFrame : function(fn){ return setTimeout(fn, 16); };
+    raf(postHeightNow);
+  }
   function sendReady() {
     if (readySent) return;
     readySent = true;
     try {
       if (window.parent) {
         window.parent.postMessage({ channel: CH, nonce: NONCE, kind: "ready" }, "*");
+      }
+    } catch (_) {}
+    scheduleHeight();
+    try {
+      if (typeof ResizeObserver === "function") {
+        var ro = new ResizeObserver(scheduleHeight);
+        if (document.documentElement) ro.observe(document.documentElement);
+        if (document.body) ro.observe(document.body);
       }
     } catch (_) {}
   }
@@ -318,11 +425,42 @@ function buildBridgeScriptSource(nonce: string): string {
   window.addEventListener("message", function(ev) {
     if (!ev || ev.source !== window.parent) return;
     var d = ev.data;
-    if (!d || d.channel !== CH || d.nonce !== NONCE || d.kind !== "data") return;
-    hasPayload = true;
-    lastPayload = d.payload;
-    for (var i = 0; i < listeners.length; i++) {
-      try { listeners[i](d.payload); } catch (_) {}
+    if (!d || d.channel !== CH || d.nonce !== NONCE) return;
+    if (d.kind === "data") {
+      hasPayload = true;
+      lastPayload = d.payload;
+      for (var i = 0; i < listeners.length; i++) {
+        try { listeners[i](d.payload); } catch (_) {}
+      }
+      scheduleHeight();
+      return;
+    }
+    if (d.kind === "theme") {
+      var mode = d.theme === "dark" ? "dark" : "light";
+      currentTheme = mode;
+      hasTheme = true;
+      try {
+        if (document.documentElement) {
+          document.documentElement.dataset.theme = mode;
+          document.documentElement.style.colorScheme = mode;
+        }
+      } catch (_) {}
+      for (var t = 0; t < themeListeners.length; t++) {
+        try { themeListeners[t](mode); } catch (_) {}
+      }
+      return;
+    }
+    if (d.kind === "action_result" && typeof d.requestId === "string") {
+      var entry = pending[d.requestId];
+      if (!entry) return;
+      delete pending[d.requestId];
+      pendingCount = Math.max(0, pendingCount - 1);
+      clearTimeout(entry.timer);
+      if (d.ok) {
+        entry.resolve(d.result);
+      } else {
+        entry.reject(new Error(typeof d.error === "string" && d.error ? d.error : "Action failed"));
+      }
     }
   });
   var api = Object.freeze({
@@ -331,11 +469,51 @@ function buildBridgeScriptSource(nonce: string): string {
       listeners.push(cb);
       if (hasPayload) { try { cb(lastPayload); } catch (_) {} }
     },
+    onTheme: function(cb) {
+      if (typeof cb !== "function") return;
+      themeListeners.push(cb);
+      if (hasTheme) { try { cb(currentTheme); } catch (_) {} }
+    },
+    getTheme: function() {
+      return currentTheme;
+    },
     action: function(name, args) {
-      if (typeof name !== "string" || !name) return;
-      if (window.parent) {
-        window.parent.postMessage({ channel: CH, nonce: NONCE, kind: "action", action: name, args: (args && typeof args === "object" && !Array.isArray(args)) ? args : {} }, "*");
+      if (typeof name !== "string" || !name) {
+        return Promise.reject(new Error("Action name is required"));
       }
+      if (!window.parent) {
+        return Promise.reject(new Error("Host bridge unavailable"));
+      }
+      if (pendingCount >= 32) {
+        return Promise.reject(new Error("Too many pending actions"));
+      }
+      var reqId = "html-" + NONCE.slice(0, 8) + "-" + (++reqSeq);
+      return new Promise(function(resolve, reject) {
+        var timer = setTimeout(function() {
+          if (pending[reqId]) {
+            delete pending[reqId];
+            pendingCount = Math.max(0, pendingCount - 1);
+            reject(new Error("Action timed out"));
+          }
+        }, 35000);
+        pending[reqId] = { resolve: resolve, reject: reject, timer: timer };
+        pendingCount += 1;
+        try {
+          window.parent.postMessage({
+            channel: CH,
+            nonce: NONCE,
+            kind: "action",
+            requestId: reqId,
+            action: name,
+            args: (args && typeof args === "object" && !Array.isArray(args)) ? args : {}
+          }, "*");
+        } catch (err) {
+          delete pending[reqId];
+          pendingCount = Math.max(0, pendingCount - 1);
+          clearTimeout(timer);
+          reject(err);
+        }
+      });
     }
   });
   Object.defineProperty(window, "theuthDeck", { value: api, writable: false, configurable: false });
