@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 vi.hoisted(() => {
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined })
 })
-import { CATEGORIES, MOVED_TABS, TAB_IDS, bandTabs, deviceTabs, isTab, navCategories, navTabs, placeOf, shownCategories, shownTab, shownTabs } from './registry'
+import { CATEGORIES, MOVED_TABS, TAB_IDS, bandTabs, deviceTabs, isTab, navCategories, navTabs, placeOf, shownCategories, shownTab, shownTabs, tabShown } from './registry'
 import { type EngineCaps, engineCaps, notApplicable } from './scope'
 import type { Discovery } from '@/rpc/discovery'
 
@@ -192,4 +192,69 @@ test('the nav: device tabs leave General for the "This <device>" group, whose ba
   hide('app')
   expect(navCategories().map((c) => c.id)).not.toContain('general')
   expect(deviceTabs().map((t) => t.id)).toEqual(['appearance', 'shortcuts'])
+})
+
+function discoveryWith(methods: readonly string[], topics: readonly string[] = [], phase: Discovery['phase'] = 'ready'): Discovery {
+  const allMethods = topics.length > 0 ? [...new Set([...methods, 'subscribe_topics', 'unsubscribe_topics'])] : [...methods]
+  return {
+    phase,
+    capabilities: null,
+    unavailable: new Set(),
+    document:
+      phase === 'ready'
+        ? ({
+            methods: allMethods.map((name) => ({ name, params: [], result: { schema: {} } })),
+            'x-theuth': {
+              events: topics.map((key) => {
+                const [topic, version] = key.split('@')
+                return { topic, version: Number(version) }
+              }),
+              subscriptions: topics.length > 0 ? [{ subscribe: 'subscribe_topics', unsubscribe: 'unsubscribe_topics', notification: 'subscribe_topics' }] : [],
+            },
+          } as never)
+        : null,
+  }
+}
+
+test('Network: hub discovery shows all five Network tabs without a desktop-local gate; iOS-LOCAL shows only devices', () => {
+  // Runs against the real registry (no `hide()`), verifying no desktop-local `visible` gate remains on Network tabs.
+  const network = CATEGORIES.find((category) => category.id === 'network')!
+  const hubMethods = [...new Set(network.tabs.flatMap((tab) => tab.required?.methods ?? []))]
+  const hubTopics = [...new Set(network.tabs.flatMap((tab) => tab.required?.topics ?? []))]
+  const hubDiscovery = discoveryWith(hubMethods, hubTopics)
+  const iosLocalDiscovery = discoveryWith([])
+
+  expect(shownTabs(network, hubDiscovery).map((tab) => tab.id)).toEqual(['machine', 'machines', 'devices', 'messaging', 'vms'])
+  expect(shownTabs(network, iosLocalDiscovery).map((tab) => tab.id)).toEqual(['devices'])
+  expect(shownTab('machine', iosLocalDiscovery)).toBe('devices')
+})
+
+test('Network paired-hub discovery: shows hub-supported Network tabs (and while connecting), leaves other categories and device tabs on active discovery', () => {
+  const network = CATEGORIES.find((category) => category.id === 'network')!
+  const sharing = CATEGORIES.find((category) => category.id === 'sharing')!
+  const hubMethods = [...new Set([...network.tabs, ...sharing.tabs].flatMap((tab) => tab.required?.methods ?? []))]
+  const hubTopics = [...new Set([...network.tabs, ...sharing.tabs].flatMap((tab) => tab.required?.topics ?? []))]
+  const hubDiscovery = discoveryWith(hubMethods, hubTopics)
+  const hubWithoutVms = discoveryWith(hubMethods.filter((m) => !m.startsWith('sandbox')), hubTopics)
+  const hubConnecting = discoveryWith([], [], 'connecting')
+  const hubDiscovering = discoveryWith([], [], 'discovering')
+  const hubFailed = discoveryWith([], [], 'failed')
+  const iosLocalDiscovery = discoveryWith([])
+
+  // Paired phone with active = LOCAL and ready hub: all 5 Network tabs show; Sharing stays filtered on active discovery.
+  expect(navTabs(network, iosLocalDiscovery, hubDiscovery).map((t) => t.id)).toEqual(['machine', 'machines', 'devices', 'messaging', 'vms'])
+  expect(bandTabs(placeOf('machine')!, iosLocalDiscovery, hubDiscovery).map((t) => t.id)).toEqual(['machine', 'machines', 'devices', 'messaging', 'vms'])
+  expect(navTabs(sharing, iosLocalDiscovery, hubDiscovery)).toEqual([])
+  expect(deviceTabs(iosLocalDiscovery).map((t) => t.id)).toEqual(['appearance', 'shortcuts'])
+
+  // Hub without sandbox_* hides Sandbox VMs while showing the rest.
+  expect(navTabs(network, iosLocalDiscovery, hubWithoutVms).map((t) => t.id)).toEqual(['machine', 'machines', 'devices', 'messaging'])
+
+  // While hub discovery is connecting or discovering, keep Network tabs visible so the body can show loading.
+  expect(navTabs(network, iosLocalDiscovery, hubConnecting).map((t) => t.id)).toEqual(['machine', 'machines', 'devices', 'messaging', 'vms'])
+  expect(navTabs(network, iosLocalDiscovery, hubDiscovering).map((t) => t.id)).toEqual(['machine', 'machines', 'devices', 'messaging', 'vms'])
+  expect(tabShown(sharing, sharing.tabs[0]!, iosLocalDiscovery, hubConnecting)).toBe(false)
+
+  // Failed hub discovery falls back to active discovery (devices only on iOS-LOCAL).
+  expect(navTabs(network, iosLocalDiscovery, hubFailed).map((t) => t.id)).toEqual(['devices'])
 })

@@ -5,14 +5,17 @@ import { ChevronDown } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { MachineDot, MachineRow } from '@/components/settings/MachineRow'
 import { usePickedMachine, useSettingsMachines } from '@/components/settings/machine-target'
+import type { Machine } from '@/lib/mesh-machines'
 import { cn } from '@/lib/utils'
 
-export function MachinePicker({ phone, className }: { phone?: boolean; className?: string }) {
+export function MachinePicker({ phone, className, selected }: { phone?: boolean; className?: string; selected?: Machine | null }) {
   const settings = useSettingsMachines()
   const pick = usePickedMachine((s) => s.pick)
   // One machine (or an engine that cannot forward): nothing to pick.
-  if (!settings || settings.machines.length < 2 || !settings.target) return null
-  const { machines, target } = settings
+  if (!settings || settings.machines.length < 2) return null
+  const target = selected ?? settings.target
+  if (!target) return null
+  const { machines } = settings
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -31,7 +34,7 @@ export function MachinePicker({ phone, className }: { phone?: boolean; className
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-(--radix-dropdown-menu-trigger-width) min-w-56">
         {machines.map((m) => (
-          <DropdownMenuItem key={m.id} disabled={!m.online} aria-current={m.id === target.id || undefined} onSelect={() => pick(m.connected ? null : m.id)}>
+          <DropdownMenuItem key={m.id} disabled={!m.online} aria-current={m.id === target.id || undefined} onSelect={() => pick(m.id)}>
             <MachineRow machine={m} selected={m.id === target.id} />
           </DropdownMenuItem>
         ))}

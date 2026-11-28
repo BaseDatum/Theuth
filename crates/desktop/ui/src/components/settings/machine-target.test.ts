@@ -3,12 +3,13 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { act, createElement as h } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, test, vi } from 'vitest'
-import { MachineScope, type SettingsMachines, SettingsMachinesProvider, aimedAt } from '@/components/settings/machine-target'
+import { MachineScope, type SettingsMachines, SettingsMachinesProvider, aimedAt, pickerTargetFor, resolveTabBinding } from '@/components/settings/machine-target'
 import { useAction } from '@/components/settings/shared'
 import type { Machine } from '@/lib/mesh-machines'
 import { useApi } from '@/lib/rpc'
 import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
+import type { Discovery } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
 import { LOCAL } from '@/link/engines'
 import { scope } from '@/store/engine-scope'
@@ -122,4 +123,208 @@ test('227: a connectedOnly tab (its methods are not forwardable) stays on the co
   expect(aimedAt({ scope: 'machine', connectedOnly: true }, mbp)).toBe(mbp)
   expect(aimedAt({ scope: 'machine' }, p50)).toBe(p50)
   expect(aimedAt({ scope: 'everywhere' }, p50)).toBeNull()
+})
+
+function discoveryWith(methods: readonly string[], phase: Discovery['phase'] = 'ready'): Discovery {
+  return {
+    phase,
+    capabilities: null,
+    unavailable: new Set(),
+    document:
+      phase === 'ready'
+        ? ({ methods: methods.map((name) => ({ name, params: [], result: { schema: {} } })), 'x-theuth': { events: [], subscriptions: [] } } as never)
+        : null,
+  }
+}
+
+test('resolveTabBinding: paired phone on LOCAL binds Network everywhere tabs to hub scope and machine tabs to hub by default', () => {
+  const phone = machine(LOCAL, 'This iPhone', { kind: 'local', connected: true, client: LOCAL, forwarded: false, path: null })
+  const hub = machine('mbp', '333 · MacBook Pro', { kind: 'hub', connected: false, client: 'hub-row', forwarded: false, hub: true, path: null })
+  const iosDiscovery = discoveryWith([])
+  const hubDiscovery = discoveryWith(['mesh_status', 'link_status', 'a2a_status', 'sandbox_create'])
+  const hubConnecting = discoveryWith([], 'connecting')
+  const hubWithoutVms = discoveryWith(['mesh_status', 'link_status', 'a2a_status'])
+
+  const machineTab = { id: 'machine', scope: 'machine' as const, required: { methods: ['mesh_status'] as const } }
+  const machinesTab = { id: 'machines', scope: 'everywhere' as const, required: { methods: ['mesh_status'] as const } }
+  const devicesTab = { id: 'devices', scope: 'everywhere' as const }
+  const vmsTab = { id: 'vms', scope: 'machine' as const, required: { methods: ['sandbox_create'] as const } }
+  const sharingTab = { id: 'shared', scope: 'everywhere' as const, required: { methods: ['mesh_status'] as const } }
+
+  // Default (picked === null): Network machine tab aims directly at the hub's own machine (no forwarding).
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: machineTab,
+      target: phone,
+      picked: null,
+      machines: [phone, hub],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery,
+    }),
+  ).toEqual({ aimed: hub, scopeClient: null, loading: false })
+
+  // Default before mesh_status populates the hub machine row: scopes directly to meshClient rather than flashing Unavailable.
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: machineTab,
+      target: phone,
+      picked: null,
+      machines: [phone],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery,
+    }),
+  ).toEqual({ aimed: null, scopeClient: 'hub-row', loading: false })
+
+  // Everywhere Network tabs (Machines, Devices) re-scope to meshClient with aimed = null.
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: machinesTab,
+      target: phone,
+      picked: null,
+      machines: [phone, hub],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery,
+    }),
+  ).toEqual({ aimed: null, scopeClient: 'hub-row', loading: false })
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: devicesTab,
+      target: phone,
+      picked: null,
+      machines: [phone, hub],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery,
+    }),
+  ).toEqual({ aimed: null, scopeClient: 'hub-row', loading: false })
+
+  // Sharing (and other non-Network everywhere tabs) are NOT re-scoped.
+  expect(
+    resolveTabBinding({
+      categoryId: 'sharing',
+      tab: sharingTab,
+      target: phone,
+      picked: null,
+      machines: [phone, hub],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery,
+    }),
+  ).toEqual({ aimed: null, scopeClient: null, loading: false })
+
+  // Explicit This iPhone pick is respected: machine tab stays on phone so Capability shows Unavailable.
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: machineTab,
+      target: phone,
+      picked: LOCAL,
+      machines: [phone, hub],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery,
+    }),
+  ).toEqual({ aimed: phone, scopeClient: null, loading: false })
+
+  // Hub discovery still connecting: required Network tabs report loading; Devices still mounts in hub scope so Reachable shows.
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: machineTab,
+      target: phone,
+      picked: null,
+      machines: [phone],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery: hubConnecting,
+    }),
+  ).toEqual({ aimed: null, scopeClient: null, loading: true })
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: machinesTab,
+      target: phone,
+      picked: null,
+      machines: [phone],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery: hubConnecting,
+    }),
+  ).toEqual({ aimed: null, scopeClient: null, loading: true })
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: devicesTab,
+      target: phone,
+      picked: null,
+      machines: [phone],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery: hubConnecting,
+    }),
+  ).toEqual({ aimed: null, scopeClient: 'hub-row', loading: false })
+
+  // Hub that does not advertise VMs does not override aim.
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: vmsTab,
+      target: phone,
+      picked: null,
+      machines: [phone, hub],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: iosDiscovery,
+      hubDiscovery: hubWithoutVms,
+    }),
+  ).toEqual({ aimed: phone, scopeClient: null, loading: false })
+
+  // Unpaired phone (meshClient === active) or desktop whose active engine already serves the tab: no re-scoping.
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: devicesTab,
+      target: phone,
+      picked: null,
+      machines: [phone],
+      active: LOCAL,
+      meshClient: LOCAL,
+      discovery: iosDiscovery,
+    }),
+  ).toEqual({ aimed: null, scopeClient: null, loading: false })
+  expect(
+    resolveTabBinding({
+      categoryId: 'network',
+      tab: devicesTab,
+      target: mac,
+      picked: null,
+      machines: [mac, hub],
+      active: LOCAL,
+      meshClient: 'hub-row',
+      discovery: hubDiscovery,
+      hubDiscovery,
+    }),
+  ).toEqual({ aimed: null, scopeClient: null, loading: false })
+
+  // pickerTargetFor: highlights hub while picked === null and Network tab aims/scopes to hub; keeps target on explicit pick or other categories.
+  expect(pickerTargetFor({ aimed: hub, scopeClient: null, loading: false }, null, [phone, hub], phone)).toBe(hub)
+  expect(pickerTargetFor({ aimed: null, scopeClient: 'hub-row', loading: false }, null, [phone, hub], phone)).toBe(hub)
+  expect(pickerTargetFor({ aimed: phone, scopeClient: null, loading: false }, LOCAL, [phone, hub], phone)).toBe(phone)
+  expect(pickerTargetFor({ aimed: null, scopeClient: null, loading: false }, null, [phone, hub], phone)).toBe(phone)
 })

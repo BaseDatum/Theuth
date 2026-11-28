@@ -34,7 +34,7 @@ import { Switch } from '@/components/ui/switch'
 import { BOOTSTRAPPING_HINT, bootstrappingLabel, isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { LOCAL, useEngines } from '@/link/engines'
+import { LOCAL } from '@/link/engines'
 import { NODES_KEY, useHasNodes, useNodes } from '@/link/nodes'
 import type { HubPref } from "@/rpc/bindings/method.nodes.output"
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
@@ -46,6 +46,7 @@ import type { RelayState } from "@/rpc/bindings/method.nodes.output"
 import type { RotationState } from "@/rpc/bindings/method.nodes.output"
 import type { PeerSync } from '@/rpc/bindings/method.sessionsync.receiver'
 import { useConnection } from '@/store/connection'
+import { useScope } from '@/store/engine-scope'
 import { on } from '@/store/sessions'
 
 const PREFS: readonly [HubPref, string][] = [
@@ -67,7 +68,7 @@ const LAN_KEYS = ['web.allow_private_network', 'browser.allow_private_network'] 
  */
 export function MachineTab() {
   const status = useMesh()
-  const active = useEngines((s) => s.active)
+  const scopeId = useScope().id
   const info = useConnection((s) => s.info)
   if (status.isPending) return <Empty>Loading…</Empty>
   if (status.isError) return <Empty>{status.error.message}</Empty>
@@ -75,7 +76,7 @@ export function MachineTab() {
   return (
     <>
       <RotationBanner nameOf={nameOfIn(s)} />
-      <ThisMachine s={s} managing={active !== LOCAL ? (info?.name ?? s.self_name) : null} />
+      <ThisMachine s={s} managing={scopeId !== LOCAL ? (info?.name ?? s.self_name) : null} />
       <MeshSettings s={s} />
     </>
   )

@@ -93,3 +93,13 @@ test('S4: a hidden tab lands on its category’s first shown tab, else Appearanc
   hide('signal', 'slack', 'telegram')
   expect(routeTarget('telegram', {})).toEqual({ kind: 'tab', tab: 'appearance', search: {} })
 })
+
+test('Network tabs have no desktop-local visible gate: routeTarget without discovery renders machine/machines and aliases network to machine', () => {
+  // Runs against the real registry (no `hide()`), matching `beforeLoad` in `routes/settings.$tab.tsx` even on non-desktop clients.
+  expect(routeTarget('machine', {})).toEqual({ kind: 'render' })
+  expect(routeTarget('machines', {})).toEqual({ kind: 'render' })
+  expect(routeTarget('messaging', {})).toEqual({ kind: 'render' })
+  expect(routeTarget('vms', {})).toEqual({ kind: 'render' })
+  expect(routeTarget('devices', {})).toEqual({ kind: 'render' })
+  expect(routeTarget('network', {})).toEqual({ kind: 'tab', tab: 'machine', search: {} })
+})
