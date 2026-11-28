@@ -38,6 +38,7 @@ import { useEngines } from '@/link/engines'
 import type { SearchCategory } from '@/rpc/bindings/method.rpc_2dcompose.input'
 import type { SearchGroup } from "@/rpc/bindings/method.rpc_2dcompose.output"
 import { useEntries } from '@/store/sessions'
+import { useUserTerminals } from '@/store/terminals'
 
 const INDEXING_POLL_MS = 500
 const LONG_PRESS_MS = 450
@@ -166,6 +167,7 @@ export function AttachPicker({
 
   // ---- Browse sources (§7.4), fetched in parallel, shown as they arrive.
   const browsing = open && debounced === ''
+  const userTerminals = useUserTerminals((s) => s.terminals)
   const notes = useNotes()
   const knowledge = useQuery({
     queryKey: [...queryKeys.knowledgeList, 'attach'],
@@ -388,8 +390,26 @@ export function AttachPicker({
           break
       }
     }
+    if (tab === 'all' && userTerminals.length > 0) {
+      groups.push({
+        id: 'terminal',
+        heading: KIND_LABEL.terminal,
+        rows: userTerminals.map((t) => row({ kind: 'terminal', terminal: t }, now)),
+      })
+    }
   } else if (open) {
     for (const c of cats) searchGroup(c)
+    if (tab === 'all' && userTerminals.length > 0) {
+      const q = debounced.toLowerCase()
+      const matching = userTerminals
+        .filter((t) =>
+          `${t.name} ${t.node} ${t.engine} ${t.shell}`.toLowerCase().includes(q),
+        )
+        .map((t) => row({ kind: 'terminal', terminal: t }, now))
+      if (matching.length > 0) {
+        groups.push({ id: 'terminal', heading: KIND_LABEL.terminal, rows: matching })
+      }
+    }
   }
   const shown = groups.filter((g) => g.rows.length > 0 || g.section || (browsing && tab !== 'all'))
   const flat = shown.flatMap((g) => g.rows)

@@ -142,6 +142,7 @@ pub mod repl;
 pub mod search;
 pub mod sensor;
 pub mod session_read;
+pub mod shells;
 pub mod skills;
 pub mod snap;
 pub mod spill;

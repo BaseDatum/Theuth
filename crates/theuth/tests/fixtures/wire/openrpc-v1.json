@@ -117014,7 +117014,7 @@
         ]
       },
       "method.roster.input.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, or `attachments/<sha16>[.<ext>]` for a local file.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -117059,6 +117059,11 @@
           {
             "const": "file",
             "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -119113,7 +119118,7 @@
         "type": "object"
       },
       "method.roster.output.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, or `attachments/<sha16>[.<ext>]` for a local file.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -119158,6 +119163,11 @@
           {
             "const": "file",
             "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -121564,7 +121574,7 @@
         "type": "object"
       },
       "method.roster.receiver.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, or `attachments/<sha16>[.<ext>]` for a local file.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -121609,6 +121619,11 @@
           {
             "const": "file",
             "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -141998,7 +142013,7 @@
         "type": "object"
       },
       "method.tasks.output.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, or `attachments/<sha16>[.<ext>]` for a local file.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -142043,6 +142058,11 @@
           {
             "const": "file",
             "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -142512,7 +142532,7 @@
         "type": "object"
       },
       "method.tasks.receiver.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, or `attachments/<sha16>[.<ext>]` for a local file.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -142557,6 +142577,11 @@
           {
             "const": "file",
             "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -168054,6 +168079,41 @@
         },
         "x-theuth-receiverSchema": {
           "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "shells_list",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "x-theuth-audience": "owner",

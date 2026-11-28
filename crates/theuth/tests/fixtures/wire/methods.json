@@ -672,6 +672,7 @@
   "shell_close",
   "shell_input",
   "shell_resize",
+  "shells_list",
   "shutdown",
   "signal_allow",
   "signal_link",

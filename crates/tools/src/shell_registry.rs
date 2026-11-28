@@ -239,6 +239,17 @@ mod imp {
             shell.resize(rows, cols)
         }
 
+        /// Sorted ids of currently open (running) shells in this registry.
+        pub fn list(&self) -> Vec<String> {
+            let mut ids: Vec<String> = lock(&self.shells)
+                .iter()
+                .filter(|(_, s)| s.is_alive())
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.sort();
+            ids
+        }
+
         /// Close shell `id`: remove it from the registry and `SIGHUP` its process group
         /// (escalating to `SIGTERM` / `SIGKILL` if a descendant ignores `SIGHUP`).
         /// Returns `true` if a shell was present.
@@ -474,6 +485,11 @@ mod imp {
         /// Unavailable on iOS.
         pub fn resize(&self, _id: &str, _rows: u16, _cols: u16) -> Result<(), String> {
             Err("interactive shells are not supported on iOS".into())
+        }
+
+        /// No-op on iOS.
+        pub fn list(&self) -> Vec<String> {
+            Vec::new()
         }
 
         /// No-op on iOS.

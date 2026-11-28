@@ -246,6 +246,12 @@
       "body": "review section 2"
     },
     {
+      "name": "terminal",
+      "input": "[attached terminal xeus:main \"Build shell\" · xeus]\nrun cargo check in there",
+      "refs": [{"kind": "terminal", "id": "xeus:main", "title": "Build shell", "meta": "xeus"}],
+      "body": "run cargo check in there"
+    },
+    {
       "name": "empty text",
       "input": "",
       "refs": [],

@@ -145,6 +145,10 @@ pub trait EngineApi {
         cols: Option<u16>,
         rows: Option<u16>,
     ) -> RpcResult<EngineShell>;
+    /// List open in-memory shell ids on `engine` (default: this engine) — never
+    /// creates a shell, session, or job. Owner only.
+    #[method(name = "shells_list", with_extensions)]
+    async fn shells_list(&self, engine: Option<String>) -> RpcResult<Vec<String>>;
     /// Type into an in-memory engine shell: `text` verbatim, then `keys`
     /// encoded for the shell's current terminal modes. Owner only.
     #[method(name = "shell_input", with_extensions)]
@@ -213,6 +217,63 @@ fn open_local_shell(
         .map_err(failed)
 }
 
+/// List open shells in `registry` locally (`peer` is `None`), or forward
+/// `shells_list` over `theuth/rpc/1` to `peer` (same forwarding path as
+/// `engine_shell`). Never creates a shell, session, or job.
+pub(crate) async fn list_shells_in(
+    registry: &shell_registry::ShellRegistry,
+    transport: Option<Arc<dyn Transport>>,
+    peer: Option<&PeerId>,
+) -> RpcResult<Vec<String>> {
+    if let Some(peer) = peer {
+        return match forward::to_peer_via(
+            &Extensions::new(),
+            transport,
+            peer,
+            "shells_list",
+            (None::<String>,),
+            forward::TIMEOUT,
+        )
+        .await?
+        {
+            Some(ids) => Ok(ids),
+            None => Err(forward::unreachable(peer.0.clone(), "not connected").await),
+        };
+    }
+    Ok(registry.list())
+}
+
+/// Type `text` / `keys` into open shell `shell` in `registry` locally (`peer`
+/// is `None`), or forward `shell_input` over `theuth/rpc/1` to `peer`. Never
+/// creates a shell, session, or job.
+pub(crate) async fn send_shell_input_in(
+    registry: &shell_registry::ShellRegistry,
+    transport: Option<Arc<dyn Transport>>,
+    peer: Option<&PeerId>,
+    shell: &str,
+    text: Option<&str>,
+    keys: Option<&[Key]>,
+) -> RpcResult<()> {
+    if let Some(peer) = peer {
+        return match forward::to_peer_via(
+            &Extensions::new(),
+            transport,
+            peer,
+            "shell_input",
+            (shell, &text, &keys),
+            forward::TIMEOUT,
+        )
+        .await?
+        {
+            Some(()) => Ok(()),
+            None => Err(forward::unreachable(peer.0.clone(), "not connected").await),
+        };
+    }
+    registry
+        .input(shell, text, keys.unwrap_or(&[]))
+        .map_err(failed)
+}
+
 #[async_trait]
 impl EngineApiServer for Server {
     async fn engine_terminal(
@@ -256,6 +317,18 @@ impl EngineApiServer for Server {
             rows,
         )?;
         Ok(EngineShell { shell: id, engine: me })
+    }
+
+    async fn shells_list(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+    ) -> RpcResult<Vec<String>> {
+        rpc_core::owner(ext)?;
+        if let Some(peer) = forward::engine_peer(ext, engine.as_deref()).await? {
+            return forward::call_peer(ext, &peer, "shells_list", (None::<String>,)).await;
+        }
+        Ok(shell_registry::global().list())
     }
 
     async fn shell_input(
@@ -1236,6 +1309,12 @@ mod tests {
             .expect_err("engine_terminal must refuse");
         assert!(err.message().contains("engine_shell"), "{}", err.message());
 
+        // Owner shells_list runs purely against the in-memory registry without
+        // needing Agents or Jobs actors.
+        let _ = EngineApiServer::shells_list(&server, &owner_ext, None)
+            .await
+            .expect("owner shells_list succeeds without sessions or jobs");
+
         // Missing peer (unauthenticated) is rejected.
         let unauth = Extensions::new();
         assert_eq!(
@@ -1253,6 +1332,10 @@ mod tests {
         let err = EngineApiServer::engine_shell(&server, &non_owner, None, None, None, None)
             .await
             .expect_err("non-owner engine_shell must be rejected");
+        assert_eq!(err.code(), rpc_core::UNAUTHORIZED);
+        let err = EngineApiServer::shells_list(&server, &non_owner, None)
+            .await
+            .expect_err("non-owner shells_list must be rejected");
         assert_eq!(err.code(), rpc_core::UNAUTHORIZED);
         let err = EngineApiServer::shell_input(&server, &non_owner, "main".into(), Some("hi".into()), None, None)
             .await

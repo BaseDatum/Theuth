@@ -1,18 +1,21 @@
 import { useNavigate } from '@tanstack/react-router'
-import { AppWindow, BookOpen, Copy, Download, ExternalLink, File as FileIcon, FileSearch, FileText, type LucideIcon, MessageSquare, Mic, NotebookText, Paperclip, Presentation, StickyNote, X } from 'lucide-react'
+import { AppWindow, BookOpen, Copy, Download, ExternalLink, File as FileIcon, FileSearch, FileText, type LucideIcon, MessageSquare, Mic, NotebookText, Paperclip, Presentation, StickyNote, Terminal, X } from 'lucide-react'
 import { type DragEvent, useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
+import { openViewTile } from '@/components/tiles/open'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { type AttachRef, DRAG_TYPE, KIND_LABEL, type Kind, attachTo } from '@/lib/attach'
 import { extOf, readBytes, resolveDocument, resolveFile, saveBlob } from '@/lib/files'
+import { tileLeaf, usePanes } from '@/lib/panes'
 import { container, touch } from '@/lib/platform'
 import { type PopoutTarget, canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/bindings/client'
 import { useConnection } from '@/store/connection'
+import { terminalPath } from '@/store/terminals'
 import { useScopedDisclosure } from './disclosure'
 
 /** §7.5 icons; an artifact chip has no record, so it takes the generic file glyph (picker rows refine by artifact kind). */
@@ -26,6 +29,7 @@ export const KIND_ICON: Record<Kind, LucideIcon> = {
   source: FileSearch,
   whiteboard: Presentation,
   file: FileIcon,
+  terminal: Terminal,
 }
 
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'])
@@ -81,6 +85,15 @@ function openFileInWindow(ref: AttachRef): void {
     return
   }
   void downloadFileRef(api, ref).catch(fail)
+=======
+  terminal: Terminal,
+}
+
+function parseTerminalId(id: string): { engine: string; shell: string } | null {
+  const sep = id.indexOf(':')
+  if (sep <= 0 || sep === id.length - 1) return null
+  return { engine: id.slice(0, sep), shell: id.slice(sep + 1) }
+>>>>>>> 89dd80982 (feat(ui): create a terminal on any node, and let an agent use it)
 }
 
 /** Props that make a row a drag source for the composer's drop (§7.8); desktop only — no HTML5 drag on iOS Safari. */
@@ -123,6 +136,16 @@ export function useOpenRef(): (ref: AttachRef) => void {
         return void navigate({ to: '/whiteboards/$id', params: { id: ref.id }, search: {} })
       case 'file':
         return openFileInWindow(ref)
+      case 'terminal': {
+        const parsed = parseTerminalId(ref.id)
+        if (!parsed) return
+        const id = openViewTile({ path: terminalPath({ ...parsed, name: ref.title }), title: ref.title })
+        if (id !== null) {
+          usePanes.getState().select(tileLeaf(id))
+          return
+        }
+        return void navigate({ to: '/terminal/$engine/$shell', params: parsed, search: { name: ref.title } })
+      }
     }
   }
 }
@@ -138,6 +161,10 @@ export function popoutOf(ref: AttachRef): PopoutTarget | null {
       return { kind: 'chat', session: ref.id }
     case 'meeting':
       return { kind: 'meeting', meeting: ref.id }
+    case 'terminal': {
+      const parsed = parseTerminalId(ref.id)
+      return parsed ? { kind: 'node-terminal', engine: parsed.engine, shell: parsed.shell, name: ref.title } : null
+    }
     case 'whiteboard':
     case 'knowledge':
     case 'notebook':
