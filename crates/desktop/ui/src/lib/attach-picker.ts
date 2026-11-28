@@ -16,6 +16,7 @@ export const TAB_LABEL: Record<Tab, string> = {
   source: 'Sources',
   whiteboard: 'Whiteboards',
   file: 'Files',
+  terminal: 'Terminal',
 }
 
 /** Which `search` categories a tab requests, in the picker's group order (notes first, as the browse view). */
@@ -40,6 +41,9 @@ export function categoriesFor(tab: Tab): SearchCategory[] {
     case 'whiteboard':
     case 'file':
       // No `search` category covers whiteboards or uploaded local files.
+      return []
+    case 'terminal':
+      // User terminals live in the client session store, not the engine search index.
       return []
   }
 }

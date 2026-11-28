@@ -6,7 +6,7 @@ import type { HistorySearchHit } from "@/rpc/bindings/method.rpc_2dcompose.outpu
 import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
 import type { Meta } from "@/rpc/bindings/method.knowledge.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
-import { type AttachRef, KIND_LABEL, atTrigger, chatName, cleanTitle, compose, fileMeta, marker, normalizeFileAttachId, parse, size, subtitle, title, toRef, whiteboardRef } from './attach'
+import { type AttachRef, KIND_LABEL, atTrigger, chatName, cleanTitle, compose, fileMeta, marker, normalizeFileAttachId, parse, size, subtitle, terminalRef, title, toRef, whiteboardRef } from './attach'
 // One grammar, one fixture (66 §3.3): the same file drives `agent::attach::tests`.
 import fixtures from '../../../../agent/tests/fixtures/attach_markers.json'
 
@@ -79,6 +79,17 @@ test('218 §1: the whiteboard marker parses, round-trips and counts cards in the
   expect(marker(whiteboardRef(id, 'Attention inbox', 1))).toBe(`[attached whiteboard ${id} "Attention inbox" · 1 card]`)
   expect(marker(whiteboardRef(id, 'Attention inbox', 0))).toBe(`[attached whiteboard ${id} "Attention inbox" · 0 cards]`)
   expect(whiteboardRef(id, '', 2).title).toBe('Untitled whiteboard')
+})
+
+test('terminal marker parses, round-trips, and uses label "Terminal"', () => {
+  const terminal = { engine: 'node-a', shell: 'term-1234', name: 'mac-studio terminal', node: 'mac-studio' }
+  const line = '[attached terminal node-a:term-1234 "mac-studio terminal" · mac-studio]'
+  const ref = { kind: 'terminal', id: 'node-a:term-1234', title: 'mac-studio terminal', meta: 'mac-studio' } as const
+  expect(KIND_LABEL.terminal).toBe('Terminal')
+  expect(terminalRef(terminal)).toEqual(ref)
+  expect(toRef({ kind: 'terminal', terminal })).toEqual(ref)
+  expect(marker(ref)).toBe(line)
+  expect(parse(`${line}\ncheck logs`)).toEqual({ refs: [ref], body: 'check logs' })
 })
 
 const NOW = new Date(2026, 8, 24, 12, 0, 0)

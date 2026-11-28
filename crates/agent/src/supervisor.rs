@@ -13902,6 +13902,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let _ = reg
             .ask(RegisterTool(Arc::new(crate::session_read::SessionReadTool)))
             .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(crate::shells::NodeShellTool)))
+            .await;
         // 144 §13.2 (E2): ask across notebooks and the overviews.
         let _ = reg
             .ask(RegisterTool(Arc::new(crate::ask::NotebookAskTool)))

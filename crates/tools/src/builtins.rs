@@ -147,6 +147,7 @@ pub const CATEGORIES: &[CategoryDef] = &[
             "cell_runs",
             "cell_output",
             "interpreters",
+            "node_shell",
         ],
         prefixes: &[],
     },

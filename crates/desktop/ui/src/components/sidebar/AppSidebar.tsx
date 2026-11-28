@@ -51,6 +51,7 @@ import { useUpdate } from '@/lib/update'
 import { takeReveal, useSidebarReveal } from '@/lib/sidebar-reveal'
 import { cn } from '@/lib/utils'
 import type { DocSummary } from "@/rpc/bindings/method.agent.output"
+import { CreateTerminalButton, CreateTerminalRail } from './CreateTerminal'
 import { Desks } from './Desks'
 import { ICON_COUNT, ICON_MARK, ICON_PLUS, RAIL_ITEM, RailSections, useSettledRail } from './Rail'
 import { SearchTrigger } from './SearchTrigger'
@@ -207,6 +208,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 <SquarePen />
               </Link>
             </RailTip>
+            <CreateTerminalRail itemClass={RAIL_ITEM} wrap={(t) => <RailTip label="Create terminal">{t}</RailTip>} />
             <Capability required={attentionRequirements} hide>
               <RailTip label="Inbox">
                 <Link to="/attention" aria-label="Inbox" className={RAIL_ITEM} data-active={section === 'attention' || undefined} data-tour="nav-inbox" {...dragInbox}>
@@ -353,28 +355,31 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       </SidebarHeader>
       <SidebarContent ref={setScrollEl} className="gap-0 overflow-y-auto">
         <SidebarMenu className="px-1.5">
-          <SidebarMenuItem className="group/popout-row">
-            <SidebarMenuButton asChild className={cn('h-9 rounded-[10px] px-2.5', canPopout() && (peers ? 'pointer-fine:pr-14' : 'pointer-fine:pr-8'))}>
-              <Link
-                to="/new"
-                aria-label="New chat"
-                {...dragNew}
-                onClick={(e) => {
-                  e.preventDefault()
-                  openNewChat(navigate)
-                }}
-              >
-                <SquarePen /> Chat
-                <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
-              </Link>
-            </SidebarMenuButton>
-            {/* New chat creates nothing until its first send (`/new`), so its window is that page; every press a new
-             * window (`key`), since the last one may already be the chat its first send made. */}
-            <SidebarPopoutButton
-              target={() => void openPopout({ kind: 'page', path: '/new', key: crypto.randomUUID().slice(0, 8) })}
-              className={cn('top-2', peers ? 'right-8' : 'right-2')}
-            />
-            <NewChatOnMenu />
+          <SidebarMenuItem className="flex items-center gap-1">
+            <div className="group/popout-row relative min-w-0 flex-1">
+              <SidebarMenuButton asChild className={cn('h-9 rounded-[10px] px-2.5', canPopout() && (peers ? 'pointer-fine:pr-14' : 'pointer-fine:pr-8'))}>
+                <Link
+                  to="/new"
+                  aria-label="New chat"
+                  {...dragNew}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    openNewChat(navigate)
+                  }}
+                >
+                  <SquarePen /> Chat
+                  <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
+                </Link>
+              </SidebarMenuButton>
+              {/* New chat creates nothing until its first send (`/new`), so its window is that page; every press a new
+               * window (`key`), since the last one may already be the chat its first send made. */}
+              <SidebarPopoutButton
+                target={() => void openPopout({ kind: 'page', path: '/new', key: crypto.randomUUID().slice(0, 8) })}
+                className={cn('top-2', peers ? 'right-8' : 'right-2')}
+              />
+              <NewChatOnMenu />
+            </div>
+            <CreateTerminalButton />
           </SidebarMenuItem>
           <Capability required={attentionRequirements} hide><SidebarMenuItem className="group/popout-row" data-tour="nav-inbox">
             <SidebarMenuButton asChild isActive={section === 'attention'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
