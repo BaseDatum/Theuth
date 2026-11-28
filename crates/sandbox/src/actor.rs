@@ -1956,7 +1956,7 @@ mod tests {
             failed.state,
             SandboxState::Failed {
                 step: "first_run".into(),
-                error: "first_run: boom".into()
+                error: "first_run: exit status 1: boom".into()
             }
         );
         let before = r.mock.calls().len();

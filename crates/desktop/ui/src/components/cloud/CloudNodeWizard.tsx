@@ -115,6 +115,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const [sshPortText, setSshPortText] = useState<string>(initial?.spec?.ssh?.port != null ? String(initial.spec.ssh.port) : '')
   const [sshProbeResult, setSshProbeResult] = useState<SshProbe | null>(null)
   const [sshProbeError, setSshProbeError] = useState<string | null>(null)
+  const [createError, setCreateError] = useState<string | null>(null)
   const [created, setCreated] = useState<string | null>(initial?.node ?? null)
 
   // The default pick: a connected provider that can create, else the first that can.
@@ -261,6 +262,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     if (connect.waiting && kind) void api.cloud_oauth_cancel(kind).catch(() => undefined)
     const nextProvider = providers.find((p) => p.provider === k)
     setPicked(k)
+    setCreateError(null)
     setConnect({ mode: nextProvider?.oauth ? 'oauth' : 'token', waiting: false, error: null, token: '' })
   }
 
@@ -310,10 +312,12 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   const create = () => {
     if (!spec || (nameError && !isK8s)) return
     if (isSsh && (!sshOpts.host || sshPortError)) return
+    setCreateError(null)
     actions.create.mutate(
       { spec, vaultPassword: vault && !isK8s && vaultPassword && !onPhoneEngine ? vaultPassword : null },
       {
         onSuccess: (n) => {
+          setCreateError(null)
           if (!onPhoneEngine) {
             setVaultPassword('')
             setVaultConfirm('')
@@ -321,6 +325,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           setCreated(n.name)
           setStep('progress')
         },
+        onError: (e) => setCreateError(errorText(e)),
       },
     )
   }
@@ -349,6 +354,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
   }
 
   const back = () => {
+    setCreateError(null)
     if (effectiveStep === 'configure') setStep('provider')
     else if (effectiveStep === 'provider' && entry === 'first-run') setStep('choose')
     else onClose()
@@ -417,6 +423,15 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
           onCreate={create}
         />
       )}
+      {createError && (
+        <p
+          data-cloud-create-error=""
+          role="alert"
+          className="w-full rounded-lg border border-danger-border/50 bg-danger-bg px-3 py-2 font-mono text-xs whitespace-pre-wrap break-words text-danger"
+        >
+          {createError}
+        </p>
+      )}
     </>
   )
 
@@ -453,7 +468,7 @@ export function CloudNodeWizard({ entry, onDone, onClose, initial }: { entry: Wi
     } else {
       progressView = (
         <>
-          <ProgressView name={created} rows={rows} pct={progressPct(rows, progress)} eta={progress?.eta_secs ?? null} error={node.error ?? null} retrying={actions.destroy.isPending} phone={phone} onRetry={retry} />
+          <ProgressView name={created} rows={rows} pct={progressPct(rows, progress)} eta={progress?.eta_secs ?? null} error={node.error ?? null} lines={progress?.lines} retrying={actions.destroy.isPending} phone={phone} onRetry={retry} />
           {node.link && !node.error && <p className="text-[13px] text-fg-tertiary">{LEAVE_HINT}</p>}
         </>
       )

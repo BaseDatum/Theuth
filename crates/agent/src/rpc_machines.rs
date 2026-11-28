@@ -102,8 +102,8 @@ pub const SETTINGS_FORWARDABLE: &[&str] = &[
     "set_theuth_agent_model", "set_title_effort", "set_title_model", "set_tool_category",
     "set_vision_effort", "set_vision_model", "subagent_effort", "subagent_model",
     "test_summary_call", "theuth_agent_effort", "theuth_agent_model", "title_effort", "title_model",
-    "update_status", "upsert_tool_category", "vision_effort", "vision_model", "voice_mlx_download",
-    "voice_mlx_status", "voice_settings", "voice_status",
+    "update_apply", "update_status", "upsert_tool_category", "vision_effort", "vision_model",
+    "voice_mlx_download", "voice_mlx_status", "voice_settings", "voice_status",
 ];
 
 /// Substrings no allowlisted name may contain (227 §2 security review).

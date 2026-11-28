@@ -143816,6 +143816,55 @@
         ],
         "type": "object"
       },
+      "method.update.output.UpdateApplyResult": {
+        "description": "Result of the `update_apply` RPC.",
+        "properties": {
+          "from": {
+            "description": "Running version before applying.",
+            "type": "string"
+          },
+          "restarting": {
+            "description": "`true` when the managed daemon is draining and exiting (`75`) to restart.",
+            "type": "boolean"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.update.output.UpdateApplyStatus"
+              }
+            ],
+            "description": "Whether an update was applied or the engine is already up to date."
+          },
+          "to": {
+            "description": "Version installed on disk (`None` when `up_to_date`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "from",
+          "restarting"
+        ],
+        "type": "object"
+      },
+      "method.update.output.UpdateApplyStatus": {
+        "description": "Outcome status for `update_apply`.",
+        "oneOf": [
+          {
+            "const": "up_to_date",
+            "description": "Already running the latest same-major release.",
+            "type": "string"
+          },
+          {
+            "const": "applied",
+            "description": "A newer release is in place on disk and the managed daemon is restarting into it.",
+            "type": "string"
+          }
+        ]
+      },
       "method.update.output.UpdateReady": {
         "description": "Event: a newer version was verified and is on disk (`applied: true`), or\nexists but the binary's directory is not writable (`applied: false`)\n(39 §3.2). Published once per version.",
         "properties": {
@@ -143838,6 +143887,55 @@
           "type"
         ],
         "type": "object"
+      },
+      "method.update.receiver.UpdateApplyResult": {
+        "description": "Result of the `update_apply` RPC.",
+        "properties": {
+          "from": {
+            "description": "Running version before applying.",
+            "type": "string"
+          },
+          "restarting": {
+            "description": "`true` when the managed daemon is draining and exiting (`75`) to restart.",
+            "type": "boolean"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.update.receiver.UpdateApplyStatus"
+              }
+            ],
+            "description": "Whether an update was applied or the engine is already up to date."
+          },
+          "to": {
+            "description": "Version installed on disk (`None` when `up_to_date`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "from",
+          "restarting"
+        ],
+        "type": "object"
+      },
+      "method.update.receiver.UpdateApplyStatus": {
+        "description": "Outcome status for `update_apply`.",
+        "oneOf": [
+          {
+            "const": "up_to_date",
+            "description": "Already running the latest same-major release.",
+            "type": "string"
+          },
+          {
+            "const": "applied",
+            "description": "A newer release is in place on disk and the managed daemon is restarting into it.",
+            "type": "string"
+          }
+        ]
       },
       "method.update.receiver.UpdateReady": {
         "description": "Event: a newer version was verified and is on disk (`applied: true`), or\nexists but the binary's directory is not writable (`applied: false`)\n(39 §3.2). Published once per version.",
@@ -169965,6 +170063,23 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": false,
       "x-theuth-owner": "rpc-compose"
+    },
+    {
+      "name": "update_apply",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.update.output.UpdateApplyResult"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.update.receiver.UpdateApplyResult"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "update"
     },
     {
       "name": "update_status",

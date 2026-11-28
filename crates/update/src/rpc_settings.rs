@@ -1,7 +1,7 @@
 use crate as update;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
-use rpc_core::{send, Server};
+use rpc_core::{failed, send, Server};
 use update::rpc_support::update_actor;
 
 /// Settings RPC methods owned by this plugin.
@@ -12,13 +12,21 @@ pub trait UpdateSettingsApi {
     /// (`applied`) / available but not writable (39 §4.3).
     #[method(name = "update_status")]
     async fn update_status(&self) -> RpcResult<Option<update::UpdateReady>>;
+
+    /// Check for a newer same-major release, verify and install it on disk, and
+    /// restart a managed daemon (drain + exit 75) without waiting for the tick interval.
+    #[method(name = "update_apply")]
+    async fn update_apply(&self) -> RpcResult<update::UpdateApplyResult>;
 }
 
 #[async_trait]
 impl UpdateSettingsApiServer for Server {
-
     async fn update_status(&self) -> RpcResult<Option<update::UpdateReady>> {
         send(&update_actor()?, update::Status).await
+    }
+
+    async fn update_apply(&self) -> RpcResult<update::UpdateApplyResult> {
+        update::apply_now(&update_actor()?).await.map_err(failed)
     }
 }
 

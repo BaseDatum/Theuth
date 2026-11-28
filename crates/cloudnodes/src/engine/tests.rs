@@ -602,11 +602,59 @@ async fn restart_and_resize_go_busy_then_back() {
     *r.mesh.join_after.lock() = Some((1, peer("n1", "box", true)));
     r.cloud.create(spec("box"), None).await.unwrap();
     settle(&r.cloud, "box").await;
+
+    // Ready emit must carry the live mesh peer, never wiping it to reachable: Some(false).
+    let ready_ev = r
+        .events
+        .lock()
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            CloudEvent::CloudNodeChanged { node }
+                if node.name == "box" && node.state == NodeState::Ready =>
+            {
+                Some(node.clone())
+            }
+            _ => None,
+        })
+        .expect("Ready CloudNodeChanged event");
+    assert_eq!(
+        (ready_ev.reachable, ready_ev.path),
+        (Some(true), Some(MeshPath::Direct))
+    );
+
     let n = r.cloud.resize("box", 8).await.unwrap();
     assert_eq!(n.state, NodeState::Busy);
+    assert_eq!(
+        (n.reachable, n.path),
+        (Some(true), Some(MeshPath::Direct)),
+        "op return value must preserve live mesh peer"
+    );
     let rec = settle(&r.cloud, "box").await;
     assert_eq!((rec.state, rec.spec.memory_gb), (NodeState::Ready, 8));
     assert_eq!(rec.created.unwrap().size_slug, "s-2vcpu-8gb");
+
+    // Post-op Ready emit must also preserve the live mesh peer.
+    let post_op = r
+        .events
+        .lock()
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            CloudEvent::CloudNodeChanged { node }
+                if node.name == "box" && node.state == NodeState::Ready =>
+            {
+                Some(node.clone())
+            }
+            _ => None,
+        })
+        .expect("post-op Ready CloudNodeChanged event");
+    assert_eq!(
+        (post_op.reachable, post_op.path),
+        (Some(true), Some(MeshPath::Direct)),
+        "op emit must not mark a live peer offline"
+    );
+
     r.cloud.update_now("box").await.unwrap();
     settle(&r.cloud, "box").await;
     assert!(r.cloud.resize("box", 3).await.is_err());

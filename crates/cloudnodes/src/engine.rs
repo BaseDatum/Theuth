@@ -317,21 +317,63 @@ impl Cloud {
         });
     }
 
+    /// Mutate one record on disk and return the updated copy.
+    fn mutate(&self, name: &str, f: impl FnOnce(&mut Record)) -> Result<Record> {
+        let _w = self.write.lock();
+        let mut rec = self
+            .records
+            .get(name)?
+            .ok_or_else(|| CloudError(format!("no cloud node named {name}")))?;
+        f(&mut rec);
+        self.records.put(&rec)?;
+        Ok(rec)
+    }
+
+    /// Look up `rec`'s current mesh peer the same way `cloud_list` does.
+    async fn current_peer(&self, rec: &Record) -> Option<MeshPeer> {
+        if rec.peer_id.is_none() || self.own_mesh() {
+            return None;
+        }
+        let peers = self.mesh.peers().await.unwrap_or_default();
+        peer_of(rec, &peers).cloned()
+    }
+
+    /// Change one record on disk, look up its live mesh peer, and publish the row.
+    async fn update_node(&self, name: &str, f: impl FnOnce(&mut Record)) -> Result<(Record, CloudNode)> {
+        let rec = self.mutate(name, f)?;
+        let peer = self.current_peer(&rec).await;
+        let node = view(&rec, peer.as_ref(), None);
+        self.emit(CloudEvent::CloudNodeChanged { node: node.clone() });
+        Ok((rec, node))
+    }
+
+    /// Change one record on disk and publish the row with its current mesh peer.
+    async fn update_async(&self, name: &str, f: impl FnOnce(&mut Record)) -> Result<Record> {
+        self.update_node(name, f).await.map(|(rec, _)| rec)
+    }
+
     /// Change one record on disk and publish the row.
     fn update(&self, name: &str, f: impl FnOnce(&mut Record)) -> Result<Record> {
-        let rec = {
-            let _w = self.write.lock();
-            let mut rec = self
-                .records
-                .get(name)?
-                .ok_or_else(|| CloudError(format!("no cloud node named {name}")))?;
-            f(&mut rec);
-            self.records.put(&rec)?;
-            rec
-        };
-        self.emit(CloudEvent::CloudNodeChanged {
-            node: view(&rec, None, None),
-        });
+        let rec = self.mutate(name, f)?;
+        if rec.peer_id.is_some()
+            && !self.own_mesh()
+            && let Ok(handle) = tokio::runtime::Handle::try_current()
+        {
+            let mesh = self.mesh.clone();
+            let sink = self.sink.clone();
+            let rec_for_emit = rec.clone();
+            handle.spawn(async move {
+                let peers = mesh.peers().await.unwrap_or_default();
+                let peer = peer_of(&rec_for_emit, &peers);
+                (sink)(CloudEvent::CloudNodeChanged {
+                    node: view(&rec_for_emit, peer, None),
+                });
+            });
+        } else {
+            self.emit(CloudEvent::CloudNodeChanged {
+                node: view(&rec, None, None),
+            });
+        }
         Ok(rec)
     }
 
@@ -345,6 +387,23 @@ impl Cloud {
                 r.vault = None;
             }
         });
+        if let Err(e) = r {
+            tracing::warn!("cloudnodes: {name}: recording the failure: {e}");
+        }
+    }
+
+    async fn fail_async(&self, name: &str, error: &str) {
+        tracing::warn!("cloudnodes: {name}: {error}");
+        let r = self
+            .update_async(name, |r| {
+                r.state = NodeState::Failed;
+                r.error = Some(error.to_owned());
+                // The job that held a vault password is over.
+                if r.vault == Some(VaultProtection::Pending) {
+                    r.vault = None;
+                }
+            })
+            .await;
         if let Err(e) = r {
             tracing::warn!("cloudnodes: {name}: recording the failure: {e}");
         }
@@ -771,6 +830,7 @@ impl Cloud {
         } else {
             None
         };
+        let prior_peer = prior.as_ref().and_then(|r| peer_of(r, &peers)).cloned();
         let rec = Record {
             spec,
             created: None,
@@ -790,7 +850,7 @@ impl Cloud {
             let _w = self.write.lock();
             self.records.put(&rec)?;
         }
-        let node = view(&rec, None, None);
+        let node = view(&rec, prior_peer.as_ref(), None);
         self.emit(CloudEvent::CloudNodeChanged { node: node.clone() });
         let me = self.clone();
         let job_name = name.clone();
@@ -800,7 +860,7 @@ impl Cloud {
         }
         let task = tokio::spawn(async move {
             if let Err(e) = me.create_job(&job_name, provider, password).await {
-                me.fail(&job_name, &e.0);
+                me.fail_async(&job_name, &e.0).await;
             }
             me.jobs.lock().remove(&job_name);
         });
@@ -829,7 +889,8 @@ impl Cloud {
         );
         let ticket = Zeroizing::new(self.mesh.remote_ticket(TICKET_TTL_MS).await?);
         let expires = now_ms() + TICKET_TTL_MS;
-        self.update(name, |r| r.ticket_expires_ms = Some(expires))?;
+        self.update_async(name, |r| r.ticket_expires_ms = Some(expires))
+            .await?;
         let req = CreateReq {
             name: name.to_owned(),
             region: rec.spec.region.clone(),
@@ -871,18 +932,20 @@ impl Cloud {
         drop(req);
         if kind == ProviderKind::Ssh {
             let remote_peer_id = created.extra.clone();
-            self.update(name, |r| {
+            self.update_async(name, |r| {
                 r.created = Some(created);
                 if r.peer_id.is_none() {
                     r.peer_id = remote_peer_id;
                 }
                 r.stage = Some(Stage::Join);
-            })?;
+            })
+            .await?;
         } else {
-            self.update(name, |r| {
+            self.update_async(name, |r| {
                 r.created = Some(created);
                 r.stage = Some(Stage::Install);
-            })?;
+            })
+            .await?;
             self.progress(
                 name,
                 Some(Stage::Install),
@@ -949,10 +1012,11 @@ impl Cloud {
             );
             tokio::time::sleep(self.pace.poll).await;
         };
-        self.update(name, |r| {
+        self.update_async(name, |r| {
             r.peer_id = Some(joined.id.clone());
             r.stage = Some(Stage::Join);
-        })?;
+        })
+        .await?;
         self.progress(
             name,
             Some(Stage::Join),
@@ -973,11 +1037,12 @@ impl Cloud {
                 .is_some_and(|p| p.reachable);
         }
         self.protect_vault(name, &joined.id, password).await?;
-        self.update(name, |r| {
+        self.update_async(name, |r| {
             r.state = NodeState::Ready;
             r.stage = Some(Stage::Ready);
             r.error = None;
-        })?;
+        })
+        .await?;
         self.progress(
             name,
             Some(Stage::Ready),
@@ -1024,7 +1089,8 @@ impl Cloud {
                 .records
                 .get(name)?
                 .is_some_and(|r| r.vault == Some(VaultProtection::Pending));
-        self.update(name, |r| r.stage = Some(Stage::Vault))?;
+        self.update_async(name, |r| r.stage = Some(Stage::Vault))
+            .await?;
         self.progress(
             name,
             Some(Stage::Vault),
@@ -1033,7 +1099,7 @@ impl Cloud {
             Some(10),
         );
         let outcome = self.vault_outcome(name, node, password, wanted).await;
-        self.update(name, |r| r.vault = Some(outcome))?;
+        self.update_async(name, |r| r.vault = Some(outcome)).await?;
         self.progress(
             name,
             Some(Stage::Vault),
@@ -1184,7 +1250,7 @@ impl Cloud {
                     let job_name = name.clone();
                     let task = tokio::spawn(async move {
                         if let Err(e) = me.wait_join(&job_name, None).await {
-                            me.fail(&job_name, &e.0);
+                            me.fail_async(&job_name, &e.0).await;
                         }
                         me.jobs.lock().remove(&job_name);
                     });
@@ -1351,7 +1417,7 @@ impl Cloud {
             .provider_for(rec.spec.provider, rec.spec.k8s.as_ref(), rec.spec.ssh.as_ref())
             .await?;
         let before = rec.state.clone();
-        let rec = self.update(name, |r| r.state = NodeState::Busy)?;
+        let (_, node) = self.update_node(name, |r| r.state = NodeState::Busy).await?;
         let me = self.clone();
         let job_name = name.to_owned();
         let task = tokio::spawn(async move {
@@ -1366,20 +1432,22 @@ impl Cloud {
                 Op::Restart | Op::Update => provider.restart(name).await.map(|()| None),
                 Op::Resize(gb) => provider.resize(name, gb).await.map(|slug| Some((gb, slug))),
             };
-            let res = me.update(name, |r| {
-                r.state = before;
-                match &outcome {
-                    Ok(Some((gb, slug))) => {
-                        r.spec.memory_gb = *gb;
-                        if let Some(c) = r.created.as_mut() {
-                            c.size_slug = slug.clone();
+            let res = me
+                .update_async(name, |r| {
+                    r.state = before;
+                    match &outcome {
+                        Ok(Some((gb, slug))) => {
+                            r.spec.memory_gb = *gb;
+                            if let Some(c) = r.created.as_mut() {
+                                c.size_slug = slug.clone();
+                            }
+                            r.error = None;
                         }
-                        r.error = None;
+                        Ok(None) => r.error = None,
+                        Err(_) => {}
                     }
-                    Ok(None) => r.error = None,
-                    Err(_) => {}
-                }
-            });
+                })
+                .await;
             match outcome {
                 Ok(_) => me.progress(name, None, "Done", None, None),
                 Err(e) => me.progress(name, None, &format!("Failed: {e}"), None, None),
@@ -1392,7 +1460,7 @@ impl Cloud {
         self.jobs
             .lock()
             .insert(name.to_owned(), task.abort_handle());
-        Ok(view(&rec, None, None))
+        Ok(node)
     }
 
     // --- terminal / logs -----------------------------------------------------------------
@@ -1508,14 +1576,15 @@ impl Cloud {
             .provider_for(kind, k8s.as_ref(), ssh.as_ref())
             .await?;
         if rec.is_some() {
-            self.update(name, |r| r.state = NodeState::Destroying)?;
+            self.update_async(name, |r| r.state = NodeState::Destroying)
+                .await?;
         }
         self.progress(name, None, "Destroying", None, None);
         let mut lines = match provider.destroy(name, keep_volume).await {
             Ok(lines) => lines,
             Err(e) => {
                 if rec.is_some() {
-                    self.fail(name, &format!("destroy: {e}"));
+                    self.fail_async(name, &format!("destroy: {e}")).await;
                 }
                 return Err(e);
             }
@@ -1534,7 +1603,7 @@ impl Cloud {
             }
         }
         if keep_volume && kind != ProviderKind::Ssh && rec.is_some() {
-            self.update(name, |r| {
+            self.update_async(name, |r| {
                 r.state = NodeState::VolumeKept;
                 r.stage = None;
                 r.error = None;
@@ -1542,7 +1611,8 @@ impl Cloud {
                     c.server_id = None;
                     c.ip = None;
                 }
-            })?;
+            })
+            .await?;
         } else {
             {
                 let _w = self.write.lock();

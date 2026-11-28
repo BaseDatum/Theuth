@@ -1,11 +1,12 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Command, Copy, Monitor, MoreHorizontal, Terminal } from 'lucide-react'
+import { Command, Copy, Loader2, Monitor, MoreHorizontal, Terminal } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { CLASS } from '@/components/chat/NewChatPane'
 import { CloudNodesSettings } from '@/components/cloud/CloudNodesSettings'
+import { isNewerUpdate, usePeerUpdateApply, usePeerUpdates } from '@/components/cloud/nodeUpdate'
 import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
 import { Editable } from '@/components/settings/Link'
 import { VaultWarning, usePairFlow } from '@/components/settings/PairDialog'
@@ -108,7 +109,7 @@ export function MachinesTab({ progress }: { focus?: string | null; progress?: st
   return (
     <>
       <Machines s={s} onUnpair={setUnpair} />
-      <CloudNodesSettings progress={progress} />
+      <CloudNodesSettings progress={progress} mesh={s} />
       <NearbyList on={s.nearby} onPair={pairing.start} />
       <PairString />
       <OverSsh />
@@ -270,6 +271,9 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
   // (a real unpair) or, behind a confirm with the vault warning, keeps it.
   const confirm = useAction((v: { id: string; keep: boolean }) => api.mesh_confirm_peer(v.id, v.keep), { keys: [keys.mesh] })
   const [keeping, setKeeping] = useState<MeshStatus['quarantined'][number] | null>(null)
+  const onlinePeerIds = useMemo(() => s.peers.filter((p) => p.reachable).map((p) => p.id), [s.peers])
+  const peerUpdates = usePeerUpdates(onlinePeerIds)
+  const peerUpdateApply = usePeerUpdateApply()
   const selfDetail = detailOf(s, s.self_id)
   return (
     <Section title="Machines in this mesh">
@@ -288,6 +292,10 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
       {s.peers.map((p) => {
         const on = messaging.isPending && messaging.variables.id === p.id ? messaging.variables.on : !s.messaging_off.includes(p.id)
         const detail = detailOf(s, p.id)
+        const rawUpdate = p.reachable ? peerUpdates.get(p.id) : null
+        const available = isNewerUpdate(rawUpdate) ? rawUpdate : null
+        const updating = peerUpdateApply.isPending(p.id)
+        const updateError = peerUpdateApply.errorOf(p.id)
         return (
           <div key={p.id} className={cn('flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border-subtle py-3 last:border-0', !p.reachable && 'text-fg-secondary')}>
             <OsGlyph os={s.stats.find((x) => x.id === p.id)?.os} />
@@ -305,6 +313,19 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
             </div>
             <div className="ml-auto flex items-center gap-2 max-lg:flex-wrap">
               <PathChip peer={p} sync={byPeer.get(p.id)} />
+              {available && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  data-update-peer={p.id}
+                  aria-label={`Update ${p.name}`}
+                  disabled={updating}
+                  onClick={() => peerUpdateApply.apply(p.id, p.name)}
+                >
+                  {updating && <Loader2 className="animate-spin" />}
+                  {updating ? 'Updating…' : `Update ${available.version}`}
+                </Button>
+              )}
               <span className="ml-1 text-[13px] text-fg-secondary">Agents can message</span>
               <Switch aria-label={`Agents can message ${p.name}`} checked={on} disabled={messaging.isPending} onCheckedChange={(v) => messaging.mutate({ id: p.id, on: v })} />
               <DropdownMenu>
@@ -321,6 +342,15 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+            {updateError && (
+              <p
+                data-update-error={p.id}
+                role="alert"
+                className="w-full min-w-0 font-mono text-xs whitespace-pre-wrap break-words text-danger"
+              >
+                {updateError}
+              </p>
+            )}
           </div>
         )
       })}
