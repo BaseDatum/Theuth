@@ -3,6 +3,9 @@
 *.sqlite-*
 /bindings
 .env.signing
+.DS_Store
+__pycache__/
+*.py[cod]
 crates/desktop/ui/.link-smoke-identity.json
 deploy/relay/.iroh-relay/
 deploy/relay/k8s/rwx-dev/secret.yaml
