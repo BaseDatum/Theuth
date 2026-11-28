@@ -22,6 +22,7 @@ export const KIND_LABEL: Record<Card['kind'], string> = {
   session: 'session',
   view: 'app view',
   task: 'task',
+  deck: 'deck',
 }
 
 const VERSIONED = new Set<Card['kind']>(['page', 'excerpt', 'diff', 'terminal', 'web', 'image', 'session', 'view'])

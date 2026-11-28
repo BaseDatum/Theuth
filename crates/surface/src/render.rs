@@ -923,6 +923,21 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
         Component::Layers(p) => layers_lines(p, width),
         Component::Journey(p) => journey_lines(p, width),
         Component::Fishbone(p) => fishbone_lines(p, width),
+        // ---- 229 Deck-scoped interactive controls (inert static fallback in TUI) ----
+        Component::ActionButton(p) => vec![vec![span(format!("[Action: {}]", p.label), DIM)]],
+        Component::StreamControls(p) => vec![vec![span(
+            format!(
+                "[Stream controls: {}]",
+                p.title.as_deref().unwrap_or("Deck")
+            ),
+            DIM,
+        )]],
+        Component::ResultBanner(p) => vec![vec![span(
+            p.empty_text
+                .as_deref()
+                .unwrap_or("Action results appear in the Deck view"),
+            DIM,
+        )]],
     }
 }
 

@@ -40,6 +40,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
 pub mod actor;
 pub mod cells;
 pub mod cite_check;
+pub mod deck;
 pub mod helper;
 pub mod hub;
 pub mod index;
@@ -84,8 +85,7 @@ pub use notebook::*;
 pub use relay::{CreateReq, HandbackReply};
 pub use share::{
     Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName,
-    SharedDoc, SharedDocs, proof,
-    secret_hash,
+    SharedDoc, SharedDocs, proof, secret_hash,
 };
 pub use store::DocStats;
 

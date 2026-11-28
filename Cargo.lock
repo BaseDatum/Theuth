@@ -5558,6 +5558,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "decks"
+version = "2.22.2"
+dependencies = [
+ "agent",
+ "anyhow",
+ "artifact",
+ "async-trait",
+ "chrono",
+ "croner",
+ "document",
+ "figment",
+ "futures",
+ "hex",
+ "jsonrpsee",
+ "jsonschema",
+ "kameo",
+ "monty-types",
+ "parking_lot",
+ "platform",
+ "rpc-core",
+ "rpc-core-macros",
+ "runtime",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "surface",
+ "tempfile",
+ "tokio",
+ "tools",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wire",
+]
+
+[[package]]
 name = "defmt"
 version = "0.3.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -24040,6 +24078,7 @@ dependencies = [
  "codeindex",
  "computer",
  "decision",
+ "decks",
  "dirs 7.0.0",
  "document",
  "double",

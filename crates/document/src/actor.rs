@@ -325,7 +325,7 @@ impl DocumentActor {
         if !self.open.contains_key(id) {
             let l = self.store.load(id).map_err(|e| format!("{e:#}"))?;
             let touched = Arc::new(Mutex::new(Vec::new()));
-            if l.meta.kind != DocKind::Whiteboard {
+            if !l.meta.kind.is_pure_yjs() {
                 let state = l
                     .doc
                     .transact()
@@ -474,7 +474,8 @@ impl DocumentActor {
         o.idle_since = Instant::now();
         o.meta.updated_ms = now;
         let whiteboard = o.meta.kind == DocKind::Whiteboard;
-        if !from_helper && !whiteboard {
+        let pure_yjs = o.meta.kind.is_pure_yjs();
+        if !from_helper && !pure_yjs {
             self.helper.update(doc, &update).log("update");
         }
         // The file already holds what a File import brought in; only other authors change the derived file.
@@ -568,8 +569,12 @@ impl DocumentActor {
         if self.imports.values().any(|i| i.doc == *doc) {
             return None;
         }
-        // 218: a whiteboard's file is written from the document, never imported.
-        if self.open.get(doc).is_some_and(|o| o.meta.kind == DocKind::Whiteboard) {
+        // 218/229: pure-Yjs files (whiteboard/deck) are written from the document, never imported.
+        if self
+            .open
+            .get(doc)
+            .is_some_and(|o| o.meta.kind.is_pure_yjs())
+        {
             return None;
         }
         let derived = match self.open.get(doc) {
@@ -580,7 +585,7 @@ impl DocumentActor {
                 .then(|| o.meta.derived.clone())?,
             None => {
                 let m = self.store.read_meta(doc).ok()?;
-                (m.last_export.is_none() && m.kind != DocKind::Whiteboard).then_some(m.derived)?
+                (m.last_export.is_none() && !m.kind.is_pure_yjs()).then_some(m.derived)?
             }
         };
         let text = std::fs::read_to_string(self.data_dir.join(derived)).ok()?;
@@ -604,9 +609,13 @@ impl DocumentActor {
                 return;
             }
         };
-        // 218 §3.1: a whiteboard has no blocks; nothing imports into it.
+        // 218/229: pure-Yjs docs have no blocks; nothing imports into them.
         if o.meta.kind == DocKind::Whiteboard {
             finish_reply(reply, Err(crate::wb::DOC_REFUSAL.into()));
+            return;
+        }
+        if o.meta.kind == DocKind::Deck {
+            finish_reply(reply, Err(crate::deck::DOC_REFUSAL.into()));
             return;
         }
         if mode == ImportMode::Diff && o.meta.last_export.as_deref() == Some(sha.as_str()) {
@@ -662,10 +671,16 @@ impl DocumentActor {
             reply.send(Err(EditError::Other(e)));
             return;
         }
-        // 218 §3.1: a whiteboard is edited with the wb_* tools only.
-        if self.open.get(doc).is_some_and(|o| o.meta.kind == DocKind::Whiteboard) {
-            reply.send(Err(EditError::Other(crate::wb::DOC_REFUSAL.into())));
-            return;
+        // 218/229: pure-Yjs docs are edited with their dedicated tools only.
+        if let Some(kind) = self.open.get(doc).map(|o| o.meta.kind) {
+            if kind == DocKind::Whiteboard {
+                reply.send(Err(EditError::Other(crate::wb::DOC_REFUSAL.into())));
+                return;
+            }
+            if kind == DocKind::Deck {
+                reply.send(Err(EditError::Other(crate::deck::DOC_REFUSAL.into())));
+                return;
+            }
         }
         // 144 §3.1: a source's text is derived; only the helper (ingest, the insight job) edits it.
         if let Err(e) = self.source_writable(doc, &by) {
@@ -779,8 +794,12 @@ impl DocumentActor {
         o.export_first = None;
         let path = self.data_dir.join(&o.meta.derived);
         let kind = o.meta.kind;
-        // 218 §3.3: a whiteboard's derived file is its outline, rendered here; never the helper.
-        let outline = (kind == DocKind::Whiteboard).then(|| crate::wb::engine::export_text(o));
+        // 218/229: pure-Yjs derived files are rendered directly in Rust; never the helper.
+        let outline = match kind {
+            DocKind::Whiteboard => Some(crate::wb::engine::export_text(o)),
+            DocKind::Deck => Some(crate::deck::export_text(o)),
+            _ => None,
+        };
         let helper = self.helper.clone();
         let me = self.actor_ref();
         let doc = doc.clone();
@@ -1672,9 +1691,13 @@ impl Message<Outline> for DocumentActor {
                 tx.send(Err(e));
                 return reply;
             }
-            // 218 §3.1: no blocks, no helper.
+            // 218/229: no blocks, no helper.
             Ok(o) if o.meta.kind == DocKind::Whiteboard => {
                 tx.send(Err(crate::wb::DOC_REFUSAL.into()));
+                return reply;
+            }
+            Ok(o) if o.meta.kind == DocKind::Deck => {
+                tx.send(Err(crate::deck::DOC_REFUSAL.into()));
                 return reply;
             }
             Ok(_) => {}
@@ -1749,8 +1772,8 @@ impl Message<Headings> for DocumentActor {
                 return reply;
             }
         };
-        // 218: a whiteboard has no headings and no helper mirror.
-        if kind == DocKind::Whiteboard {
+        // 218/229: pure-Yjs docs have no headings and no helper mirror.
+        if kind.is_pure_yjs() {
             tx.send(Ok(Some(DocHeadings {
                 kind,
                 headings: Vec::new(),
@@ -1828,9 +1851,13 @@ impl Message<Markdown> for DocumentActor {
                 tx.send(Err(e));
                 return reply;
             }
-            // 218 §3.1, §4.1: refused cleanly, never a helper call.
+            // 218/229: refused cleanly, never a helper call.
             Ok(o) if o.meta.kind == DocKind::Whiteboard => {
                 tx.send(Err(crate::wb::DOC_REFUSAL.into()));
+                return reply;
+            }
+            Ok(o) if o.meta.kind == DocKind::Deck => {
+                tx.send(Err(crate::deck::DOC_REFUSAL.into()));
                 return reply;
             }
             Ok(_) => {}
@@ -2158,8 +2185,8 @@ impl Message<Rename> for DocumentActor {
             None,
         );
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
-        // 218: a whiteboard's title lives in its meta only; the outline file follows at export.
-        if meta.kind == DocKind::Whiteboard {
+        // 218/229: pure-Yjs titles live in meta only; derived markdown follows at export.
+        if meta.kind.is_pure_yjs() {
             self.schedule_export(&m.doc);
             tx.send(Ok(()));
             return reply;
@@ -2481,9 +2508,18 @@ impl Message<Restore> for DocumentActor {
         let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
             return reply;
         };
-        if self.open.get(&m.doc).is_some_and(|o| o.meta.kind == DocKind::Whiteboard) {
-            tx.send(Err("restoring a snapshot is not available for whiteboards; use undo on the canvas".into()));
-            return reply;
+        if let Some(kind) = self.open.get(&m.doc).map(|o| o.meta.kind) {
+            if kind == DocKind::Whiteboard {
+                tx.send(Err(
+                    "restoring a snapshot is not available for whiteboards; use undo on the canvas"
+                        .into(),
+                ));
+                return reply;
+            }
+            if kind == DocKind::Deck {
+                tx.send(Err("restoring a whole-document snapshot is not available for Decks; inspect per-section history instead".into()));
+                return reply;
+            }
         }
         let bytes = match self.store.read_snapshot(&m.doc, &m.snapshot) {
             Ok(b) => b,

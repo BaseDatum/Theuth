@@ -14,6 +14,7 @@ import { Route as ArtifactsRouteImport } from './routes/artifacts'
 import { Route as AttentionRouteImport } from './routes/attention'
 import { Route as AutoresearchRouteImport } from './routes/autoresearch'
 import { Route as CostsRouteImport } from './routes/costs'
+import { Route as DecksRouteImport } from './routes/decks'
 import { Route as IslandRouteImport } from './routes/island'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as LibraryRouteImport } from './routes/library'
@@ -35,6 +36,7 @@ import { Route as AutoresearchSlugRouteImport } from './routes/autoresearch.$slu
 import { Route as AutoresearchNewRouteImport } from './routes/autoresearch.new'
 import { Route as CSessionRouteImport } from './routes/c.$session'
 import { Route as CloudNewRouteImport } from './routes/cloud.new'
+import { Route as DecksIdRouteImport } from './routes/decks_.$id'
 import { Route as DiffSessionRouteImport } from './routes/diff.$session'
 import { Route as FileSessionRouteImport } from './routes/file.$session'
 import { Route as KnowledgeSplatRouteImport } from './routes/knowledge.$'
@@ -93,6 +95,11 @@ const AutoresearchRoute = AutoresearchRouteImport.update({
 const CostsRoute = CostsRouteImport.update({
   id: '/costs',
   path: '/costs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DecksRoute = DecksRouteImport.update({
+  id: '/decks',
+  path: '/decks',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IslandRoute = IslandRouteImport.update({
@@ -198,6 +205,11 @@ const CSessionRoute = CSessionRouteImport.update({
 const CloudNewRoute = CloudNewRouteImport.update({
   id: '/cloud/new',
   path: '/cloud/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DecksIdRoute = DecksIdRouteImport.update({
+  id: '/decks_/$id',
+  path: '/decks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DiffSessionRoute = DiffSessionRouteImport.update({
@@ -377,6 +389,7 @@ export interface FileRoutesByFullPath {
   '/attention': typeof AttentionRouteWithChildren
   '/autoresearch': typeof AutoresearchRouteWithChildren
   '/costs': typeof CostsRoute
+  '/decks': typeof DecksRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/library': typeof LibraryRoute
@@ -396,6 +409,7 @@ export interface FileRoutesByFullPath {
   '/autoresearch/new': typeof AutoresearchNewRoute
   '/c/$session': typeof CSessionRoute
   '/cloud/new': typeof CloudNewRoute
+  '/decks/$id': typeof DecksIdRoute
   '/diff/$session': typeof DiffSessionRoute
   '/file/$session': typeof FileSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -438,6 +452,7 @@ export interface FileRoutesByTo {
   '/artifacts': typeof ArtifactsRouteWithChildren
   '/autoresearch': typeof AutoresearchRouteWithChildren
   '/costs': typeof CostsRoute
+  '/decks': typeof DecksRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/library': typeof LibraryRoute
@@ -457,6 +472,7 @@ export interface FileRoutesByTo {
   '/autoresearch/new': typeof AutoresearchNewRoute
   '/c/$session': typeof CSessionRoute
   '/cloud/new': typeof CloudNewRoute
+  '/decks/$id': typeof DecksIdRoute
   '/diff/$session': typeof DiffSessionRoute
   '/file/$session': typeof FileSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -501,6 +517,7 @@ export interface FileRoutesById {
   '/attention': typeof AttentionRouteWithChildren
   '/autoresearch': typeof AutoresearchRouteWithChildren
   '/costs': typeof CostsRoute
+  '/decks': typeof DecksRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/library': typeof LibraryRoute
@@ -520,6 +537,7 @@ export interface FileRoutesById {
   '/autoresearch/new': typeof AutoresearchNewRoute
   '/c/$session': typeof CSessionRoute
   '/cloud/new': typeof CloudNewRoute
+  '/decks_/$id': typeof DecksIdRoute
   '/diff/$session': typeof DiffSessionRoute
   '/file/$session': typeof FileSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -565,6 +583,7 @@ export interface FileRouteTypes {
     | '/attention'
     | '/autoresearch'
     | '/costs'
+    | '/decks'
     | '/island'
     | '/knowledge'
     | '/library'
@@ -584,6 +603,7 @@ export interface FileRouteTypes {
     | '/autoresearch/new'
     | '/c/$session'
     | '/cloud/new'
+    | '/decks/$id'
     | '/diff/$session'
     | '/file/$session'
     | '/knowledge/$'
@@ -626,6 +646,7 @@ export interface FileRouteTypes {
     | '/artifacts'
     | '/autoresearch'
     | '/costs'
+    | '/decks'
     | '/island'
     | '/knowledge'
     | '/library'
@@ -645,6 +666,7 @@ export interface FileRouteTypes {
     | '/autoresearch/new'
     | '/c/$session'
     | '/cloud/new'
+    | '/decks/$id'
     | '/diff/$session'
     | '/file/$session'
     | '/knowledge/$'
@@ -688,6 +710,7 @@ export interface FileRouteTypes {
     | '/attention'
     | '/autoresearch'
     | '/costs'
+    | '/decks'
     | '/island'
     | '/knowledge'
     | '/library'
@@ -707,6 +730,7 @@ export interface FileRouteTypes {
     | '/autoresearch/new'
     | '/c/$session'
     | '/cloud/new'
+    | '/decks_/$id'
     | '/diff/$session'
     | '/file/$session'
     | '/knowledge/$'
@@ -751,6 +775,7 @@ export interface RootRouteChildren {
   AttentionRoute: typeof AttentionRouteWithChildren
   AutoresearchRoute: typeof AutoresearchRouteWithChildren
   CostsRoute: typeof CostsRoute
+  DecksRoute: typeof DecksRoute
   IslandRoute: typeof IslandRoute
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LibraryRoute: typeof LibraryRoute
@@ -766,6 +791,7 @@ export interface RootRouteChildren {
   AskSessionRoute: typeof AskSessionRoute
   CSessionRoute: typeof CSessionRoute
   CloudNewRoute: typeof CloudNewRoute
+  DecksIdRoute: typeof DecksIdRoute
   DiffSessionRoute: typeof DiffSessionRoute
   FileSessionRoute: typeof FileSessionRoute
   MeetingsIdRoute: typeof MeetingsIdRoute
@@ -837,6 +863,13 @@ declare module '@tanstack/react-router' {
       path: '/costs'
       fullPath: '/costs'
       preLoaderRoute: typeof CostsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/decks': {
+      id: '/decks'
+      path: '/decks'
+      fullPath: '/decks'
+      preLoaderRoute: typeof DecksRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/island': {
@@ -984,6 +1017,13 @@ declare module '@tanstack/react-router' {
       path: '/cloud/new'
       fullPath: '/cloud/new'
       preLoaderRoute: typeof CloudNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/decks_/$id': {
+      id: '/decks_/$id'
+      path: '/decks/$id'
+      fullPath: '/decks/$id'
+      preLoaderRoute: typeof DecksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/diff/$session': {
@@ -1285,6 +1325,7 @@ const rootRouteChildren: RootRouteChildren = {
   AttentionRoute: AttentionRouteWithChildren,
   AutoresearchRoute: AutoresearchRouteWithChildren,
   CostsRoute: CostsRoute,
+  DecksRoute: DecksRoute,
   IslandRoute: IslandRoute,
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LibraryRoute: LibraryRoute,
@@ -1300,6 +1341,7 @@ const rootRouteChildren: RootRouteChildren = {
   AskSessionRoute: AskSessionRoute,
   CSessionRoute: CSessionRoute,
   CloudNewRoute: CloudNewRoute,
+  DecksIdRoute: DecksIdRoute,
   DiffSessionRoute: DiffSessionRoute,
   FileSessionRoute: FileSessionRoute,
   MeetingsIdRoute: MeetingsIdRoute,

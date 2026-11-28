@@ -115,7 +115,9 @@ impl Tool for ShowPtyTool {
             Err(msg) => return Ok(ToolOutput::err(format!("show_pty: {msg}"))),
         };
         let Some(jobs) = ActorRef::<Jobs>::lookup(tools::JOBS_ACTOR).ok().flatten() else {
-            return Ok(ToolOutput::err("show_pty: jobs are not running on this engine"));
+            return Ok(ToolOutput::err(
+                "show_pty: jobs are not running on this engine",
+            ));
         };
         let (query, spawned) = match plan {
             Plan::Show(job) => (job, None),
@@ -309,8 +311,7 @@ fn login_shell() -> String {
 /// `s` as one word for `$SHELL` (which may be csh or fish): bare when plain, else single-quoted.
 #[cfg(not(target_os = "ios"))]
 fn shell_word(s: &str) -> String {
-    if s
-        .chars()
+    if s.chars()
         .all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c))
     {
         s.to_owned()
@@ -509,7 +510,9 @@ impl Tool for ShowNoteTool {
             }
         };
         let Some(handle) = document::Handle::lookup() else {
-            return Ok(ToolOutput::err("show_note: documents are disabled on this engine"));
+            return Ok(ToolOutput::err(
+                "show_note: documents are disabled on this engine",
+            ));
         };
         let docs = document::tools::Docs::new(handle.actor().clone(), self.rt.data_dir.clone());
         let id = match docs.resolve(args.doc.trim()).await {
@@ -691,8 +694,7 @@ fn whiteboard_receipt(title: &str, doc: &str, cards: Option<u32>, live: bool) ->
 fn valid_block(b: &str) -> bool {
     !b.is_empty()
         && b.len() <= MAX_BLOCK
-        && b
-            .chars()
+        && b.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
@@ -713,6 +715,7 @@ fn note_kind(kind: DocKind) -> Result<String, String> {
         DocKind::AgentCharter => "a charter opens in the Agents view",
         DocKind::TaskThread => "a task thread opens with its task",
         DocKind::Whiteboard => return Err("this is a whiteboard; use show_whiteboard".to_owned()),
+        DocKind::Deck => return Err("this is a Deck; use show_deck".to_owned()),
     };
     Err(format!(
         "{name} documents do not open in a note tile; {hint}"
@@ -802,7 +805,10 @@ mod tests {
         );
         assert!(r.contains("read-only"), "{r}");
         let done = job_receipt(&tile(false, false), session(), None, true);
-        assert!(done.ends_with("\nThe job has finished; the tile shows its log."), "{done}");
+        assert!(
+            done.ends_with("\nThe job has finished; the tile shows its log."),
+            "{done}"
+        );
     }
 
     #[cfg(not(target_os = "ios"))]
@@ -827,7 +833,10 @@ mod tests {
         assert_eq!(lines[3], NO_APP);
         let unnamed = Spawned { name: None, ..sp };
         let r = job_receipt(&tile(true, true), session(), Some(&unnamed), true);
-        assert_eq!(r.lines().nth(1).unwrap(), "started j3 in /work: exec /bin/zsh -l");
+        assert_eq!(
+            r.lines().nth(1).unwrap(),
+            "started j3 in /work: exec /bin/zsh -l"
+        );
     }
 
     #[test]
@@ -870,7 +879,9 @@ mod tests {
         keys.sort();
         assert_eq!(
             keys,
-            ["call_id", "job", "name", "pty", "running", "session", "spawned", "title", "type"]
+            [
+                "call_id", "job", "name", "pty", "running", "session", "spawned", "title", "type"
+            ]
         );
         let v = serde_json::to_value(NoteViewOpened {
             session,
@@ -887,7 +898,9 @@ mod tests {
         keys.sort();
         assert_eq!(
             keys,
-            ["block", "call_id", "doc", "kind", "session", "title", "type"]
+            [
+                "block", "call_id", "doc", "kind", "session", "title", "type"
+            ]
         );
     }
 
@@ -924,7 +937,13 @@ mod tests {
             "dev"
         );
         assert_eq!(
-            default_job_title(&job("j1", None, "cargo  build\n--release", "running", false)),
+            default_job_title(&job(
+                "j1",
+                None,
+                "cargo  build\n--release",
+                "running",
+                false
+            )),
             "cargo build --release"
         );
         assert_eq!(

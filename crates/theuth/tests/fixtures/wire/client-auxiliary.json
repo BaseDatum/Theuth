@@ -1507,6 +1507,57 @@
               "props"
             ],
             "description": "Cause-and-effect: an effect with categorised causes on the bones."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "ActionButton"
+              },
+              "props": {
+                "$ref": "#/definitions/ActionButtonProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Declared Deck action button (inert outside Deck context)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "StreamControls"
+              },
+              "props": {
+                "$ref": "#/definitions/StreamControlsProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Deck stream lifecycle controls: Start / Pause / Resume / Stop / Run once (inert outside Deck context)."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "ResultBanner"
+              },
+              "props": {
+                "$ref": "#/definitions/ResultBannerProps"
+              }
+            },
+            "required": [
+              "type",
+              "props"
+            ],
+            "description": "Per-caller private action result banner (inert outside Deck context)."
           }
         ],
         "description": "One element: a catalog component (`type` + `props` on the wire) and the ids it contains.",
@@ -6416,6 +6467,139 @@
           "items"
         ],
         "description": "One `Fishbone` category."
+      },
+      "ActionButtonProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Button label."
+          },
+          "action": {
+            "type": "string",
+            "description": "Declared Deck action name."
+          },
+          "args_json": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional JSON-encoded object of action arguments."
+          },
+          "tone": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ActionTone"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Visual tone."
+          },
+          "disabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Explicitly disabled."
+          },
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional confirmation message before dispatch."
+          }
+        },
+        "required": [
+          "label",
+          "action",
+          "args_json",
+          "tone",
+          "disabled",
+          "confirm"
+        ],
+        "description": "`ActionButton` props (design doc 229): triggers a declared Deck action; inert outside Deck context."
+      },
+      "ActionTone": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "default",
+            "description": "Neutral action button."
+          },
+          {
+            "type": "string",
+            "const": "primary",
+            "description": "Emphasized primary action button."
+          },
+          {
+            "type": "string",
+            "const": "danger",
+            "description": "Destructive / caution action button."
+          }
+        ],
+        "description": "Visual tone for [`ActionButtonProps`]."
+      },
+      "StreamControlsProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional heading label above the controls."
+          },
+          "show_run_once": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Show a single-shot Run button beside streaming controls."
+          }
+        },
+        "required": [
+          "title",
+          "show_run_once"
+        ],
+        "description": "`StreamControls` props (design doc 229): live Start/Pause/Resume/Stop controls; inert outside Deck context."
+      },
+      "ResultBannerProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional title for the banner."
+          },
+          "empty_text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Placeholder text before any action has returned a result."
+          },
+          "action_filter": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional declared action name to filter displayed results."
+          }
+        },
+        "required": [
+          "title",
+          "empty_text",
+          "action_filter"
+        ],
+        "description": "`ResultBanner` props (design doc 229): displays the caller's private action result; inert outside Deck context."
       }
     },
     "minItems": 3,

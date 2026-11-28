@@ -18773,6 +18773,66 @@
         ],
         "type": "object"
       },
+      "event.decks_2echanged.output.DeckChanged": {
+        "description": "Coarse global wire event for Deck list refresh (never carries live frames or snapshot payloads).",
+        "properties": {
+          "deck_id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "const": "DeckChanged",
+            "type": "string"
+          },
+          "updated_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "title",
+          "updated_ms",
+          "deleted",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.decks_2echanged.receiver.DeckChanged": {
+        "description": "Coarse global wire event for Deck list refresh (never carries live frames or snapshot payloads).",
+        "properties": {
+          "deck_id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "const": "DeckChanged",
+            "type": "string"
+          },
+          "updated_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "title",
+          "updated_ms",
+          "deleted",
+          "type"
+        ],
+        "type": "object"
+      },
       "event.document_2ecell_2dlatest.output.CellLatestChanged": {
         "description": "184 §6.4 (W-p) bus event (`subscribe_events`): a replica batch from another engine touched\n`cell_latest` rows of `doc`; an open note re-reads `cell_latest`. Wire shape\n`{ \"type\": \"CellLatestChanged\", \"doc\": … }`.",
         "properties": {
@@ -18881,6 +18941,11 @@
             "const": "whiteboard",
             "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
             "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
+            "type": "string"
           }
         ]
       },
@@ -18986,6 +19051,11 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
             "type": "string"
           }
         ]
@@ -45075,6 +45145,11 @@
             "const": "whiteboard",
             "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
             "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck has no other owner (229): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -47768,6 +47843,11 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
             "type": "string"
           }
         ]
@@ -56732,6 +56812,11 @@
             "const": "whiteboard",
             "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
             "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck has no other owner (229): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -59394,6 +59479,11 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
             "type": "string"
           }
         ]
@@ -93811,6 +93901,2164 @@
         ],
         "type": "object"
       },
+      "method.decks.input.DeclaredAction": {
+        "description": "A declared interactive action accepted by a Deck script.\nOnly declared actions whose `args` validate against `schema` can enter the Monty checkout.",
+        "properties": {
+          "allow_while_paused": {
+            "default": true,
+            "description": "Whether this action may run while the stream is `Paused` (checkout retained).",
+            "type": "boolean"
+          },
+          "description": {
+            "default": "",
+            "description": "Description of what the action does.",
+            "type": "string"
+          },
+          "mutates_state": {
+            "default": true,
+            "description": "Whether this action mutates persistent Monty state or external systems.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Unique action identifier within the Deck script (e.g. `\"triage_incident\"`).",
+            "type": "string"
+          },
+          "schema": {
+            "description": "JSON Schema object validating the action's `args` payload."
+          },
+          "title": {
+            "description": "Short user-facing title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "schema"
+        ],
+        "type": "object"
+      },
+      "method.decks.input.RuntimeControlOp": {
+        "description": "Lifecycle control operations on a Deck runtime.",
+        "oneOf": [
+          {
+            "const": "start",
+            "description": "Start persistent streaming or scheduled collection (approved revision only).",
+            "type": "string"
+          },
+          {
+            "const": "pause",
+            "description": "Pause stepping while retaining the live Monty checkout and globals.",
+            "type": "string"
+          },
+          {
+            "const": "resume",
+            "description": "Resume a paused checkout immediately.",
+            "type": "string"
+          },
+          {
+            "const": "stop",
+            "description": "Checkpoint state/.monty, release the checkout, and fence with a new `run_epoch`.",
+            "type": "string"
+          },
+          {
+            "const": "run_once",
+            "description": "Execute one bounded collection step immediately (approved revision only).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.input.ScriptMode": {
+        "description": "Execution mode of a Deck script revision.",
+        "oneOf": [
+          {
+            "const": "oneshot",
+            "description": "One-shot scheduled or on-demand collection (`on_step` or `collect`).",
+            "type": "string"
+          },
+          {
+            "const": "streaming",
+            "description": "Persistent streaming (`on_start` + cooperative `on_step` loop keeping checkout alive).",
+            "type": "string"
+          },
+          {
+            "const": "hybrid",
+            "description": "Both scheduled collection / streaming and interactive declared actions (`on_action`).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.input.SectionKind": {
+        "description": "Kind of visual section inside a Deck.",
+        "oneOf": [
+          {
+            "const": "json_render",
+            "description": "Native `json-render` specification (bound to live snapshot/frame data).",
+            "type": "string"
+          },
+          {
+            "const": "note",
+            "description": "Collaborative markdown / text note section.",
+            "type": "string"
+          },
+          {
+            "const": "html",
+            "description": "Strictly sandboxed HTML section (zero network/forms/same-origin, Deck intent bridge only).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.output.ApprovalId": {
+        "description": "Correlates a request with its resolution.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.decks.output.DeckDetail": {
+        "description": "Full Deck detail payload for `/decks/$id` and `deck_get`.",
+        "properties": {
+          "active_script": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.ScriptRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "doc": {
+            "$ref": "#/components/schemas/method.decks.output.DeckDocSnapshot"
+          },
+          "last_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.DeckSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "live_frame": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.LiveFrame"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_script": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.ScriptRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/method.decks.output.DeckRuntimeStatus"
+          }
+        },
+        "required": [
+          "doc",
+          "runtime"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckDocSnapshot": {
+        "description": "Complete snapshot of a Deck's collaborative Y.Doc state.",
+        "properties": {
+          "archived_sections": {
+            "description": "Archived sections in display order.",
+            "items": {
+              "$ref": "#/components/schemas/method.decks.output.DeckSection"
+            },
+            "type": "array"
+          },
+          "columns": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": {
+            "default": "",
+            "type": "string"
+          },
+          "doc_id": {
+            "type": "string"
+          },
+          "focus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.DeckFocus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "layout": {
+            "type": "string"
+          },
+          "script_ref": {
+            "$ref": "#/components/schemas/method.decks.output.DeckScriptRef"
+          },
+          "sections": {
+            "description": "Active (non-archived) sections in display order.",
+            "items": {
+              "$ref": "#/components/schemas/method.decks.output.DeckSection"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc_id",
+          "title",
+          "description",
+          "layout",
+          "columns",
+          "script_ref",
+          "sections",
+          "archived_sections"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckFocus": {
+        "description": "Focus / presence marker stored in `meta.focus`.",
+        "properties": {
+          "at": {
+            "description": "Timestamp (Unix ms).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "by": {
+            "description": "Who set focus (`\"owner\"`, `\"session:<uuid>\"`).",
+            "type": "string"
+          },
+          "section": {
+            "description": "Focused section ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section",
+          "by",
+          "at"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckRuntimeEvent": {
+        "description": "Per-Deck bounded subscription event (`deck_subscribe`).\nFlows over per-Deck channels, NEVER the global `RuntimeWire`.",
+        "oneOf": [
+          {
+            "description": "Initial state sent immediately upon subscribing.",
+            "properties": {
+              "last_snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/method.decks.output.DeckSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "live_frame": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/method.decks.output.LiveFrame"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "$ref": "#/components/schemas/method.decks.output.DeckRuntimeStatus"
+              },
+              "type": {
+                "const": "sync",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Transient live frame emitted by `deck_emit(data, durable=False)`.",
+            "properties": {
+              "frame": {
+                "$ref": "#/components/schemas/method.decks.output.LiveFrame"
+              },
+              "type": {
+                "const": "live_frame",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "frame"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Durable snapshot persisted by `deck_emit(data, durable=True)` or collection return.",
+            "properties": {
+              "snapshot": {
+                "$ref": "#/components/schemas/method.decks.output.DeckSnapshot"
+              },
+              "type": {
+                "const": "snapshot",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "snapshot"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Runtime status change (streaming/paused/stopped/stale/error/epoch).",
+            "properties": {
+              "status": {
+                "$ref": "#/components/schemas/method.decks.output.DeckRuntimeStatus"
+              },
+              "type": {
+                "const": "status",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tool approval pause surfaced to the Deck view.",
+            "properties": {
+              "approval": {
+                "$ref": "#/components/schemas/method.decks.output.PendingApproval"
+              },
+              "type": {
+                "const": "approval_pending",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "approval"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tool approval resolved; Deck resumes or records denial.",
+            "properties": {
+              "approval_id": {
+                "$ref": "#/components/schemas/method.decks.output.ApprovalId"
+              },
+              "approved": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "approval_cleared",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "approval_id",
+              "approved"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Subscription ended (Deck deleted or shutdown).",
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "const": "closed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.decks.output.DeckRuntimeStatus": {
+        "description": "Observable runtime status for a Deck.",
+        "properties": {
+          "active_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "checkout_alive": {
+            "type": "boolean"
+          },
+          "consecutive_failures": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_ok_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_ok_snapshot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending_approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.PendingApproval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/method.decks.output.SessionId"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/method.decks.output.RuntimeState"
+          },
+          "step_count": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "session_id",
+          "state",
+          "run_epoch",
+          "stale",
+          "consecutive_failures",
+          "step_count",
+          "checkout_alive"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckScriptRef": {
+        "description": "Read-only script pointer mirrored into `script_refs` for collaborative UI display.\nNever contains executable source or grants authorization.",
+        "properties": {
+          "active_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "schedule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "default": 0,
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckSection": {
+        "description": "A collaborative Deck section read from `yrs::Doc`.",
+        "properties": {
+          "alias": {
+            "description": "Short monotonic alias (`\"s1\"`, `\"s2\"`, ...).",
+            "type": "string"
+          },
+          "archived": {
+            "description": "Whether this section is archived (hidden from active layout, still readable in history).",
+            "type": "boolean"
+          },
+          "col_span": {
+            "description": "Grid column span (1..=12).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "content": {
+            "description": "Section body (`json-render` JSON, markdown text, or HTML template).",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Creation timestamp (Unix ms).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "created_by": {
+            "description": "Creator attribution.",
+            "type": "string"
+          },
+          "data_key": {
+            "description": "Optional data binding key into the Deck's live snapshot/frame.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Stable section ID (UUIDv7-derived short token).",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.SectionKind"
+              }
+            ],
+            "description": "Section kind."
+          },
+          "rank": {
+            "description": "Fractional rank in `order`.",
+            "format": "double",
+            "type": "number"
+          },
+          "rev": {
+            "description": "Monotonic per-section revision counter for optimistic CAS.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Display title.",
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "Last modification timestamp (Unix ms).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "updated_by": {
+            "description": "Last modifier attribution.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "alias",
+          "kind",
+          "title",
+          "content",
+          "col_span",
+          "archived",
+          "rev",
+          "rank",
+          "created_at",
+          "created_by",
+          "updated_at",
+          "updated_by"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckSnapshot": {
+        "description": "Durable last-good snapshot persisted separately from transient live frames.",
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "data": true,
+          "deck_id": {
+            "type": "string"
+          },
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "script_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "deck_id",
+          "script_rev",
+          "run_epoch",
+          "seq",
+          "data",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckSummary": {
+        "description": "Summary row for listing Decks (left rail popover & `/decks`).",
+        "properties": {
+          "active_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "pending_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "section_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/method.decks.output.SessionId"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/method.decks.output.RuntimeState"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "section_count",
+          "session_id",
+          "state",
+          "stale",
+          "updated_ms"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeclaredAction": {
+        "description": "A declared interactive action accepted by a Deck script.\nOnly declared actions whose `args` validate against `schema` can enter the Monty checkout.",
+        "properties": {
+          "allow_while_paused": {
+            "default": true,
+            "description": "Whether this action may run while the stream is `Paused` (checkout retained).",
+            "type": "boolean"
+          },
+          "description": {
+            "default": "",
+            "description": "Description of what the action does.",
+            "type": "string"
+          },
+          "mutates_state": {
+            "default": true,
+            "description": "Whether this action mutates persistent Monty state or external systems.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Unique action identifier within the Deck script (e.g. `\"triage_incident\"`).",
+            "type": "string"
+          },
+          "schema": {
+            "description": "JSON Schema object validating the action's `args` payload."
+          },
+          "title": {
+            "description": "Short user-facing title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "description",
+          "schema",
+          "mutates_state",
+          "allow_while_paused"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.InteractErrorCode": {
+        "description": "Structured error codes for [`InteractResponse`].",
+        "enum": [
+          "no_approved_script",
+          "revision_mismatch",
+          "undeclared_action",
+          "invalid_args",
+          "busy",
+          "timed_out",
+          "waiting_approval",
+          "paused",
+          "execution_error"
+        ],
+        "type": "string"
+      },
+      "method.decks.output.InteractResponse": {
+        "description": "Per-caller response to an interactive Deck action (`deck_interact`).\n`result` is strictly private to the caller; shared broadcasts occur ONLY if Python called `deck_emit`.",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "cached": {
+            "description": "`true` when returned from the idempotency cache without re-executing Python.",
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.InteractErrorCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "private": {
+            "description": "Always `true`: return results belong only to this caller and are never broadcast.",
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "result": true,
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "script_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_id",
+          "action",
+          "ok",
+          "private",
+          "cached",
+          "run_epoch",
+          "script_rev"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.LiveFrame": {
+        "description": "Transient in-memory live frame emitted via `deck_emit(...)`.\nNever persisted to whiteboard Y.Doc or Deck CRDT Y.Doc.",
+        "properties": {
+          "data": true,
+          "deck_id": {
+            "type": "string"
+          },
+          "emitted_at": {
+            "type": "string"
+          },
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "script_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "script_rev",
+          "run_epoch",
+          "seq",
+          "data",
+          "emitted_at"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.PendingApproval": {
+        "description": "Pending tool approval surfaced when a Deck's Monty checkout invokes a gated tool.",
+        "properties": {
+          "approval_id": {
+            "$ref": "#/components/schemas/method.decks.output.ApprovalId"
+          },
+          "args": true,
+          "risk": {
+            "$ref": "#/components/schemas/method.decks.output.Risk"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/method.decks.output.SessionId"
+          },
+          "tool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "approval_id",
+          "session_id",
+          "tool",
+          "risk",
+          "args"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.Risk": {
+        "description": "How much damage a tool can do; the only input to the approval policy.",
+        "oneOf": [
+          {
+            "const": "read_only",
+            "description": "Observes only.",
+            "type": "string"
+          },
+          {
+            "const": "mutating",
+            "description": "Changes state that can be undone or is scoped.",
+            "type": "string"
+          },
+          {
+            "const": "destructive",
+            "description": "Irreversible or unbounded (arbitrary shell, delete, network writes).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.output.RuntimeState": {
+        "description": "Lifecycle state of a Deck's single runtime owner.",
+        "enum": [
+          "stopped",
+          "starting",
+          "streaming",
+          "paused",
+          "scheduled_idle",
+          "waiting_approval",
+          "error"
+        ],
+        "type": "string"
+      },
+      "method.decks.output.ScriptMode": {
+        "description": "Execution mode of a Deck script revision.",
+        "oneOf": [
+          {
+            "const": "oneshot",
+            "description": "One-shot scheduled or on-demand collection (`on_step` or `collect`).",
+            "type": "string"
+          },
+          {
+            "const": "streaming",
+            "description": "Persistent streaming (`on_start` + cooperative `on_step` loop keeping checkout alive).",
+            "type": "string"
+          },
+          {
+            "const": "hybrid",
+            "description": "Both scheduled collection / streaming and interactive declared actions (`on_action`).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.output.ScriptRevision": {
+        "description": "One immutable revision of a Deck's executable Monty script.",
+        "properties": {
+          "approved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approved_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "change_summary": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "code_sha256": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "declared_actions": {
+            "items": {
+              "$ref": "#/components/schemas/method.decks.output.DeclaredAction"
+            },
+            "type": "array"
+          },
+          "interval_secs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/method.decks.output.ScriptMode"
+          },
+          "proposed_by": {
+            "type": "string"
+          },
+          "rejected_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schedule_cron": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/method.decks.output.ScriptStatus"
+          }
+        },
+        "required": [
+          "deck_id",
+          "rev",
+          "code",
+          "code_sha256",
+          "declared_actions",
+          "mode",
+          "status",
+          "proposed_by",
+          "change_summary",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.ScriptStatus": {
+        "description": "Review gate status of a Deck script revision.\nVisual CRDT edits can never transition a revision to `Approved`.",
+        "enum": [
+          "pending_review",
+          "approved",
+          "rejected",
+          "superseded"
+        ],
+        "type": "string"
+      },
+      "method.decks.output.SectionKind": {
+        "description": "Kind of visual section inside a Deck.",
+        "oneOf": [
+          {
+            "const": "json_render",
+            "description": "Native `json-render` specification (bound to live snapshot/frame data).",
+            "type": "string"
+          },
+          {
+            "const": "note",
+            "description": "Collaborative markdown / text note section.",
+            "type": "string"
+          },
+          {
+            "const": "html",
+            "description": "Strictly sandboxed HTML section (zero network/forms/same-origin, Deck intent bridge only).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.output.SectionRevision": {
+        "description": "One historical revision recorded on a section.",
+        "properties": {
+          "archived": {
+            "description": "Archived flag at this revision.",
+            "type": "boolean"
+          },
+          "at": {
+            "description": "Timestamp (Unix ms).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "by": {
+            "description": "Author (`\"owner\"`, `\"session:<uuid>\"`, `\"engine\"`).",
+            "type": "string"
+          },
+          "content": {
+            "description": "Section content at this revision.",
+            "type": "string"
+          },
+          "rev": {
+            "description": "Monotonic revision number (1-based).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "summary": {
+            "description": "Short summary of what changed.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Section title at this revision.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rev",
+          "at",
+          "by",
+          "summary",
+          "title",
+          "content",
+          "archived"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.decks.receiver.ApprovalId": {
+        "description": "Correlates a request with its resolution.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.decks.receiver.DeckDetail": {
+        "description": "Full Deck detail payload for `/decks/$id` and `deck_get`.",
+        "properties": {
+          "active_script": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.ScriptRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "doc": {
+            "$ref": "#/components/schemas/method.decks.receiver.DeckDocSnapshot"
+          },
+          "last_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.DeckSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "live_frame": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.LiveFrame"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_script": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.ScriptRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/method.decks.receiver.DeckRuntimeStatus"
+          }
+        },
+        "required": [
+          "doc",
+          "runtime"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeckDocSnapshot": {
+        "description": "Complete snapshot of a Deck's collaborative Y.Doc state.",
+        "properties": {
+          "archived_sections": {
+            "description": "Archived sections in display order.",
+            "items": {
+              "$ref": "#/components/schemas/method.decks.receiver.DeckSection"
+            },
+            "type": "array"
+          },
+          "columns": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": {
+            "default": "",
+            "type": "string"
+          },
+          "doc_id": {
+            "type": "string"
+          },
+          "focus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.DeckFocus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "layout": {
+            "type": "string"
+          },
+          "script_ref": {
+            "$ref": "#/components/schemas/method.decks.receiver.DeckScriptRef"
+          },
+          "sections": {
+            "description": "Active (non-archived) sections in display order.",
+            "items": {
+              "$ref": "#/components/schemas/method.decks.receiver.DeckSection"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc_id",
+          "title",
+          "layout",
+          "columns",
+          "script_ref",
+          "sections",
+          "archived_sections"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeckFocus": {
+        "description": "Focus / presence marker stored in `meta.focus`.",
+        "properties": {
+          "at": {
+            "description": "Timestamp (Unix ms).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "by": {
+            "description": "Who set focus (`\"owner\"`, `\"session:<uuid>\"`).",
+            "type": "string"
+          },
+          "section": {
+            "description": "Focused section ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section",
+          "by",
+          "at"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeckRuntimeEvent": {
+        "description": "Per-Deck bounded subscription event (`deck_subscribe`).\nFlows over per-Deck channels, NEVER the global `RuntimeWire`.",
+        "oneOf": [
+          {
+            "description": "Initial state sent immediately upon subscribing.",
+            "properties": {
+              "last_snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/method.decks.receiver.DeckSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "live_frame": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/method.decks.receiver.LiveFrame"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "$ref": "#/components/schemas/method.decks.receiver.DeckRuntimeStatus"
+              },
+              "type": {
+                "const": "sync",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Transient live frame emitted by `deck_emit(data, durable=False)`.",
+            "properties": {
+              "frame": {
+                "$ref": "#/components/schemas/method.decks.receiver.LiveFrame"
+              },
+              "type": {
+                "const": "live_frame",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "frame"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Durable snapshot persisted by `deck_emit(data, durable=True)` or collection return.",
+            "properties": {
+              "snapshot": {
+                "$ref": "#/components/schemas/method.decks.receiver.DeckSnapshot"
+              },
+              "type": {
+                "const": "snapshot",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "snapshot"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Runtime status change (streaming/paused/stopped/stale/error/epoch).",
+            "properties": {
+              "status": {
+                "$ref": "#/components/schemas/method.decks.receiver.DeckRuntimeStatus"
+              },
+              "type": {
+                "const": "status",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tool approval pause surfaced to the Deck view.",
+            "properties": {
+              "approval": {
+                "$ref": "#/components/schemas/method.decks.receiver.PendingApproval"
+              },
+              "type": {
+                "const": "approval_pending",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "approval"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tool approval resolved; Deck resumes or records denial.",
+            "properties": {
+              "approval_id": {
+                "$ref": "#/components/schemas/method.decks.receiver.ApprovalId"
+              },
+              "approved": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "approval_cleared",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "approval_id",
+              "approved"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Subscription ended (Deck deleted or shutdown).",
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "const": "closed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.decks.receiver.DeckRuntimeStatus": {
+        "description": "Observable runtime status for a Deck.",
+        "properties": {
+          "active_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "checkout_alive": {
+            "type": "boolean"
+          },
+          "consecutive_failures": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_ok_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_ok_snapshot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending_approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.PendingApproval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/method.decks.receiver.SessionId"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/method.decks.receiver.RuntimeState"
+          },
+          "step_count": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "session_id",
+          "state",
+          "run_epoch",
+          "stale",
+          "consecutive_failures",
+          "step_count",
+          "checkout_alive"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeckScriptRef": {
+        "description": "Read-only script pointer mirrored into `script_refs` for collaborative UI display.\nNever contains executable source or grants authorization.",
+        "properties": {
+          "active_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "schedule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "default": 0,
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "method.decks.receiver.DeckSection": {
+        "description": "A collaborative Deck section read from `yrs::Doc`.",
+        "properties": {
+          "alias": {
+            "description": "Short monotonic alias (`\"s1\"`, `\"s2\"`, ...).",
+            "type": "string"
+          },
+          "archived": {
+            "description": "Whether this section is archived (hidden from active layout, still readable in history).",
+            "type": "boolean"
+          },
+          "col_span": {
+            "description": "Grid column span (1..=12).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "content": {
+            "description": "Section body (`json-render` JSON, markdown text, or HTML template).",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Creation timestamp (Unix ms).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "created_by": {
+            "description": "Creator attribution.",
+            "type": "string"
+          },
+          "data_key": {
+            "description": "Optional data binding key into the Deck's live snapshot/frame.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Stable section ID (UUIDv7-derived short token).",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.SectionKind"
+              }
+            ],
+            "description": "Section kind."
+          },
+          "rank": {
+            "description": "Fractional rank in `order`.",
+            "format": "double",
+            "type": "number"
+          },
+          "rev": {
+            "description": "Monotonic per-section revision counter for optimistic CAS.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Display title.",
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "Last modification timestamp (Unix ms).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "updated_by": {
+            "description": "Last modifier attribution.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "alias",
+          "kind",
+          "title",
+          "content",
+          "col_span",
+          "archived",
+          "rev",
+          "rank",
+          "created_at",
+          "created_by",
+          "updated_at",
+          "updated_by"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeckSnapshot": {
+        "description": "Durable last-good snapshot persisted separately from transient live frames.",
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "data": true,
+          "deck_id": {
+            "type": "string"
+          },
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "script_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "deck_id",
+          "script_rev",
+          "run_epoch",
+          "seq",
+          "data",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeckSummary": {
+        "description": "Summary row for listing Decks (left rail popover & `/decks`).",
+        "properties": {
+          "active_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "pending_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "section_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/method.decks.receiver.SessionId"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/method.decks.receiver.RuntimeState"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "section_count",
+          "session_id",
+          "state",
+          "stale",
+          "updated_ms"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeclaredAction": {
+        "description": "A declared interactive action accepted by a Deck script.\nOnly declared actions whose `args` validate against `schema` can enter the Monty checkout.",
+        "properties": {
+          "allow_while_paused": {
+            "default": true,
+            "description": "Whether this action may run while the stream is `Paused` (checkout retained).",
+            "type": "boolean"
+          },
+          "description": {
+            "default": "",
+            "description": "Description of what the action does.",
+            "type": "string"
+          },
+          "mutates_state": {
+            "default": true,
+            "description": "Whether this action mutates persistent Monty state or external systems.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Unique action identifier within the Deck script (e.g. `\"triage_incident\"`).",
+            "type": "string"
+          },
+          "schema": {
+            "description": "JSON Schema object validating the action's `args` payload."
+          },
+          "title": {
+            "description": "Short user-facing title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "schema"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.InteractErrorCode": {
+        "description": "Structured error codes for [`InteractResponse`].",
+        "enum": [
+          "no_approved_script",
+          "revision_mismatch",
+          "undeclared_action",
+          "invalid_args",
+          "busy",
+          "timed_out",
+          "waiting_approval",
+          "paused",
+          "execution_error"
+        ],
+        "type": "string"
+      },
+      "method.decks.receiver.InteractResponse": {
+        "description": "Per-caller response to an interactive Deck action (`deck_interact`).\n`result` is strictly private to the caller; shared broadcasts occur ONLY if Python called `deck_emit`.",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "cached": {
+            "description": "`true` when returned from the idempotency cache without re-executing Python.",
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.InteractErrorCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "private": {
+            "description": "Always `true`: return results belong only to this caller and are never broadcast.",
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "result": true,
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "script_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_id",
+          "action",
+          "ok",
+          "private",
+          "cached",
+          "run_epoch",
+          "script_rev"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.LiveFrame": {
+        "description": "Transient in-memory live frame emitted via `deck_emit(...)`.\nNever persisted to whiteboard Y.Doc or Deck CRDT Y.Doc.",
+        "properties": {
+          "data": true,
+          "deck_id": {
+            "type": "string"
+          },
+          "emitted_at": {
+            "type": "string"
+          },
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "script_rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "script_rev",
+          "run_epoch",
+          "seq",
+          "data",
+          "emitted_at"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.PendingApproval": {
+        "description": "Pending tool approval surfaced when a Deck's Monty checkout invokes a gated tool.",
+        "properties": {
+          "approval_id": {
+            "$ref": "#/components/schemas/method.decks.receiver.ApprovalId"
+          },
+          "args": true,
+          "risk": {
+            "$ref": "#/components/schemas/method.decks.receiver.Risk"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/method.decks.receiver.SessionId"
+          },
+          "tool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "approval_id",
+          "session_id",
+          "tool",
+          "risk",
+          "args"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.Risk": {
+        "description": "How much damage a tool can do; the only input to the approval policy.",
+        "oneOf": [
+          {
+            "const": "read_only",
+            "description": "Observes only.",
+            "type": "string"
+          },
+          {
+            "const": "mutating",
+            "description": "Changes state that can be undone or is scoped.",
+            "type": "string"
+          },
+          {
+            "const": "destructive",
+            "description": "Irreversible or unbounded (arbitrary shell, delete, network writes).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.receiver.RuntimeState": {
+        "description": "Lifecycle state of a Deck's single runtime owner.",
+        "enum": [
+          "stopped",
+          "starting",
+          "streaming",
+          "paused",
+          "scheduled_idle",
+          "waiting_approval",
+          "error"
+        ],
+        "type": "string"
+      },
+      "method.decks.receiver.ScriptMode": {
+        "description": "Execution mode of a Deck script revision.",
+        "oneOf": [
+          {
+            "const": "oneshot",
+            "description": "One-shot scheduled or on-demand collection (`on_step` or `collect`).",
+            "type": "string"
+          },
+          {
+            "const": "streaming",
+            "description": "Persistent streaming (`on_start` + cooperative `on_step` loop keeping checkout alive).",
+            "type": "string"
+          },
+          {
+            "const": "hybrid",
+            "description": "Both scheduled collection / streaming and interactive declared actions (`on_action`).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.receiver.ScriptRevision": {
+        "description": "One immutable revision of a Deck's executable Monty script.",
+        "properties": {
+          "approved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approved_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "change_summary": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "code_sha256": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "declared_actions": {
+            "items": {
+              "$ref": "#/components/schemas/method.decks.receiver.DeclaredAction"
+            },
+            "type": "array"
+          },
+          "interval_secs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/method.decks.receiver.ScriptMode"
+          },
+          "proposed_by": {
+            "type": "string"
+          },
+          "rejected_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schedule_cron": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/method.decks.receiver.ScriptStatus"
+          }
+        },
+        "required": [
+          "deck_id",
+          "rev",
+          "code",
+          "code_sha256",
+          "declared_actions",
+          "mode",
+          "status",
+          "proposed_by",
+          "change_summary",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.ScriptStatus": {
+        "description": "Review gate status of a Deck script revision.\nVisual CRDT edits can never transition a revision to `Approved`.",
+        "enum": [
+          "pending_review",
+          "approved",
+          "rejected",
+          "superseded"
+        ],
+        "type": "string"
+      },
+      "method.decks.receiver.SectionKind": {
+        "description": "Kind of visual section inside a Deck.",
+        "oneOf": [
+          {
+            "const": "json_render",
+            "description": "Native `json-render` specification (bound to live snapshot/frame data).",
+            "type": "string"
+          },
+          {
+            "const": "note",
+            "description": "Collaborative markdown / text note section.",
+            "type": "string"
+          },
+          {
+            "const": "html",
+            "description": "Strictly sandboxed HTML section (zero network/forms/same-origin, Deck intent bridge only).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.receiver.SectionRevision": {
+        "description": "One historical revision recorded on a section.",
+        "properties": {
+          "archived": {
+            "description": "Archived flag at this revision.",
+            "type": "boolean"
+          },
+          "at": {
+            "description": "Timestamp (Unix ms).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "by": {
+            "description": "Author (`\"owner\"`, `\"session:<uuid>\"`, `\"engine\"`).",
+            "type": "string"
+          },
+          "content": {
+            "description": "Section content at this revision.",
+            "type": "string"
+          },
+          "rev": {
+            "description": "Monotonic revision number (1-based).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "summary": {
+            "description": "Short summary of what changed.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Section title at this revision.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rev",
+          "at",
+          "by",
+          "summary",
+          "title",
+          "content",
+          "archived"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
       "method.document.input.DocId": {
         "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
         "type": "string"
@@ -93866,6 +96114,11 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
             "type": "string"
           }
         ]
@@ -94047,6 +96300,11 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
+            "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck has no other owner (229): keyless, a fresh v7 id.",
             "type": "string"
           }
         ]
@@ -94418,6 +96676,11 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
             "type": "string"
           }
         ]
@@ -95992,6 +98255,11 @@
             "const": "whiteboard",
             "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
             "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck has no other owner (229): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -96360,6 +98628,11 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
             "type": "string"
           }
         ]
@@ -116827,6 +119100,11 @@
             "const": "whiteboard",
             "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
             "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck has no other owner (229): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -122660,6 +124938,11 @@
             "const": "whiteboard",
             "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
             "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck has no other owner (229): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -123140,6 +125423,11 @@
             "const": "whiteboard",
             "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
             "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck has no other owner (229): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -123549,6 +125837,11 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
             "type": "string"
           }
         ]
@@ -125791,6 +128084,11 @@
             "const": "whiteboard",
             "description": "A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.",
             "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck has no other owner (229): keyless, a fresh v7 id.",
+            "type": "string"
           }
         ]
       },
@@ -126196,6 +128494,11 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+            "type": "string"
+          },
+          {
+            "const": "deck",
+            "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
             "type": "string"
           }
         ]
@@ -151386,6 +153689,1050 @@
       "x-theuth-owner": "dreaming"
     },
     {
+      "name": "deck_create",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "title",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "description",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "example",
+          "required": false,
+          "schema": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckDetail"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckDetail"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_focus",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "section_id",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "sectionId"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_get",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckDetail"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckDetail"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_interact",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "action",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "args",
+          "required": true,
+          "schema": true,
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "request_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "requestId"
+          ]
+        },
+        {
+          "name": "expected_rev",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "expectedRev"
+          ]
+        },
+        {
+          "name": "timeout_ms",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "timeoutMs"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.InteractResponse"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.InteractResponse"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_list",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.decks.output.DeckSummary"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.decks.receiver.DeckSummary"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_runtime_control",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "op",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.decks.input.RuntimeControlOp"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckRuntimeStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckRuntimeStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_script_approve",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "rev",
+          "required": true,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.ScriptRevision"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.ScriptRevision"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_script_propose",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "code",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "declared_actions",
+          "required": true,
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/method.decks.input.DeclaredAction"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": [
+            "declaredActions"
+          ]
+        },
+        {
+          "name": "mode",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.decks.input.ScriptMode"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "interval_secs",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "intervalSecs"
+          ]
+        },
+        {
+          "name": "schedule_cron",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "scheduleCron"
+          ]
+        },
+        {
+          "name": "change_summary",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "changeSummary"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.ScriptRevision"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.ScriptRevision"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_script_read",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "rev",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.decks.output.ScriptRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.decks.receiver.ScriptRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_script_reject",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "rev",
+          "required": true,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.ScriptRevision"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.ScriptRevision"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_section_add",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.decks.input.SectionKind"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "title",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "content",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "col_span",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "colSpan"
+          ]
+        },
+        {
+          "name": "data_key",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "dataKey"
+          ]
+        },
+        {
+          "name": "index",
+          "required": false,
+          "schema": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckSection"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckSection"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_section_archive",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "section_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "sectionId"
+          ]
+        },
+        {
+          "name": "archived",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "expected_rev",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "expectedRev"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckSection"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckSection"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_section_history",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "section_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "sectionId"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.decks.output.SectionRevision"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.decks.receiver.SectionRevision"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_section_move",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "section_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "sectionId"
+          ]
+        },
+        {
+          "name": "to_index",
+          "required": true,
+          "schema": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": [
+            "toIndex"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_section_patch",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "section_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "sectionId"
+          ]
+        },
+        {
+          "name": "expected_rev",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "expectedRev"
+          ]
+        },
+        {
+          "name": "title",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "content",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "col_span",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "colSpan"
+          ]
+        },
+        {
+          "name": "data_key",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "dataKey"
+          ]
+        },
+        {
+          "name": "summary",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckSection"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckSection"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_snapshot_get",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "snapshot_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "snapshotId"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.decks.output.DeckSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.decks.receiver.DeckSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_snapshots",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.decks.output.DeckSnapshot"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.decks.receiver.DeckSnapshot"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_subscribe",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_unsubscribe",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "subscription_id",
+          "required": true,
+          "schema": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": false,
+      "x-theuth-owner": "decks"
+    },
+    {
       "name": "delete_decision_training",
       "paramStructure": "by-position",
       "params": [
@@ -171995,6 +175342,17 @@
       {
         "exposure": "public",
         "receiverSchema": {
+          "$ref": "#/components/schemas/event.decks_2echanged.receiver.DeckChanged"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.decks_2echanged.output.DeckChanged"
+        },
+        "topic": "decks.changed",
+        "version": 1
+      },
+      {
+        "exposure": "public",
+        "receiverSchema": {
           "$ref": "#/components/schemas/event.document_2ecell_2dlatest.receiver.CellLatestChanged"
         },
         "schema": {
@@ -172500,6 +175858,7 @@
       "codeindex",
       "computer",
       "decision",
+      "decks",
       "document",
       "double",
       "dreaming",
@@ -172559,6 +175918,31 @@
         },
         "subscribe": "cell_attach",
         "unsubscribe": "cell_detach",
+        "unsubscribeAliases": []
+      },
+      {
+        "aliases": [],
+        "itemSchema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckRuntimeEvent"
+        },
+        "notification": "deck_subscribe",
+        "params": [
+          {
+            "name": "deck_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-theuth-aliases": [
+              "deckId"
+            ]
+          }
+        ],
+        "receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckRuntimeEvent"
+        },
+        "subscribe": "deck_subscribe",
+        "unsubscribe": "deck_unsubscribe",
         "unsubscribeAliases": []
       },
       {

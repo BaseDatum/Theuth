@@ -95,6 +95,7 @@ double = { path = "crates/double" }  # the owner's double: decision model + auto
 dreaming = { path = "crates/dreaming" }  # nightly own-context routine: knowledge tidy, cases, gated skill edits (136)
 autoresearch = { path = "crates/autoresearch" }  # measured experiment loop: noise gate, evaluator custody, git ratchet (140)
 cells = { path = "crates/cells" }  # user-run code cells: kernels, run store, RPC (171)
+decks = { path = "crates/decks" }  # native collaborative live Decks (229)
 evalcore = { path = "crates/evalcore" }  # 159 §13.1 the eval core prompt studies and dreaming share: split, judge, paired gate, rows
 codeindex = { path = "crates/codeindex" }  # tree-sitter tags → sqlite symbol/reference index per repo root (60)
 # Code index (design doc 60 §2.B): tree-sitter core + tags runner and the four grammar crates (each depends

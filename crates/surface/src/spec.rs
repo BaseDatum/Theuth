@@ -154,6 +154,13 @@ pub enum Component {
     Journey(JourneyProps),
     /// Cause-and-effect: an effect with categorised causes on the bones.
     Fishbone(FishboneProps),
+    // ---- 229 Deck-scoped interactive controls (inert outside Deck context) ----
+    /// Declared Deck action button (inert outside Deck context).
+    ActionButton(ActionButtonProps),
+    /// Deck stream lifecycle controls: Start / Pause / Resume / Stop / Run once (inert outside Deck context).
+    StreamControls(StreamControlsProps),
+    /// Per-caller private action result banner (inert outside Deck context).
+    ResultBanner(ResultBannerProps),
 }
 
 /// `Card` props.
@@ -2178,4 +2185,60 @@ pub struct FishboneCause {
     pub category: String,
     /// Causes on the bone; ≤ 6.
     pub items: Vec<String>,
+}
+
+/// Visual tone for [`ActionButtonProps`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ActionTone {
+    /// Neutral action button.
+    Default,
+    /// Emphasized primary action button.
+    Primary,
+    /// Destructive / caution action button.
+    Danger,
+}
+
+/// `ActionButton` props (design doc 229): triggers a declared Deck action; inert outside Deck context.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct ActionButtonProps {
+    /// Button label.
+    pub label: String,
+    /// Declared Deck action name.
+    pub action: String,
+    /// Optional JSON-encoded object of action arguments.
+    pub args_json: Option<String>,
+    /// Visual tone.
+    pub tone: Option<ActionTone>,
+    /// Explicitly disabled.
+    pub disabled: Option<bool>,
+    /// Optional confirmation message before dispatch.
+    pub confirm: Option<String>,
+}
+
+/// `StreamControls` props (design doc 229): live Start/Pause/Resume/Stop controls; inert outside Deck context.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct StreamControlsProps {
+    /// Optional heading label above the controls.
+    pub title: Option<String>,
+    /// Show a single-shot Run button beside streaming controls.
+    pub show_run_once: Option<bool>,
+}
+
+/// `ResultBanner` props (design doc 229): displays the caller's private action result; inert outside Deck context.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct ResultBannerProps {
+    /// Optional title for the banner.
+    pub title: Option<String>,
+    /// Placeholder text before any action has returned a result.
+    pub empty_text: Option<String>,
+    /// Optional declared action name to filter displayed results.
+    pub action_filter: Option<String>,
 }

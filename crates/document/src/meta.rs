@@ -114,6 +114,10 @@ pub enum DocKind {
     /// top-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);
     /// its derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.
     Whiteboard,
+    /// A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and
+    /// read-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no
+    /// helper mirror. Executable Monty state and runtime churn live in `crates/decks`.
+    Deck,
 }
 
 impl DocKind {
@@ -129,20 +133,34 @@ impl DocKind {
             Self::Notebook => "notebook",
             Self::Source => "source",
             Self::Whiteboard => "whiteboard",
+            Self::Deck => "deck",
         }
+    }
+
+    /// Pure-Yjs document kinds (no XML fragment, no BlockNote helper mirror).
+    pub fn is_pure_yjs(self) -> bool {
+        matches!(self, Self::Whiteboard | Self::Deck)
     }
 
     /// A note or a board: owned by nobody else, so it is renamed and deleted directly, keeps the title it was
     /// created with, and lists among the notes.
     pub fn free_standing(self) -> bool {
-        matches!(self, Self::Note | Self::Board | Self::Whiteboard)
+        matches!(
+            self,
+            Self::Note | Self::Board | Self::Whiteboard | Self::Deck
+        )
     }
 
     /// 184 §4.1: the kinds that get `DocMeta.home` at create (the rest stay unhomed, hub-served).
     pub fn homed(self) -> bool {
         matches!(
             self,
-            Self::Note | Self::Board | Self::MeetingNote | Self::TaskThread | Self::Whiteboard
+            Self::Note
+                | Self::Board
+                | Self::MeetingNote
+                | Self::TaskThread
+                | Self::Whiteboard
+                | Self::Deck
         )
     }
 
@@ -187,6 +205,8 @@ pub enum Binding {
     Source(String),
     /// A whiteboard has no other owner (218 §1): keyless, a fresh v7 id.
     Whiteboard,
+    /// A Deck has no other owner (229): keyless, a fresh v7 id.
+    Deck,
 }
 
 impl Binding {
@@ -198,7 +218,10 @@ impl Binding {
     /// No natural key: several live documents share this binding (notes, notebooks), so `Lookup`
     /// and the id convergence of 69 §5 never apply to it.
     pub fn keyless(&self) -> bool {
-        matches!(self, Self::Note | Self::Notebook | Self::Whiteboard)
+        matches!(
+            self,
+            Self::Note | Self::Notebook | Self::Whiteboard | Self::Deck
+        )
     }
 
     /// The kind a new document of this binding gets.
@@ -213,6 +236,7 @@ impl Binding {
             Self::Notebook => DocKind::Notebook,
             Self::Source(_) => DocKind::Source,
             Self::Whiteboard => DocKind::Whiteboard,
+            Self::Deck => DocKind::Deck,
         }
     }
 
@@ -231,6 +255,7 @@ impl Binding {
             Self::Notebook => format!("documents/{id}/notebook.md"),
             Self::Source(_) => format!("documents/{id}/source.md"),
             Self::Whiteboard => format!("documents/{id}/whiteboard.md"),
+            Self::Deck => format!("documents/{id}/deck.md"),
         }
     }
 }

@@ -274,6 +274,23 @@ pub(crate) fn validate(v: &Value) -> Result<Spec, Vec<SpecError>> {
                     ));
                 }
             }
+            Component::ActionButton(a) => {
+                if a.action.trim().is_empty() {
+                    errs.push(err(
+                        &format!("{p}/props/action"),
+                        "action must not be empty",
+                    ));
+                }
+                if let Some(raw) = &a.args_json {
+                    match serde_json::from_str::<Value>(raw) {
+                        Ok(Value::Object(_)) => {}
+                        _ => errs.push(err(
+                            &format!("{p}/props/args_json"),
+                            "args_json must be a JSON object",
+                        )),
+                    }
+                }
+            }
             _ => {}
         }
         elements.insert(
@@ -1779,7 +1796,7 @@ mod tests {
             ("/elements/h/props/level", "expected 1..=4"),
             (
                 "/elements/t/type",
-                "unknown component \"DataTable\"; catalog: Accordion, Alert, Badge",
+                "unknown component \"DataTable\"; catalog: Accordion, ActionButton, Alert, Badge",
             ),
             ("/elements/g/props/columns", "expected 1..=6"),
         ];

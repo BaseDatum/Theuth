@@ -23,12 +23,12 @@ use kameo::actor::ActorRef;
 mod inproc;
 
 #[cfg(any(target_os = "ios", feature = "inproc-monty"))]
+use inproc::{InProcCheckout as Checkout, InProcPool as Pool};
+#[cfg(any(target_os = "ios", feature = "inproc-monty"))]
 pub use inproc::{
     InProcCheckout as MontyCheckout, InProcPool as MontyPool, MountSpec, MountSpecMode, OnPrint,
     PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent, on_print_sync,
 };
-#[cfg(any(target_os = "ios", feature = "inproc-monty"))]
-use inproc::{InProcCheckout as Checkout, InProcPool as Pool};
 #[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
 pub use monty_pool::{
     Checkout as MontyCheckout, MountSpec, MountSpecMode, OnPrint, Pool as MontyPool, PoolError,
@@ -249,14 +249,102 @@ pub fn open_inproc_pool(max_workers: usize) -> Arc<MontyPool> {
     Arc::new(MontyPool::new(cap))
 }
 
+/// Start the platform-appropriate Monty pool (in-process on iOS/`inproc-monty`,
+/// subprocess worker using the current binary otherwise).
+pub async fn open_default_pool(max_workers: usize) -> Option<Arc<MontyPool>> {
+    #[cfg(any(target_os = "ios", feature = "inproc-monty"))]
+    {
+        Some(open_inproc_pool(max_workers))
+    }
+    #[cfg(not(any(target_os = "ios", feature = "inproc-monty")))]
+    {
+        let exe = std::env::current_exe().ok()?;
+        open_pool(&exe, max_workers).await
+    }
+}
+
+/// Build a session [`ReplConfig`] matching [`Repl::open_with`] (with optional extra `.pyi` stubs
+/// appended after the session tool stubs, e.g. for Deck cooperative builtins).
+pub fn session_repl_config(specs: &[ToolSpec], extra_stubs: &str, max_memory: usize) -> ReplConfig {
+    let mut type_stubs = stubs(specs);
+    if !extra_stubs.is_empty() {
+        type_stubs.push('\n');
+        type_stubs.push_str(extra_stubs);
+        if !type_stubs.ends_with('\n') {
+            type_stubs.push('\n');
+        }
+    }
+    ReplConfig {
+        limits: Some(ResourceLimits {
+            max_memory: Some(max_memory),
+            max_suspensions: MAX_SUSPENSIONS,
+            max_total_sleep: Some(MAX_TOTAL_SLEEP),
+            ..ResourceLimits::default()
+        }),
+        type_check: true,
+        type_check_stubs: Some(type_stubs),
+        os_policy: OsPolicy {
+            timezone: SandboxTimeZone::Fixed {
+                offset_seconds: chrono::Local::now().offset().local_minus_utc(),
+                name: None,
+            },
+            sleep: SleepMode::System(MAX_SLEEP),
+            ..OsPolicy::default()
+        },
+        ..ReplConfig::default()
+    }
+}
+
+/// Build read-only `/cwd` and `/spill` mounts matching [`Repl::open_with`] (omitting `/spill`
+/// when host paths nest, which Monty forbids).
+pub fn session_mounts(cwd: &Path, spill: &Path) -> Vec<MountSpec> {
+    let mut mounts = Vec::with_capacity(2);
+    let _ = std::fs::create_dir_all(spill);
+    let nested = match (std::fs::canonicalize(cwd), std::fs::canonicalize(spill)) {
+        (Ok(a), Ok(b)) => a.starts_with(&b) || b.starts_with(&a),
+        _ => false,
+    };
+    let spill_mount = if nested {
+        None
+    } else {
+        Some(("/spill", spill))
+    };
+    for (virt, host) in std::iter::once(("/cwd", cwd)).chain(spill_mount) {
+        match MountSpec::new(virt, host, MountSpecMode::ReadOnly) {
+            Ok(m) => mounts.push(m),
+            Err(e) => tracing::warn!("mount {virt} → {}: {e}", host.display()),
+        }
+    }
+    mounts
+}
+
+/// Query all live tools visible to `session` (builtins, plugins, and configured MCP servers).
+pub async fn session_tool_specs(
+    registry: &ActorRef<ToolRegistry>,
+    session: SessionId,
+) -> Vec<ToolSpec> {
+    registry
+        .ask(ListTools(Some(session)))
+        .await
+        .unwrap_or_default()
+}
+
+/// Find the tool whose sanitised Python identifier matches `ident`.
+pub fn find_session_tool<'a>(specs: &'a [ToolSpec], ident: &str) -> Option<&'a ToolSpec> {
+    specs.iter().find(|s| sanitize_ident(&s.name) == ident)
+}
+
 /// Test-only: a pool on the first python worker that answers a real checkout and
 /// feed, so a stale `t`/`monty` on `PATH` (older worker protocol; `Pool::new` does
 /// not handshake) is skipped rather than failing the test at its first checkout.
 /// Candidates: `$THEUTH_WORKER`, `$THEUTH_MONTY_WORKER`, this build's own `t`
 /// (`target/<profile>/t`, beside the test exe's `deps/`), then every `monty` and
 /// `t` on `PATH`. `None` (noted on stderr) when none works, so the test skips.
-#[cfg(all(test, not(any(target_os = "ios", feature = "inproc-monty"))))]
-pub(crate) async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
+#[cfg(all(
+    any(test, feature = "test-support"),
+    not(any(target_os = "ios", feature = "inproc-monty"))
+))]
+pub async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     for var in ["THEUTH_WORKER", "THEUTH_MONTY_WORKER"] {
         candidates.extend(std::env::var_os(var).map(PathBuf::from));
@@ -301,8 +389,11 @@ pub(crate) async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
 }
 
 /// Test-only in-process Monty pool for iOS / `--features inproc-monty`.
-#[cfg(all(test, any(target_os = "ios", feature = "inproc-monty")))]
-pub(crate) async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
+#[cfg(all(
+    any(test, feature = "test-support"),
+    any(target_os = "ios", feature = "inproc-monty")
+))]
+pub async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
     Some(open_inproc_pool(max_processes))
 }
 
@@ -475,7 +566,7 @@ fn py_literal(v: &Value) -> String {
 }
 
 /// First sentence of the description, cut at [`SUMMARY_CHARS`].
-fn summary(description: &str) -> String {
+pub fn summary(description: &str) -> String {
     let d = description.trim();
     let end = d
         .find(". ")
@@ -621,7 +712,7 @@ pub fn py_str_literal(s: &str) -> String {
 }
 
 /// `help(name)` text (08 §4.2).
-fn help(spec: &ToolSpec) -> String {
+pub fn help(spec: &ToolSpec) -> String {
     let mut out = format!(
         "async def {}({}) -> {}\n\n{}\n",
         sanitize_ident(&spec.name),
@@ -1169,7 +1260,7 @@ struct Snapshot {
 /// Monty's Load adopts the dump's typing state, not the checkout's fresh
 /// configuration. Replace only our known stub prefix, preserving committed
 /// user declarations; a reopened/legacy dump gets missing runtime names only.
-fn rebase_dump_stubs(bytes: &mut Vec<u8>, previous: Option<&str>, fresh: &str) {
+pub fn rebase_dump_stubs(bytes: &mut Vec<u8>, previous: Option<&str>, fresh: &str) {
     let rebase = || -> anyhow::Result<Option<Vec<u8>>> {
         let mut dump = monty::Dump::load(bytes)?;
         let Some(typing) = &mut dump.type_check else {
@@ -2231,7 +2322,7 @@ fn first_arg<'a>(args: &'a CallArgs, name: &str) -> Option<ObjectRef<'a>> {
 }
 
 /// kwargs by name; positional args in signature order; unknown kwargs pass through.
-fn merge_args(spec: &ToolSpec, args: &CallArgs) -> Value {
+pub fn merge_args(spec: &ToolSpec, args: &CallArgs) -> Value {
     let mut obj = serde_json::Map::new();
     for (name, v) in params(&spec.schema).iter().map(|p| p.name).zip(args.args()) {
         obj.insert(name.to_owned(), from_monty(v));
@@ -2302,7 +2393,7 @@ pub(crate) fn knowledge_read_ids(name: &str, args: &Value, out: &ToolOutput) -> 
 }
 
 /// Tool output → sandbox return value or exception (08 §3.3, §4.2).
-fn tool_result(name: &str, out: ToolOutput) -> ResumeValue {
+pub fn tool_result(name: &str, out: ToolOutput) -> ResumeValue {
     if out.is_error {
         let exc = if out.content.ends_with("denied by user")
             || out.content.ends_with("denied by policy")
@@ -2332,7 +2423,7 @@ fn tool_result(name: &str, out: ToolOutput) -> ResumeValue {
 
 /// OS calls no mount covers: empty environment, else the call's own default
 /// (`NotHandled`). Clocks are the worker's, in the host's zone (`os_policy`).
-fn os_answer(function_name: &str, args: &CallArgs) -> ResumeValue {
+pub fn os_answer(function_name: &str, args: &CallArgs) -> ResumeValue {
     match function_name {
         "os.getenv" => {
             ResumeValue::Return(args.arg(1).map_or_else(MontyObject::none, |d| d.to_owned()))
@@ -4143,7 +4234,13 @@ mod tests {
         let mut printed = String::new();
         let mut on_print = on_print_sync(|_, chunk| printed.push_str(chunk));
         let ev = checkout
-            .feed("print('hello')\nx = 40 + 2\nx", Vec::new(), Vec::new(), false, &mut on_print)
+            .feed(
+                "print('hello')\nx = 40 + 2\nx",
+                Vec::new(),
+                Vec::new(),
+                false,
+                &mut on_print,
+            )
             .await
             .expect("cell 1");
         drop(on_print);
@@ -4220,7 +4317,10 @@ mod tests {
                         .into_iter()
                         .map(|id| {
                             let msg = pending.remove(&id).expect("pending call");
-                            (id, ResumeValue::Return(MontyObject::string(format!("echo:{msg}"))))
+                            (
+                                id,
+                                ResumeValue::Return(MontyObject::string(format!("echo:{msg}"))),
+                            )
                         })
                         .collect();
                     checkout

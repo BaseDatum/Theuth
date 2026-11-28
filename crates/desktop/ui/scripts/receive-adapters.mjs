@@ -11,7 +11,7 @@ export function emitAdapters(document, schemas) {
   }
   function tag(schema) {
     schema = resolve(schema)
-    return JSON.stringify(Object.entries(schema?.properties ?? {}).filter(([, s]) => s && 'const' in s).map(([k, s]) => [k, s.const]))
+    return JSON.stringify(Object.entries(schema?.properties ?? {}).filter(([, s]) => s && typeof s === 'object' && 'const' in s).map(([k, s]) => [k, s.const]))
   }
   function profile(output, receiver) {
     output = resolve(output); receiver = resolve(receiver)
@@ -33,7 +33,7 @@ export function emitAdapters(document, schemas) {
       for (const [key, property] of Object.entries(output.properties)) {
         const received = input.properties?.[key]
         shape.properties[key] = profile(property, received)
-        if (received && output.required?.includes(key) && 'default' in received) shape.defaults[key] = received.default
+        if (received && typeof received === 'object' && output.required?.includes(key) && 'default' in received) shape.defaults[key] = received.default
         else if (received && output.required?.includes(key) && !input.required?.includes(key) && nullable(received)) shape.defaults[key] = null
         const scalar = resolve(property)
         if (scalar && typeof scalar === 'object' && 'const' in scalar) shape.tags[key] = [scalar.const]

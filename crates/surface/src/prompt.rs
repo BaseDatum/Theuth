@@ -12,7 +12,7 @@ const SKILL: &str = include_str!("../visualize.md");
 
 /// One minimal element per component, in catalog order; the `### Name` example in the skill.
 /// Containers reference children `a`/`b`, which the example leaves to the reader.
-const EXAMPLES: [(&str, &str); 57] = [
+const EXAMPLES: [(&str, &str); 60] = [
     (
         "Card",
         r#"{"type": "Card", "props": {"title": "Release readiness"}, "children": ["a", "b"]}"#,
@@ -237,6 +237,18 @@ const EXAMPLES: [(&str, &str); 57] = [
     (
         "Fishbone",
         r#"{"type": "Fishbone", "props": {"effect": "Slow replies", "causes": [{"category": "Model", "items": ["long context"]}, {"category": "Tools", "items": ["cold ELK"]}]}}"#,
+    ),
+    (
+        "ActionButton",
+        r#"{"type": "ActionButton", "props": {"label": "Refresh", "action": "refresh", "args_json": "{}", "tone": "primary"}}"#,
+    ),
+    (
+        "StreamControls",
+        r#"{"type": "StreamControls", "props": {"title": "Live stream", "show_run_once": true}}"#,
+    ),
+    (
+        "ResultBanner",
+        r#"{"type": "ResultBanner", "props": {"title": "Last result", "empty_text": "No action run yet"}}"#,
     ),
 ];
 

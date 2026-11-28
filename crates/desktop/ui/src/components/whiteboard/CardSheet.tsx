@@ -26,6 +26,7 @@ import { taskPath } from './task-cards'
 
 // Lazy: it pulls the route tree, which holds the whiteboard route itself.
 const ViewCard = lazy(() => import('./canvas/cards/ViewCard'))
+const DeckSheetView = lazy(() => import('@/components/decks/DeckView').then((m) => ({ default: m.DeckView })))
 
 function PageBody({ session, callId, title }: { session: string; callId: string; title: string }) {
   const api = useApi()
@@ -115,6 +116,14 @@ function Body({ card, source, blobUrl, onSession }: { card: Card; source: Source
         <div className="relative h-full">
           <Suspense fallback={null}>
             <ViewCard path={taskPath(source.task)} interactive />
+          </Suspense>
+        </div>
+      )
+    case 'deck':
+      return (
+        <div className="relative h-full">
+          <Suspense fallback={null}>
+            <DeckSheetView deckId={source.deck} section={source.section} snapshotId={source.snapshot_id} />
           </Suspense>
         </div>
       )

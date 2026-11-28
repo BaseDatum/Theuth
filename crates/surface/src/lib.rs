@@ -315,7 +315,7 @@ mod tests {
         };
     }
 
-    const VALID: [(&str, &str); 59] = [
+    const VALID: [(&str, &str); 60] = [
         fixture!("valid-release-readiness"),
         fixture!("valid-status-board"),
         fixture!("valid-stack-text"),
@@ -376,6 +376,7 @@ mod tests {
         fixture!("valid-tree-layouts"),
         fixture!("valid-kanban-rows"),
         fixture!("valid-heatmap-diverging"),
+        fixture!("valid-deck-controls"),
     ];
 
     const REPAIRABLE: [(&str, &str); 4] = [

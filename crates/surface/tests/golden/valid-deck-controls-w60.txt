@@ -1,0 +1,5 @@
+[Stream controls: Workspace Pulse]
+
+[Action: Refresh Metrics]
+
+No action invoked yet.

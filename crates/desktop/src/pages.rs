@@ -19,13 +19,48 @@ pub const SCHEME: &str = "theuth-page";
 const MAX_ENTRIES: usize = 64;
 const MAX_BYTES: usize = 128 * 1024 * 1024;
 
-/// Managed state: token → page bytes, LRU-bounded by count and total bytes.
+/// Security policy profile for a `theuth-page` document.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PageProfile {
+    /// Existing HTML artifact policy (unchanged: `sandbox allow-scripts allow-forms`).
+    #[default]
+    Standard,
+    /// Strict Deck HTML section policy (design doc 229): zero network, zero forms,
+    /// no same-origin, no embedded objects/frames — only inline styles/scripts + data URIs.
+    DeckStrict,
+}
+
+impl PageProfile {
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim) {
+            Some("deck") | Some("deck_strict") => Self::DeckStrict,
+            _ => Self::Standard,
+        }
+    }
+
+    pub const fn csp(self) -> &'static str {
+        match self {
+            Self::Standard => "sandbox allow-scripts allow-forms",
+            Self::DeckStrict => {
+                "sandbox allow-scripts; default-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PageEntry {
+    body: Arc<[u8]>,
+    profile: PageProfile,
+}
+
+/// Managed state: token → page bytes + policy profile, LRU-bounded by count and total bytes.
 #[derive(Default)]
 pub struct Pages(Mutex<Inner>);
 
 #[derive(Default)]
 struct Inner {
-    by_token: HashMap<String, Arc<[u8]>>,
+    by_token: HashMap<String, PageEntry>,
     /// One page per call; a second `page_put` for the same call replaces the first.
     by_call: HashMap<String, String>,
     /// Least recently used at the front. ponytail: O(n) refresh, n ≤ 64.
@@ -35,8 +70,8 @@ struct Inner {
 
 impl Inner {
     fn remove(&mut self, token: &str) {
-        if let Some(body) = self.by_token.remove(token) {
-            self.bytes -= body.len();
+        if let Some(entry) = self.by_token.remove(token) {
+            self.bytes -= entry.body.len();
             self.order.retain(|t| t != token);
             self.by_call.retain(|_, t| t != token);
         }
@@ -49,15 +84,27 @@ impl Pages {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Store `html` under a fresh token; returns the token.
+    /// Store `html` under a fresh token with the standard artifact profile; returns the token.
+    #[cfg(test)]
     pub fn put(&self, call_id: String, html: Vec<u8>) -> String {
+        self.put_with_profile(call_id, html, PageProfile::Standard)
+    }
+
+    /// Store `html` under a fresh token with an explicit [`PageProfile`]; returns the token.
+    pub fn put_with_profile(&self, call_id: String, html: Vec<u8>, profile: PageProfile) -> String {
         let token = format!("{:032x}", rand::random::<u128>());
         let mut inner = self.lock();
         if let Some(old) = inner.by_call.remove(&call_id) {
             inner.remove(&old);
         }
         inner.bytes += html.len();
-        inner.by_token.insert(token.clone(), Arc::from(html));
+        inner.by_token.insert(
+            token.clone(),
+            PageEntry {
+                body: Arc::from(html),
+                profile,
+            },
+        );
         inner.by_call.insert(call_id, token.clone());
         inner.order.push_back(token.clone());
         // The page just put always stays, even when it alone exceeds the byte budget.
@@ -76,15 +123,20 @@ impl Pages {
         }
     }
 
-    /// The bytes for `token`, refreshing its recency.
-    fn get(&self, token: &str) -> Option<Arc<[u8]>> {
+    /// The entry for `token`, refreshing its recency.
+    fn get_entry(&self, token: &str) -> Option<PageEntry> {
         let mut inner = self.lock();
-        let body = inner.by_token.get(token)?.clone();
+        let entry = inner.by_token.get(token)?.clone();
         if let Some(i) = inner.order.iter().position(|t| t == token) {
             inner.order.remove(i);
             inner.order.push_back(token.to_owned());
         }
-        Some(body)
+        Some(entry)
+    }
+
+    #[cfg(test)]
+    fn get(&self, token: &str) -> Option<Arc<[u8]>> {
+        self.get_entry(token).map(|e| e.body)
     }
 }
 
@@ -99,8 +151,18 @@ fn page_url(token: &str) -> String {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn page_put(pages: State<'_, Pages>, call_id: String, html: String) -> Result<String, String> {
-    Ok(page_url(&pages.put(call_id, html.into_bytes())))
+pub fn page_put(
+    pages: State<'_, Pages>,
+    call_id: String,
+    html: String,
+    profile: Option<String>,
+) -> Result<String, String> {
+    let policy = PageProfile::parse(profile.as_deref());
+    Ok(page_url(&pages.put_with_profile(
+        call_id,
+        html.into_bytes(),
+        policy,
+    )))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -123,20 +185,17 @@ fn respond(pages: &Pages, req: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>
         return status(StatusCode::METHOD_NOT_ALLOWED);
     }
     let token = req.uri().path().strip_prefix('/').unwrap_or_default();
-    let Some(body) = pages.get(token) else {
+    let Some(entry) = pages.get_entry(token) else {
         return status(StatusCode::NOT_FOUND);
     };
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .header(
-            header::CONTENT_SECURITY_POLICY,
-            "sandbox allow-scripts allow-forms",
-        )
+        .header(header::CONTENT_SECURITY_POLICY, entry.profile.csp())
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::CACHE_CONTROL, "no-store")
         .header(header::REFERRER_POLICY, "no-referrer")
-        .body(Cow::Owned(body.to_vec()))
+        .body(Cow::Owned(entry.body.to_vec()))
         .expect("static headers")
 }
 
@@ -329,5 +388,40 @@ mod tests {
         assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
         assert!(!a.contains("call-1"));
         assert!(page_url(&a).ends_with(&format!("localhost/{a}")));
+    }
+
+    #[test]
+    fn deck_strict_profile_enforces_no_network_no_forms_no_same_origin() {
+        let pages = Pages::default();
+        let deck_tok = pages.put_with_profile(
+            "deck-sec-1".into(),
+            b"<p>deck</p>".to_vec(),
+            PageProfile::DeckStrict,
+        );
+        let deck_res = respond(&pages, &get(&format!("theuth-page://localhost/{deck_tok}")));
+        assert_eq!(deck_res.status(), StatusCode::OK);
+        let csp = header(&deck_res, header::CONTENT_SECURITY_POLICY);
+        assert!(csp.contains("sandbox allow-scripts"));
+        assert!(!csp.contains("allow-same-origin"));
+        assert!(!csp.contains("allow-forms"));
+        assert!(csp.contains("default-src 'none'"));
+        assert!(csp.contains("connect-src 'none'"));
+        assert!(csp.contains("form-action 'none'"));
+        assert!(csp.contains("object-src 'none'"));
+        assert!(csp.contains("frame-src 'none'"));
+        assert!(
+            deck_res
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none()
+        );
+
+        // Standard artifact pages keep their existing policy untouched.
+        let std_tok = put(&pages, "art-1", "<p>artifact</p>");
+        let std_res = respond(&pages, &get(&format!("theuth-page://localhost/{std_tok}")));
+        assert_eq!(
+            header(&std_res, header::CONTENT_SECURITY_POLICY),
+            "sandbox allow-scripts allow-forms"
+        );
     }
 }

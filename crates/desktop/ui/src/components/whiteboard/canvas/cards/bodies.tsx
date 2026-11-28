@@ -1,7 +1,7 @@
 // §8.5 renderers by kind (live LOD). Each fills the card's body; the chrome (title bar, shield, ink, scrubber) is
 // CardNode's. Heavy live views (pages) are budgeted by lod.ts; terminals never run live on the canvas, and a web card
 // only while entered (a native view over it, WebCard.tsx); otherwise it shows its stored snapshot.
-import { AppWindow, FileCode2, FileDiff, FileText, Globe, Image as ImageIcon, LayoutDashboard, ListTodo, MessageSquare, Shapes, StickyNote, Terminal as TerminalIcon, type LucideIcon } from 'lucide-react'
+import { AppWindow, FileCode2, FileDiff, FileText, Globe, Image as ImageIcon, Layers, LayoutDashboard, ListTodo, MessageSquare, Shapes, StickyNote, Terminal as TerminalIcon, type LucideIcon } from 'lucide-react'
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { CustomRendererProps } from 'streamdown'
@@ -29,14 +29,16 @@ const NoteView = lazy(() => import('@/components/notes/NotePage').then((m) => ({
 const ViewCard = lazy(() => import('./ViewCard'))
 // Lazy: it pulls the task store and its queries.
 const TaskCardBody = lazy(() => import('./TaskCard'))
+// Lazy: shares the live DeckView + per-Deck subscription with `/decks/$id`, never mutating the whiteboard Y.Doc.
+const DeckCardBody = lazy(() => import('@/components/decks/DeckCardBody'))
 
 export const KIND_ICON: Record<CardKind, LucideIcon> = {
   page: AppWindow, diagram: Shapes, note: FileText, excerpt: FileCode2, diff: FileDiff, terminal: TerminalIcon,
-  web: Globe, image: ImageIcon, sticky: StickyNote, session: MessageSquare, view: LayoutDashboard, task: ListTodo,
+  web: Globe, image: ImageIcon, sticky: StickyNote, session: MessageSquare, view: LayoutDashboard, task: ListTodo, deck: Layers,
 }
 export const KIND_NAME: Record<CardKind, string> = {
   page: 'page', diagram: 'diagram', note: 'note', excerpt: 'excerpt', diff: 'diff', terminal: 'terminal',
-  web: 'web', image: 'image', sticky: 'sticky', session: 'session', view: 'app view', task: 'task',
+  web: 'web', image: 'image', sticky: 'sticky', session: 'session', view: 'app view', task: 'task', deck: 'deck',
 }
 
 const fence = (code: string, language: string) => ({ code, isIncomplete: false, language }) as unknown as CustomRendererProps
@@ -271,6 +273,13 @@ export function LiveBody({ card, source, editing }: { card: Card; source: Source
       return (
         <Suspense fallback={<Pending />}>
           <TaskCardBody task={source.task} />
+        </Suspense>
+      )
+    case 'deck':
+      // Live Deck card by reference only: streams frames/snapshots without mutating the whiteboard Y.Doc.
+      return (
+        <Suspense fallback={<Pending />}>
+          <DeckCardBody deckId={source.deck} section={source.section} snapshotId={source.snapshot_id} />
         </Suspense>
       )
   }

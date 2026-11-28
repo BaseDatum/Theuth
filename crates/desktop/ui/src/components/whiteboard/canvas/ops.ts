@@ -15,7 +15,7 @@ export const CHUNK_WRITES = 60
 /** Approximate payload per transaction (§2.9). */
 export const CHUNK_BYTES = 30_000
 /** Kinds that edit in place: exactly one version, replaced. */
-export const IN_PLACE: readonly CardKind[] = ['sticky', 'note', 'diagram']
+export const IN_PLACE: readonly CardKind[] = ['sticky', 'note', 'diagram', 'deck']
 export const STICKY_MAX = 280
 
 /** A plain value without `undefined` fields (Yjs plain values are JSON-like). */

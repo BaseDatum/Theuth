@@ -946,6 +946,9 @@ impl DocumentActor {
             DocKind::Whiteboard => {
                 return Err("whiteboards stay on the machine that holds their images".into());
             }
+            DocKind::Deck => {
+                return Err("decks stay on the machine that runs their runtime".into());
+            }
             _ => return Err("this document is served by the hub".into()),
         }
         if !self.hub.is_me(to) && !self.legs.reachable(to) {
@@ -1565,8 +1568,7 @@ mod tests {
             .unwrap();
         vault.rotate("a", vec![], vec![], 0, false).await.unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let helper =
-            crate::helper::Helper::new(tx, rt.shutdown.clone());
+        let helper = crate::helper::Helper::new(tx, rt.shutdown.clone());
         let actor = DocumentActor::spawn(DocumentActor::new(
             store.clone(),
             helper,
@@ -1657,8 +1659,7 @@ mod tests {
         store.create(&theirs).await.unwrap();
         vault.rotate("a", vec![], vec![], 0, false).await.unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let helper =
-            crate::helper::Helper::new(tx, rt.shutdown.clone());
+        let helper = crate::helper::Helper::new(tx, rt.shutdown.clone());
         let actor = DocumentActor::spawn(DocumentActor::new(
             store.clone(),
             helper,

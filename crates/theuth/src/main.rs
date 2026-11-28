@@ -12,9 +12,9 @@ mod secret_cli;
 mod service;
 mod subsystems;
 mod vault_cli;
-mod worker;
 #[cfg(test)]
 mod wire_discovery_tests;
+mod worker;
 
 use std::path::{Path, PathBuf};
 
@@ -587,7 +587,9 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                     client.request("device_rename", rpc_params![id, name]).await
                 }
                 DevicesCmd::Claim { claim } => {
-                    client.request("device_pair_claim", rpc_params![claim.0]).await
+                    client
+                        .request("device_pair_claim", rpc_params![claim.0])
+                        .await
                 }
             },
         },
@@ -1471,7 +1473,11 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
         ("routines.md", schedule::tools::ROUTINES_SKILL.to_owned()),
         ("apps.md", app::skill()),
         ("board.md", document::tools::BOARD_SKILL.to_owned()),
-        ("whiteboard.md", document::tools::WHITEBOARD_SKILL.to_owned()), // 218:A3
+        (
+            "whiteboard.md",
+            document::tools::WHITEBOARD_SKILL.to_owned(),
+        ), // 218:A3
+        ("decks.md", decks::DECKS_SKILL.to_owned()), // 229
         ("decide.md", decision::tool::DECIDE_SKILL.to_owned()),
         ("double.md", double::tool::DOUBLE_SKILL.to_owned()),
         ("native-apps.md", computer::NATIVE_APPS_SKILL.to_owned()),
@@ -1990,7 +1996,10 @@ async fn run() -> anyhow::Result<()> {
     let plugins: Vec<Box<dyn Plugin>> = if let Some((ws, running)) = attached {
         // A client of the running engine: no engine plugins here (63 §2.3).
         if cli.acp {
-            vec![Box::new(rpc_compose::AcpPlugin { remote: Some(ws), module: rpc_module })]
+            vec![Box::new(rpc_compose::AcpPlugin {
+                remote: Some(ws),
+                module: rpc_module,
+            })]
         } else {
             let prompt = match cli.prompt {
                 Some(p) if p.is_empty() => Some(std::io::read_to_string(std::io::stdin())?),
@@ -2051,14 +2060,20 @@ async fn run() -> anyhow::Result<()> {
             // The `search` tool (49 §4.4): registration only.
             Box::new(rpc_compose::SearchToolsPlugin),
             // 63 §6.4: attachable, on a loopback port; stdout untouched.
-            Box::new(rpc_compose::RpcPlugin { implicit: true, module: rpc_module }),
+            Box::new(rpc_compose::RpcPlugin {
+                implicit: true,
+                module: rpc_module,
+            }),
             Box::new(signal::SignalPlugin {
                 channel: false,
                 link: None,
             }),
             Box::new(slack::SlackPlugin { channel: false }),
             Box::new(telegram::TelegramPlugin { channel: false }),
-            Box::new(rpc_compose::AcpPlugin { remote: None, module: rpc_module }),
+            Box::new(rpc_compose::AcpPlugin {
+                remote: None,
+                module: rpc_module,
+            }),
         ]
     } else {
         let mut plugins = engine_plugins(cli.headless, cli.serve || cli.headless);
@@ -2164,7 +2179,9 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
 }
 
 /// Assemble dispatch and inert discovery from the production owner list.
-fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::Server>, rpc_core::Discovery) {
+fn rpc_composition(
+    server: rpc_core::Server,
+) -> (jsonrpsee::RpcModule<rpc_core::Server>, rpc_core::Discovery) {
     use wire::RuntimeWire as _;
     let rt = server.rt.clone();
     rpc_compose::prepare(&server.rt);
@@ -2177,6 +2194,7 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
         artifact::rpc_module(server.clone()),
         browser::rpc_module(server.clone()),
         document::rpc_module(server.clone()),
+        decks::rpc_module(server.clone()),
         knowledge::rpc_module(server.clone()),
         link::rpc_module(server.clone()),
         roster::rpc_module(server.clone()),
@@ -2205,11 +2223,17 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
         share::rpc_module(server.clone()),
         cloudnodes::rpc_module(server.clone()),
         sandbox::rpc_module(server),
-    ]).expect("production RPC descriptors");
+    ])
+    .expect("production RPC descriptors");
     let discovery = rpc_core::Discovery {
         descriptors: composition.descriptors,
         events: rt.wire_schema(),
-        plugins: rt.extension(DeclaredPlugins::default).0.get().cloned().unwrap_or_default(),
+        plugins: rt
+            .extension(DeclaredPlugins::default)
+            .0
+            .get()
+            .cloned()
+            .unwrap_or_default(),
     };
     (composition.module, discovery)
 }
@@ -2218,13 +2242,24 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
 struct DeclaredPlugins(std::sync::Arc<std::sync::OnceLock<Vec<String>>>);
 
 /// The same selected plugins declare before any start hook can open a service.
-async fn declare_plugins(rt: &Runtime, plugins: &mut [Box<dyn Plugin>]) -> anyhow::Result<jsonrpsee::RpcModule<rpc_core::Server>> {
+async fn declare_plugins(
+    rt: &Runtime,
+    plugins: &mut [Box<dyn Plugin>],
+) -> anyhow::Result<jsonrpsee::RpcModule<rpc_core::Server>> {
     use wire::RuntimeWire as _;
-    let names = plugins.iter().map(|plugin| plugin.name().to_owned()).collect();
-    anyhow::ensure!(rt.extension(DeclaredPlugins::default).0.set(names).is_ok(), "plugin declarations are frozen");
+    let names = plugins
+        .iter()
+        .map(|plugin| plugin.name().to_owned())
+        .collect();
+    anyhow::ensure!(
+        rt.extension(DeclaredPlugins::default).0.set(names).is_ok(),
+        "plugin declarations are frozen"
+    );
     for plugin in plugins {
         let name = plugin.name();
-        plugin.declare_wire(rt).await
+        plugin
+            .declare_wire(rt)
+            .await
             .map_err(|e| anyhow::anyhow!("plugin {name} failed to declare: {e:#}"))?;
     }
     rt.freeze_wire().await?;
@@ -2243,15 +2278,30 @@ async fn export_wire_contract(out: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(out)?;
     let cached = rpc_core::discovery_document(&rt, rpc_core::DiscoveryView::Mesh)?;
     let document: serde_json::Value = serde_json::from_str(cached.document.0.get())?;
-    std::fs::write(out.join("openrpc.json"), serde_json::to_string_pretty(&document)? + "\n")?;
-    std::fs::write(out.join("methods.json"), serde_json::to_string_pretty(&names)?)?;
-    std::fs::write(out.join("surface-catalog.json"), serde_json::to_string_pretty(&surface::catalog_schema())?)?;
-    std::fs::write(out.join("surface-catalog-compact.txt"), surface::catalog_compact())?;
+    std::fs::write(
+        out.join("openrpc.json"),
+        serde_json::to_string_pretty(&document)? + "\n",
+    )?;
+    std::fs::write(
+        out.join("methods.json"),
+        serde_json::to_string_pretty(&names)?,
+    )?;
+    std::fs::write(
+        out.join("surface-catalog.json"),
+        serde_json::to_string_pretty(&surface::catalog_schema())?,
+    )?;
+    std::fs::write(
+        out.join("surface-catalog-compact.txt"),
+        surface::catalog_compact(),
+    )?;
     let auxiliary = serde_json::json!({
         "agent": agent::rpc_forward::client_error_schema(),
         "surface": surface::client_schema(),
     });
-    std::fs::write(out.join("client-auxiliary.json"), serde_json::to_string_pretty(&auxiliary)?)?;
+    std::fs::write(
+        out.join("client-auxiliary.json"),
+        serde_json::to_string_pretty(&auxiliary)?,
+    )?;
     Ok(())
 }
 
@@ -2270,9 +2320,14 @@ mod wire_contract_tests {
     #[tokio::test]
     async fn real_composition_descriptors_match_served_methods() {
         let rt = Runtime::new(Figment::new(), std::env::temp_dir());
-        declare_plugins(&rt, &mut engine_plugins(true, true)).await.unwrap();
+        declare_plugins(&rt, &mut engine_plugins(true, true))
+            .await
+            .unwrap();
         let (module, discovery) = rpc_composition(rpc_core::Server::new(rt));
-        discovery.descriptors.validate_methods(module.method_names()).unwrap();
+        discovery
+            .descriptors
+            .validate_methods(module.method_names())
+            .unwrap();
         // 194's source-scan uniqueness check belongs at the real composition:
         // validate_methods rejects duplicate names, including aliases and unsubscribers.
         for (name, owner) in [
@@ -2293,19 +2348,31 @@ mod wire_contract_tests {
             ("set_theuth_agent_effort", "roster"),
             ("autoresearch.settings.set", "autoresearch"),
         ] {
-            let method = discovery.descriptors.methods.iter()
+            let method = discovery
+                .descriptors
+                .methods
+                .iter()
                 .find(|method| method.name == name)
                 .unwrap_or_else(|| panic!("missing RPC method: {name}"));
             assert_eq!(method.owner, owner, "{name}");
         }
         let document = discovery.document().unwrap();
-        let described: BTreeSet<_> = document["methods"].as_array().unwrap().iter()
-            .map(|method| method["name"].as_str().unwrap()).collect();
+        let described: BTreeSet<_> = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|method| method["name"].as_str().unwrap())
+            .collect();
         let served: BTreeSet<_> = module.method_names().collect();
         assert_eq!(described, served);
         assert!(described.contains("new_session"));
-        assert!(document["x-theuth"]["events"].as_array().unwrap().iter()
-            .any(|event| event["topic"] == "agent.events"));
+        assert!(
+            document["x-theuth"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["topic"] == "agent.events")
+        );
     }
 }
 
@@ -2318,6 +2385,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(secrets::SecretsPlugin),
         Box::new(external_backends::ExternalBackendsPlugin), // 221
         Box::new(document::DocumentPlugin),
+        Box::new(decks::DecksPlugin),
         Box::new(knowledge::KnowledgePlugin),
         Box::new(web::WebPlugin),
         Box::new(browser::BrowserPlugin),
@@ -2377,7 +2445,10 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
     ];
     // 58 §6.1: capture backends per OS; `MeetingStatus.supported` says what this host can do.
     plugins.push(Box::new(meeting::MeetingPlugin));
-    plugins.push(Box::new(rpc_compose::RpcPlugin { implicit: !serve, module: rpc_module }));
+    plugins.push(Box::new(rpc_compose::RpcPlugin {
+        implicit: !serve,
+        module: rpc_module,
+    }));
     plugins
 }
 
@@ -2505,7 +2576,9 @@ async fn start_plugins(
 /// a channel listens on the hub (in daemon mode) and is control-only elsewhere.
 fn hub_subsystem(name: &'static str, daemon: bool) -> Option<subsystems::HubSubsystem> {
     let make: subsystems::MakePlugin = match name {
-        "dreaming" => Box::new(|hub| hub.then(|| Box::new(dreaming::DreamingPlugin) as Box<dyn Plugin>)),
+        "dreaming" => {
+            Box::new(|hub| hub.then(|| Box::new(dreaming::DreamingPlugin) as Box<dyn Plugin>))
+        }
         "signal" => Box::new(move |hub| {
             Some(Box::new(signal::SignalPlugin {
                 channel: daemon && hub,

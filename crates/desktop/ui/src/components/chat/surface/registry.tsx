@@ -12,6 +12,9 @@ import {
   Folder,
   Info,
   Lightbulb,
+  Pause,
+  Play,
+  RefreshCw,
   Square,
   SquareCheck,
   TriangleAlert,
@@ -26,6 +29,7 @@ import { useSnapshot } from '@/lib/snapshot-mode'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import { catalog } from './catalog'
+import { useDeckInteractContext } from './deck-context'
 import { Excerpt } from './Excerpt'
 import { BarChartView } from './diagrams/BarChart'
 import { EntitiesView } from './diagrams/Entities'
@@ -644,6 +648,162 @@ const components: Components<typeof catalog> = {
   Layers: ({ props, loading }) => <LayersView props={props} loading={loading} />,
   Journey: ({ props, loading }) => <JourneyView props={props} loading={loading} />,
   Fishbone: ({ props, loading }) => <FishboneView props={props} loading={loading} />,
+  ActionButton: ({ props }) => <DeckActionButtonView props={props} />,
+  StreamControls: ({ props }) => <DeckStreamControlsView props={props} />,
+  ResultBanner: ({ props }) => <DeckResultBannerView props={props} />,
+}
+
+function parseActionArgs(raw: string | undefined): Record<string, unknown> {
+  if (!raw || !raw.trim()) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // Ignore malformed args; server-side schema validation also enforces shape.
+  }
+  return {}
+}
+
+function DeckActionButtonView({
+  props,
+}: {
+  props: {
+    label: string
+    action: string
+    args_json?: string
+    tone?: 'default' | 'primary' | 'danger'
+    disabled?: boolean
+    confirm?: string
+  }
+}) {
+  const deck = useDeckInteractContext()
+  const inert = deck === null
+  const disabled = inert || Boolean(props.disabled) || Boolean(deck?.busy)
+  const variant = props.tone === 'danger' ? 'destructive' : props.tone === 'primary' ? 'default' : 'outline'
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant={variant}
+      disabled={disabled}
+      data-deck-action={props.action}
+      data-deck-inert={inert ? 'true' : undefined}
+      title={inert ? 'Interactive Deck buttons are disabled outside a Deck' : props.action}
+      onClick={() => {
+        if (!deck || disabled) return
+        if (props.confirm && typeof window !== 'undefined' && !window.confirm(props.confirm)) return
+        void deck.invokeAction(props.action, parseActionArgs(props.args_json))
+      }}
+    >
+      {props.label}
+    </Button>
+  )
+}
+
+function DeckStreamControlsView({
+  props,
+}: {
+  props: { title?: string; show_run_once?: boolean }
+}) {
+  const deck = useDeckInteractContext()
+  const inert = deck === null
+  const state = deck?.runtimeState ?? 'stopped'
+  const busy = Boolean(deck?.busy)
+  return (
+    <div
+      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-layer-1 px-3 py-2 text-xs"
+      data-deck-stream-controls
+      data-deck-inert={inert ? 'true' : undefined}
+    >
+      <div className="flex items-center gap-2">
+        <span className="font-medium text-fg-primary">{props.title || 'Stream Runtime'}</span>
+        <span
+          className={cn(
+            'rounded-full px-2 py-0.5 text-[11px] font-medium capitalize',
+            state === 'streaming'
+              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+              : state === 'paused'
+                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                : state === 'waiting_approval'
+                  ? 'bg-orange-500/15 text-orange-600 dark:text-orange-400'
+                  : state === 'error'
+                    ? 'bg-destructive/15 text-destructive'
+                    : 'bg-layer-2 text-fg-secondary',
+          )}
+        >
+          {state.replace('_', ' ')}
+        </span>
+        {deck?.stale && <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600">stale</span>}
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {state === 'paused' ? (
+          <Button type="button" size="sm" variant="default" data-deck-control="resume" disabled={inert || busy} onClick={() => deck && void deck.controlRuntime('resume')}>
+            <Play className="mr-1 size-3" /> Resume
+          </Button>
+        ) : state === 'streaming' ? (
+          <Button type="button" size="sm" variant="outline" data-deck-control="pause" disabled={inert || busy} onClick={() => deck && void deck.controlRuntime('pause')}>
+            <Pause className="mr-1 size-3" /> Pause
+          </Button>
+        ) : (
+          <Button type="button" size="sm" variant="default" data-deck-control="start" disabled={inert || busy} onClick={() => deck && void deck.controlRuntime('start')}>
+            <Play className="mr-1 size-3" /> Start
+          </Button>
+        )}
+        <Button type="button" size="sm" variant="outline" data-deck-control="stop" disabled={inert || busy || state === 'stopped'} onClick={() => deck && void deck.controlRuntime('stop')}>
+          <Square className="mr-1 size-3" /> Stop
+        </Button>
+        {props.show_run_once && (
+          <Button type="button" size="sm" variant="ghost" data-deck-control="run_once" disabled={inert || busy} onClick={() => deck && void deck.controlRuntime('run_once')}>
+            <RefreshCw className="mr-1 size-3" /> Run once
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DeckResultBannerView({
+  props,
+}: {
+  props: { title?: string; empty_text?: string; action_filter?: string }
+}) {
+  const deck = useDeckInteractContext()
+  const inert = deck === null
+  const result = deck?.lastResult
+  const matches = result && (!props.action_filter || result.action === props.action_filter)
+  return (
+    <div
+      className="rounded-lg border border-border-subtle bg-layer-1 px-3 py-2 text-xs"
+      data-deck-result-banner
+      data-deck-inert={inert ? 'true' : undefined}
+    >
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="font-medium text-fg-primary">{props.title || 'Action Result'}</span>
+        {matches && (
+          <span className="text-[11px] text-fg-tertiary">
+            {result.action} · {result.private ? 'private to you' : 'shared'}
+            {result.cached ? ' · cached' : ''}
+          </span>
+        )}
+      </div>
+      {!matches ? (
+        <div className="text-fg-tertiary">
+          {inert ? 'Deck action results are inactive outside a Deck.' : props.empty_text || 'Run an action to see your private result here.'}
+        </div>
+      ) : result.ok ? (
+        <pre className="m-0 max-h-40 overflow-auto rounded bg-layer-2 p-2 font-mono text-[11px] text-fg-primary">
+          {typeof result.result === 'string' ? result.result : JSON.stringify(result.result, null, 2)}
+        </pre>
+      ) : (
+        <div className="text-destructive">
+          {result.error_code ? `[${result.error_code}] ` : ''}
+          {result.error || 'Action failed'}
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** json-render registry over the v0 catalog; the only thing `JsonRenderFence` needs. */

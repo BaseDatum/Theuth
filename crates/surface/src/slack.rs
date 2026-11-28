@@ -317,6 +317,15 @@ impl Render<'_> {
             Component::Layers(_) => return Err(SlackBlocksError::Unsupported("Layers")),
             Component::Journey(_) => return Err(SlackBlocksError::Unsupported("Journey")),
             Component::Fishbone(_) => return Err(SlackBlocksError::Unsupported("Fishbone")),
+            Component::ActionButton(_) => {
+                return Err(SlackBlocksError::Unsupported("ActionButton"));
+            }
+            Component::StreamControls(_) => {
+                return Err(SlackBlocksError::Unsupported("StreamControls"));
+            }
+            Component::ResultBanner(_) => {
+                return Err(SlackBlocksError::Unsupported("ResultBanner"));
+            }
         }
         Ok(())
     }
