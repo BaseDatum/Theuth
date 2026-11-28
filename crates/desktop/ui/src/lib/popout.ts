@@ -42,6 +42,8 @@ export type PopoutTarget =
   | { kind: 'file'; session: string; path: string; line?: number; end_line?: number }
   /** `/diff/$session?spec=<DiffSpec JSON>` (212): one `show_diff` diff alone; the label keys on a hash of the spec. */
   | { kind: 'diff'; session: string; spec: DiffSpec }
+  /** `/decks/$id` (with optional `?section=...&snapshot=...`): one Deck alone, preserving its section/snapshot and title. */
+  | { kind: 'deck'; deck: string; section?: string; snapshot?: string; title?: string }
   /** `/tile/$kind/$session?props=<JSON>`: one generic tile (`components/tiles/registry`, kind `tile`) alone, drawn by its
    * kind's own renderer — every tile kind without a dedicated route above (media, diagram, jobs, Context, …). Props too
    * long for a URL ride in localStorage instead (`?stash=<hash>`, `TILE_STASH`); the label keys on a hash of them. */
@@ -67,12 +69,16 @@ const propsJson = (props: unknown): string => JSON.stringify(props ?? null)
 /** A stash's id: lettered, so the router never reads it as a number (an all-digit hash would lose its leading zeros). */
 const stashId = (json: string): string => `p${fnv(json)}`
 
+const deckIdOf = (t: Extract<PopoutTarget, { kind: 'deck' }>): string =>
+  t.section || t.snapshot ? `${t.deck}-${fnv(`${t.section ?? ''}\0${t.snapshot ?? ''}`)}` : t.deck
+
 const idOf = (t: PopoutTarget): string =>
   t.kind === 'tile' ? `${t.tile}-${t.session}-${fnv(propsJson(t.props))}` :
   t.kind === 'page' ? `${t.path.replace(/^\//, '')}${t.key ? `-${t.key}` : ''}` :
   t.kind === 'web' ? t.id :
   t.kind === 'file' ? `${t.session}-${t.path}` :
   t.kind === 'diff' ? `${t.session}-${fnv(JSON.stringify(t.spec))}` :
+  t.kind === 'deck' ? deckIdOf(t) :
   t.kind === 'chat' || t.kind === 'talk'
     ? t.session
     : t.kind === 'artifact'
@@ -90,6 +96,40 @@ const idOf = (t: PopoutTarget): string =>
                 : t.kind === 'codemap'
                   ? `${t.session}-${t.root}`
                   : t.meeting
+
+function deckPath(t: Extract<PopoutTarget, { kind: 'deck' }>): string {
+  const base = `/decks/${encodeURIComponent(t.deck)}`
+  const params = new URLSearchParams()
+  if (t.section) params.set('section', t.section)
+  if (t.snapshot) params.set('snapshot', t.snapshot)
+  const qs = params.toString()
+  return qs ? `${base}?${qs}` : base
+}
+
+/** Parse a `/decks/<id>` route (with optional `?section=...&snapshot=...`) into a `deck` popout target. */
+export function deckPopoutTarget(href: string, title?: string): Extract<PopoutTarget, { kind: 'deck' }> | null {
+  const clean = href.split('#')[0] ?? href
+  const url = new URL(clean, 'http://x')
+  const [, head, raw, extra] = url.pathname.split('/')
+  if (head !== 'decks' || !raw || extra !== undefined) return null
+  let deck: string
+  try {
+    deck = decodeURIComponent(raw)
+  } catch {
+    deck = raw
+  }
+  if (!deck) return null
+  const section = url.searchParams.get('section') || undefined
+  const snapshot = url.searchParams.get('snapshot') || undefined
+  const trimmed = title?.trim() || undefined
+  return {
+    kind: 'deck',
+    deck,
+    ...(section ? { section } : {}),
+    ...(snapshot ? { snapshot } : {}),
+    ...(trimmed ? { title: trimmed } : {}),
+  }
+}
 
 function tilePath(t: Extract<PopoutTarget, { kind: 'tile' }>): string {
   const json = propsJson(t.props)
@@ -177,6 +217,7 @@ const pathOf = (t: PopoutTarget): string =>
   t.kind === 'web' ? `/web/${encodeURIComponent(t.id)}?url=${encodeURIComponent(t.url)}&title=${encodeURIComponent(t.title)}` :
   t.kind === 'file' ? `/file/${encodeURIComponent(t.session)}?path=${encodeURIComponent(t.path)}${t.line === undefined ? '' : `&line=${t.line}`}${t.end_line === undefined ? '' : `&end_line=${t.end_line}`}` :
   t.kind === 'diff' ? `/diff/${encodeURIComponent(t.session)}?spec=${encodeURIComponent(JSON.stringify(t.spec))}` :
+  t.kind === 'deck' ? deckPath(t) :
   t.kind === 'chat' || t.kind === 'talk'
     ? `/${t.kind === 'chat' ? 'c' : 'talk'}/${encodeURIComponent(t.session)}`
     : t.kind === 'artifact'
@@ -270,6 +311,17 @@ export function popoutTarget(href: string): PopoutTarget | null {
     const spec = specParam(url.searchParams.get('spec'))
     return spec ? { kind: 'diff', session: decodeURIComponent(id), spec } : null
   }
+  if (head === 'decks') {
+    if (sub !== undefined) return null
+    const section = url.searchParams.get('section') || undefined
+    const snapshot = url.searchParams.get('snapshot') || undefined
+    return {
+      kind: 'deck',
+      deck: decodeURIComponent(id),
+      ...(section ? { section } : {}),
+      ...(snapshot ? { snapshot } : {}),
+    }
+  }
   if (head === 'c') return { kind: 'chat', session: decodeURIComponent(id) }
   if (head === 'talk') return { kind: 'talk', session: decodeURIComponent(id) }
   if (head === 'vm') return { kind: 'vm', name: decodeURIComponent(id) }
@@ -304,6 +356,10 @@ export function routeWindow(href: string): PopoutTarget {
   if (id && head === 'talk') return { kind: 'talk', session: id }
   if (id && head === 'notes') return { kind: 'note', doc: id }
   if (id && head === 'notebooks') return { kind: 'notebook', notebook: id }
+  if (id && head === 'decks' && sub === undefined) {
+    const deckTarget = deckPopoutTarget(path)
+    if (deckTarget) return deckTarget
+  }
   if (id && head === 'meetings' && sub === undefined) return { kind: 'meeting', meeting: id }
   if (id && head === 'artifacts') return { kind: 'artifact', callId: id }
   if (id && head === 'vm') return { kind: 'vm', name: id }
@@ -374,6 +430,7 @@ export function popoutTitle(t: PopoutTarget): string {
     case 'web': return t.title.trim() || 'Web'
     case 'file': return t.path.split(/[\\/]/).filter(Boolean).pop() ?? 'File'
     case 'diff': return 'Diff'
+    case 'deck': return t.title?.trim() || 'Deck'
     case 'tile': return t.tile.charAt(0).toUpperCase() + t.tile.slice(1)
   }
 }

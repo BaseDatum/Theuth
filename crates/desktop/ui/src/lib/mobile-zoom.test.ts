@@ -28,9 +28,12 @@ function scan(): string[] {
     if (f.endsWith(join('components', 'ui', 'input.tsx')) || f.endsWith(join('components', 'ui', 'textarea.tsx'))) continue
     const lines = readFileSync(f, 'utf8').split('\n')
     lines.forEach((line, i) => {
-      if (!TAG.test(line)) return
-      const span = line + '\n' + (lines[i + 1] ?? '')
-      if (ALLOW.test(line) || ALLOW.test(lines[i + 1] ?? '')) return
+      const m = TAG.exec(line)
+      if (!m) return
+      const rest = line.slice(m.index)
+      const closesHere = /\/>/.test(rest)
+      const span = closesHere ? rest.slice(0, rest.indexOf('/>') + 2) : rest + '\n' + (lines[i + 1] ?? '')
+      if (ALLOW.test(line) || (!closesHere && ALLOW.test(lines[i + 1] ?? ''))) return
       if (SMALL.test(span)) hits.push(`${relative(ROOT, f)}:${i + 1}`)
     })
   }

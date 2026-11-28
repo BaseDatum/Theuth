@@ -12,6 +12,7 @@ import { requirements as routinesRequirements } from '@/components/routines/requ
 import { requirements as tasksRequirements } from '@/components/tasks/requirements'
 import { requirements as projectsRequirements } from '@/components/projects/requirements'
 import { requirements as whiteboardRequirements } from '@/components/whiteboard/requirements'
+import { requirements as deckRequirements } from '@/components/decks/requirements'
 import { placementsOf, pluginStore } from '@/lib/plugins'
 import { type Requirements, supports } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
@@ -123,6 +124,14 @@ const BUILTIN_VIEWS: readonly BuiltinViewSpec[] = [
     required: whiteboardRequirements,
   },
   {
+    path: '/decks',
+    title: 'Decks',
+    group: 'library',
+    description: 'Collaborative live Decks with review-gated Monty streams and interactive sections',
+    detail_template: '/decks/<id>',
+    required: deckRequirements,
+  },
+  {
     path: '/notebooks',
     title: 'Notebooks',
     group: 'library',
@@ -223,6 +232,7 @@ const VALID_EXACT_PATHS = new Set<string>([
   '/skills',
   '/notes',
   '/whiteboards',
+  '/decks',
   '/notebooks',
   '/meetings',
   '/meetings/new',
@@ -244,6 +254,7 @@ const VALID_PARAM_PATTERNS: readonly RegExp[] = [
   /^\/meetings\/[^/]+$/,
   /^\/autoresearch\/[^/]+$/,
   /^\/whiteboards\/[^/]+$/,
+  /^\/decks\/[^/]+$/,
   /^\/knowledge\/.+$/,
   /^\/artifacts\/[^/]+$/,
   /^\/attention\/[^/]+$/,
@@ -254,7 +265,7 @@ const VALID_PARAM_PATTERNS: readonly RegExp[] = [
 ]
 
 const UNKNOWN_VIEW_HINT =
-  'call pane_list() for available_views (e.g. /projects, /tasks, /notebooks, /notes, /knowledge, /agents, /routines, /meetings, /whiteboards, /artifacts, /autoresearch, /skills, /attention, /costs, /settings/appearance)'
+  'call pane_list() for available_views (e.g. /projects, /tasks, /notebooks, /notes, /knowledge, /agents, /routines, /meetings, /whiteboards, /decks, /artifacts, /autoresearch, /skills, /attention, /costs, /settings/appearance)'
 
 /**
  * Validate a candidate view path against the app's known routes so agents never open a 404 pane.

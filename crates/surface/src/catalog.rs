@@ -78,8 +78,11 @@ pub fn catalog_schema() -> Value {
 
 /// Frontend-only parsing vocabulary, exported separately from RPC contracts.
 pub fn client_schema() -> Value {
-    SchemaSettings::draft07().for_serialize().into_generator()
-        .into_root_schema_for::<(crate::cell::Cell, crate::cell::NoteDefaults, Spec)>().to_value()
+    SchemaSettings::draft07()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<(crate::cell::Cell, crate::cell::NoteDefaults, Spec)>()
+        .to_value()
 }
 
 fn fields(schema: &Value) -> String {
@@ -116,8 +119,8 @@ fn fields(schema: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// The contract's fifty-seven names, in catalog order.
-    const NAMES: [&str; 57] = [
+    /// The contract's sixty names, in catalog order.
+    const NAMES: [&str; 60] = [
         "Card",
         "Stack",
         "Grid",
@@ -175,13 +178,20 @@ mod tests {
         "Layers",
         "Journey",
         "Fishbone",
+        "ActionButton",
+        "StreamControls",
+        "ResultBanner",
     ];
 
     #[test]
     fn catalog_matches_component_variants() {
         let names: Vec<&str> = catalog().entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, NAMES);
-        assert!(catalog().names.starts_with("Accordion, Alert, "));
+        assert!(
+            catalog()
+                .names
+                .starts_with("Accordion, ActionButton, Alert, ")
+        );
         for e in &catalog().entries {
             assert_eq!(e.props["type"], "object", "{}: {}", e.name, e.props);
             assert_eq!(e.props["additionalProperties"], false, "{}", e.name);
@@ -192,7 +202,7 @@ mod tests {
     fn compact_lists_every_component_with_props() {
         let compact = catalog_compact();
         let parts: Vec<&str> = compact.split(" · ").collect();
-        assert_eq!(parts.len(), 57, "{compact}");
+        assert_eq!(parts.len(), 60, "{compact}");
         assert!(compact.starts_with("Card(description?, title?) · Stack(direction?, gap?) · Grid(columns) · Separator() · Heading(text, level?)"), "{compact}");
         assert!(
             compact.contains("KeyValueList(items[{key, value}])"),
@@ -220,7 +230,7 @@ mod tests {
             "{compact}"
         );
         assert!(
-            compact.ends_with("Journey(stages, rows[{label, cells}], mood?, pains[{stage, text}]?, title?) · Fishbone(effect, causes[{category, items}], title?)"),
+            compact.ends_with("Journey(stages, rows[{label, cells}], mood?, pains[{stage, text}]?, title?) · Fishbone(effect, causes[{category, items}], title?) · ActionButton(label, action, args_json?, confirm?, disabled?, tone?) · StreamControls(show_run_once?, title?) · ResultBanner(action_filter?, empty_text?, title?)"),
             "{compact}"
         );
     }

@@ -286,19 +286,18 @@ mod imp {
         }
     }
 
+    type SpawnedShell = (
+        Arc<LiveShell>,
+        Box<dyn Child + Send + Sync>,
+        mpsc::Receiver<Vec<u8>>,
+    );
+
     fn spawn_shell(
         program: (&Path, &[String]),
         cwd: &Path,
         rows: u16,
         cols: u16,
-    ) -> Result<
-        (
-            Arc<LiveShell>,
-            Box<dyn Child + Send + Sync>,
-            mpsc::Receiver<Vec<u8>>,
-        ),
-        String,
-    > {
+    ) -> Result<SpawnedShell, String> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows,

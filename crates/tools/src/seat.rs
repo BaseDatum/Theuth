@@ -140,20 +140,50 @@ pub fn writable(session: SessionId, path: &Path) -> anyhow::Result<PathBuf> {
     }
 }
 
-/// `path` with its longest existing prefix canonicalised and the rest (a
-/// file about to be created) appended; `None` when the rest holds `..` or
-/// nothing of the path exists.
+/// `path` with every existing prefix canonicalised left-to-right and any
+/// nonexistent tail lexically normalised (`.` dropped, `..` pops the last
+/// normal segment). Relative paths are anchored against `std::env::current_dir()`.
+/// Returns `None` if `path` is empty, `current_dir()` fails, or `..` would
+/// escape past root (callers must fail closed on `None`).
 pub(crate) fn real(path: &Path) -> Option<PathBuf> {
-    let mut tail = Vec::new();
-    let mut cur = path;
-    loop {
-        if let Ok(mut out) = cur.canonicalize() {
-            out.extend(tail.iter().rev());
-            return Some(out);
+    use std::path::Component;
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut cur = PathBuf::new();
+    for comp in abs.components() {
+        match comp {
+            Component::Prefix(p) => cur.push(p.as_os_str()),
+            Component::RootDir => cur.push(Component::RootDir.as_os_str()),
+            Component::CurDir => {}
+            Component::Normal(seg) => {
+                cur.push(seg);
+                if let Ok(canon) = cur.canonicalize() {
+                    cur = canon;
+                }
+            }
+            Component::ParentDir => {
+                if let Ok(canon) = cur.canonicalize() {
+                    cur = canon;
+                }
+                if !cur.pop() {
+                    return None;
+                }
+                if let Ok(canon) = cur.canonicalize() {
+                    cur = canon;
+                }
+            }
         }
-        let name = cur.file_name()?;
-        tail.push(name.to_owned());
-        cur = cur.parent()?;
+    }
+    if cur.as_os_str().is_empty() {
+        None
+    } else {
+        Some(cur)
     }
 }
 
@@ -163,21 +193,61 @@ pub(crate) fn real(path: &Path) -> Option<PathBuf> {
 pub const CELL_RECORD: &str =
     "this file belongs to a user cell's run record — read results with cell_runs / cell_output";
 
+/// 229 B2: what file tools answer on internal Deck state (`<data_dir>/decks/`,
+/// holding `decks.sqlite` and `.monty` runtime dumps).
+pub const DECK_STATE: &str =
+    "this file belongs to internal Deck state — manage Decks with deck_* tools";
+
 /// The engine's data dir (set at plugin start): a private session's
 /// resource root is a scratch dir, while cell records live in the data dir.
 static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Record the engine's data dir for [`refuse_cell_record`].
+/// Record the engine's data dir for [`refuse_cell_record`] and [`refuse_internal_state`].
 pub fn set_data_dir(dir: &Path) {
     let _ = DATA_DIR.set(dir.to_path_buf());
+}
+
+/// The engine's recorded data dir, if configured.
+pub(crate) fn engine_data_dir() -> Option<PathBuf> {
+    DATA_DIR.get().cloned()
 }
 
 /// `root` (the session's resource root) and the engine's data dir, canonical.
 fn data_dirs(root: &Path) -> Vec<PathBuf> {
     std::iter::once(root)
         .chain(DATA_DIR.get().map(PathBuf::as_path))
-        .filter_map(|d| d.canonicalize().ok())
+        .filter_map(real)
         .collect()
+}
+
+/// Case-insensitive `starts_with` on macOS/Windows (matching `protected_write`).
+pub(crate) fn path_starts_with(path: &Path, prefix: &Path) -> bool {
+    if path.starts_with(prefix) {
+        return true;
+    }
+    if cfg!(any(target_os = "macos", windows)) {
+        let mut pi = path.components();
+        for pre in prefix.components() {
+            let Some(cur) = pi.next() else {
+                return false;
+            };
+            if !cur
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&pre.as_os_str().to_string_lossy())
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    false
+}
+
+/// A canonical `path` is internal Deck state under `<data_dir>/decks`.
+pub(crate) fn is_deck_state(dirs: &[PathBuf], path: &Path) -> bool {
+    dirs.iter()
+        .any(|d| path_starts_with(path, &d.join("decks")))
 }
 
 /// A canonical `path` is a cell record: under `<data dir>/cells/` (the cells
@@ -188,23 +258,39 @@ fn held(dirs: &[PathBuf], path: &Path) -> bool {
             .is_some_and(|n| n.to_string_lossy().ends_with(crate::jobs::CELL_LOG))
     };
     dirs.iter().any(|d| {
-        path.starts_with(d.join("cells")) || (path.starts_with(d.join("jobs")) && kernel_log())
+        path_starts_with(path, &d.join("cells"))
+            || (path_starts_with(path, &d.join("jobs")) && kernel_log())
     })
 }
 
-/// Refuse `path` (`..` and symlinks followed) when it is a user cell's run
-/// record ([`CELL_RECORD`]).
-pub fn refuse_cell_record(root: &Path, path: &Path) -> anyhow::Result<()> {
-    match real(path) {
-        Some(p) if held(&data_dirs(root), &p) => {
-            anyhow::bail!("{}: {CELL_RECORD}", path.display())
-        }
-        _ => Ok(()),
+/// Refuse `path` (`..` and symlinks followed) when it targets protected
+/// engine internal state (`<data_dir>/decks/`, cell records, kernel cell logs)
+/// or cannot be safely resolved (fail closed).
+pub fn refuse_internal_state(root: &Path, path: &Path) -> anyhow::Result<()> {
+    let Some(p) = real(path) else {
+        anyhow::bail!(
+            "{}: cannot safely resolve path against protected engine state",
+            path.display()
+        );
+    };
+    let dirs = data_dirs(root);
+    if is_deck_state(&dirs, &p) {
+        anyhow::bail!("{}: {DECK_STATE}", path.display());
     }
+    if held(&dirs, &p) {
+        anyhow::bail!("{}: {CELL_RECORD}", path.display());
+    }
+    Ok(())
+}
+
+/// Refuse `path` (`..` and symlinks followed) when it is a user cell's run
+/// record ([`CELL_RECORD`]) or internal Deck state ([`DECK_STATE`]).
+pub fn refuse_cell_record(root: &Path, path: &Path) -> anyhow::Result<()> {
+    refuse_internal_state(root, path)
 }
 
 /// For a walk of `walk_root` (not itself a record): is entry `path` (under
-/// `walk_root`, symlinks not followed by the walk) a cell record?
+/// `walk_root`, symlinks not followed by the walk) a cell record or Deck state?
 pub fn cell_record_filter(
     root: &Path,
     walk_root: &Path,
@@ -216,7 +302,8 @@ pub fn cell_record_filter(
         let (Some(real_root), Ok(rel)) = (&real_root, path.strip_prefix(&walk_root)) else {
             return false;
         };
-        held(&dirs, &real_root.join(rel))
+        let target = real_root.join(rel);
+        held(&dirs, &target) || is_deck_state(&dirs, &target)
     }
 }
 
@@ -311,5 +398,57 @@ mod tests {
         set_write_root(s, None);
         assert!(writable(s, &outside.join("o.rs")).is_ok());
         forget(s);
+    }
+
+    #[test]
+    fn refuse_internal_state_blocks_decks_and_nonexistent_parent_traversal() {
+        let scratch = crate::test_dir("deck-state-guard");
+        let data = scratch.path().to_path_buf();
+        std::fs::create_dir_all(data.join("decks/runtime")).unwrap();
+        std::fs::create_dir_all(data.join("deck-work/d1")).unwrap();
+        std::fs::write(data.join("decks/decks.sqlite"), b"db").unwrap();
+
+        // Direct paths under <data_dir>/decks are refused.
+        assert!(refuse_internal_state(&data, &data.join("decks/decks.sqlite")).is_err());
+        assert!(refuse_internal_state(&data, &data.join("decks/runtime/s1.monty")).is_err());
+        assert!(refuse_internal_state(&data, &data.join("decks/new-file.tmp")).is_err());
+
+        // <nonexistent>/.. traversal into <data_dir>/decks is resolved and refused.
+        assert!(
+            refuse_internal_state(&data, &data.join("decks/nonexistent/../decks.sqlite")).is_err()
+        );
+        assert!(
+            refuse_internal_state(&data, &data.join("nonexistent/../decks/decks.sqlite")).is_err()
+        );
+
+        // Symlink pointing into <data_dir>/decks is refused.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(data.join("decks"), data.join("deck-work/d1/escape"))
+                .unwrap();
+            assert!(
+                refuse_internal_state(&data, &data.join("deck-work/d1/escape/decks.sqlite"))
+                    .is_err()
+            );
+            assert!(
+                refuse_internal_state(
+                    &data,
+                    &data.join("deck-work/d1/escape/nonexistent/../decks.sqlite")
+                )
+                .is_err()
+            );
+        }
+
+        // Empty / root-escaping paths fail closed.
+        assert!(refuse_internal_state(&data, Path::new("")).is_err());
+        assert!(refuse_internal_state(&data, Path::new("/..")).is_err());
+
+        // Per-deck isolated work dir (<data_dir>/deck-work/<id>) is NOT under <data_dir>/decks.
+        assert!(refuse_internal_state(&data, &data.join("deck-work/d1/out.txt")).is_ok());
+
+        // Relative path resolves against process cwd (no fail-open None).
+        let rel = real(Path::new("nonexistent/../Cargo.toml"));
+        assert!(rel.is_some());
+        assert!(rel.unwrap().is_absolute());
     }
 }

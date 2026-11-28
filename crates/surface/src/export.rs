@@ -395,6 +395,22 @@ fn element(spec: &Spec, id: &str, out: &mut String, depth: usize) {
         Component::Layers(p) => layers(p, out),
         Component::Journey(p) => journey(p, out),
         Component::Fishbone(p) => fishbone(p, out),
+        Component::ActionButton(p) => {
+            out.push_str(&format!("[Action: {} (`{}`)]\n\n", p.label, p.action));
+        }
+        Component::StreamControls(p) => {
+            out.push_str(&format!(
+                "[Stream Controls: {}]\n\n",
+                p.title.as_deref().unwrap_or("Deck")
+            ));
+        }
+        Component::ResultBanner(p) => {
+            if let Some(t) = &p.title {
+                out.push_str(&format!("**{t}**: "));
+            }
+            out.push_str(p.empty_text.as_deref().unwrap_or("No action result yet."));
+            out.push_str("\n\n");
+        }
         // ---- 123 ELK family (W1) ----
         Component::StateMachine(p) => crate::elk_family::state_machine_md(p, out),
         Component::Entities(p) => crate::elk_family::entities_md(p, out),
@@ -1006,6 +1022,9 @@ fn type_name(c: &Component) -> &'static str {
         Component::Layers(_) => "Layers",
         Component::Journey(_) => "Journey",
         Component::Fishbone(_) => "Fishbone",
+        Component::ActionButton(_) => "ActionButton",
+        Component::StreamControls(_) => "StreamControls",
+        Component::ResultBanner(_) => "ResultBanner",
     }
 }
 

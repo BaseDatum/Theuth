@@ -12,7 +12,7 @@ const SKILL: &str = include_str!("../visualize.md");
 
 /// One minimal element per component, in catalog order; the `### Name` example in the skill.
 /// Containers reference children `a`/`b`, which the example leaves to the reader.
-const EXAMPLES: [(&str, &str); 57] = [
+const EXAMPLES: [(&str, &str); 60] = [
     (
         "Card",
         r#"{"type": "Card", "props": {"title": "Release readiness"}, "children": ["a", "b"]}"#,
@@ -238,6 +238,18 @@ const EXAMPLES: [(&str, &str); 57] = [
         "Fishbone",
         r#"{"type": "Fishbone", "props": {"effect": "Slow replies", "causes": [{"category": "Model", "items": ["long context"]}, {"category": "Tools", "items": ["cold ELK"]}]}}"#,
     ),
+    (
+        "ActionButton",
+        r#"{"type": "ActionButton", "props": {"label": "Refresh", "action": "refresh", "args_json": "{}", "tone": "primary"}}"#,
+    ),
+    (
+        "StreamControls",
+        r#"{"type": "StreamControls", "props": {"title": "Live stream", "show_run_once": true}}"#,
+    ),
+    (
+        "ResultBanner",
+        r#"{"type": "ResultBanner", "props": {"title": "Last result", "empty_text": "No action run yet"}}"#,
+    ),
 ];
 
 /// The `## Show first, then tell` prompt block (doc §6.2): [`BLOCK_HEAD`], the compact
@@ -310,7 +322,7 @@ Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes
 Closed vocabularies — write them exactly: every diagram unit's `state` is default | active | done | muted | danger (danger marks the break; one or two `active` units at most); `direction` is LR | TB; Entities `key` is pk | fk | uk and `relations[].kind` is one-one | one-many | many-many | inherits | implements | composes | aggregates | depends | references; Callout `variant` is note | tip | question | important; Table cells are strings. Every prop sits inside `props`.\n\
 Mermaid styling: outline, never fill. Every classDef is `fill:none,stroke:<color>,stroke-width:2.5px` (add `stroke-dasharray:6 3` for a soft category); carnelian #8f2f1f gate/blocker, blue #2563eb mutation, Egyptian blue #52a2cc dashed warning/non-gating, green #16a34a done, gray #6b7280 external; at most three classes; `rect rgba(0,0,0,0)` for sequence bands; put the category in the node text and end with a one-line legend. No `\"` or `;` inside labels, no parentheses inside `([...])`. Full guide: the visualize skill.\n\
 \n\
-Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.\n\
+Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). `ActionButton`, `StreamControls`, and `ResultBanner` are Deck-only (inert in ordinary chat fences). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.\n\
 \n\
 When you report finished work, a subagent's result or an investigation, report visually first as above.\n\
 \n\

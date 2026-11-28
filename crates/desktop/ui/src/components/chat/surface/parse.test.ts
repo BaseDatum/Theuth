@@ -116,3 +116,36 @@ test('parsePartial is null until a root element exists and never throws', () => 
   expect(parsePartial('')).toBeNull()
   expect(parsePartial('{"root":"a","elements":{"a":{"type":"Card","children":["a"]}}}')).toBeNull()
 })
+
+test('Deck interactive components (ActionButton, StreamControls, ResultBanner) mirror Rust validate.rs rules (H13)', () => {
+  const btn = (props: Record<string, unknown>) =>
+    JSON.stringify({ root: 'b', elements: { b: { type: 'ActionButton', props } } })
+  expect(ok(btn({ label: 'Triage', action: 'triage', args_json: '{"severity":"P1"}' })).spec.elements.b?.type).toBe(
+    'ActionButton',
+  )
+  expect(ok(btn({ label: 'Refresh', action: 'refresh' })).repaired).toBe(false)
+  expect(err(btn({ label: 'Bad', action: '   ' }))).toBe('/elements/b/props/action: action must not be empty')
+  expect(err(btn({ label: 'Bad', action: 'go', args_json: '{broken' }))).toBe(
+    '/elements/b/props/args_json: args_json must be a JSON object',
+  )
+  expect(err(btn({ label: 'Bad', action: 'go', args_json: '' }))).toBe(
+    '/elements/b/props/args_json: args_json must be a JSON object',
+  )
+  expect(err(btn({ label: 'Bad', action: 'go', args_json: '   ' }))).toBe(
+    '/elements/b/props/args_json: args_json must be a JSON object',
+  )
+  expect(err(btn({ label: 'Bad', action: 'go', args_json: '[1,2]' }))).toBe(
+    '/elements/b/props/args_json: args_json must be a JSON object',
+  )
+  expect(err(btn({ label: 'Bad', action: 'go', args_json: '"str"' }))).toBe(
+    '/elements/b/props/args_json: args_json must be a JSON object',
+  )
+  expect(
+    ok(JSON.stringify({ root: 's', elements: { s: { type: 'StreamControls', props: { show_run_once: true } } } })).spec
+      .elements.s?.type,
+  ).toBe('StreamControls')
+  expect(
+    ok(JSON.stringify({ root: 'r', elements: { r: { type: 'ResultBanner', props: { title: 'Out' } } } })).spec.elements
+      .r?.type,
+  ).toBe('ResultBanner')
+})

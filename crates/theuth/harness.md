@@ -184,9 +184,11 @@ system prompt lists them; `load_skill` fetches a body; `add_skill` /
 `remove_skill` write local ones; `add_skill_repo` / `sync_skills` manage
 cloned repos (read-only). This file, `visualize` (drawing in replies,
 design doc 30), `pdf` (front matter, page breaks and Typst for `show`'s
-`.pdf` names, design doc 35), `loops` and `apps` (OpenUI Lang, the component
-catalog and examples for `app`, design doc 46) are binary-owned; all of them
-are rewritten on every start.
+`.pdf` names, design doc 35), `loops`, `apps` (OpenUI Lang, the component
+catalog and examples for `app`, design doc 46), and `decks` (collaborative
+live Decks with `json_render`/`openui`/`note`/strict-CSP `html`, sustained
+triggers, per-source mesh triggers, and per-Deck trust, design doc 229) are
+binary-owned; all of them are rewritten on every start.
 
 ## Sessions, subagents, jobs, knowledge
 
@@ -239,6 +241,11 @@ are rewritten on every start.
   functions (`wb_read`, `wb_card`, `wb_crop`, `wb_place`, `wb_update`,
   `wb_link`, `wb_frame`, `wb_dim`, `wb_resolve`, `wb_remove`, `wb_focus`,
   `wb_create`, `wb_export`) after `load_skill("whiteboard")`.
+  `show_deck{deck_id, placement?}` opens a collaborative live Deck (design doc 229)
+  in `/decks/<id>`; manage `json_render`/`openui`/`note`/strict-CSP `html` sections,
+  review-gated or owner-trusted Monty scripts, sustained triggers (including
+  per-source mesh triggers), and declared actions with `deck_*` tools after
+  `load_skill("decks")` (`skills/decks.md`).
 - `show_file{path, line?, end_line?, title?}` opens a source file in the
   same kind of tile, raw and syntax highlighted, scrolled to and marking
   `line`..`end_line`; the tile follows the file as it changes on disk.
@@ -338,8 +345,9 @@ are rewritten on every start.
 
 ## Only the user can
 
-Restart the process, log in (providers or MCP), approve a call, switch the
-running session's model (`/model`), pair Signal, see a secret's value, add
+Restart the process, log in (providers or MCP), approve a call, approve a Deck
+script or enable/revoke permanent per-Deck trust (on the Deck's home engine),
+switch the running session's model (`/model`), pair Signal, see a secret's value, add
 one from the keyboard, or delete one (`/secrets`, Settings › Secrets, `theuth
 --secret-set`), or approve a `share_publish` (only the owner, in person, on
 their own surface; never a double, an app or another chat user). Turning

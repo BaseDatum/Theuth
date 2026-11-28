@@ -43,6 +43,7 @@ const NAME = /^(open|opened|expanded\w*|collapsed|shown|show[A-Z]\w*|raw|all|ful
 const CHROME: Record<string, true> = {
   'chat/AdvisorPill.tsx': true,
   'chat/AttachPicker.tsx': true,
+  'chat/CommunicationNotice.tsx': true,
   'chat/ComposerMeta.tsx': true,
   'chat/CostPill.tsx': true,
   'chat/HeaderMenu.tsx': true,
@@ -52,6 +53,8 @@ const CHROME: Record<string, true> = {
   'chat/ModelMenu.tsx': true,
   'chat/OrphansBanner.tsx': true,
   'chat/SessionMenu.tsx': true,
+  'chat/floating/ReplyBubble.tsx': true,
+  'chat/floating/SessionChip.tsx': true,
 }
 
 function sources(dir: string): string[] {

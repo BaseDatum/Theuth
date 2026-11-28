@@ -32,6 +32,7 @@ pub fn default_size(kind: CardKind, device: Option<&str>) -> (f64, f64) {
         CardKind::Image | CardKind::Web | CardKind::Note | CardKind::Session => (320.0, 240.0),
         CardKind::View => (560.0, 400.0),
         CardKind::Task => (280.0, 168.0),
+        CardKind::Deck => (460.0, 320.0),
     }
 }
 
@@ -78,7 +79,12 @@ pub fn obstacles(s: &Snapshot) -> Vec<[f64; 4]> {
 }
 
 fn free(b: [f64; 4], obs: &[[f64; 4]]) -> bool {
-    let grown = [b[0] - CLEAR, b[1] - CLEAR, b[2] + 2.0 * CLEAR, b[3] + 2.0 * CLEAR];
+    let grown = [
+        b[0] - CLEAR,
+        b[1] - CLEAR,
+        b[2] + 2.0 * CLEAR,
+        b[3] + 2.0 * CLEAR,
+    ];
     !obs.iter().any(|o| overlaps(grown, *o))
 }
 
@@ -92,7 +98,14 @@ fn scan(x: f64, y: f64, w: f64, h: f64, d: (f64, f64), obs: &[[f64; 4]]) -> Opti
 /// Right of everything: always free.
 fn beyond(y: f64, obs: &[[f64; 4]]) -> (f64, f64) {
     let right = obs.iter().map(|o| o[0] + o[2]).fold(f64::MIN, f64::max);
-    (if right == f64::MIN { 0.0 } else { right + GAP + CLEAR }, y)
+    (
+        if right == f64::MIN {
+            0.0
+        } else {
+            right + GAP + CLEAR
+        },
+        y,
+    )
 }
 
 /// Next to `anchor`: to its right (gap 24) then below it, alternating outward in 24 px steps.
@@ -101,7 +114,11 @@ fn beside(a: [f64; 4], w: f64, h: f64, below_first: bool, obs: &[[f64; 4]]) -> (
         let off = GAP * k as f64;
         let right = (a[0] + a[2] + GAP + off, a[1]);
         let below = (a[0], a[1] + a[3] + GAP + off);
-        let order = if below_first { [below, right] } else { [right, below] };
+        let order = if below_first {
+            [below, right]
+        } else {
+            [right, below]
+        };
         if let Some(p) = order.into_iter().find(|&(x, y)| free([x, y, w, h], obs)) {
             return p;
         }
@@ -124,10 +141,16 @@ pub fn place(s: &Snapshot, want: &Want) -> Spot {
     let loose: Vec<(String, [f64; 4])> = s
         .cards
         .iter()
-        .filter(|c| c.state != CardState::Archived && c.frame.as_deref().and_then(|f| s.frame(f)).is_none())
+        .filter(|c| {
+            c.state != CardState::Archived && c.frame.as_deref().and_then(|f| s.frame(f)).is_none()
+        })
         .map(|c| (c.id.clone(), c.rect()))
         .collect();
-    let (x, y) = match rows(&loose).last().and_then(|r| r.last()).and_then(|id| s.card(id)) {
+    let (x, y) = match rows(&loose)
+        .last()
+        .and_then(|r| r.last())
+        .and_then(|id| s.card(id))
+    {
         Some(c) => beside(c.rect(), w, h, false, &obs),
         None if obs.is_empty() => (0.0, 0.0),
         None => scan(0.0, 0.0, w, h, (1.0, 0.0), &obs).unwrap_or_else(|| beyond(0.0, &obs)),
@@ -146,10 +169,17 @@ fn in_frame(s: &Snapshot, f: &Frame, w: f64, h: f64, obs: &[[f64; 4]]) -> Spot {
     let limit = f.x + f.w.max(ROW_MAX) - PAD;
     let (mut x, mut y) = (left, f.y + BAND + PAD);
     if let Some(last) = rows(&members).last() {
-        let boxes: Vec<[f64; 4]> = last.iter().filter_map(|id| s.card(id)).map(|c| c.rect()).collect();
+        let boxes: Vec<[f64; 4]> = last
+            .iter()
+            .filter_map(|id| s.card(id))
+            .map(|c| c.rect())
+            .collect();
         let right = boxes.iter().map(|b| b[0] + b[2]).fold(f64::MIN, f64::max);
         let top = boxes.iter().map(|b| b[1]).fold(f64::MAX, f64::min);
-        let bottom = members.iter().map(|(_, b)| b[1] + b[3]).fold(f64::MIN, f64::max);
+        let bottom = members
+            .iter()
+            .map(|(_, b)| b[1] + b[3])
+            .fold(f64::MIN, f64::max);
         (x, y) = (right + GAP, top);
         if x + w > limit || scan_row(x, y, w, h, limit, obs).is_none() {
             (x, y) = (left, bottom + GAP);
@@ -165,12 +195,7 @@ fn in_frame(s: &Snapshot, f: &Frame, w: f64, h: f64, obs: &[[f64; 4]]) -> Spot {
             break beyond(y, obs);
         }
     };
-    let need = [
-        f.x.min(x - PAD),
-        f.y.min(y - PAD - BAND),
-        0.0,
-        0.0,
-    ];
+    let need = [f.x.min(x - PAD), f.y.min(y - PAD - BAND), 0.0, 0.0];
     let right = (f.x + f.w).max(x + w + PAD);
     let bottom = (f.y + f.h).max(y + h + PAD);
     let grown = [need[0], need[1], right - need[0], bottom - need[1]];
@@ -195,7 +220,12 @@ pub fn frame_around(cards: &[[f64; 4]]) -> Option<[f64; 4]> {
     let y0 = cards.iter().map(|b| b[1]).fold(f64::MAX, f64::min);
     let x1 = cards.iter().map(|b| b[0] + b[2]).fold(f64::MIN, f64::max);
     let y1 = cards.iter().map(|b| b[1] + b[3]).fold(f64::MIN, f64::max);
-    (!cards.is_empty()).then_some([x0 - PAD, y0 - PAD - BAND, x1 - x0 + 2.0 * PAD, y1 - y0 + 2.0 * PAD + BAND])
+    (!cards.is_empty()).then_some([
+        x0 - PAD,
+        y0 - PAD - BAND,
+        x1 - x0 + 2.0 * PAD,
+        y1 - y0 + 2.0 * PAD + BAND,
+    ])
 }
 
 #[cfg(test)]
@@ -216,7 +246,7 @@ mod tests {
         }
     }
 
-    const KINDS: [CardKind; 11] = [
+    const KINDS: [CardKind; 13] = [
         CardKind::Page,
         CardKind::Diagram,
         CardKind::Note,
@@ -228,6 +258,8 @@ mod tests {
         CardKind::Sticky,
         CardKind::Session,
         CardKind::View,
+        CardKind::Task,
+        CardKind::Deck,
     ];
 
     #[test]
@@ -237,9 +269,15 @@ mod tests {
             let mut s = Snapshot::default();
             let n = (rng.next() % 30) as usize;
             for i in 0..n {
-                let kind = KINDS[(rng.next() % 10) as usize];
+                let kind = KINDS[(rng.next() as usize) % KINDS.len()];
                 let (w, h) = default_size(kind, Some("phone"));
-                let mut c = card(&format!("C{round:03}{i:03}"), kind, [rng.range(-800.0, 2400.0), rng.range(-600.0, 1800.0), w, h], "t", vec![]);
+                let mut c = card(
+                    &format!("C{round:03}{i:03}"),
+                    kind,
+                    [rng.range(-800.0, 2400.0), rng.range(-600.0, 1800.0), w, h],
+                    "t",
+                    vec![],
+                );
                 if rng.next().is_multiple_of(7) {
                     c.state = CardState::Archived;
                 }
@@ -251,17 +289,32 @@ mod tests {
                     id: format!("S{i:03}"),
                     n: 2,
                     bytes: 12,
-                    bb: [rng.range(-800.0, 2400.0), rng.range(-600.0, 1800.0), rng.range(2.0, 400.0), rng.range(2.0, 300.0)],
+                    bb: [
+                        rng.range(-800.0, 2400.0),
+                        rng.range(-600.0, 1800.0),
+                        rng.range(2.0, 400.0),
+                        rng.range(2.0, 300.0),
+                    ],
                     card: anchored.then(|| "C000000".to_owned()),
                     ver: None,
                     at: 0,
                 });
             }
             s.cards.sort_by(|a, b| a.id.cmp(&b.id));
-            let kind = KINDS[(rng.next() % 10) as usize];
+            let kind = KINDS[(rng.next() as usize) % KINDS.len()];
             let (w, h) = default_size(kind, None);
-            let near = (n > 0 && rng.next().is_multiple_of(2)).then(|| s.cards[(rng.next() as usize) % n].id.clone());
-            let spot = place(&s, &Want { w, h, near: near.as_deref(), below_first: rng.next().is_multiple_of(2), frame: None });
+            let near = (n > 0 && rng.next().is_multiple_of(2))
+                .then(|| s.cards[(rng.next() as usize) % n].id.clone());
+            let spot = place(
+                &s,
+                &Want {
+                    w,
+                    h,
+                    near: near.as_deref(),
+                    below_first: rng.next().is_multiple_of(2),
+                    frame: None,
+                },
+            );
             let b = [spot.x, spot.y, w, h];
             for o in obstacles(&s) {
                 assert!(!overlaps(b, o), "round {round}: {b:?} overlaps {o:?}");
@@ -286,12 +339,27 @@ mod tests {
         let (w, h) = default_size(CardKind::Page, Some("phone"));
         let mut placed = Vec::new();
         for i in 0..9 {
-            let spot = place(&s, &Want { w, h, near: None, below_first: false, frame: Some("F") });
+            let spot = place(
+                &s,
+                &Want {
+                    w,
+                    h,
+                    near: None,
+                    below_first: false,
+                    frame: Some("F"),
+                },
+            );
             if let Some(g) = spot.grow {
                 let f = &mut s.frames[0];
                 (f.x, f.y, f.w, f.h) = (g[0], g[1], g[2], g[3]);
             }
-            let mut c = card(&format!("C{i}"), CardKind::Page, [spot.x, spot.y, w, h], "v", vec![]);
+            let mut c = card(
+                &format!("C{i}"),
+                CardKind::Page,
+                [spot.x, spot.y, w, h],
+                "v",
+                vec![],
+            );
             c.frame = Some("F".into());
             s.cards.push(c);
             s.cards.sort_by(|a, b| a.id.cmp(&b.id));
@@ -321,7 +389,10 @@ mod tests {
 
     #[test]
     fn frame_around_pads_and_bands() {
-        assert_eq!(frame_around(&[[100.0, 100.0, 10.0, 10.0]]), Some([68.0, 28.0, 74.0, 114.0]));
+        assert_eq!(
+            frame_around(&[[100.0, 100.0, 10.0, 10.0]]),
+            Some([68.0, 28.0, 74.0, 114.0])
+        );
         assert_eq!(frame_around(&[]), None);
     }
 }

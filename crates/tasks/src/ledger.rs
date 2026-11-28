@@ -1348,7 +1348,7 @@ impl Ledger {
 
         let mut patch = patch;
         if let Some(b) = patch.blockers.take() {
-            if b.iter().any(|x| *x == id.0) {
+            if b.contains(&id.0) {
                 return Err("a task cannot block itself (a blocker cycle of one)".into());
             }
             let b = self.check_blockers(b, &t.blockers).await?;
@@ -8301,7 +8301,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             r.ledger.blocks_of(&design.id).await.unwrap(),
-            [build.id.clone()]
+            std::slice::from_ref(&build.id)
         );
 
         let ghost = TaskId::new().0;
@@ -8384,7 +8384,7 @@ pub(crate) mod tests {
         assert_eq!(t.state, TaskState::Todo);
         // 214 A1: the finished dependency stays, as resolved.
         assert!(t.blockers.is_empty());
-        assert_eq!(t.resolved_blockers, [first.id.clone()]);
+        assert_eq!(t.resolved_blockers, std::slice::from_ref(&first.id));
         assert!(r.ledger.wakes().await.unwrap().iter().any(|w| {
             w.task.as_ref() == Some(&second.id) && w.reason == WakeReason::BlockersResolved
         }));
@@ -8401,7 +8401,7 @@ pub(crate) mod tests {
         assert!(t.blockers.is_empty());
         assert_eq!(
             r.ledger.get(&t.id).await.unwrap().resolved_blockers,
-            [first.id.clone()]
+            std::slice::from_ref(&first.id)
         );
         let mut input = planned("fourth", None, &["person:sam"]);
         input.state = TaskState::Todo;

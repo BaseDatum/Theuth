@@ -221,6 +221,7 @@ Example:
 - `Excerpt`: `path` is repository-relative (no leading `/`, no `..`, no `http:`); `text` is 1–120 lines and ≤ 16 KiB; every `mark` pair `[from, to]` is ordered and inside `start..start+lines-1`.
 - Every diagram unit that refers to something else does so by id: `transitions[].from/to` → `states[].id`, `relations[].from/to` → `entities[].id` (`from_field`/`to_field` → that entity's `fields[].name`), `steps[].lane` → `lanes[].id`, `flows[].from/to` → `nodes[].id` (no cycles, `value > 0`), `depends[]` → `tasks[].id`; `series[].values` has one value per label; `Gantt` dates are ISO (`2026-10-08`), `end ≥ start`.
 - `ref` (on every diagram unit: `Graph` nodes, `Sequence` steps, states, entities, lane steps, tasks, cells, layers…): `path`, `path#L10` or `path#L10-L24` — repository-relative, 1-based, inclusive — or `block:<id>`. No `..`, no scheme, no URL.
+- `ActionButton`, `StreamControls`, and `ResultBanner` are **Deck-only** controls (inert static fallbacks in ordinary chat fences); only emit them inside Deck sections.
 
 ## Catalog
 <!-- generated from crates/surface: names, props, one example each -->

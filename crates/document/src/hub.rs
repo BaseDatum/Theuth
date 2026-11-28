@@ -423,7 +423,9 @@ impl DocumentActor {
         }
         let one_shot = match &req {
             CreateReq::Create { binding, .. } => binding.keyless(),
-            CreateReq::Notebook { .. } | CreateReq::Whiteboard { .. } => true,
+            CreateReq::Notebook { .. } | CreateReq::Whiteboard { .. } | CreateReq::Deck { .. } => {
+                true
+            }
             CreateReq::Ensure { .. } => false,
         };
         let (me, key) = (self.actor_ref(), (client.clone(), id.clone()));
@@ -945,6 +947,9 @@ impl DocumentActor {
             DocKind::TaskThread => return Err("move the task instead".into()),
             DocKind::Whiteboard => {
                 return Err("whiteboards stay on the machine that holds their images".into());
+            }
+            DocKind::Deck => {
+                return Err("decks stay on the machine that runs their runtime".into());
             }
             _ => return Err("this document is served by the hub".into()),
         }
@@ -1565,8 +1570,7 @@ mod tests {
             .unwrap();
         vault.rotate("a", vec![], vec![], 0, false).await.unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let helper =
-            crate::helper::Helper::new(tx, rt.shutdown.clone());
+        let helper = crate::helper::Helper::new(tx, rt.shutdown.clone());
         let actor = DocumentActor::spawn(DocumentActor::new(
             store.clone(),
             helper,
@@ -1657,8 +1661,7 @@ mod tests {
         store.create(&theirs).await.unwrap();
         vault.rotate("a", vec![], vec![], 0, false).await.unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let helper =
-            crate::helper::Helper::new(tx, rt.shutdown.clone());
+        let helper = crate::helper::Helper::new(tx, rt.shutdown.clone());
         let actor = DocumentActor::spawn(DocumentActor::new(
             store.clone(),
             helper,

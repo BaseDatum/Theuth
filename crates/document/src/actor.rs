@@ -325,7 +325,7 @@ impl DocumentActor {
         if !self.open.contains_key(id) {
             let l = self.store.load(id).map_err(|e| format!("{e:#}"))?;
             let touched = Arc::new(Mutex::new(Vec::new()));
-            if l.meta.kind != DocKind::Whiteboard {
+            if !l.meta.kind.is_pure_yjs() {
                 let state = l
                     .doc
                     .transact()
@@ -406,14 +406,59 @@ impl DocumentActor {
     ) -> Result<(), String> {
         let max = self.cfg.max_doc_bytes;
         let store = self.store.clone();
-        let o = self.load(doc)?;
-        if o.bytes + update.len() > max {
-            return Err(format!(
-                "DocTooLarge: document would exceed {max} bytes ({} + {})",
-                o.bytes,
-                update.len()
-            ));
+        let mut force_snapshot_after = false;
+        {
+            let o = self.load(doc)?;
+            if o.bytes + update.len() > max {
+                let log_count = o.log_count;
+                let is_deck = o.meta.kind == DocKind::Deck;
+                if log_count > 0 {
+                    let _ = self.snapshot(doc, None);
+                }
+                let o = self.load(doc)?;
+                if o.bytes + update.len() > max {
+                    if is_deck {
+                        // Allow Deck compaction/archiving updates that bring or move the compacted
+                        // Y.Doc state within/toward `max_doc_bytes` so an oversized Deck is never bricked.
+                        let pre_state = o
+                            .doc
+                            .transact()
+                            .encode_state_as_update_v1(&StateVector::default());
+                        let scratch = yrs::Doc::new();
+                        let u_check =
+                            Update::decode_v1(&update).map_err(|e| format!("bad update: {e}"))?;
+                        if let Ok(pre_u) = Update::decode_v1(&pre_state) {
+                            let _ = scratch.transact_mut().apply_update(pre_u);
+                        }
+                        scratch
+                            .transact_mut()
+                            .apply_update(u_check)
+                            .map_err(|e| format!("apply update: {e}"))?;
+                        let post_len = scratch
+                            .transact()
+                            .encode_state_as_update_v1(&StateVector::default())
+                            .len();
+                        if post_len <= max || post_len < pre_state.len() {
+                            force_snapshot_after = true;
+                        } else {
+                            return Err(format!(
+                                "DocTooLarge: document would exceed {max} bytes ({} + {}, compacted {})",
+                                o.bytes,
+                                update.len(),
+                                post_len
+                            ));
+                        }
+                    } else {
+                        return Err(format!(
+                            "DocTooLarge: document would exceed {max} bytes ({} + {})",
+                            o.bytes,
+                            update.len()
+                        ));
+                    }
+                }
+            }
         }
+        let o = self.load(doc)?;
         let u = Update::decode_v1(&update).map_err(|e| format!("bad update: {e}"))?;
         // 184 §4.7, §16: a client update that changes neither the Doc's state vector nor its
         // delete set (a catch-all echoing the delete set, a re-sent update) is a no-op: no log
@@ -474,7 +519,8 @@ impl DocumentActor {
         o.idle_since = Instant::now();
         o.meta.updated_ms = now;
         let whiteboard = o.meta.kind == DocKind::Whiteboard;
-        if !from_helper && !whiteboard {
+        let pure_yjs = o.meta.kind.is_pure_yjs();
+        if !from_helper && !pure_yjs {
             self.helper.update(doc, &update).log("update");
         }
         // The file already holds what a File import brought in; only other authors change the derived file.
@@ -513,6 +559,11 @@ impl DocumentActor {
         // 218 R8: a whiteboard past 2 MiB bakes its old answered ink (a separate write).
         if whiteboard && by != Principal::Helper {
             self.wb_bake_if_due(doc);
+        }
+        if force_snapshot_after
+            && let Err(e) = self.snapshot(doc, None)
+        {
+            tracing::warn!(doc = %doc, error = %e, "post-compaction snapshot failed");
         }
         Ok(())
     }
@@ -568,8 +619,12 @@ impl DocumentActor {
         if self.imports.values().any(|i| i.doc == *doc) {
             return None;
         }
-        // 218: a whiteboard's file is written from the document, never imported.
-        if self.open.get(doc).is_some_and(|o| o.meta.kind == DocKind::Whiteboard) {
+        // 218/229: pure-Yjs files (whiteboard/deck) are written from the document, never imported.
+        if self
+            .open
+            .get(doc)
+            .is_some_and(|o| o.meta.kind.is_pure_yjs())
+        {
             return None;
         }
         let derived = match self.open.get(doc) {
@@ -580,7 +635,7 @@ impl DocumentActor {
                 .then(|| o.meta.derived.clone())?,
             None => {
                 let m = self.store.read_meta(doc).ok()?;
-                (m.last_export.is_none() && m.kind != DocKind::Whiteboard).then_some(m.derived)?
+                (m.last_export.is_none() && !m.kind.is_pure_yjs()).then_some(m.derived)?
             }
         };
         let text = std::fs::read_to_string(self.data_dir.join(derived)).ok()?;
@@ -604,9 +659,13 @@ impl DocumentActor {
                 return;
             }
         };
-        // 218 §3.1: a whiteboard has no blocks; nothing imports into it.
+        // 218/229: pure-Yjs docs have no blocks; nothing imports into them.
         if o.meta.kind == DocKind::Whiteboard {
             finish_reply(reply, Err(crate::wb::DOC_REFUSAL.into()));
+            return;
+        }
+        if o.meta.kind == DocKind::Deck {
+            finish_reply(reply, Err(crate::deck::DOC_REFUSAL.into()));
             return;
         }
         if mode == ImportMode::Diff && o.meta.last_export.as_deref() == Some(sha.as_str()) {
@@ -662,10 +721,16 @@ impl DocumentActor {
             reply.send(Err(EditError::Other(e)));
             return;
         }
-        // 218 §3.1: a whiteboard is edited with the wb_* tools only.
-        if self.open.get(doc).is_some_and(|o| o.meta.kind == DocKind::Whiteboard) {
-            reply.send(Err(EditError::Other(crate::wb::DOC_REFUSAL.into())));
-            return;
+        // 218/229: pure-Yjs docs are edited with their dedicated tools only.
+        if let Some(kind) = self.open.get(doc).map(|o| o.meta.kind) {
+            if kind == DocKind::Whiteboard {
+                reply.send(Err(EditError::Other(crate::wb::DOC_REFUSAL.into())));
+                return;
+            }
+            if kind == DocKind::Deck {
+                reply.send(Err(EditError::Other(crate::deck::DOC_REFUSAL.into())));
+                return;
+            }
         }
         // 144 §3.1: a source's text is derived; only the helper (ingest, the insight job) edits it.
         if let Err(e) = self.source_writable(doc, &by) {
@@ -779,8 +844,12 @@ impl DocumentActor {
         o.export_first = None;
         let path = self.data_dir.join(&o.meta.derived);
         let kind = o.meta.kind;
-        // 218 §3.3: a whiteboard's derived file is its outline, rendered here; never the helper.
-        let outline = (kind == DocKind::Whiteboard).then(|| crate::wb::engine::export_text(o));
+        // 218/229: pure-Yjs derived files are rendered directly in Rust; never the helper.
+        let outline = match kind {
+            DocKind::Whiteboard => Some(crate::wb::engine::export_text(o)),
+            DocKind::Deck => Some(crate::deck::export_text(o)),
+            _ => None,
+        };
         let helper = self.helper.clone();
         let me = self.actor_ref();
         let doc = doc.clone();
@@ -840,7 +909,9 @@ impl DocumentActor {
             tracing::warn!(doc = %doc, error = %e, "snapshot at unload failed; log kept");
         }
         if let Some(o) = self.open.remove(doc) {
-            self.helper.close(doc).log("close");
+            if !o.meta.kind.is_pure_yjs() {
+                self.helper.close(doc).log("close");
+            }
             self.homes.insert(doc.clone(), o.meta.home.clone());
             // A quiet period still running at unload is over: the owner hears now, nothing is lost.
             if o.notify_due.is_some() && !o.exporting && o.export_due.is_none() {
@@ -895,12 +966,29 @@ impl DocumentActor {
     pub(crate) async fn delete_doc(&mut self, doc: &DocId) -> Result<(), String> {
         self.drop_claim(doc);
         self.homes.remove(doc);
-        let meta = match self.open.remove(doc) {
+        let changed = match self.open.remove(doc) {
             Some(o) => {
-                self.helper.close(doc).log("close");
-                Some(o.meta)
+                if !o.meta.kind.is_pure_yjs() {
+                    self.helper.close(doc).log("close");
+                }
+                Some(DocumentChanged::of(&o.meta, true))
             }
-            None => self.store.read_meta(doc).ok(),
+            None => match self.store.read_meta(doc) {
+                Ok(meta) => Some(DocumentChanged::of(&meta, true)),
+                Err(_) => self
+                    .store
+                    .summary(doc)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|row| DocumentChanged {
+                        doc: row.id,
+                        kind: row.kind,
+                        title: row.title,
+                        updated_ms: row.updated_ms,
+                        deleted: true,
+                    }),
+            },
         };
         if let Some(subs) = self.subs.remove(doc) {
             for s in subs {
@@ -910,8 +998,8 @@ impl DocumentActor {
             }
         }
         self.store.delete(doc).await.map_err(|e| format!("{e:#}"))?;
-        if let Some(meta) = meta {
-            self.rt.publish(DocumentChanged::of(&meta, true)).await;
+        if let Some(ev) = changed {
+            self.rt.publish(ev).await;
         }
         Ok(())
     }
@@ -1134,6 +1222,12 @@ impl DocumentActor {
         let update = unb64(&m.update)?;
         self.admit(&m.doc, &m.by, true).await?;
         self.source_writable(&m.doc, &m.by)?;
+        {
+            let o = self.load(&m.doc)?;
+            if o.meta.kind == DocKind::Deck {
+                crate::deck::validate_raw_update(&o.doc, &update, &m.by)?;
+            }
+        }
         Ok(self.apply(&m.doc, update, m.by, false, Vec::new()).await?)
     }
 }
@@ -1672,9 +1766,13 @@ impl Message<Outline> for DocumentActor {
                 tx.send(Err(e));
                 return reply;
             }
-            // 218 §3.1: no blocks, no helper.
+            // 218/229: no blocks, no helper.
             Ok(o) if o.meta.kind == DocKind::Whiteboard => {
                 tx.send(Err(crate::wb::DOC_REFUSAL.into()));
+                return reply;
+            }
+            Ok(o) if o.meta.kind == DocKind::Deck => {
+                tx.send(Err(crate::deck::DOC_REFUSAL.into()));
                 return reply;
             }
             Ok(_) => {}
@@ -1749,8 +1847,8 @@ impl Message<Headings> for DocumentActor {
                 return reply;
             }
         };
-        // 218: a whiteboard has no headings and no helper mirror.
-        if kind == DocKind::Whiteboard {
+        // 218/229: pure-Yjs docs have no headings and no helper mirror.
+        if kind.is_pure_yjs() {
             tx.send(Ok(Some(DocHeadings {
                 kind,
                 headings: Vec::new(),
@@ -1828,9 +1926,13 @@ impl Message<Markdown> for DocumentActor {
                 tx.send(Err(e));
                 return reply;
             }
-            // 218 §3.1, §4.1: refused cleanly, never a helper call.
+            // 218/229: refused cleanly, never a helper call.
             Ok(o) if o.meta.kind == DocKind::Whiteboard => {
                 tx.send(Err(crate::wb::DOC_REFUSAL.into()));
+                return reply;
+            }
+            Ok(o) if o.meta.kind == DocKind::Deck => {
+                tx.send(Err(crate::deck::DOC_REFUSAL.into()));
                 return reply;
             }
             Ok(_) => {}
@@ -2158,8 +2260,8 @@ impl Message<Rename> for DocumentActor {
             None,
         );
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
-        // 218: a whiteboard's title lives in its meta only; the outline file follows at export.
-        if meta.kind == DocKind::Whiteboard {
+        // 218/229: pure-Yjs titles live in meta only; derived markdown follows at export.
+        if meta.kind.is_pure_yjs() {
             self.schedule_export(&m.doc);
             tx.send(Ok(()));
             return reply;
@@ -2481,8 +2583,28 @@ impl Message<Restore> for DocumentActor {
         let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
             return reply;
         };
-        if self.open.get(&m.doc).is_some_and(|o| o.meta.kind == DocKind::Whiteboard) {
-            tx.send(Err("restoring a snapshot is not available for whiteboards; use undo on the canvas".into()));
+        let kind = match self.open.get(&m.doc) {
+            Some(o) => o.meta.kind,
+            None => match self.store.read_meta(&m.doc) {
+                Ok(meta) => meta.kind,
+                Err(e) => {
+                    tx.send(Err(format!("{e:#}")));
+                    return reply;
+                }
+            },
+        };
+        if kind == DocKind::Whiteboard {
+            tx.send(Err(
+                "restoring a snapshot is not available for whiteboards; use undo on the canvas"
+                    .into(),
+            ));
+            return reply;
+        }
+        if kind == DocKind::Deck {
+            tx.send(Err(
+                "restoring a whole-document snapshot is not available for Decks; inspect per-section history instead"
+                    .into(),
+            ));
             return reply;
         }
         let bytes = match self.store.read_snapshot(&m.doc, &m.snapshot) {
@@ -2785,6 +2907,9 @@ impl Message<HelperEvent> for DocumentActor {
                 let ids: Vec<DocId> = self.open.keys().cloned().collect();
                 for id in ids {
                     let o = &self.open[&id];
+                    if o.meta.kind.is_pure_yjs() {
+                        continue;
+                    }
                     let state = o
                         .doc
                         .transact()

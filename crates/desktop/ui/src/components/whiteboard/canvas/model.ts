@@ -8,7 +8,7 @@ export const ENGINE = 'engine'    // provider.ts#L16 literal
 
 export type Id = string
 export type By = 'owner' | `session:${string}`
-export type CardKind = 'page' | 'diagram' | 'note' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'sticky' | 'session' | 'view' | 'task'
+export type CardKind = 'page' | 'diagram' | 'note' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'sticky' | 'session' | 'view' | 'task' | 'deck'
 export type Source =
   | { t: 'page'; session: string; call_id: string }
   | { t: 'diagram'; lang: 'json-render' | 'openui' | 'mermaid'; code: string }
@@ -24,6 +24,8 @@ export type Source =
   | { t: 'view'; path: string }
   /** A task (67 TASKS) by id: the card draws the task's live record (title, state, owner, …) from the task store. */
   | { t: 'task'; task: string }
+  /** A live Deck (229) by reference only: deck id + optional focused section / pinned snapshot. */
+  | { t: 'deck'; deck: string; section?: string; snapshot_id?: string }
 export type Version = { source: Source; at: number; by: By; note?: string }
 export type DevicePreset = 'phone' | 'tablet' | 'desktop' | 'auto' | 'custom'
 export type DeviceViewport = { w: number; h: number; preset: DevicePreset }
@@ -68,7 +70,7 @@ export type Board = {
 
 type Raw = Record<string, unknown>
 
-const CARD_KINDS: readonly CardKind[] = ['page', 'diagram', 'note', 'excerpt', 'diff', 'terminal', 'web', 'image', 'sticky', 'session', 'view', 'task']
+const CARD_KINDS: readonly CardKind[] = ['page', 'diagram', 'note', 'excerpt', 'diff', 'terminal', 'web', 'image', 'sticky', 'session', 'view', 'task', 'deck']
 const CARD_STATES: readonly CardState[] = ['live', 'dimmed', 'archived']
 const PORTS: readonly Port[] = ['top', 'right', 'bottom', 'left']
 const FRAME_COLOURS: readonly FrameColour[] = ['neutral', 'blue', 'green', 'amber', 'red', 'violet']
@@ -149,6 +151,17 @@ function readSource(v: unknown, kind: CardKind): Source | null {
     case 'session': return str(s.session) !== undefined ? { t: 'session', session: s.session as string } : null
     case 'view': return str(s.path) !== undefined ? { t: 'view', path: s.path as string } : null
     case 'task': return str(s.task) ? { t: 'task', task: s.task as string } : null
+    case 'deck': {
+      const hasCtrl = (v: string) => /[\x00-\x1f\x7f]/.test(v)
+      const deck = str(s.deck)?.trim()
+      if (!deck || hasCtrl(deck)) return null
+      const out: Extract<Source, { t: 'deck' }> = { t: 'deck', deck }
+      const section = str(s.section)?.trim()
+      if (section && !hasCtrl(section)) out.section = section
+      const snapshotId = str(s.snapshot_id)?.trim()
+      if (snapshotId && !hasCtrl(snapshotId)) out.snapshot_id = snapshotId
+      return out
+    }
   }
 }
 

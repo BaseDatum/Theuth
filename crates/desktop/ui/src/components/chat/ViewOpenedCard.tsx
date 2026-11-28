@@ -4,6 +4,7 @@ import { openViewFromCard, useTileOpen } from '@/components/tiles/open'
 import { useTileHost } from '@/components/tiles/host'
 import { Button } from '@/components/ui/button'
 import { isTile, ownerOf, type PanePlacement, tileLeaf, usePanes } from '@/lib/panes'
+import { deckPopoutTarget } from '@/lib/popout'
 import { tileId } from '@/lib/tiles'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
@@ -13,7 +14,7 @@ type Tool = Extract<Entry, { kind: 'tool' }>
 /** `leaf`: the pane the receipt named, `null` while pending, failed or unparsable. */
 export type ViewCall = { title: string; path: string; leaf: string | null; reused: boolean }
 
-/** `show_view`'s pinned first line, `view opened · <title> · <path> · tile <leaf>` (`view reused · …`), written by
+/** `show_view`/`show_deck`'s pinned first line, `view opened · <title> · <path> · tile <leaf>` (`view reused · …`), written by
  * `view_receipt` in `crates/artifact/src/layout.rs`; receipts written before it carry only the human line
  * `Opened|Reused <title> (<path>) in pane <leaf>`. */
 const RECEIPT = /^view (opened|reused) · (.*) · (\/\S*) · tile (\S+)$/m
@@ -27,14 +28,27 @@ export function viewCall(tool: Pick<Tool, 'args' | 'result'>): ViewCall {
   return { title: args.title ?? args.path, path: args.path, leaf: null, reused: false }
 }
 
-/** The call's own `path`, `title`, `placement` and `target`: what Reopen asks for again. */
+/** The call's own `path` (or `deck_id`), `title`, `placement` and `target`: what Reopen asks for again. */
 function viewArgs(raw: unknown): { path: string; title?: string; placement?: PanePlacement; target?: string } {
   const a = (raw ?? {}) as Record<string, unknown>
   const str = (k: string) => (typeof a[k] === 'string' && a[k] !== '' ? (a[k] as string) : undefined)
   const placement = str('placement') as PanePlacement | undefined
   const target = str('target')
   const title = str('title')
-  return { path: str('path') ?? '', ...(title ? { title } : {}), ...(placement ? { placement } : {}), ...(target ? { target } : {}) }
+  let path = str('path')
+  if (!path) {
+    const deckId = str('deck_id')
+    if (deckId) {
+      const qs = new URLSearchParams()
+      const section = str('section')
+      const snapshot = str('snapshot_id') ?? str('snapshot')
+      if (section) qs.set('section', section)
+      if (snapshot) qs.set('snapshot', snapshot)
+      const q = qs.toString()
+      path = `/decks/${encodeURIComponent(deckId)}${q ? `?${q}` : ''}`
+    }
+  }
+  return { path: path ?? '', ...(title ? { title } : {}), ...(placement ? { placement } : {}), ...(target ? { target } : {}) }
 }
 
 /** A card's open button label: `Focus` while its tile is laid out, `Reopen` once closed; `Open` where nothing tiles. */
@@ -62,9 +76,9 @@ export function OpenLabel({ label }: { label: 'Focus' | 'Reopen' | 'Open' }) {
 }
 
 /**
- * The transcript card of a `show_view` call: the view's title and route, **Focus** while its pane is open, **Reopen**
- * once it was closed (with the call's own placement and target, through `openViewFromCard`, which never closes another
- * pane), and pop out where windows exist. On a phone, Open navigates to the route.
+ * The transcript card of a `show_view` or `show_deck` call: the view's title and route, **Focus** while its pane is
+ * open, **Reopen** once it was closed (with the call's own placement and target, through `openViewFromCard`, which
+ * never closes another pane), and pop out where windows exist. On a phone, Open navigates to the route.
  */
 export function ViewOpenedCard({ tool, session }: { tool: Tool; session: string }) {
   const host = useTileHost()
@@ -78,6 +92,7 @@ export function ViewOpenedCard({ tool, session }: { tool: Tool; session: string 
     const { placement, target, title = call.title } = viewArgs(tool.args)
     openViewFromCard({ path: call.path, ...(title ? { title } : {}) }, { placement, target, session, navigate: (href) => void navigate({ href }) })
   }
+  const popoutTarget = deckPopoutTarget(call.path, call.title !== 'Decks' ? call.title : undefined) ?? { kind: 'page' as const, path: call.path }
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm" data-view-card={call.leaf ?? undefined}>
       <div className="flex min-w-0 items-center gap-3">
@@ -92,7 +107,7 @@ export function ViewOpenedCard({ tool, session }: { tool: Tool; session: string 
             <OpenLabel label={openLabel(host !== null, open)} />
           </Button>
         )}
-        {ready && <PopoutButton target={{ kind: 'page', path: call.path }} />}
+        {ready && <PopoutButton target={popoutTarget} />}
       </div>
       {failed && <p className="mt-2 text-xs text-destructive wrap-anywhere">{tool.result?.output}</p>}
     </div>

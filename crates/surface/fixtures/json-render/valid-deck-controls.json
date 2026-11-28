@@ -1,0 +1,36 @@
+{
+  "root": "root",
+  "elements": {
+    "root": {
+      "type": "Stack",
+      "props": {
+        "direction": "vertical",
+        "gap": "sm"
+      },
+      "children": ["controls", "action", "result"]
+    },
+    "controls": {
+      "type": "StreamControls",
+      "props": {
+        "title": "Workspace Pulse",
+        "show_run_once": true
+      }
+    },
+    "action": {
+      "type": "ActionButton",
+      "props": {
+        "label": "Refresh Metrics",
+        "action": "refresh_metrics",
+        "args_json": "{\"scope\":\"daily\"}",
+        "tone": "primary"
+      }
+    },
+    "result": {
+      "type": "ResultBanner",
+      "props": {
+        "title": "Action Result",
+        "empty_text": "No action invoked yet."
+      }
+    }
+  }
+}

@@ -12,17 +12,23 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use yrs::types::map::MapPrelim;
-use yrs::{Any, Array, ArrayPrelim, ArrayRef, Doc, In, Map, MapRef, Out, ReadTxn, Transact, TransactionMut};
+use yrs::{
+    Any, Array, ArrayPrelim, ArrayRef, Doc, In, Map, MapRef, Out, ReadTxn, Transact, TransactionMut,
+};
 
 pub use super::pack;
 
 /// The seven top-level maps, exactly these names.
-pub const MAPS: [&str; 7] = ["meta", "cards", "links", "frames", "ink", "marks", "aliases"];
+pub const MAPS: [&str; 7] = [
+    "meta", "cards", "links", "frames", "ink", "marks", "aliases",
+];
 /// Schema version written to `meta.v`.
 pub const SCHEMA: u32 = 1;
 
 /// What a card shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CardKind {
     /// An `.html` artifact.
@@ -49,6 +55,8 @@ pub enum CardKind {
     View,
     /// A task (67 TASKS), drawn live from the task store: state, title, owner, priority, blockers.
     Task,
+    /// A Deck (229), rendered live by reference only (deck id + optional focused section / pinned snapshot).
+    Deck,
 }
 
 impl CardKind {
@@ -67,18 +75,23 @@ impl CardKind {
             Self::Session => "session",
             Self::View => "view",
             Self::Task => "task",
+            Self::Deck => "deck",
         }
     }
 
     /// Kinds whose single version is replaced in place (no `vK/K` in the outline).
     pub fn in_place(self) -> bool {
-        matches!(self, Self::Sticky | Self::Note | Self::Diagram)
+        matches!(self, Self::Sticky | Self::Note | Self::Diagram | Self::Deck)
     }
 
     /// Kinds whose card is sized to its rendered content when placed or updated without an explicit size
     /// (the owner's client measures it and writes the size; see [`Card::fit`]).
+    /// `Deck` is deliberately excluded so live streaming/snapshot repaints never resize or move cards.
     pub fn fits_content(self) -> bool {
-        matches!(self, Self::Page | Self::Diagram | Self::Note | Self::Excerpt | Self::Image | Self::Task)
+        matches!(
+            self,
+            Self::Page | Self::Diagram | Self::Note | Self::Excerpt | Self::Image | Self::Task
+        )
     }
 
     fn parse(s: &str) -> Option<Self> {
@@ -223,6 +236,18 @@ pub enum Source {
         /// The task id.
         task: String,
     },
+    /// A Deck by reference only (229): stores deck id + optional focused section or pinned snapshot id,
+    /// never script, HTML, or snapshot bytes.
+    Deck {
+        /// Deck DocId.
+        deck: String,
+        /// Optional focused section id or alias.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        section: Option<String>,
+        /// Optional pinned durable snapshot id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_id: Option<String>,
+    },
 }
 
 impl Source {
@@ -241,6 +266,7 @@ impl Source {
             Self::Session { .. } => CardKind::Session,
             Self::View { .. } => CardKind::View,
             Self::Task { .. } => CardKind::Task,
+            Self::Deck { .. } => CardKind::Deck,
         }
     }
 }
@@ -599,7 +625,10 @@ pub struct Snapshot {
 impl Snapshot {
     /// The card `id`.
     pub fn card(&self, id: &str) -> Option<&Card> {
-        self.cards.binary_search_by(|c| c.id.as_str().cmp(id)).ok().map(|i| &self.cards[i])
+        self.cards
+            .binary_search_by(|c| c.id.as_str().cmp(id))
+            .ok()
+            .map(|i| &self.cards[i])
     }
 
     /// The frame `id`.
@@ -645,7 +674,11 @@ pub fn any_to_json(a: &Any) -> Value {
     match a {
         Any::Null | Any::Undefined => Value::Null,
         Any::Bool(b) => Value::Bool(*b),
-        Any::Number(n) => num_json(n.as_f64().or_else(|| n.as_i64().map(|i| i as f64)).unwrap_or(0.0)),
+        Any::Number(n) => num_json(
+            n.as_f64()
+                .or_else(|| n.as_i64().map(|i| i as f64))
+                .unwrap_or(0.0),
+        ),
         Any::String(s) => Value::String(s.to_string()),
         Any::Buffer(b) => Value::from(b.len()),
         Any::Array(xs) => Value::Array(xs.iter().map(any_to_json).collect()),
@@ -657,7 +690,9 @@ fn num_json(f: f64) -> Value {
     if f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_991.0 {
         Value::from(f as i64)
     } else {
-        serde_json::Number::from_f64(f).map(Value::Number).unwrap_or(Value::Null)
+        serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
     }
 }
 
@@ -671,7 +706,11 @@ fn out_to_json<T: ReadTxn>(txn: &T, o: &Out) -> Value {
 }
 
 fn map_to_json<T: ReadTxn>(txn: &T, m: &MapRef) -> Value {
-    Value::Object(m.iter(txn).map(|(k, v)| (k.to_owned(), out_to_json(txn, &v))).collect())
+    Value::Object(
+        m.iter(txn)
+            .map(|(k, v)| (k.to_owned(), out_to_json(txn, &v)))
+            .collect(),
+    )
 }
 
 fn f(v: &Value, k: &str) -> Option<f64> {
@@ -691,7 +730,12 @@ fn boxed(v: &Value, k: &str) -> Option<[f64; 4]> {
     if a.len() != 4 {
         return None;
     }
-    Some([a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?, a[3].as_f64()?])
+    Some([
+        a[0].as_f64()?,
+        a[1].as_f64()?,
+        a[2].as_f64()?,
+        a[3].as_f64()?,
+    ])
 }
 fn parse<T: serde::de::DeserializeOwned>(v: Option<&Value>) -> Option<T> {
     serde_json::from_value(v?.clone()).ok()
@@ -837,7 +881,10 @@ pub fn read<T: ReadTxn>(txn: &T) -> Snapshot {
 
 /// Read `meta`; defaults for what is absent.
 pub fn read_meta<T: ReadTxn>(txn: &T) -> Meta {
-    let v = txn.get_map("meta").map(|m| map_to_json(txn, &m)).unwrap_or(Value::Null);
+    let v = txn
+        .get_map("meta")
+        .map(|m| map_to_json(txn, &m))
+        .unwrap_or(Value::Null);
     Meta {
         v: u(&v, "v").unwrap_or(SCHEMA),
         created: i(&v, "created").unwrap_or(0),
@@ -857,7 +904,9 @@ pub fn json_to_any(v: &Value) -> Any {
         Value::String(s) => Any::from(s.as_str()),
         Value::Array(a) => Any::Array(a.iter().map(json_to_any).collect::<Vec<_>>().into()),
         Value::Object(o) => Any::Map(Arc::new(
-            o.iter().map(|(k, v)| (k.clone(), json_to_any(v))).collect::<HashMap<_, _>>(),
+            o.iter()
+                .map(|(k, v)| (k.clone(), json_to_any(v)))
+                .collect::<HashMap<_, _>>(),
         )),
     }
 }
@@ -925,7 +974,14 @@ impl Maps {
     }
 
     /// Set (or, with `None`, delete) one field of entry `id` in `root`. False when the entry is gone.
-    pub fn set(&self, txn: &mut TransactionMut, root: &str, id: &str, key: &str, v: Option<Any>) -> bool {
+    pub fn set(
+        &self,
+        txn: &mut TransactionMut,
+        root: &str,
+        id: &str,
+        key: &str,
+        v: Option<Any>,
+    ) -> bool {
         let Some(m) = self.entry(txn, root, id) else {
             return false;
         };
@@ -994,7 +1050,12 @@ pub fn card_fields(c: &Card) -> Vec<(&'static str, In)> {
         ("title", text(&c.title)),
         (
             "versions",
-            In::Array(ArrayPrelim::from(c.versions.iter().map(|v| In::Any(plain(v))).collect::<Vec<_>>())),
+            In::Array(ArrayPrelim::from(
+                c.versions
+                    .iter()
+                    .map(|v| In::Any(plain(v)))
+                    .collect::<Vec<_>>(),
+            )),
         ),
         ("state", text(c.state.as_str())),
         ("by", text(&c.by)),
@@ -1112,12 +1173,17 @@ pub fn ulid_at(ms: u64) -> String {
     const A: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let rand = uuid::Uuid::new_v4().as_u128() & ((1u128 << 80) - 1);
     let v: u128 = ((ms as u128 & ((1 << 48) - 1)) << 80) | rand;
-    (0..26).rev().map(|i| A[((v >> (i * 5)) & 31) as usize] as char).collect()
+    (0..26)
+        .rev()
+        .map(|i| A[((v >> (i * 5)) & 31) as usize] as char)
+        .collect()
 }
 
 /// `^[0-9A-HJKMNP-TV-Z]{26}$`.
 pub fn is_ulid(s: &str) -> bool {
-    s.len() == 26 && s.bytes().all(|b| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&b))
+    s.len() == 26
+        && s.bytes()
+            .all(|b| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&b))
 }
 
 #[cfg(test)]
@@ -1126,7 +1192,13 @@ pub(crate) mod tests {
     use yrs::updates::decoder::Decode;
     use yrs::{Doc, Transact};
 
-    pub(crate) fn card(id: &str, kind: CardKind, rect: [f64; 4], title: &str, versions: Vec<Version>) -> Card {
+    pub(crate) fn card(
+        id: &str,
+        kind: CardKind,
+        rect: [f64; 4],
+        title: &str,
+        versions: Vec<Version>,
+    ) -> Card {
         Card {
             id: id.into(),
             kind,
@@ -1159,15 +1231,26 @@ pub(crate) mod tests {
             [250.0, 80.0, 180.0, 390.0],
             "Mock B — flat list",
             vec![Version {
-                source: Source::Page { session: Some("s".into()), call_id: "toolu_01AAA".into() },
+                source: Source::Page {
+                    session: Some("s".into()),
+                    call_id: "toolu_01AAA".into(),
+                },
                 at: 1_795_570_100_000,
                 by: "session:s".into(),
                 note: Some("first".into()),
             }],
         );
-        c.viewport = Some(DeviceViewport { w: 390.0, h: 844.0, preset: "phone".into() });
+        c.viewport = Some(DeviceViewport {
+            w: 390.0,
+            h: 844.0,
+            preset: "phone".into(),
+        });
         c.frame = Some("01KAR3ZC4M0000000000000009".into());
-        c.snap = Some(Snap { v: 1, at: 5, theme: "dark".into() });
+        c.snap = Some(Snap {
+            v: 1,
+            at: 5,
+            theme: "dark".into(),
+        });
         c.pin = true;
         c.state = CardState::Dimmed;
         c.tag = Some("why".into());
@@ -1219,7 +1302,10 @@ pub(crate) mod tests {
             maps.put(&mut txn, "links", &l.id, link_fields(&l));
             maps.put(&mut txn, "frames", &fr.id, frame_fields(&fr));
             maps.put(&mut txn, "marks", &m.id, mark_fields(&m, "owner"));
-            let pts = pack::encode([100.0, 50.0], &[(100.0, 50.0, 0.5, 0), (101.5, 50.25, 1.0, 8)]);
+            let pts = pack::encode(
+                [100.0, 50.0],
+                &[(100.0, 50.0, 0.5, 0), (101.5, 50.25, 1.0, 8)],
+            );
             let stroke = Any::Map(Arc::new(HashMap::from([
                 ("pts".to_owned(), Any::Buffer(pts.into())),
                 ("n".to_owned(), Any::from(2.0)),
@@ -1241,9 +1327,17 @@ pub(crate) mod tests {
         assert_eq!(snap.strokes[0].n, 2);
         assert_eq!(snap.strokes[0].ver, Some(1));
         assert_eq!(snap.strokes[0].at, 1_795_570_200_000);
-        assert_eq!(snap.aliases.get("01KAR3ZC4M0000000000000001").map(String::as_str), Some("c1"));
+        assert_eq!(
+            snap.aliases
+                .get("01KAR3ZC4M0000000000000001")
+                .map(String::as_str),
+            Some("c1")
+        );
         let meta = read_meta(&doc.transact());
-        assert_eq!((meta.v, meta.created, meta.bg.as_str()), (1, 1_795_570_000_000, "dots"));
+        assert_eq!(
+            (meta.v, meta.created, meta.bg.as_str()),
+            (1, 1_795_570_000_000, "dots")
+        );
     }
 
     #[test]
@@ -1252,22 +1346,45 @@ pub(crate) mod tests {
         let maps = Maps::of(&doc);
         {
             let mut txn = doc.transact_mut();
-            let mut good = card_fields(&card("A", CardKind::Sticky, [0.0, 0.0, 10.0, 10.0], "ok", vec![]));
+            let mut good = card_fields(&card(
+                "A",
+                CardKind::Sticky,
+                [0.0, 0.0, 10.0, 10.0],
+                "ok",
+                vec![],
+            ));
             good.push(("future", text("kept")));
             maps.put(&mut txn, "cards", "A", good);
             // An unknown kind: skipped on read, never deleted.
-            let mut odd = card_fields(&card("B", CardKind::Sticky, [0.0, 0.0, 10.0, 10.0], "odd", vec![]));
+            let mut odd = card_fields(&card(
+                "B",
+                CardKind::Sticky,
+                [0.0, 0.0, 10.0, 10.0],
+                "odd",
+                vec![],
+            ));
             odd[0] = ("kind", text("hologram"));
             maps.put(&mut txn, "cards", "B", odd);
             // An unknown version source: that version is skipped, the card stays.
-            maps.put(&mut txn, "cards", "C", card_fields(&card("C", CardKind::Web, [0.0, 0.0, 1.0, 1.0], "w", vec![])));
+            maps.put(
+                &mut txn,
+                "cards",
+                "C",
+                card_fields(&card("C", CardKind::Web, [0.0, 0.0, 1.0, 1.0], "w", vec![])),
+            );
             let v = maps.versions(&txn, "C").unwrap();
             v.push_back(&mut txn, plain(&serde_json::json!({"source": {"t": "web", "url": "https://x"}, "at": 1, "by": "owner"})));
-            v.push_back(&mut txn, plain(&serde_json::json!({"source": {"t": "teleport"}, "at": 2, "by": "owner"})));
+            v.push_back(
+                &mut txn,
+                plain(&serde_json::json!({"source": {"t": "teleport"}, "at": 2, "by": "owner"})),
+            );
             maps.set_meta(&mut txn, "mystery", Any::from(3.0));
         }
         let snap = read(&doc.transact());
-        assert_eq!(snap.cards.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["A", "C"]);
+        assert_eq!(
+            snap.cards.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["A", "C"]
+        );
         assert_eq!(snap.cards[1].versions.len(), 1);
         // A field write leaves the unknown key alone.
         {
@@ -1286,20 +1403,36 @@ pub(crate) mod tests {
         let maps = Maps::of(&doc);
         {
             let mut txn = doc.transact_mut();
-            let mut f = card_fields(&card("A", CardKind::Sticky, [0.0, 0.0, 10.0, 10.0], "t", vec![]));
+            let mut f = card_fields(&card(
+                "A",
+                CardKind::Sticky,
+                [0.0, 0.0, 10.0, 10.0],
+                "t",
+                vec![],
+            ));
             f[1] = ("x", In::Any(Any::Number(yrs::any::Number::Int(120))));
             f[5] = ("z", In::Any(Any::Number(yrs::any::Number::Int(7))));
             maps.put(&mut txn, "cards", "A", f);
-            maps.put(&mut txn, "marks", "M", vec![
-                ("strokes", In::Any(plain(&Vec::<String>::new()))),
-                ("bb", In::Any(plain(&[0.0, 0.0, 1.0, 1.0]))),
-                ("state", text("sent")),
-                ("sent_at", In::Any(Any::Number(yrs::any::Number::Int(1_795_570_300_000)))),
-                ("ver", In::Any(Any::Number(yrs::any::Number::Int(2)))),
-            ]);
+            maps.put(
+                &mut txn,
+                "marks",
+                "M",
+                vec![
+                    ("strokes", In::Any(plain(&Vec::<String>::new()))),
+                    ("bb", In::Any(plain(&[0.0, 0.0, 1.0, 1.0]))),
+                    ("state", text("sent")),
+                    (
+                        "sent_at",
+                        In::Any(Any::Number(yrs::any::Number::Int(1_795_570_300_000))),
+                    ),
+                    ("ver", In::Any(Any::Number(yrs::any::Number::Int(2)))),
+                ],
+            );
         }
         // Through the wire (BigInt/varint encodings) and back.
-        let update = doc.transact().encode_state_as_update_v1(&Default::default());
+        let update = doc
+            .transact()
+            .encode_state_as_update_v1(&Default::default());
         let other = Doc::new();
         other
             .transact_mut()
@@ -1307,7 +1440,10 @@ pub(crate) mod tests {
             .unwrap();
         let snap = read(&other.transact());
         assert_eq!((snap.cards[0].x, snap.cards[0].z), (120.0, 7));
-        assert_eq!((snap.marks[0].sent_at, snap.marks[0].ver), (1_795_570_300_000, Some(2)));
+        assert_eq!(
+            (snap.marks[0].sent_at, snap.marks[0].ver),
+            (1_795_570_300_000, Some(2))
+        );
     }
 
     #[test]

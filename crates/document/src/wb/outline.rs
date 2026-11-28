@@ -3,7 +3,9 @@
 
 use std::fmt::Write as _;
 
-use super::model::{Card, CardKind, CardState, Frame, Link, Mark, MarkState, Snapshot, Source, preset_size};
+use super::model::{
+    Card, CardKind, CardState, Frame, Link, Mark, MarkState, Snapshot, Source, preset_size,
+};
 
 /// Card lines before the overflow line.
 pub const MAX_CARD_LINES: usize = 200;
@@ -113,7 +115,11 @@ fn listed(s: &Snapshot) -> Vec<(&Card, Option<&Frame>)> {
 /// Frames in reading order (by `y`, then `x`).
 fn frames_in_order(s: &Snapshot) -> Vec<&Frame> {
     let mut f: Vec<&Frame> = s.frames.iter().collect();
-    f.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)).then(a.id.cmp(&b.id)));
+    f.sort_by(|a, b| {
+        a.y.total_cmp(&b.y)
+            .then(a.x.total_cmp(&b.x))
+            .then(a.id.cmp(&b.id))
+    });
     f
 }
 
@@ -130,7 +136,12 @@ pub fn frame_line(s: &Snapshot, fr: &Frame) -> String {
 
 /// The card line.
 pub fn card_line(s: &Snapshot, c: &Card) -> String {
-    let mut l = format!("{} {} {}", s.name(&c.id), c.kind.as_str(), quote(&c.title, 80));
+    let mut l = format!(
+        "{} {} {}",
+        s.name(&c.id),
+        c.kind.as_str(),
+        quote(&c.title, 80)
+    );
     let n = c.versions.len();
     if !c.kind.in_place() && n > 0 {
         let _ = write!(l, " v{n}/{n}");
@@ -161,16 +172,50 @@ fn extras(c: &Card) -> Vec<String> {
     };
     match &v.source {
         Source::Sticky { text } => vec![
-            format!("{} lines", text.lines().filter(|l| !l.trim().is_empty()).count()),
+            format!(
+                "{} lines",
+                text.lines().filter(|l| !l.trim().is_empty()).count()
+            ),
             format!("#{}", fnv16(text.as_bytes())),
         ],
         Source::Diagram { lang, code } => {
-            vec![format!("#{}", fnv16(format!("{}\n{code}", lang.as_str()).as_bytes()))]
+            vec![format!(
+                "#{}",
+                fnv16(format!("{}\n{code}", lang.as_str()).as_bytes())
+            )]
         }
-        Source::Excerpt { path, start, end, .. } => vec![format!("{path}#L{start}-L{end}")],
+        Source::Excerpt {
+            path, start, end, ..
+        } => vec![format!("{path}#L{start}-L{end}")],
         Source::Web { url } => host(url).map(|h| vec![h.to_owned()]).unwrap_or_default(),
         Source::View { path } => vec![path.clone()],
         Source::Task { task } => vec![format!("task {task}")],
+        Source::Deck {
+            deck,
+            section,
+            snapshot_id,
+        } => {
+            let clean = |s: &str| -> String {
+                s.chars()
+                    .filter(|c| !c.is_control())
+                    .take(64)
+                    .collect()
+            };
+            let mut v = vec![format!("deck {}", clean(deck))];
+            if let Some(s) = section {
+                let s = clean(s);
+                if !s.is_empty() {
+                    v.push(format!("section {s}"));
+                }
+            }
+            if let Some(snap) = snapshot_id {
+                let snap = clean(snap);
+                if !snap.is_empty() {
+                    v.push(format!("snapshot {snap}"));
+                }
+            }
+            v
+        }
         _ => Vec::new(),
     }
 }
@@ -184,7 +229,13 @@ fn host(url: &str) -> Option<&str> {
 
 /// The link line.
 pub fn link_line(s: &Snapshot, l: &Link) -> String {
-    let mut out = format!("{} {} {} {}", s.name(&l.id), s.name(&l.from), l.arrow.glyph(), s.name(&l.to));
+    let mut out = format!(
+        "{} {} {} {}",
+        s.name(&l.id),
+        s.name(&l.from),
+        l.arrow.glyph(),
+        s.name(&l.to)
+    );
     if let Some(t) = l.label.as_deref().filter(|t| !t.is_empty()) {
         out.push(' ');
         out.push_str(&quote(t, 80));
@@ -334,7 +385,10 @@ fn push_rows(out: &mut String, rows: &[Vec<String>]) {
 pub fn source_summary(c: &Card) -> (String, Option<String>) {
     let Some(v) = c.versions.last() else {
         return match &c.placeholder {
-            Some(p) => (format!("placeholder {} — nothing placed yet", quote(p, 80)), None),
+            Some(p) => (
+                format!("placeholder {} — nothing placed yet", quote(p, 80)),
+                None,
+            ),
             None => ("no version yet".into(), None),
         };
     };
@@ -342,7 +396,10 @@ pub fn source_summary(c: &Card) -> (String, Option<String>) {
         Source::Page { session, call_id } => (
             format!(
                 "an .html page from call {call_id}{}",
-                session.as_deref().map(|s| format!(" of session {s}")).unwrap_or_default()
+                session
+                    .as_deref()
+                    .map(|s| format!(" of session {s}"))
+                    .unwrap_or_default()
             ),
             Some(format!("artifact_read(\"{call_id}\")")),
         ),
@@ -351,8 +408,12 @@ pub fn source_summary(c: &Card) -> (String, Option<String>) {
             None,
         ),
         Source::Note { doc } => (format!("note {doc}"), Some(format!("doc_read(\"{doc}\")"))),
-        Source::Excerpt { path, start, end, .. } => (format!("excerpt {path}#L{start}-L{end}"), None),
-        Source::Diff { session, frozen, .. } => match frozen {
+        Source::Excerpt {
+            path, start, end, ..
+        } => (format!("excerpt {path}#L{start}-L{end}"), None),
+        Source::Diff {
+            session, frozen, ..
+        } => match frozen {
             Some(f) => (
                 format!("diff frozen as call {} of session {}", f.call_id, f.session),
                 Some(format!("artifact_read(\"{}\")", f.call_id)),
@@ -360,7 +421,10 @@ pub fn source_summary(c: &Card) -> (String, Option<String>) {
             None => (
                 format!(
                     "a working-tree diff{}",
-                    session.as_deref().map(|s| format!(" of session {s}")).unwrap_or_default()
+                    session
+                        .as_deref()
+                        .map(|s| format!(" of session {s}"))
+                        .unwrap_or_default()
                 ),
                 session.as_deref().map(|s| format!("session_read(\"{s}\")")),
             ),
@@ -368,20 +432,34 @@ pub fn source_summary(c: &Card) -> (String, Option<String>) {
         Source::Terminal { session, job } => (
             format!(
                 "terminal job {job}{}",
-                session.as_deref().map(|s| format!(" of session {s}")).unwrap_or_default()
+                session
+                    .as_deref()
+                    .map(|s| format!(" of session {s}"))
+                    .unwrap_or_default()
             ),
             session.as_deref().map(|s| format!("session_read(\"{s}\")")),
         ),
         Source::Web { url } => (format!("web page {url}"), None),
-        Source::Image { session, call_id, path, blob } => match (call_id, path, blob) {
+        Source::Image {
+            session,
+            call_id,
+            path,
+            blob,
+        } => match (call_id, path, blob) {
             (Some(call), _, _) => (
                 format!(
                     "image from call {call}{}",
-                    session.as_deref().map(|s| format!(" of session {s}")).unwrap_or_default()
+                    session
+                        .as_deref()
+                        .map(|s| format!(" of session {s}"))
+                        .unwrap_or_default()
                 ),
                 Some(format!("artifact_read(\"{call}\")")),
             ),
-            (None, Some(p), _) => (format!("image file {p}"), Some(format!("read_file(\"{p}\")"))),
+            (None, Some(p), _) => (
+                format!("image file {p}"),
+                Some(format!("read_file(\"{p}\")")),
+            ),
             (None, None, Some(b)) => (format!("stored image {b}"), None),
             _ => ("image".into(), None),
         },
@@ -391,13 +469,44 @@ pub fn source_summary(c: &Card) -> (String, Option<String>) {
             Some(format!("session_read(\"{session}\")")),
         ),
         Source::View { path } => (
-            format!("live app view {path} — the user sees it update and can work in it; wb_crop shows how it last looked"),
+            format!(
+                "live app view {path} — the user sees it update and can work in it; wb_crop shows how it last looked"
+            ),
             None,
         ),
         Source::Task { task } => (
-            format!("task {task}, shown live (state, owner, priority, blockers) — the card title follows the task's"),
+            format!(
+                "task {task}, shown live (state, owner, priority, blockers) — the card title follows the task's"
+            ),
             Some(format!("task_get(\"{task}\")")),
         ),
+        Source::Deck {
+            deck,
+            section,
+            snapshot_id,
+        } => {
+            let clean = |s: &str| -> String {
+                s.chars()
+                    .filter(|c| !c.is_control())
+                    .take(64)
+                    .collect()
+            };
+            let deck = clean(deck);
+            let mut detail = format!("live Deck {deck}");
+            if let Some(s) = section {
+                let s = clean(s);
+                if !s.is_empty() {
+                    detail.push_str(&format!(" (section {s})"));
+                }
+            }
+            if let Some(snap) = snapshot_id {
+                let snap = clean(snap);
+                if !snap.is_empty() {
+                    detail.push_str(&format!(" (pinned snapshot {snap})"));
+                }
+            }
+            (detail, Some(format!("deck_read(\"{deck}\")")))
+        }
     }
 }
 
@@ -438,7 +547,11 @@ pub fn render_frame(doc: &str, s: &Snapshot, frame: &Frame) -> (String, Counts) 
         }
     }
     let mut links = 0;
-    for l in s.links.iter().filter(|l| ids.contains(l.from.as_str()) && ids.contains(l.to.as_str())) {
+    for l in s
+        .links
+        .iter()
+        .filter(|l| ids.contains(l.from.as_str()) && ids.contains(l.to.as_str()))
+    {
         out.push_str(&link_line(s, l));
         out.push('\n');
         links += 1;
@@ -497,7 +610,10 @@ pub(crate) mod tests {
     }
 
     fn page(call: &str) -> Version {
-        v(Source::Page { session: Some(SESSION.into()), call_id: call.into() })
+        v(Source::Page {
+            session: Some(SESSION.into()),
+            call_id: call.into(),
+        })
     }
 
     /// The document behind the §3.2 example.
@@ -514,26 +630,58 @@ pub(crate) mod tests {
             preset: Some("phone".into()),
             by: "owner".into(),
         };
-        let mut c1 = card(&id(1), CardKind::Image, [60.0, 80.0, 180.0, 390.0], "Today", vec![v(Source::Image {
-            session: None,
-            call_id: None,
-            path: Some("/tmp/today.png".into()),
-            blob: None,
-        })]);
-        let mut c2 = card(&id(2), CardKind::Page, [250.0, 80.0, 180.0, 390.0], "Mock A — grouped", vec![page("toolu_01A")]);
+        let mut c1 = card(
+            &id(1),
+            CardKind::Image,
+            [60.0, 80.0, 180.0, 390.0],
+            "Today",
+            vec![v(Source::Image {
+                session: None,
+                call_id: None,
+                path: Some("/tmp/today.png".into()),
+                blob: None,
+            })],
+        );
+        let mut c2 = card(
+            &id(2),
+            CardKind::Page,
+            [250.0, 80.0, 180.0, 390.0],
+            "Mock A — grouped",
+            vec![page("toolu_01A")],
+        );
         c2.state = CardState::Dimmed;
         c2.tag = Some("header kept; grouping rejected".into());
-        let mut c3 = card(&id(3), CardKind::Page, [440.0, 90.0, 180.0, 390.0], "Mock B — flat list", vec![page("toolu_01B"), page("toolu_01C")]);
+        let mut c3 = card(
+            &id(3),
+            CardKind::Page,
+            [440.0, 90.0, 180.0, 390.0],
+            "Mock B — flat list",
+            vec![page("toolu_01B"), page("toolu_01C")],
+        );
         for c in [&mut c1, &mut c2, &mut c3] {
             c.frame = Some(id(9));
         }
-        let c4 = card(&id(4), CardKind::Sticky, [50.0, 494.0, 220.0, 150.0], "Requirements", vec![v(Source::Sticky {
-            text: "- Triage with one thumb\n- Never lose a decision\n- Group only when > 20 items".into(),
-        })]);
-        let c5 = card(&id(5), CardKind::Diagram, [300.0, 500.0, 360.0, 260.0], "Item lifecycle", vec![v(Source::Diagram {
-            lang: DiagramLang::Mermaid,
-            code: "stateDiagram-v2\n  new --> seen\n  seen --> done\n  seen --> snoozed".into(),
-        })]);
+        let c4 = card(
+            &id(4),
+            CardKind::Sticky,
+            [50.0, 494.0, 220.0, 150.0],
+            "Requirements",
+            vec![v(Source::Sticky {
+                text:
+                    "- Triage with one thumb\n- Never lose a decision\n- Group only when > 20 items"
+                        .into(),
+            })],
+        );
+        let c5 = card(
+            &id(5),
+            CardKind::Diagram,
+            [300.0, 500.0, 360.0, 260.0],
+            "Item lifecycle",
+            vec![v(Source::Diagram {
+                lang: DiagramLang::Mermaid,
+                code: "stateDiagram-v2\n  new --> seen\n  seen --> done\n  seen --> snoozed".into(),
+            })],
+        );
         let link = Link {
             id: id(6),
             from: id(4),
@@ -572,7 +720,19 @@ pub(crate) mod tests {
             mark(13, MarkState::Sent),
         ];
         let mut aliases = std::collections::BTreeMap::new();
-        for (n, a) in [(1, "c1"), (2, "c2"), (3, "c3"), (4, "c4"), (5, "c5"), (6, "l1"), (9, "f1"), (10, "m1"), (11, "m2"), (12, "m3"), (13, "m4")] {
+        for (n, a) in [
+            (1, "c1"),
+            (2, "c2"),
+            (3, "c3"),
+            (4, "c4"),
+            (5, "c5"),
+            (6, "l1"),
+            (9, "f1"),
+            (10, "m1"),
+            (11, "m2"),
+            (12, "m3"),
+            (13, "m4"),
+        ] {
             aliases.insert(id(n), a.to_owned());
         }
         Snapshot {
@@ -590,7 +750,14 @@ pub(crate) mod tests {
         let want = include_str!("../../tests/fixtures/whiteboard/outline.txt");
         let (text, counts) = render(DOC, "Attention inbox", &fixture());
         assert_eq!(format!("{text}\n"), want);
-        assert_eq!(counts, Counts { cards: 5, links: 1, marks: 1 });
+        assert_eq!(
+            counts,
+            Counts {
+                cards: 5,
+                links: 1,
+                marks: 1
+            }
+        );
     }
 
     #[test]
@@ -611,7 +778,12 @@ pub(crate) mod tests {
 
     #[test]
     fn quote_unquote() {
-        for (s, max) in [("plain", 80), ("a \"quoted\" \\ back", 80), ("line\nbreak", 80), ("é ünïcode", 3)] {
+        for (s, max) in [
+            ("plain", 80),
+            ("a \"quoted\" \\ back", 80),
+            ("line\nbreak", 80),
+            ("é ünïcode", 3),
+        ] {
             let q = quote(s, max);
             let tail = format!("{q} · tail");
             let (back, rest) = unquote(&tail).unwrap();

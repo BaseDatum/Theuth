@@ -7,6 +7,7 @@ import { requirements as artifactsRequirements } from '@/components/artifacts/re
 import { requirements as knowledgeRequirements } from '@/components/knowledge/requirements'
 import { requirements as notesRequirements } from '@/components/notes/requirements'
 import { requirements as whiteboardRequirements } from '@/components/whiteboard/requirements'
+import { requirements as deckRequirements } from '@/components/decks/requirements'
 import { requirements as notebooksRequirements } from '@/components/notebooks/requirements'
 import { requirements as meetingRequirements } from '@/components/meeting/requirements'
 import { skillsRequirements, secretsRequirements } from '@/components/library/requirements'
@@ -16,12 +17,12 @@ import { requirements as projectsRequirements } from '@/components/projects/requ
 // Settings › Tools › MCP (143 R1 had both under Agents); Agents keeps the work, Library the content.
 // 223: the task board left Agents for Projects; `/tasks` URLs stay, now under the Projects row and band.
 
-import { BookOpen, Bot, CalendarClock, FlaskConical, FolderKanban, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Notebook, Presentation, Sparkles, StickyNote } from 'lucide-react'
+import { BookOpen, Bot, CalendarClock, FlaskConical, FolderKanban, FolderOpen, Layers, ListChecks, Lock, type LucideIcon, Mic, Notebook, Presentation, Sparkles, StickyNote } from 'lucide-react'
 
 export type Group = 'agents' | 'projects' | 'library'
 
 /** A tab's route, as a literal so `navigate({ to })` type-checks. */
-export type Tab = '/agents' | '/projects' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/whiteboards' | '/notebooks' | '/meetings' | '/skills' | '/secrets' | '/autoresearch'
+export type Tab = '/agents' | '/projects' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/whiteboards' | '/decks' | '/notebooks' | '/meetings' | '/skills' | '/secrets' | '/autoresearch'
 
 export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: LucideIcon; required: Requirements }[]> = {
   agents: [
@@ -42,6 +43,8 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
     { required: notesRequirements, to: '/notes', label: 'Notes', icon: StickyNote },
     // 218: a canvas for thinking with the agent (mocks, diagrams, notes, Pencil marks); its own `whiteboard` doc kind.
     { required: whiteboardRequirements, to: '/whiteboards', label: 'Whiteboards', icon: Presentation },
+    // 229: collaborative live Decks with review-gated Monty streams & interactive sections.
+    { required: deckRequirements, to: '/decks', label: 'Decks', icon: Layers },
     { required: notebooksRequirements, to: '/notebooks', label: 'Notebooks', icon: Notebook },
     { required: meetingRequirements, to: '/meetings', label: 'Meetings', icon: Mic },
     { required: secretsRequirements, to: '/secrets', label: 'Secrets', icon: Lock },
@@ -56,7 +59,7 @@ export const tabOf = (group: Group, pathname: string): string | null =>
 export const groupOf = (pathname: string): Group | null =>
   (['agents', 'projects', 'library'] as const).find((g) => tabOf(g, pathname)) ?? null
 
-export type Section = 'talk' | 'agents' | 'projects' | 'attention' | 'library' | 'meeting' | 'whiteboards' | 'costs' | 'settings' | null
+export type Section = 'talk' | 'agents' | 'projects' | 'attention' | 'library' | 'meeting' | 'whiteboards' | 'decks' | 'costs' | 'settings' | null
 
 /** Which sidebar row `pathname` lights up; null for chats and the rest. */
 export const sectionOf = (pathname: string): Section => {
@@ -68,6 +71,8 @@ export const sectionOf = (pathname: string): Section => {
   if (pathname === '/meetings/new') return 'meeting'
   // 218: the Whiteboards row lights itself (`sidebar/Whiteboards.tsx`); Library stays dark under it.
   if (pathname === '/whiteboards' || pathname.startsWith('/whiteboards/')) return 'whiteboards'
+  // 229: the Decks row/rail lights itself (`sidebar/Decks.tsx`); Library stays dark under it.
+  if (pathname === '/decks' || pathname.startsWith('/decks/')) return 'decks'
   if (tabOf('library', pathname)) return 'library'
   if (pathname === '/costs' || pathname.startsWith('/costs/')) return 'costs'
   // 188: Settings is a page now, its footer button lit like any row.

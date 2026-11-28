@@ -24,6 +24,7 @@ const NOT_A_ROW: Record<string, string> = {
   request: 'inside the `<schedule>` envelope: the schedule card body',
   until: 'inside the `<schedule>` envelope: the schedule card body',
   when: 'inside the `<schedule>` envelope: the schedule card body',
+  trigger: 'inside the `<schedule>` envelope: untrusted trigger metric payload for a routine run',
   task_result: "opencode's own output, parsed by the acp harness, never written",
   task_error: "opencode's own output, parsed by the acp harness, never written",
   workflow: "a section of the advisor's system prompt, never a session row",

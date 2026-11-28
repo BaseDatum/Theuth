@@ -1,10 +1,10 @@
 import { RouterProvider, createMemoryHistory, createRouter, useNavigate } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { TileFrame } from '@/components/tiles/TileFrame'
 import type { ViewProps } from '@/components/tiles/open'
 import type { TileKind, TileRender } from '@/components/tiles/types'
 import { usePanes } from '@/lib/panes'
-import { openPopout } from '@/lib/popout'
+import { deckPopoutTarget, openPopout } from '@/lib/popout'
 import { setTileProps } from '@/lib/tiles'
 import { normalizeViewPath, viewTitle } from '@/lib/view-title'
 import { routeTree } from '@/routeTree.gen'
@@ -101,6 +101,18 @@ function ViewTile({ tile, first, close }: TileRender) {
     }
   }, [innerRouter, p.path])
 
+  const handleTileTitle = useCallback(
+    (nextTitle: string) => {
+      const trimmed = nextTitle.trim()
+      if (!trimmed) return
+      const prev = propsRef.current
+      const path = lastPathRef.current
+      if (prev.title === trimmed && normalizeViewPath(prev.path || '/') === path) return
+      setTileProps(tile.id, { path, title: trimmed })
+    },
+    [tile.id],
+  )
+
   const title = viewTitle(currentPath, p.title)
 
   return (
@@ -108,9 +120,13 @@ function ViewTile({ tile, first, close }: TileRender) {
       first={first}
       onClose={close}
       onBack={canBack ? () => innerRouter.history.back() : undefined}
+      onTitle={handleTileTitle}
       title={title}
       tab={title}
-      popOut={() => openPopout({ kind: 'page', path: currentPath })}
+      popOut={() => {
+        const deckTarget = deckPopoutTarget(currentPath, title !== 'Decks' ? title : undefined)
+        return openPopout(deckTarget ?? { kind: 'page', path: currentPath })
+      }}
       className="bg-background"
     >
       <RouterProvider router={innerRouter} />

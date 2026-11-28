@@ -448,8 +448,10 @@ mod tests {
 
     #[test]
     fn commands_route_by_slash() {
-        let mut p = Plugins::default();
-        p.list = vec![plugin("turns", PluginRunState::Running, vec![placement("reset", PlacementKind::Command, false)])];
+        let p = Plugins {
+            list: vec![plugin("turns", PluginRunState::Running, vec![placement("reset", PlacementKind::Command, false)])],
+            ..Default::default()
+        };
         assert_eq!(p.commands(), vec![("/turns:reset".to_owned(), String::new(), "[plugin turns] reset".to_owned())]);
         assert!(p.slash_fallback("/turns:reset"));
         assert!(!p.slash_fallback("/turns:other"));
@@ -460,11 +462,13 @@ mod tests {
     fn hidden_commands_leave_the_popup_and_undrawn_plugins_offer_none() {
         let mut hidden = placement("reset", PlacementKind::Command, false);
         hidden.hidden = true;
-        let mut p = Plugins::default();
-        p.list = vec![
-            plugin("turns", PluginRunState::Running, vec![hidden]),
-            plugin("new", PluginRunState::AwaitingApproval, vec![placement("go", PlacementKind::Command, false)]),
-        ];
+        let p = Plugins {
+            list: vec![
+                plugin("turns", PluginRunState::Running, vec![hidden]),
+                plugin("new", PluginRunState::AwaitingApproval, vec![placement("go", PlacementKind::Command, false)]),
+            ],
+            ..Default::default()
+        };
         assert!(p.commands().is_empty());
         assert_eq!(p.command("/turns:reset"), Some(("turns".into(), "reset".into())));
         assert!(!p.slash_fallback("/turns:go"));

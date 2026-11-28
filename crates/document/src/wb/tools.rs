@@ -187,7 +187,7 @@ pub struct WbPlaceArgs {
     /// Whiteboard id (default: the current one).
     #[serde(default)]
     pub whiteboard: Option<String>,
-    /// page | diagram | note | excerpt | diff | terminal | web | image | sticky | session | view | task.
+    /// page | diagram | note | excerpt | diff | terminal | web | image | sticky | session | view | task | deck.
     pub kind: CardKind,
     /// Card title (≤ 120 chars).
     pub title: String,
@@ -391,8 +391,8 @@ wb_tool!(WbPlaceTool, "wb_place", Risk::Mutating, WbPlaceArgs,
     |w, a, cx| w.call("wb_place", a.whiteboard.clone().as_deref(), &cx, Op::Place(a)).await);
 
 wb_tool!(WbUpdateTool, "wb_update", Risk::Mutating, WbUpdateArgs,
-    "Refine a card: fills a placeholder, or pushes a new version (the user can scrub back); stickies, notes \
-     and diagrams are replaced in place. note= says what changed. Answers the card's sent marks. \
+    "Refine a card: fills a placeholder, or pushes a new version (the user can scrub back); stickies, notes, \
+     diagrams and decks are replaced in place. note= says what changed. Answers the card's sent marks. \
      Returns {card, version, filled}. A new direction is wb_place, not this.",
     |w, a, cx| w.call("wb_update", a.whiteboard.clone().as_deref(), &cx, Op::Update(a)).await);
 

@@ -12,6 +12,7 @@ const ROUTE_TITLES: readonly [prefix: string, title: string][] = [
   ['/skills', 'Skills'],
   ['/artifacts', 'Artifacts'],
   ['/whiteboards', 'Whiteboards'],
+  ['/decks', 'Decks'],
   ['/autoresearch', 'Autoresearch'],
   ['/attention', 'Inbox'],
   ['/costs', 'Costs'],

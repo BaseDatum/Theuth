@@ -259,7 +259,7 @@ export function AttachChip({ item: ref, again, onRemove, className }: { item: At
   const Icon = KIND_ICON[ref.kind] ?? Paperclip
   const label = KIND_LABEL[ref.kind] ?? ref.kind
   const [shown, setShown] = useScopedDisclosure(`attach|${ref.kind}|${ref.id}`)
-  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewOpen, setPreviewOpen] = useScopedDisclosure(`attach-preview|${ref.kind}|${ref.id}`)
   const previewableFile = ref.kind === 'file' && (isImageFile(ref) || isPdfFile(ref))
   const onOpenClick = () => {
     setShown(false)

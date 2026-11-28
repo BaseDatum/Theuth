@@ -104,7 +104,7 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
       <WebViewCard tool={tool} session={session} />
     ) : tool.name === 'browser_show_element' ? (
       <ElementFormCard tool={tool} session={session} readOnly={readOnly} />
-    ) : tool.name === 'show_view' ? (
+    ) : tool.name === 'show_view' || tool.name === 'show_deck' ? (
       <ViewOpenedCard tool={tool} session={session} />
     ) : tool.name === 'show_pty' ? (
       <PtyViewCard tool={tool} />

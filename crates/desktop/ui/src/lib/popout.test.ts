@@ -354,3 +354,37 @@ test('a standalone node terminal pops out at /terminal/$engine/$shell with label
   expect(takeNodeTerminalPopout(popoutLabel(t), store)).toEqual({ engine: 'node-1', shell: 'main' })
   expect(takeNodeTerminalPopout(popoutLabel(t), store)).toBeNull()
 })
+
+test('a Deck pops out with kind deck preserving section, snapshot, and title across URL roundtrip', async () => {
+  const { deckPopoutTarget, routeWindow } = await import('./popout')
+  const plain: PopoutTarget = { kind: 'deck', deck: 'deck-1', title: 'Ops Pulse' }
+  expect(popoutLabel(plain)).toBe('popout-deck-deck-1')
+  expect(popoutUrl(plain)).toBe('/decks/deck-1?window=popout-deck-deck-1')
+  expect(popoutTarget(popoutUrl(plain))).toEqual({ kind: 'deck', deck: 'deck-1' })
+  expect(popoutTitle(plain)).toBe('Ops Pulse')
+  expect(popoutTitle({ kind: 'deck', deck: 'deck-1' })).toBe('Deck')
+  expect(soloPopout(plain)).toBe(true)
+
+  const scoped: PopoutTarget = { kind: 'deck', deck: 'deck/1', section: 'sec-cpu', snapshot: 'snap-42', title: 'CPU Deck' }
+  const label = popoutLabel(scoped)
+  expect(label).toMatch(/^popout-deck-deck_1-[0-9a-f]{8}$/)
+  const url = popoutUrl(scoped)
+  expect(url).toBe(`/decks/deck%2F1?section=sec-cpu&snapshot=snap-42&window=${label}`)
+  expect(popoutTarget(url)).toEqual({ kind: 'deck', deck: 'deck/1', section: 'sec-cpu', snapshot: 'snap-42' })
+  expect(popoutTarget(`tauri://localhost${url}`)).toEqual({ kind: 'deck', deck: 'deck/1', section: 'sec-cpu', snapshot: 'snap-42' })
+  expect(routeWindow('/decks/deck%2F1?section=sec-cpu&snapshot=snap-42#top')).toEqual({
+    kind: 'deck',
+    deck: 'deck/1',
+    section: 'sec-cpu',
+    snapshot: 'snap-42',
+  })
+  expect(deckPopoutTarget('/decks/deck-1?section=s1&snapshot=snap-9', 'Ops Deck')).toEqual({
+    kind: 'deck',
+    deck: 'deck-1',
+    section: 's1',
+    snapshot: 'snap-9',
+    title: 'Ops Deck',
+  })
+  expect(deckPopoutTarget('/decks')).toBeNull()
+  expect(popoutTarget('/decks?window=x')).toBeNull()
+})

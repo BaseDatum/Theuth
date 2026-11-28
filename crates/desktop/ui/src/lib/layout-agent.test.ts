@@ -319,3 +319,33 @@ test('openViewFromCard: a new view joins the views panel, an open one is reveale
   expect(usePanes.getState().leaves).toEqual(['a', tasks, costs])
   expect(usePanes.getState().selected).toBe(tasks)
 })
+
+test('applyLayoutOp: open_view handles /decks and /decks/<id> both mounted and unmounted', () => {
+  expect(validateViewPath('/decks')).toEqual({ ok: true, normalized: '/decks' })
+  expect(validateViewPath('/decks/deck-1?section=s1&snapshot=snap-9')).toEqual({
+    ok: true,
+    normalized: '/decks/deck-1?section=s1&snapshot=snap-9',
+  })
+  expect(viewTitle('/decks')).toBe('Decks')
+  expect(viewTitle('/decks/deck-1', 'Ops Deck')).toBe('Ops Deck')
+
+  // Mounted workspace: opens & reuses Deck tile with explicit title
+  const ws = tiling(['a'])
+  const deckPath = '/decks/deck-1?section=s1'
+  const deckLeaf = tileLeaf(tileId('view', '', deckPath))
+  const r1 = applyLayoutOp({ op: 'open_view', path: deckPath, title: 'Ops Deck' }, 'a')
+  expect(r1).toEqual({ kind: 'done', result: { pane: deckLeaf, path: deckPath, title: 'Ops Deck', reused: false } })
+  expect(ws.getDocument().views[deckLeaf]?.params).toMatchObject({ props: { path: deckPath, title: 'Ops Deck' } })
+
+  const r2 = applyLayoutOp({ op: 'open_view', path: deckPath }, 'a')
+  expect(r2).toEqual({ kind: 'done', result: { pane: deckLeaf, path: deckPath, title: 'Decks', reused: true } })
+
+  // Unmounted workspace: stages pending drop and navigates to chat workspace
+  untile()
+  const navigate = vi.fn()
+  const decksLeaf = tileLeaf(tileId('view', '', '/decks'))
+  const unmounted = applyLayoutOp({ op: 'open_view', path: '/decks' }, 'a', navigate)
+  expect(unmounted).toEqual({ kind: 'done', result: { pane: decksLeaf, path: '/decks', title: 'Decks', reused: false } })
+  expect(hasPendingDrop()).toBe(true)
+  expect(navigate).toHaveBeenCalledWith('/c/a')
+})

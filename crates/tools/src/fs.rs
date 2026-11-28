@@ -591,9 +591,14 @@ impl Tool for WriteFile {
                         .await
                         .map_err(|e| anyhow::anyhow!("{}: {e}", parent.display()))?;
                 }
+                // 229 B2: re-check after create_dir_all so newly materialized dirs/symlinks
+                // cannot bypass write_root or protected internal state guards.
+                let path = crate::seat::writable(cx.session, &a.path)?;
+                crate::seat::refuse_internal_state(&cx.resources.root, &path)?;
                 (format!("created {shown} ({bytes} bytes)"), false)
             }
         };
+        crate::seat::refuse_internal_state(&cx.resources.root, &path)?;
         crate::edit::write_atomic(&path, a.content.as_bytes()).await?;
         let mut out = ToolOutput::ok(head);
         out.structured = Some(write_structured(&shown, bytes, !replaced, &diff));

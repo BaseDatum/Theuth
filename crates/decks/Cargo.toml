@@ -1,0 +1,57 @@
+[package]
+name = "decks"
+version = "2.22.2"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Native collaborative live Decks: pure-Yjs sections, Monty session runtime, scheduled & persistent streaming, declared actions, and bounded per-Deck subscriptions (design doc 229)"
+
+[dependencies]
+agent = { workspace = true }
+artifact = { workspace = true }
+document = { workspace = true }
+mesh = { workspace = true }
+platform = { workspace = true }
+replica = { workspace = true }
+rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
+runtime = { workspace = true }
+schedule = { workspace = true }
+surface = { workspace = true }
+tools = { workspace = true }
+wire = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+croner = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+jsonrpsee = { workspace = true }
+jsonschema = { workspace = true }
+kameo = { workspace = true }
+monty-types = { workspace = true }
+parking_lot = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+agent = { workspace = true, features = ["test-support"] }
+base64 = { workspace = true }
+figment = { workspace = true }
+tempfile = "3"
+tracing-subscriber = { workspace = true }
+yrs = { workspace = true }
+
+[features]
+inproc-monty = ["agent/inproc-monty"]
+
+[lints]
+workspace = true

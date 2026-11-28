@@ -181,7 +181,7 @@ export const excerptProps = z.strictObject({
   symbol: str.optional(),
 })
 
-/** The 57 components (v0 + 123's 19) with their zod prop schemas; containers declare `slots: ['default']`. */
+/** The 60 components (v0 + 123's 19 + 229's 3 Deck interactive) with their zod prop schemas; containers declare `slots: ['default']`. */
 export const catalog = defineCatalog(schema, {
   components: {
     Card: { props: z.strictObject({ title: str.optional(), description: str.optional() }), slots: ['default'] },
@@ -308,6 +308,30 @@ export const catalog = defineCatalog(schema, {
     Layers: { props: layersProps },
     Journey: { props: journeyProps },
     Fishbone: { props: fishboneProps },
+    // ---- 229 Decks interactive components (inert outside Deck context) ----
+    ActionButton: {
+      props: z.strictObject({
+        label: str,
+        action: str,
+        args_json: str.optional(),
+        tone: z.enum(['default', 'primary', 'danger']).optional(),
+        disabled: z.boolean().optional(),
+        confirm: str.optional(),
+      }),
+    },
+    StreamControls: {
+      props: z.strictObject({
+        title: str.optional(),
+        show_run_once: z.boolean().optional(),
+      }),
+    },
+    ResultBanner: {
+      props: z.strictObject({
+        title: str.optional(),
+        empty_text: str.optional(),
+        action_filter: str.optional(),
+      }),
+    },
   },
   actions: {},
 })
@@ -317,7 +341,7 @@ export const COMPONENTS: Record<string, z.ZodType> = Object.fromEntries(
   Object.entries(catalog.data.components).map(([name, def]) => [name, def.props]),
 )
 
-/** The 57 component names, catalog order. */
+/** The 60 component names, catalog order. */
 export const COMPONENT_NAMES = Object.keys(COMPONENTS)
 
 /** True for the five containers (the ones declaring a default slot); only they may have `children`. */

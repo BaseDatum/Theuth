@@ -20,6 +20,7 @@ import { applyFit, fitSize, fitsContent, measureBody } from './fit'
 import { hidesOverflow, scrollChain, wheelRoute, ZOOM_SURFACE } from './scroll'
 import { useResizeEnd } from './resize'
 import { viewCardPath } from '../view-card'
+import { deckRoutePath } from '@/components/decks/types'
 import { openTaskPane, taskOf } from '../task-cards'
 
 // Lazy: the task card's tools pull the task store and its queries.
@@ -75,8 +76,19 @@ function Toolbar({ card, refreshPreview, fitNow, resetView }: { card: Card; refr
   const { doc, open, stopCapturing, readOnly } = useCanvas()
   const [tagging, setTagging] = useState(false)
   const [tag, setTag] = useState('')
-  const source = card.kind === 'view' ? versionOf(card)?.source : undefined
-  const viewPath = source?.t === 'view' ? viewCardPath(source.path) : null
+  const source = card.kind === 'view' || card.kind === 'deck' ? versionOf(card)?.source : undefined
+  const panePath =
+    source?.t === 'view'
+      ? viewCardPath(source.path)
+      : source?.t === 'deck'
+        ? deckRoutePath(source.deck, source.section, source.snapshot_id)
+        : null
+  const archiveLabel =
+    card.kind === 'task'
+      ? 'Remove from board (the task stays)'
+      : card.kind === 'deck'
+        ? 'Remove from board (the deck stays)'
+        : 'Archive'
   if (tagging) {
     return (
       <form
@@ -102,7 +114,7 @@ function Toolbar({ card, refreshPreview, fitNow, resetView }: { card: Card; refr
       <button type="button" onClick={() => open(card.id)}>
         <ExternalLink className="size-4" /> Open
       </button>
-      {viewPath && <OpenInPane path={viewPath} title={card.title} />}
+      {panePath && <OpenInPane path={panePath} title={card.title} />}
       {card.kind === 'task' && (
         <Suspense fallback={null}>
           <TaskTools card={card} />
@@ -147,8 +159,8 @@ function Toolbar({ card, refreshPreview, fitNow, resetView }: { card: Card; refr
           )}
           <button
             type="button"
-            aria-label={card.kind === 'task' ? 'Remove from board (the task stays)' : 'Archive'}
-            title={card.kind === 'task' ? 'Remove from board (the task stays)' : undefined}
+            aria-label={archiveLabel}
+            title={card.kind === 'task' || card.kind === 'deck' ? archiveLabel : undefined}
             onClick={() => { archive(doc, [card.id]); stopCapturing() }}
           >
             <Archive className="size-4" />
@@ -193,8 +205,9 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
     if (c.kind === 'page') return pageViewport(c, c.frame ? b.frames[c.frame]?.preset : undefined)
     return l && fitBox.current ? measureBody(fitBox.current) : null
   }, [])
+  const canFit = fitsContent(card)
   useEffect(() => {
-    if (!card.fit || readOnly || !live) return
+    if (!card.fit || !canFit || readOnly || !live) return
     const t0 = performance.now()
     let last = ''
     let same = 0
@@ -211,8 +224,8 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
       applyFit(doc, b, c.id, fitSize(n, headerOf(c)), LOCAL, false)
     }, 250)
     return () => clearInterval(timer)
-  }, [card.fit, readOnly, live, doc, naturalOf])
-  const fitNow = fitsContent(card)
+  }, [card.fit, canFit, readOnly, live, doc, naturalOf])
+  const fitNow = canFit
     ? () => {
         const n = naturalOf()
         if (n) applyFit(doc, board, card.id, fitSize(n, headerOf(card)), OWNER, true)

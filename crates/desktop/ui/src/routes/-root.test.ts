@@ -29,6 +29,8 @@ vi.mock('@/components/sidebar/AppSidebar', () => ({ AppSidebar: () => h('nav', {
 vi.mock('@/components/sidebar/SearchDialog', () => ({ SearchDialog: () => h('div', { 'data-search': true }) }))
 vi.mock('@/components/meeting/MeetingBar', () => ({ MeetingBar: () => h('div', { 'data-meeting-bar': true }) }))
 vi.mock('@/components/costs/Resident', () => ({ CostsResident: () => h('div', { 'data-resident': true }), ResidentCtx: {} }))
+vi.mock('@/components/tasks/queries', () => ({ useLiveTasks: vi.fn() }))
+vi.mock('@/components/tasks/TaskModal', () => ({ NewTaskHost: () => null }))
 
 test('a page window renders its route alone — no rail, search, meeting bar or resident costs host — loads its own cube and titles itself', async () => {
   const Shell = Route.options.component!

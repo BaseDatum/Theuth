@@ -102,6 +102,7 @@ codeindex.events#CodeMapChanged public
 codeindex.events#CodeMapProgress public
 codeindex.events#CodeReconciled public
 codeindex.events#CodeToolRan public
+decks.changed#DeckChanged public
 document.cell-latest#CellLatestChanged public
 document.changed#DocumentChanged public
 document.sharing#DocumentSharing public

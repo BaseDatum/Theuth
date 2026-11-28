@@ -422,6 +422,16 @@
               "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
               "type": "string",
               "const": "source"
+            },
+            {
+              "description": "A whiteboard (218 §2): a canvas the user arranges — cards, links, frames and Pencil ink in seven\ntop-level `Y.Map`s, no XML fragment and no helper mirror. Bound keyless (`Binding::Whiteboard`);\nits derived file is the outline (`documents/<id>/whiteboard.md`). Never lists among notes.",
+              "type": "string",
+              "const": "whiteboard"
+            },
+            {
+              "description": "A Deck (229): a collaborative live dashboard/document — stable-ID sections, order, aliases and\nread-only script metadata pointers in pure `yrs::Doc` root maps/arrays, no XML fragment and no\nhelper mirror. Executable Monty state and runtime churn live in `crates/decks`.",
+              "type": "string",
+              "const": "deck"
             }
           ]
         }
@@ -1503,6 +1513,22 @@
             }
           ],
           "default": null
+        },
+        "blockers": {
+          "description": "Task ids or `decision:<id>` / `person:<name>` entries this task waits on — the\ndependency edges of a plan, set at create time. Checked as in `task_update`: duplicates\ndropped; an unknown task id or a list that would form a cycle refused. A `todo` task\nwith an open blocker is created `blocked`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "accent": {
+          "description": "Accent colour: a name from [`ACCENTS`]; `\"\"` or `\"none\"` clears it.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "required": [
@@ -1632,7 +1658,7 @@
           ]
         },
         "Kind": {
-          "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`.",
+          "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
           "oneOf": [
             {
               "description": "A free-standing note (`DocId`).",
@@ -1668,6 +1694,21 @@
               "description": "A source (`DocId`, 144 §13.1).",
               "type": "string",
               "const": "source"
+            },
+            {
+              "description": "A whiteboard (`DocId`, 218 §5).",
+              "type": "string",
+              "const": "whiteboard"
+            },
+            {
+              "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+              "type": "string",
+              "const": "file"
+            },
+            {
+              "description": "An open owner-created node terminal (`<engine>:<shell>`).",
+              "type": "string",
+              "const": "terminal"
             }
           ]
         },
@@ -1784,7 +1825,7 @@
           "default": null
         },
         "project": {
-          "description": "Project label.",
+          "description": "Project label; `\"\"` clears it.",
           "type": [
             "string",
             "null"
@@ -1850,6 +1891,22 @@
             {
               "type": "null"
             }
+          ],
+          "default": null
+        },
+        "parent": {
+          "description": "Parent task id (the untyped hierarchy: any task may be a parent and a child, at any\ndepth); `\"\"` or `\"none\"` clears it. A parent that would make the task its own\nancestor is refused.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "accent": {
+          "description": "Accent colour: a name from [`ACCENTS`]; `\"\"` or `\"none\"` clears it.",
+          "type": [
+            "string",
+            "null"
           ],
           "default": null
         }
@@ -1975,7 +2032,7 @@
           ]
         },
         "Kind": {
-          "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`.",
+          "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
           "oneOf": [
             {
               "description": "A free-standing note (`DocId`).",
@@ -2011,6 +2068,21 @@
               "description": "A source (`DocId`, 144 §13.1).",
               "type": "string",
               "const": "source"
+            },
+            {
+              "description": "A whiteboard (`DocId`, 218 §5).",
+              "type": "string",
+              "const": "whiteboard"
+            },
+            {
+              "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+              "type": "string",
+              "const": "file"
+            },
+            {
+              "description": "An open owner-created node terminal (`<engine>:<shell>`).",
+              "type": "string",
+              "const": "terminal"
             }
           ]
         },
