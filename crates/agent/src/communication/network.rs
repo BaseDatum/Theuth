@@ -3654,12 +3654,16 @@ const CONTACT_QUEUED: usize = 8;
 /// ask fails and the caller refuses. Under `cfg(test)` the name is process-wide while each
 /// test has its own: only a test inside [`crate::with_test_registry`] (its thread) sees a
 /// registry, and only a live one; another test's, live or dropped with its runtime, is none.
+/// Under `feature = "test-support"` (downstream crate test binaries), dead refs left behind
+/// by an earlier test's dropped runtime are likewise filtered out as `None`.
 pub(crate) fn tool_registry() -> Result<Option<kameo::actor::ActorRef<tools::ToolRegistry>>, String>
 {
     let reg = kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
         .map_err(|e| format!("tool registry: {e}"))?;
     #[cfg(test)]
     let reg = reg.filter(|r| r.is_alive() && crate::OWNS_REGISTRY.with(std::cell::Cell::get));
+    #[cfg(all(not(test), feature = "test-support"))]
+    let reg = reg.filter(|r| r.is_alive());
     Ok(reg)
 }
 

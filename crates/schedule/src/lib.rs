@@ -3672,11 +3672,16 @@ mod fire_tests {
         (s, rec)
     }
 
+    /// Tests that register or look up the process-global `tools` registry actor serialize on
+    /// this lock so a sibling test never observes a registry whose runtime is shutting down.
+    static REGISTRY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// 183 R1 (E-M2): the pin is persisted on the row now, so a fire with
     /// `approvals: false` left the reused session unprompted for good. A
     /// fire with `approvals: true` clears it: the session asks again.
     #[tokio::test]
     async fn approvals_true_fire_clears_the_pin_a_false_fire_left() {
+        let _lock = REGISTRY_TEST_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let reg = ::tools::registry::start(&rt).await.unwrap();
@@ -3696,6 +3701,19 @@ mod fire_tests {
         apply_approvals(&reg, "nightly", session, true).await;
         let st = read().await;
         assert_eq!((st.pin, st.session), (None, st.global));
+        reg.kill();
+        reg.wait_for_shutdown().await;
+        let mut actors = kameo::registry::ACTOR_REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for name in [
+            ::tools::REGISTRY_ACTOR,
+            ::tools::APPROVAL_ACTOR,
+            ::tools::ASK_ACTOR,
+            ::tools::JOBS_ACTOR,
+        ] {
+            actors.remove(name);
+        }
     }
 
     #[tokio::test]
@@ -4178,6 +4196,7 @@ mod fire_tests {
     /// `effort:` it keeps the engine's (`agent.effort`, unset here).
     #[tokio::test]
     async fn the_run_session_starts_on_the_effort() {
+        let _lock = REGISTRY_TEST_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let agents = effort_engine(dir.path()).await;
         let effort_of = |s: SessionId| {
@@ -4213,6 +4232,7 @@ mod fire_tests {
     /// and a cleared `model:` — exactly what a fresh run session gets; `rescan` keeps the session.
     #[tokio::test]
     async fn every_fire_applies_the_routines_model_and_effort() {
+        let _lock = REGISTRY_TEST_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let agents = effort_engine(dir.path()).await;
         let default = |model: &str| agent::SetModel {
