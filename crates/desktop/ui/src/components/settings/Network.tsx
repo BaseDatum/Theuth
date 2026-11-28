@@ -2,15 +2,17 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Command, Copy, Loader2, Monitor, MoreHorizontal, Terminal } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { CLASS } from '@/components/chat/NewChatPane'
-import { CloudNodesSettings } from '@/components/cloud/CloudNodesSettings'
+import { Terminal as ShellView } from '@/components/chat/TerminalViewer'
+import { CloudNodesSettings, dispatchTerminalOpen } from '@/components/cloud/CloudNodesSettings'
 import { isNewerUpdate, usePeerUpdateApply, usePeerUpdates } from '@/components/cloud/nodeUpdate'
+import type { TerminalOpen } from '@/components/cloud/types'
 import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
 import { Editable } from '@/components/settings/Link'
 import { VaultWarning, usePairFlow } from '@/components/settings/PairDialog'
-import { Dot, Empty, RenameInput, Row, Section, useAction } from '@/components/settings/shared'
+import { Dot, Empty, RenameInput, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { RotationBanner, UnpairDialog, nameOfIn } from '@/components/settings/UnpairDialog'
 import { ago } from '@/components/sidebar/AgentTree'
 import { age } from '@/components/tasks/helpers'
@@ -31,6 +33,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { BOOTSTRAPPING_HINT, bootstrappingLabel, isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -259,7 +262,7 @@ function NearbyList({ on, onPair }: { on: boolean; onPair: (n: NearbyEngine) => 
 
 /**
  * 183 §6.7: this machine first (no switch), then each peer with its path chip, the hub badge, "Agents can message"
- * (`mesh_set_messaging`, this engine's deny list) and ⋯ Rename · Unpair.
+ * (`mesh_set_messaging`, this engine's deny list) and ⋯ Open terminal · Rename · Unpair.
  */
 function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void }) {
   const api = useApi()
@@ -271,10 +274,51 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
   // (a real unpair) or, behind a confirm with the vault warning, keeps it.
   const confirm = useAction((v: { id: string; keep: boolean }) => api.mesh_confirm_peer(v.id, v.keep), { keys: [keys.mesh] })
   const [keeping, setKeeping] = useState<MeshStatus['quarantined'][number] | null>(null)
+  const [terminalPending, setTerminalPending] = useState<ReadonlySet<string>>(() => new Set())
+  const [terminalErrors, setTerminalErrors] = useState<Record<string, string>>({})
+  const [terminalSheet, setTerminalSheet] = useState<(TerminalOpen & { name: string }) | null>(null)
   const onlinePeerIds = useMemo(() => s.peers.filter((p) => p.reachable).map((p) => p.id), [s.peers])
   const peerUpdates = usePeerUpdates(onlinePeerIds)
   const peerUpdateApply = usePeerUpdateApply()
   const selfDetail = detailOf(s, s.self_id)
+  const selfTerminalOpening = terminalPending.has(s.self_id)
+  const selfTerminalError = terminalErrors[s.self_id] ?? null
+
+  const openTerminal = useCallback(
+    (id: string, name: string) => {
+      setTerminalPending((prev) => {
+        const next = new Set(prev)
+        next.add(id)
+        return next
+      })
+      setTerminalErrors((prev) => {
+        if (!(id in prev)) return prev
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      void Promise.resolve()
+        .then(() => api.engine_shell(id))
+        .then(
+          (res) => {
+            dispatchTerminalOpen(res, name, (sheet) => setTerminalSheet(sheet))
+          },
+          (e: unknown) => {
+            setTerminalErrors((prev) => ({ ...prev, [id]: errorText(e) }))
+          },
+        )
+        .finally(() => {
+          setTerminalPending((prev) => {
+            if (!prev.has(id)) return prev
+            const next = new Set(prev)
+            next.delete(id)
+            return next
+          })
+        })
+    },
+    [api],
+  )
+
   return (
     <Section title="Machines in this mesh">
       <div className="flex flex-wrap items-center gap-3 border-b border-border-subtle py-3">
@@ -286,7 +330,29 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
           </div>
           {selfDetail && <div className="text-[13px] text-fg-secondary">{selfDetail}</div>}
         </div>
-        <Chip tone="plain">this machine</Chip>
+        <div className="ml-auto flex items-center gap-2">
+          <Chip tone="plain">this machine</Chip>
+          <Button
+            size="xs"
+            variant="outline"
+            data-terminal-peer={s.self_id}
+            aria-label={`Open terminal on ${s.self_name}`}
+            disabled={selfTerminalOpening}
+            onClick={() => openTerminal(s.self_id, s.self_name)}
+          >
+            {selfTerminalOpening ? <Loader2 className="animate-spin" /> : <Terminal aria-hidden="true" />}
+            Open terminal
+          </Button>
+        </div>
+        {selfTerminalError && (
+          <p
+            data-terminal-error={s.self_id}
+            role="alert"
+            className="w-full min-w-0 font-mono text-xs whitespace-pre-wrap break-words text-danger"
+          >
+            {selfTerminalError}
+          </p>
+        )}
       </div>
       {s.peers.length === 0 && <Empty>No other machine paired yet. Pair one from Nearby, or with a pairing string below.</Empty>}
       {s.peers.map((p) => {
@@ -296,6 +362,8 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
         const available = isNewerUpdate(rawUpdate) ? rawUpdate : null
         const updating = peerUpdateApply.isPending(p.id)
         const updateError = peerUpdateApply.errorOf(p.id)
+        const terminalOpening = terminalPending.has(p.id)
+        const terminalError = terminalErrors[p.id] ?? null
         return (
           <div key={p.id} className={cn('flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border-subtle py-3 last:border-0', !p.reachable && 'text-fg-secondary')}>
             <OsGlyph os={s.stats.find((x) => x.id === p.id)?.os} />
@@ -330,11 +398,20 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
               <Switch aria-label={`Agents can message ${p.name}`} checked={on} disabled={messaging.isPending} onCheckedChange={(v) => messaging.mutate({ id: p.id, on: v })} />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" aria-label={`${p.name}: Rename · Unpair`}>
-                    <MoreHorizontal />
+                  <Button variant="ghost" size="icon-sm" aria-label={`${p.name}: Open terminal · Rename · Unpair`}>
+                    {terminalOpening ? <Loader2 className="animate-spin" /> : <MoreHorizontal />}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    disabled={!p.reachable || terminalOpening}
+                    onSelect={() => {
+                      if (!p.reachable) return
+                      openTerminal(p.id, p.name)
+                    }}
+                  >
+                    Open terminal
+                  </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => setRenaming(p.id)}>Rename</DropdownMenuItem>
                   <DropdownMenuItem variant="destructive" onSelect={() => onUnpair(p)}>
                     Unpair…
@@ -349,6 +426,15 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
                 className="w-full min-w-0 font-mono text-xs whitespace-pre-wrap break-words text-danger"
               >
                 {updateError}
+              </p>
+            )}
+            {terminalError && (
+              <p
+                data-terminal-error={p.id}
+                role="alert"
+                className="w-full min-w-0 font-mono text-xs whitespace-pre-wrap break-words text-danger"
+              >
+                {terminalError}
               </p>
             )}
           </div>
@@ -392,7 +478,46 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {terminalSheet && (
+        <MachineTerminalSheet
+          key={`${terminalSheet.engine}:${terminalSheet.shell}`}
+          t={terminalSheet}
+          onClose={() => setTerminalSheet(null)}
+        />
+      )}
     </Section>
+  )
+}
+
+/** iOS-only fallback (`!canPopout()`): the same bottom sheet a cloud node uses. Closing it ends the shell. */
+function MachineTerminalSheet({ t, onClose }: { t: TerminalOpen & { name: string }; onClose: () => void }) {
+  const api = useApi()
+  const closedRef = useRef(false)
+  const end = useCallback(() => {
+    if (closedRef.current) return
+    closedRef.current = true
+    void api.shell_close(t.shell, t.engine).catch(() => undefined)
+  }, [api, t.shell, t.engine])
+  const close = () => {
+    end()
+    onClose()
+  }
+  useEffect(() => () => end(), [end])
+  return (
+    <Sheet open onOpenChange={(o) => !o && close()}>
+      <SheetContent side="bottom" className="flex h-[85dvh] flex-col">
+        <SheetHeader>
+          <SheetTitle>{t.name}</SheetTitle>
+          <SheetDescription className="sr-only">A shell on {t.name}.</SheetDescription>
+        </SheetHeader>
+        <ShellView
+          source={{ kind: 'shell', shell: t.shell, engine: t.engine }}
+          label={t.name}
+          onExit={close}
+          className="min-h-0 flex-1"
+        />
+      </SheetContent>
+    </Sheet>
   )
 }
 

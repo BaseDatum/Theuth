@@ -25,9 +25,22 @@ import { PairBody, type PairView, pairView, usePairFlow } from './PairDialog'
 import { RotationProgress, UnpairBody, UnpairDialog, useRotation } from './UnpairDialog'
 
 const state = vi.hoisted(() => ({ on: false }))
+const mockNotify = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }))
+const mockNavigate = vi.hoisted(() => vi.fn())
+const mockCanPopout = vi.hoisted(() => vi.fn(() => true))
+const mockOpenPopout = vi.hoisted(() => vi.fn(async (_t: unknown) => undefined))
 
-vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
-vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => vi.fn() }))
+vi.mock('@/lib/notify', () => ({ notify: mockNotify }))
+vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => mockNavigate }))
+vi.mock('@/lib/popout', async (original) => ({
+  ...(await original<typeof import('@/lib/popout')>()),
+  canPopout: () => mockCanPopout(),
+  openPopout: (t: unknown) => mockOpenPopout(t),
+}))
+vi.mock('@/components/chat/TerminalViewer', () => ({
+  Terminal: (p: { source: { shell: string; engine: string }; label: string }) =>
+    createElement('div', { 'data-node-terminal': `${p.source.engine}:${p.source.shell}`, 'data-name': p.label }),
+}))
 // Portals render nothing on the server: the dialogs' content renders in place. `state.on` (the DOM tests) uses the real ones.
 vi.mock('@/components/ui/dialog', async (original) => {
   const a = await original<typeof import('@/components/ui/dialog')>()
@@ -129,13 +142,20 @@ const api = {
   list_nodes: vi.fn(async () => []),
   mesh_pair_nearby: vi.fn(async (_id: string) => CEREMONY),
   mesh_pair_answer: vi.fn(async (_id: string, _accept: boolean) => null),
+  engine_shell: vi.fn(async (engine?: string | null, shell?: string | null) => ({ engine: engine ?? MESH.self_id, shell: shell ?? 'main' })),
+  engine_terminal: vi.fn(async () => {
+    throw new Error('engine_terminal is deprecated')
+  }),
+  shell_close: vi.fn(async () => null),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
 beforeEach(() => {
   useConnection.getState().setDiscovery({ ...disconnected(), phase: 'legacy' })
   vi.clearAllMocks()
+  mockCanPopout.mockReturnValue(true)
   api.mesh_pair_nearby.mockImplementation(async () => CEREMONY)
+  api.engine_shell.mockImplementation(async (engine?: string | null, shell?: string | null) => ({ engine: engine ?? MESH.self_id, shell: shell ?? 'main' }))
   for (const k of Object.keys(handlers)) delete handlers[k]
 })
 
@@ -787,5 +807,133 @@ test('MachinesTab queries update_status only for reachable peers without blockin
   } finally {
     delete (api as Record<string, unknown>).engine_call
   }
+})
+
+async function openPeerMenu(name: string) {
+  const trigger = document.querySelector<HTMLButtonElement>(`button[aria-label="${name}: Open terminal · Rename · Unpair"]`)
+  expect(trigger).not.toBeNull()
+  await run(async () => trigger!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+  return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+}
+
+test('reachable peer Open terminal calls engine_shell with peer id and opens a node-terminal popout without navigating or calling engine_terminal', async () => {
+  useConnection.setState({ state: 'open' })
+  await mount(createElement(MachinesTab))
+  await settle()
+
+  const items = await openPeerMenu('xeus')
+  expect(items.map((el) => el.textContent?.trim())).toEqual(['Open terminal', 'Rename', 'Unpair…'])
+  const openItem = items[0]!
+  expect(openItem.getAttribute('aria-disabled')).not.toBe('true')
+
+  await run(async () => openItem.click())
+  await vi.waitFor(() => expect(api.engine_shell).toHaveBeenCalledWith('xeus'))
+  await vi.waitFor(() =>
+    expect(mockOpenPopout).toHaveBeenCalledWith({
+      kind: 'node-terminal',
+      engine: 'xeus',
+      shell: 'main',
+      name: 'xeus',
+    }),
+  )
+  expect(mockNavigate).not.toHaveBeenCalled()
+  expect(api.engine_terminal).not.toHaveBeenCalled()
+  expect(mockNotify).not.toHaveBeenCalled()
+  expect(mockNotify.error).not.toHaveBeenCalled()
+})
+
+test('unreachable peer Open terminal is visible but disabled and does not call engine_shell', async () => {
+  useConnection.setState({ state: 'open' })
+  await mount(createElement(MachinesTab))
+  await settle()
+
+  const items = await openPeerMenu('studio')
+  expect(items.map((el) => el.textContent?.trim())).toEqual(['Open terminal', 'Rename', 'Unpair…'])
+  const openItem = items[0]!
+  expect(openItem.getAttribute('aria-disabled')).toBe('true')
+
+  await run(async () => openItem.click())
+  await settle()
+  expect(api.engine_shell).not.toHaveBeenCalled()
+  expect(mockOpenPopout).not.toHaveBeenCalled()
+  expect(mockNavigate).not.toHaveBeenCalled()
+})
+
+test('this machine Open terminal calls engine_shell with self_id and opens a node-terminal popout', async () => {
+  useConnection.setState({ state: 'open' })
+  await mount(createElement(MachinesTab))
+  await settle()
+
+  const btn = document.querySelector<HTMLButtonElement>(`[data-terminal-peer="${MESH.self_id}"]`)
+  expect(btn).not.toBeNull()
+  expect(btn?.textContent?.trim()).toBe('Open terminal')
+
+  await run(async () => btn!.click())
+  await vi.waitFor(() => expect(api.engine_shell).toHaveBeenCalledWith(MESH.self_id))
+  await vi.waitFor(() =>
+    expect(mockOpenPopout).toHaveBeenCalledWith({
+      kind: 'node-terminal',
+      engine: MESH.self_id,
+      shell: 'main',
+      name: MESH.self_name,
+    }),
+  )
+  expect(mockNavigate).not.toHaveBeenCalled()
+  expect(api.engine_terminal).not.toHaveBeenCalled()
+})
+
+test('rejected engine_shell renders the error inline in role="alert" without notify/toast', async () => {
+  api.engine_shell.mockRejectedValueOnce(new Error('peer refused shell'))
+  api.engine_shell.mockRejectedValueOnce(new Error('pty allocation failed'))
+  useConnection.setState({ state: 'open' })
+  await mount(createElement(MachinesTab))
+  await settle()
+
+  const items = await openPeerMenu('xeus')
+  await run(async () => items[0]!.click())
+  await vi.waitFor(() => {
+    const err = document.querySelector('[data-terminal-error="xeus"]')
+    expect(err?.getAttribute('role')).toBe('alert')
+    expect(err?.className).toContain('font-mono')
+    expect(err?.className).toContain('text-xs')
+    expect(err?.className).toContain('whitespace-pre-wrap')
+    expect(err?.className).toContain('break-words')
+    expect(err?.className).toContain('text-danger')
+    expect(err?.textContent).toBe('peer refused shell')
+  })
+
+  await run(async () => document.querySelector<HTMLButtonElement>(`[data-terminal-peer="${MESH.self_id}"]`)!.click())
+  await vi.waitFor(() => {
+    const err = document.querySelector(`[data-terminal-error="${MESH.self_id}"]`)
+    expect(err?.getAttribute('role')).toBe('alert')
+    expect(err?.textContent).toBe('pty allocation failed')
+  })
+
+  expect(mockOpenPopout).not.toHaveBeenCalled()
+  expect(mockNavigate).not.toHaveBeenCalled()
+  expect(mockNotify).not.toHaveBeenCalled()
+  expect(mockNotify.error).not.toHaveBeenCalled()
+})
+
+test('iOS (!canPopout) Open terminal opens a bottom sheet without popout or session navigation', async () => {
+  mockCanPopout.mockReturnValue(false)
+  useConnection.setState({ state: 'open' })
+  const { unmount } = await mount(createElement(MachinesTab))
+  await settle()
+
+  const items = await openPeerMenu('xeus')
+  await run(async () => items[0]!.click())
+  await vi.waitFor(() => {
+    const term = document.querySelector('[data-node-terminal="xeus:main"]')
+    expect(term).not.toBeNull()
+    expect(term?.getAttribute('data-name')).toBe('xeus')
+  })
+  expect(document.querySelector('[data-slot="sheet-content"]')?.textContent).toContain('xeus')
+  expect(mockOpenPopout).not.toHaveBeenCalled()
+  expect(mockNavigate).not.toHaveBeenCalled()
+  expect(api.engine_terminal).not.toHaveBeenCalled()
+
+  await unmount()
+  expect(api.shell_close).toHaveBeenCalledWith('main', 'xeus')
 })
 
