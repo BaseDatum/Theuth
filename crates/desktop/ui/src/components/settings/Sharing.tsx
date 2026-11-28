@@ -1,6 +1,6 @@
 // 210 §7.4 item 4, §7.6, §9.1, D22; 213 §2: Settings › Sharing › Public shares — this machine's switch (the share
 // plugin's store, `share_settings_*`, not a config flag), a publish form, the mesh's shares with Stop and Stop all,
-// defaults, terms, history and the disclosures. Settings › Sharing › Domains — the edge and its connection, the names,
+// defaults, history and the disclosures. Settings › Sharing › Domains — the edge and its connection, terms, the names,
 // the machines and the certificate state.
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -67,7 +67,7 @@ function useShareSettings() {
 
 const NO_PLUGIN = 'This engine has no public sharing (the share plugin is not running).'
 
-/** 213 §2 tab 5: the switch, live shares with Stop / Stop all, history, defaults, terms and disclosures. */
+/** 213 §2 tab 5: the switch, live shares with Stop / Stop all, history, defaults and disclosures. */
 export function SharingTab() {
   const { supported, settings } = useShareSettings()
   const shareError = useShareError()
@@ -141,8 +141,6 @@ export function SharingTab() {
         </Row>
       </Section>
 
-      <TermsSection enabled={enabled} />
-
       <Section title="History (30 days)">
         {history.length === 0 ? (
           <Empty>No ended shares.</Empty>
@@ -165,12 +163,13 @@ export function SharingTab() {
   )
 }
 
-/** 213 §2 tab 6: the edge and its connection, held names, the mesh's machines, certificate and clock warnings. */
+/** 213 §2 tab 6: the edge and its connection, terms, held names, the mesh's machines, certificate and clock warnings. */
 export function DomainsTab() {
   const { supported, settings } = useShareSettings()
   const status = usePublicShares((s) => s.status)
   const shares = usePublicShares((s) => s.shares)
   if (!supported) return <Empty>{NO_PLUGIN}</Empty>
+  const enabled = settings.data?.enabled ?? false
   const edgeName = status?.domain ?? 'the edge'
   return (
     <>
@@ -185,7 +184,9 @@ export function DomainsTab() {
         )}
       </Section>
 
-      <NameSection meshId={settings.data?.mesh_id ?? null} />
+      <TermsSection enabled={enabled} />
+
+      <NameSection meshId={settings.data?.mesh_id ?? null} enabled={enabled} />
 
       <MachinesSection />
 
@@ -315,16 +316,40 @@ export function MeshIdRow({ meshId }: { meshId: string | null }) {
   )
 }
 
+/** Inline text for a failed `share_names_reserve`: never the raw `terms_required` code, and clears a terms refusal
+ * once the edge's terms are accepted. */
+function reserveErrorText(error: unknown, domain: string | null, termsAccepted: boolean, asked: boolean): string | null {
+  if (!error) return null
+  if (isNotOnEngine(error)) return 'Reserving a name is not available on this engine.'
+  const msg = errorText(error)
+  const refusal = termsRefusal(msg)
+  if (!refusal) return msg
+  if (termsAccepted || (refusal.ask && !asked)) return null
+  return `Accept the terms of ${refusal.ask?.edge ?? domain ?? 'the sharing edge'} above before reserving a name.`
+}
+
 /** §7.4 item 4, §5.2, D20: Your name — Reserve (checked as you type), per held name Make primary, Rotate key,
  * Release and Transfer to another mesh, and this mesh's id for receiving one. Methods the engine lacks answer "not
  * available on this engine". */
-export function NameSection({ meshId = null }: { meshId?: string | null }) {
+export function NameSection({ meshId = null, enabled = false }: { meshId?: string | null; enabled?: boolean }) {
   const [name, setName] = useState('')
   const domain = usePublicShares((s) => s.status?.domain ?? null)
+  const asked = usePublicShares((s) => s.terms)
   const trimmed = name.trim().toLowerCase()
   const problem = trimmed ? nameProblem(trimmed) : null
   const check = useNameCheck(trimmed)
   const names = useQuery({ queryKey: NAMES_KEY, queryFn: () => namesApi.list(), retry: false })
+  // Read TermsSection's cached `share_terms_get` result without issuing a second RPC when mounted standalone.
+  const termsQuery = useQuery({ enabled: false, queryKey: TERMS_KEY, queryFn: () => shareApi().share_terms_get() })
+  const termsData = enabled ? termsQuery.data : undefined
+  const knownTerms = termsData && termsData.rev ? termsData : null
+  const termsAccepted = Boolean(knownTerms?.accepted)
+  const unacceptedEdge =
+    knownTerms && !knownTerms.accepted
+      ? knownTerms.domain
+      : asked && !(knownTerms?.accepted && knownTerms.rev === asked.rev)
+        ? asked.edge
+        : null
   const shareError = useShareError()
   const reserve = useAction((n: string) => namesApi.reserve(n), {
     keys: [NAMES_KEY],
@@ -335,10 +360,20 @@ export function NameSection({ meshId = null }: { meshId?: string | null }) {
     onError: shareError,
   })
   const avail = check?.result ? availabilityText(domain ? `${trimmed}.${domain}` : trimmed, check.result, Date.now()) : null
+  const reserveError = reserveErrorText(reserve.error, domain, termsAccepted, asked !== null)
   return (
     <Section title="Your name">
       <Row label="Reserve a name" description={`Your mesh's shares live under ${domain ? `<name>.${domain}` : '<name>.<edge domain>'}. Without one, the first publish picks a random name.`} wide>
-        <Input value={name} placeholder="sky" className="max-w-56" onChange={(e) => setName(e.target.value)} aria-label="Name" />
+        <Input
+          value={name}
+          placeholder="sky"
+          className="max-w-56"
+          onChange={(e) => {
+            setName(e.target.value)
+            if (reserve.error) reserve.reset()
+          }}
+          aria-label="Name"
+        />
         <Button size="sm" disabled={!avail?.ok || reserve.isPending} onClick={() => reserve.mutate(trimmed)}>
           {reserve.isPending ? 'Reserving…' : 'Reserve'}
         </Button>
@@ -348,7 +383,17 @@ export function NameSection({ meshId = null }: { meshId?: string | null }) {
           {problem ?? (avail ? avail.text : check?.error ? (isNotOnEngine(check.error) ? 'Checking names is not available on this engine' : errorText(check.error)) : 'Checking…')}
         </p>
       )}
-      {reserve.error && isNotOnEngine(reserve.error) && <p className="pb-2 text-sm text-danger">Reserving a name is not available on this engine.</p>}
+      {reserveError ? (
+        <p role="alert" data-reserve-error="" className="pb-2 text-sm text-danger">
+          {reserveError}
+        </p>
+      ) : (
+        unacceptedEdge && (
+          <p data-terms-needed="" className="pb-2 text-sm text-fg-secondary">
+            Accept the terms of {unacceptedEdge} above before reserving a name.
+          </p>
+        )
+      )}
       {names.isError ? (
         <Empty>{isNotOnEngine(names.error) ? 'Your names: not available on this engine.' : `Your names could not be read: ${errorText(names.error)}`}</Empty>
       ) : (names.data ?? []).length === 0 ? (

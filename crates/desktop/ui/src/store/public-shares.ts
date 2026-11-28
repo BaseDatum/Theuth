@@ -189,7 +189,7 @@ export function termsRefusal(message: string): { ask: TermsAsk | null } | null {
 
 /** What a Sharing action's toast says for a terms refusal: never the raw code. */
 export function termsToast(edge: string | null): string {
-  return `Accept the terms of ${edge ?? 'the sharing edge'} first: Settings › Sharing › Public shares › Terms`
+  return `Accept the terms of ${edge ?? 'the sharing edge'} first: Settings › Sharing › Domains › Terms`
 }
 
 /** Ids whose visitor count went from none to some: the "first visitor" moment (§7.4 item 7). */
