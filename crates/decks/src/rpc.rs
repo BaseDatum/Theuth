@@ -12,7 +12,7 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::actor::ActorRef;
-use rpc_core::{NOT_RUNNING, Server, failed, lookup, peer};
+use rpc_core::{NOT_RUNNING, Server, failed, lookup, owner};
 use serde_json::Value;
 
 use crate::hub::DeckHub;
@@ -27,6 +27,8 @@ use crate::owner::{
     SectionMoveMsg, SectionPatchMsg, SubscribeDeckMsg,
 };
 
+const UNAUTHORIZED: i32 = -32001;
+
 fn decks_actor() -> RpcResult<ActorRef<DeckSupervisor>> {
     lookup::<DeckSupervisor>(DECKS_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "decks are disabled", None::<()>),
@@ -34,8 +36,38 @@ fn decks_actor() -> RpcResult<ActorRef<DeckSupervisor>> {
     })
 }
 
-fn owner_principal(ext: &Extensions) -> RpcResult<(String, Principal)> {
-    let p = peer(ext)?;
+/// 229 B1: Owner-only RPC gate. Requires an authenticated owner peer (rejects missing peer,
+/// share guest peers via `rpc_core::owner`, and closed peers).
+pub(crate) fn owner_only(ext: &Extensions) -> RpcResult<(String, Principal)> {
+    let p = owner(ext)?;
+    if p.is_closed() {
+        return Err(ErrorObjectOwned::owned(
+            UNAUTHORIZED,
+            "owner connection is closed",
+            None::<()>,
+        ));
+    }
+    let caller_id = format!("owner:{}", p.id());
+    Ok((
+        caller_id,
+        Principal::Owner {
+            device: Some(p.id()),
+        },
+    ))
+}
+
+/// 229 B1: Human-press gate (equivalent to `plugins::HumanPress`) for security-sensitive
+/// Deck operations (`deck_script_approve`, `deck_script_reject`, `deck_runtime_control`).
+/// Rejects missing peer, share guests, engine-internal peers, closed peers, and `Forwarded` calls.
+pub(crate) fn human_press(ext: &Extensions) -> RpcResult<(String, Principal)> {
+    let p = owner(ext)?;
+    if p.is_internal() || p.is_closed() || ext.get::<agent::rpc_forward::Forwarded>().is_some() {
+        return Err(ErrorObjectOwned::owned(
+            UNAUTHORIZED,
+            "human owner press required: guest, internal, closed, or forwarded calls are forbidden",
+            None::<()>,
+        ));
+    }
     let caller_id = format!("owner:{}", p.id());
     Ok((
         caller_id,
@@ -90,7 +122,7 @@ impl Drop for UnsubGuard {
 #[rpc(server, client)]
 pub trait DecksApi {
     /// List collaborative Decks with runtime health and revision summary.
-    #[method(name = "deck_list")]
+    #[method(name = "deck_list", with_extensions)]
     async fn deck_list(&self, limit: Option<u32>) -> RpcResult<Vec<DeckSummary>>;
 
     /// Create a new collaborative Deck (or the built-in Workspace Pulse example when `example` is true).
@@ -180,11 +212,17 @@ pub trait DecksApi {
         change_summary: Option<String>,
     ) -> RpcResult<ScriptRevision>;
 
-    /// Owner approval gate: approve a `pending_review` script revision so it may run.
+    /// Owner approval gate: approve a `pending_review` script revision matching `expected_digest`
+    /// (`revision_sha256`). Does NOT auto-enable recurring schedule/stream; explicit owner Start does.
     #[method(name = "deck_script_approve", with_extensions)]
-    async fn deck_script_approve(&self, deck_id: String, rev: u64) -> RpcResult<ScriptRevision>;
+    async fn deck_script_approve(
+        &self,
+        deck_id: String,
+        rev: u64,
+        expected_digest: String,
+    ) -> RpcResult<ScriptRevision>;
 
-    /// Reject a `pending_review` script revision.
+    /// Reject a `pending_review` script revision (human owner press only).
     #[method(name = "deck_script_reject", with_extensions)]
     async fn deck_script_reject(
         &self,
@@ -194,7 +232,7 @@ pub trait DecksApi {
     ) -> RpcResult<ScriptRevision>;
 
     /// Read a Deck's script revision (specific `rev`, or pending/active/latest if omitted).
-    #[method(name = "deck_script_read")]
+    #[method(name = "deck_script_read", with_extensions)]
     async fn deck_script_read(
         &self,
         deck_id: String,
@@ -202,7 +240,7 @@ pub trait DecksApi {
     ) -> RpcResult<Option<ScriptRevision>>;
 
     /// Control a Deck's single runtime owner (`start`, `pause`, `resume`, `stop`, `run_once`).
-    #[method(name = "deck_runtime_control")]
+    #[method(name = "deck_runtime_control", with_extensions)]
     async fn deck_runtime_control(
         &self,
         deck_id: String,
@@ -222,7 +260,7 @@ pub trait DecksApi {
     ) -> RpcResult<InteractResponse>;
 
     /// List recent durable snapshots persisted for a Deck.
-    #[method(name = "deck_snapshots")]
+    #[method(name = "deck_snapshots", with_extensions)]
     async fn deck_snapshots(
         &self,
         deck_id: String,
@@ -230,7 +268,7 @@ pub trait DecksApi {
     ) -> RpcResult<Vec<DeckSnapshot>>;
 
     /// Fetch one pinned durable snapshot by ID (used by whiteboard cards with a pinned snapshot).
-    #[method(name = "deck_snapshot_get")]
+    #[method(name = "deck_snapshot_get", with_extensions)]
     async fn deck_snapshot_get(
         &self,
         deck_id: String,
@@ -238,13 +276,19 @@ pub trait DecksApi {
     ) -> RpcResult<Option<DeckSnapshot>>;
 
     /// Subscribe to bounded, coalesced per-Deck runtime events (sync, live frames, durable snapshots, status, approvals).
-    #[subscription(name = "deck_subscribe", unsubscribe = "deck_unsubscribe", item = DeckRuntimeEvent)]
+    #[subscription(
+        name = "deck_subscribe",
+        unsubscribe = "deck_unsubscribe",
+        item = DeckRuntimeEvent,
+        with_extensions
+    )]
     async fn deck_subscribe(&self, deck_id: String) -> SubscriptionResult;
 }
 
 #[async_trait]
 impl DecksApiServer for Server {
-    async fn deck_list(&self, limit: Option<u32>) -> RpcResult<Vec<DeckSummary>> {
+    async fn deck_list(&self, ext: &Extensions, limit: Option<u32>) -> RpcResult<Vec<DeckSummary>> {
+        let _ = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(ListDecks { limit })
@@ -260,7 +304,7 @@ impl DecksApiServer for Server {
         description: Option<String>,
         example: Option<bool>,
     ) -> RpcResult<DeckDetail> {
-        let (_, by) = owner_principal(ext)?;
+        let (_, by) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(CreateDeckMsg {
@@ -275,7 +319,7 @@ impl DecksApiServer for Server {
     }
 
     async fn deck_get(&self, ext: &Extensions, deck_id: String) -> RpcResult<DeckDetail> {
-        let (_, by) = owner_principal(ext)?;
+        let (_, by) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(GetDeck { deck_id, by })
@@ -295,7 +339,7 @@ impl DecksApiServer for Server {
         data_key: Option<String>,
         index: Option<usize>,
     ) -> RpcResult<DeckSection> {
-        let (_, by) = owner_principal(ext)?;
+        let (_, by) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(SectionAddMsg {
@@ -325,7 +369,7 @@ impl DecksApiServer for Server {
         data_key: Option<Option<String>>,
         summary: Option<String>,
     ) -> RpcResult<DeckSection> {
-        let (_, by) = owner_principal(ext)?;
+        let (_, by) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(SectionPatchMsg {
@@ -351,7 +395,7 @@ impl DecksApiServer for Server {
         section_id: String,
         to_index: usize,
     ) -> RpcResult<Vec<String>> {
-        let (_, by) = owner_principal(ext)?;
+        let (_, by) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(SectionMoveMsg {
@@ -373,7 +417,7 @@ impl DecksApiServer for Server {
         archived: bool,
         expected_rev: Option<u64>,
     ) -> RpcResult<DeckSection> {
-        let (_, by) = owner_principal(ext)?;
+        let (_, by) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(SectionArchiveMsg {
@@ -394,7 +438,7 @@ impl DecksApiServer for Server {
         deck_id: String,
         section_id: String,
     ) -> RpcResult<Vec<SectionRevision>> {
-        let (_, by) = owner_principal(ext)?;
+        let (_, by) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(SectionHistoryMsg {
@@ -413,7 +457,7 @@ impl DecksApiServer for Server {
         deck_id: String,
         section_id: Option<String>,
     ) -> RpcResult<()> {
-        let (_, by) = owner_principal(ext)?;
+        let (_, by) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(FocusSectionMsg {
@@ -437,7 +481,7 @@ impl DecksApiServer for Server {
         schedule_cron: Option<String>,
         change_summary: Option<String>,
     ) -> RpcResult<ScriptRevision> {
-        let (caller_id, _) = owner_principal(ext)?;
+        let (caller_id, _) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(ProposeScriptMsg {
@@ -460,13 +504,15 @@ impl DecksApiServer for Server {
         ext: &Extensions,
         deck_id: String,
         rev: u64,
+        expected_digest: String,
     ) -> RpcResult<ScriptRevision> {
-        let (caller_id, _) = owner_principal(ext)?;
+        let (caller_id, _) = human_press(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(ApproveScriptMsg {
                 deck_id,
                 rev,
+                expected_digest,
                 approved_by: caller_id,
             })
             .send()
@@ -476,11 +522,12 @@ impl DecksApiServer for Server {
 
     async fn deck_script_reject(
         &self,
-        _ext: &Extensions,
+        ext: &Extensions,
         deck_id: String,
         rev: u64,
         reason: Option<String>,
     ) -> RpcResult<ScriptRevision> {
+        let _ = human_press(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(RejectScriptMsg {
@@ -495,9 +542,11 @@ impl DecksApiServer for Server {
 
     async fn deck_script_read(
         &self,
+        ext: &Extensions,
         deck_id: String,
         rev: Option<u64>,
     ) -> RpcResult<Option<ScriptRevision>> {
+        let _ = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(ReadScriptMsg { deck_id, rev })
@@ -508,9 +557,11 @@ impl DecksApiServer for Server {
 
     async fn deck_runtime_control(
         &self,
+        ext: &Extensions,
         deck_id: String,
         op: RuntimeControlOp,
     ) -> RpcResult<DeckRuntimeStatus> {
+        let _ = human_press(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(RuntimeControlMsg { deck_id, op })
@@ -529,7 +580,7 @@ impl DecksApiServer for Server {
         expected_rev: Option<u64>,
         timeout_ms: Option<u64>,
     ) -> RpcResult<InteractResponse> {
-        let (caller_id, _) = owner_principal(ext)?;
+        let (caller_id, _) = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(InteractMsg {
@@ -548,9 +599,11 @@ impl DecksApiServer for Server {
 
     async fn deck_snapshots(
         &self,
+        ext: &Extensions,
         deck_id: String,
         limit: Option<u32>,
     ) -> RpcResult<Vec<DeckSnapshot>> {
+        let _ = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(ListSnapshotsMsg { deck_id, limit })
@@ -561,9 +614,11 @@ impl DecksApiServer for Server {
 
     async fn deck_snapshot_get(
         &self,
+        ext: &Extensions,
         deck_id: String,
         snapshot_id: String,
     ) -> RpcResult<Option<DeckSnapshot>> {
+        let _ = owner_only(ext)?;
         let actor = decks_actor()?;
         actor
             .ask(GetSnapshotMsg {
@@ -578,10 +633,13 @@ impl DecksApiServer for Server {
     async fn deck_subscribe(
         &self,
         pending: PendingSubscriptionSink,
+        ext: &Extensions,
         deck_id: String,
     ) -> SubscriptionResult {
-        // Subscribe BEFORE accept so initial Sync and subsequent updates cannot race.
+        // Authorize & subscribe BEFORE accept so unauthorized callers are rejected cleanly
+        // and initial Sync + subsequent updates cannot race.
         let sub = async {
+            let _ = owner_only(ext)?;
             let actor = decks_actor()?;
             actor
                 .ask(SubscribeDeckMsg {

@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent::repl::{
-    DUMP_HARD_BYTES, MAX_MEMORY, MontyCheckout, MontyPool, MountSpec, PoolError, ReplConfig,
-    ResumeValue, TurnEvent, find_session_tool, from_monty, help, merge_args, on_print_sync,
-    os_answer, rebase_dump_stubs, sanitize_ident, session_mounts, session_repl_config,
-    session_tool_specs, signature, summary, to_monty, tool_result,
+    DIRECT_ONLY, DUMP_HARD_BYTES, MAX_MEMORY, MontyCheckout, MontyPool, MountSpec, PoolError,
+    ReplConfig, ResumeValue, TurnEvent, find_session_tool, from_monty, help, merge_args,
+    on_print_sync, os_answer, rebase_dump_stubs, sanitize_ident, session_mounts,
+    session_repl_config, session_tool_specs, signature, summary, to_monty, tool_result,
 };
 use futures::future::join_all;
 use kameo::actor::ActorRef;
@@ -18,11 +18,11 @@ use monty_types::{CallArgs, ExcType, MontyException, MontyObject, NameLookupResu
 use platform::files::write_atomic;
 use runtime::SessionId;
 use serde_json::Value;
-use tools::{Invoke, ToolCall, ToolOutput, ToolRegistry};
+use tools::{Invoke, ToolCall, ToolOutput, ToolRegistry, ToolSpec};
 
 use crate::hub::{MAX_LIVE_FRAME_BYTES, MAX_SNAPSHOT_BYTES};
-use crate::model::ScriptRevision;
-use crate::store::StateCheckpoint;
+use crate::model::{MAX_ACTION_RESULT_BYTES, ScriptRevision};
+use crate::store::{StateCheckpoint, sha256_bytes};
 
 /// Maximum concurrent Deck Monty workers in the dedicated Deck pool.
 pub const DECK_POOL_MAX: usize = 16;
@@ -38,6 +38,15 @@ pub const ROLLOVER_EVERY_STEPS: u64 = 50;
 pub const MIN_SLEEP_SECS: f64 = 0.1;
 pub const MAX_SLEEP_SECS: f64 = 3600.0;
 
+/// Maximum `deck_emit(...)` calls allowed within a single Monty turn (229 H4).
+pub const MAX_EMITS_PER_TURN: usize = 16;
+
+/// Maximum byte length for `deck_emit(..., section=...)` after redaction (229 H4).
+pub const MAX_SECTION_NAME_BYTES: usize = 64;
+
+/// Maximum captured stdout bytes per Monty turn (UTF-8 boundary-safe, 229 H4).
+pub const MAX_STDOUT_BYTES: usize = 16_000;
+
 /// Type-checking `.pyi` stubs appended to the live session tool stubs for Deck cooperative builtins.
 pub const DECK_BUILTIN_STUBS: &str = "\
 def deck_emit(data: Any, durable: bool = False, section: str | None = None) -> None: ...
@@ -46,6 +55,26 @@ def deck_sleep(seconds: float) -> None: ...
 def deck_state() -> Any: ...
 def deck_last_snapshot() -> Any: ...
 ";
+
+/// Tools excluded from Deck script execution:
+/// - `DIRECT_ONLY` (`python`, `advise`, `consult`) cannot run inside a Monty REPL cell (229 H1).
+/// - Re-entrant `deck_*` and `show_deck` tools are blocked to prevent self-deadlock (229 B4).
+///
+/// All other builtins, plugins, and configured MCP tools remain exposed automatically.
+pub fn is_blocked_deck_tool(name: &str) -> bool {
+    DIRECT_ONLY.contains(&name) || name.starts_with("deck_") || name == "show_deck"
+}
+
+/// Fetch live session tool specs (including full configured MCP namespace) minus blocked
+/// direct-only and re-entrant Deck tools.
+pub async fn deck_tool_specs(
+    registry: &ActorRef<ToolRegistry>,
+    session: SessionId,
+) -> Vec<ToolSpec> {
+    let mut specs = session_tool_specs(registry, session).await;
+    specs.retain(|s| !is_blocked_deck_tool(&s.name));
+    specs
+}
 
 /// One emission produced by Python calling `deck_emit(data, durable=..., section=...)`.
 #[derive(Clone, Debug)]
@@ -96,14 +125,17 @@ pub struct DeckCheckout {
     session: SessionId,
     script_rev: u64,
     code_sha256: String,
+    revision_sha256: String,
     cfg: ReplConfig,
     mounts: Vec<MountSpec>,
     dump_path: PathBuf,
+    dump_hard_bytes: u64,
     checkout: Option<MontyCheckout>,
     steps_since_checkpoint: u64,
     steps_since_rollover: u64,
     call_seq: u64,
     last_dump: Option<Vec<u8>>,
+    last_dump_sha256: Option<String>,
 }
 
 struct PendingTool {
@@ -122,15 +154,37 @@ impl DeckCheckout {
         &self.code_sha256
     }
 
+    pub fn revision_sha256(&self) -> &str {
+        &self.revision_sha256
+    }
+
+    /// SHA-256 hex digest of the last `.monty` dump bytes persisted on disk.
+    pub fn last_dump_sha256(&self) -> Option<&str> {
+        self.last_dump_sha256.as_deref()
+    }
+
     pub fn is_alive(&self) -> bool {
         self.checkout
             .as_ref()
             .is_some_and(|c| c.worker_id().is_some())
     }
 
+    #[cfg(test)]
+    pub fn set_dump_hard_bytes_for_test(&mut self, cap: u64) {
+        self.dump_hard_bytes = cap;
+    }
+
+    #[cfg(test)]
+    pub fn force_rollover_for_test(&mut self) {
+        self.steps_since_rollover = ROLLOVER_EVERY_STEPS;
+    }
+
     /// Open a Deck checkout for `script`:
-    /// - Warm-restores `<session>.monty` (rebasing live session/MCP stubs) when compatible.
-    /// - Otherwise cold-starts by loading `script.code` (type-checked) and invoking `on_start(last_state)`.
+    /// - When `allow_warm_restore` is true and the `.monty` file bytes on disk match the
+    ///   checkpoint's `(monty_dump_rev, monty_dump_revision_sha256, monty_dump_sha256)`,
+    ///   warm-restores `<session>.monty` (rebasing live session/MCP stubs).
+    /// - On any mismatch or tampering, deletes the stale/tampered `.monty` file and falls
+    ///   back cleanly to cold start (`script.code` + `on_start(last_state)`).
     #[allow(clippy::too_many_arguments)]
     pub async fn open_or_restore(
         pool: Arc<MontyPool>,
@@ -141,10 +195,11 @@ impl DeckCheckout {
         dump_path: PathBuf,
         script: &ScriptRevision,
         checkpoint: Option<&StateCheckpoint>,
+        allow_warm_restore: bool,
         turn_cx: &TurnContext,
         on_emit: &mut (dyn FnMut(&EmittedPayload) + Send),
     ) -> Result<(Self, StartMode, TurnEffects), String> {
-        let specs = session_tool_specs(&registry, session).await;
+        let specs = deck_tool_specs(&registry, session).await;
         let cfg = session_repl_config(&specs, DECK_BUILTIN_STUBS, MAX_MEMORY);
         let spill = spill_root.join(session.to_string());
         let mounts = session_mounts(cwd, &spill);
@@ -155,50 +210,79 @@ impl DeckCheckout {
             session,
             script_rev: script.rev,
             code_sha256: script.code_sha256.clone(),
+            revision_sha256: script.revision_sha256.clone(),
             cfg,
             mounts,
             dump_path,
+            dump_hard_bytes: DUMP_HARD_BYTES,
             checkout: None,
             steps_since_checkpoint: 0,
             steps_since_rollover: 0,
             call_seq: 0,
             last_dump: None,
+            last_dump_sha256: None,
         };
 
-        // Attempt warm `.monty` restore if checkpoint stamp matches script revision & sha256.
-        let can_warm = checkpoint.is_some_and(|cp| {
-            cp.monty_dump_rev == Some(script.rev)
-                && cp.monty_dump_sha256.as_deref() == Some(script.code_sha256.as_str())
-        });
-        if can_warm
+        // Attempt warm `.monty` restore ONLY when:
+        // 1. Caller allows warm restore (false after rollover dump-too-large),
+        // 2. Checkpoint matches script rev AND canonical revision_sha256, AND
+        // 3. Actual `.monty` file bytes SHA-256 matches checkpoint's monty_dump_sha256 (229 B2).
+        let expected_dump_sha = if allow_warm_restore {
+            checkpoint.and_then(|cp| {
+                let rev_ok = cp.monty_dump_rev == Some(script.rev)
+                    && cp.monty_dump_revision_sha256.as_deref()
+                        == Some(script.revision_sha256.as_str());
+                rev_ok
+                    .then_some(cp.monty_dump_sha256.as_deref())
+                    .flatten()
+                    .filter(|s| !s.is_empty())
+            })
+        } else {
+            None
+        };
+
+        if let Some(expected_sha) = expected_dump_sha
             && let Ok(meta) = std::fs::metadata(&rt.dump_path)
             && meta.len() > 0
-            && meta.len() <= DUMP_HARD_BYTES
+            && meta.len() <= rt.dump_hard_bytes
             && let Ok(mut bytes) = std::fs::read(&rt.dump_path)
         {
-            if let Some(fresh_stubs) = rt.cfg.type_check_stubs.as_deref() {
-                rebase_dump_stubs(&mut bytes, None, fresh_stubs);
-            }
-            match rt.pool.checkout(&rt.cfg).await {
-                Ok(mut c) => {
-                    let mut quiet = on_print_sync(|_, _| {});
-                    if c.restore(bytes.clone(), Vec::new(), &mut quiet)
-                        .await
-                        .is_ok()
-                    {
-                        rt.checkout = Some(c);
-                        rt.last_dump = Some(bytes);
-                        return Ok((rt, StartMode::WarmRestored, TurnEffects::default()));
-                    }
-                    drop(c);
-                    tracing::warn!(
-                        deck = %script.deck_id,
-                        rev = script.rev,
-                        "warm .monty restore failed; falling back to cold on_start"
-                    );
+            let actual_sha = sha256_bytes(&bytes);
+            if actual_sha != expected_sha {
+                tracing::warn!(
+                    deck = %script.deck_id,
+                    rev = script.rev,
+                    expected = expected_sha,
+                    actual = %actual_sha,
+                    "refusing warm .monty restore: dump file SHA-256 mismatch; falling back to cold start"
+                );
+                let _ = std::fs::remove_file(&rt.dump_path);
+            } else {
+                if let Some(fresh_stubs) = rt.cfg.type_check_stubs.as_deref() {
+                    rebase_dump_stubs(&mut bytes, None, fresh_stubs);
                 }
-                Err(e) => {
-                    tracing::warn!(deck = %script.deck_id, "checkout failed on warm restore: {e}");
+                match rt.pool.checkout(&rt.cfg).await {
+                    Ok(mut c) => {
+                        let mut quiet = on_print_sync(|_, _| {});
+                        if c.restore(bytes.clone(), Vec::new(), &mut quiet)
+                            .await
+                            .is_ok()
+                        {
+                            rt.checkout = Some(c);
+                            rt.last_dump = Some(bytes);
+                            rt.last_dump_sha256 = Some(actual_sha);
+                            return Ok((rt, StartMode::WarmRestored, TurnEffects::default()));
+                        }
+                        drop(c);
+                        tracing::warn!(
+                            deck = %script.deck_id,
+                            rev = script.rev,
+                            "warm .monty restore failed; falling back to cold on_start"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(deck = %script.deck_id, "checkout failed on warm restore: {e}");
+                    }
                 }
             }
         }
@@ -246,8 +330,11 @@ if _deck_start_fn is not None:
 
     /// Clean-boundary maintenance: refresh tool/MCP stubs if `ListTools(session)` changed,
     /// or roll over worker after `ROLLOVER_EVERY_STEPS`. Preserves Python globals via `.monty` dump!
+    /// Never installs an empty uninitialized VM when dump exceeds cap or fails (229 B8): returns
+    /// `Err("rollover_dump_too_large")` / `Err("rollover_no_dump")` so `DeckOwner` performs a
+    /// clean cold start (`on_start(last_state)`).
     pub async fn maybe_refresh_or_rollover(&mut self) -> Result<bool, String> {
-        let specs = session_tool_specs(&self.registry, self.session).await;
+        let specs = deck_tool_specs(&self.registry, self.session).await;
         let fresh_cfg = session_repl_config(&specs, DECK_BUILTIN_STUBS, MAX_MEMORY);
         let stubs_changed = fresh_cfg.type_check_stubs != self.cfg.type_check_stubs;
         let rollover_due = self.steps_since_rollover >= ROLLOVER_EVERY_STEPS;
@@ -256,11 +343,15 @@ if _deck_start_fn is not None:
             return Ok(false);
         }
 
+        let mut dump_too_large = false;
         let mut bytes = if !dead {
             if let Some(c) = self.checkout.as_mut() {
                 match c.dump().await {
-                    Ok(b) if (b.len() as u64) <= DUMP_HARD_BYTES => Some(b),
-                    Ok(_) => None,
+                    Ok(b) if (b.len() as u64) <= self.dump_hard_bytes => Some(b),
+                    Ok(_) => {
+                        dump_too_large = true;
+                        None
+                    }
                     Err(_) => self.last_dump.clone(),
                 }
             } else {
@@ -278,9 +369,20 @@ if _deck_start_fn is not None:
         let prev_stubs = self.cfg.type_check_stubs.clone();
         self.cfg = fresh_cfg;
 
-        if let Some(ref mut dump_bytes) = bytes
-            && let Some(fresh_stubs) = self.cfg.type_check_stubs.as_deref()
-        {
+        if dump_too_large {
+            self.last_dump = None;
+            self.last_dump_sha256 = None;
+            let _ = std::fs::remove_file(&self.dump_path);
+            return Err("rollover_dump_too_large".into());
+        }
+
+        let Some(ref mut dump_bytes) = bytes else {
+            self.last_dump = None;
+            self.last_dump_sha256 = None;
+            return Err("rollover_no_dump".into());
+        };
+
+        if let Some(fresh_stubs) = self.cfg.type_check_stubs.as_deref() {
             rebase_dump_stubs(dump_bytes, prev_stubs.as_deref(), fresh_stubs);
         }
 
@@ -289,24 +391,19 @@ if _deck_start_fn is not None:
             .checkout(&self.cfg)
             .await
             .map_err(|e| format!("monty rollover checkout failed: {e}"))?;
-        if let Some(dump_bytes) = bytes {
-            let mut quiet = on_print_sync(|_, _| {});
-            if next
-                .restore(dump_bytes.clone(), Vec::new(), &mut quiet)
-                .await
-                .is_ok()
-            {
-                self.last_dump = Some(dump_bytes);
-                self.checkout = Some(next);
-                self.steps_since_rollover = 0;
-                return Ok(true);
-            }
-            drop(next);
-            return Err("rollover_restore_failed".into());
+        let mut quiet = on_print_sync(|_, _| {});
+        if next
+            .restore(dump_bytes.clone(), Vec::new(), &mut quiet)
+            .await
+            .is_ok()
+        {
+            self.last_dump = Some(dump_bytes.clone());
+            self.checkout = Some(next);
+            self.steps_since_rollover = 0;
+            return Ok(true);
         }
-        self.checkout = Some(next);
-        self.steps_since_rollover = 0;
-        Ok(true)
+        drop(next);
+        Err("rollover_restore_failed".into())
     }
 
     /// Execute one bounded collection / streaming step (`on_step()` or fallback `collect()`).
@@ -371,6 +468,14 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                 on_emit,
             )
             .await?;
+        let ret_bytes = serde_json::to_vec(&out.return_value)
+            .map(|b| b.len())
+            .unwrap_or(usize::MAX);
+        if ret_bytes > MAX_ACTION_RESULT_BYTES {
+            return Err(format!(
+                "action return payload ({ret_bytes} bytes) exceeds cap ({MAX_ACTION_RESULT_BYTES} bytes)"
+            ));
+        }
         if out.effects.checkpoint_state.is_some() {
             let _ = self.checkpoint_heap().await;
             self.steps_since_checkpoint = 0;
@@ -378,8 +483,9 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
         Ok(out)
     }
 
-    /// Persist `.monty` heap snapshot atomically to disk at a clean turn boundary.
-    pub async fn checkpoint_heap(&mut self) -> Result<usize, String> {
+    /// Persist `.monty` heap snapshot atomically to disk at a clean turn boundary,
+    /// returning the SHA-256 hex digest of the written `.monty` bytes (229 B2).
+    pub async fn checkpoint_heap(&mut self) -> Result<String, String> {
         let Some(c) = self.checkout.as_mut() else {
             return Err("no active checkout".into());
         };
@@ -390,29 +496,32 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
             .dump()
             .await
             .map_err(|e| format!("monty dump failed: {e}"))?;
-        if (bytes.len() as u64) > DUMP_HARD_BYTES {
+        if (bytes.len() as u64) > self.dump_hard_bytes {
             return Err(format!(
-                "deck heap dump ({} bytes) exceeds cap ({DUMP_HARD_BYTES})",
-                bytes.len()
+                "deck heap dump ({} bytes) exceeds cap ({})",
+                bytes.len(),
+                self.dump_hard_bytes
             ));
         }
         if let Some(parent) = self.dump_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        let digest = sha256_bytes(&bytes);
         write_atomic(&self.dump_path, &bytes)
             .map_err(|e| format!("write {}: {e}", self.dump_path.display()))?;
-        let len = bytes.len();
         self.last_dump = Some(bytes);
-        Ok(len)
+        self.last_dump_sha256 = Some(digest.clone());
+        Ok(digest)
     }
 
     /// Checkpoint and gracefully release the Monty worker back to the pool.
-    pub async fn stop_and_release(mut self) -> Result<bool, String> {
-        let saved = self.checkpoint_heap().await.is_ok();
+    /// Returns the SHA-256 digest of the saved `.monty` file bytes if checkpointing succeeded.
+    pub async fn stop_and_release(mut self) -> Result<Option<String>, String> {
+        let digest = self.checkpoint_heap().await.ok();
         if let Some(c) = self.checkout.take() {
             let _ = c.finish().await;
         }
-        Ok(saved)
+        Ok(digest)
     }
 
     /// Core turn driver: mirrors `agent::repl::Repl::drive`, wiring full session/MCP tools
@@ -438,8 +547,17 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
         let stdout_cap = stdout_buf.clone();
         let mut print_cb = on_print_sync(move |_, text| {
             let mut s = stdout_cap.lock();
-            if s.len() < 16_000 {
-                s.push_str(text);
+            if s.len() < MAX_STDOUT_BYTES {
+                let remaining = MAX_STDOUT_BYTES - s.len();
+                if text.len() <= remaining {
+                    s.push_str(text);
+                } else {
+                    let mut cut = remaining;
+                    while cut > 0 && !text.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    s.push_str(&text[..cut]);
+                }
             }
         });
 
@@ -468,8 +586,13 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                         | "deck_last_snapshot" | "tools" | "help" => {
                             NameLookupResult::Value(MontyObject::function(name, None))
                         }
+                        blocked if is_blocked_deck_tool(blocked) => {
+                            // Resolve blocked re-entrant/direct-only tools to a callable that
+                            // fails with a clear RuntimeError instead of deadlocking (229 B4/H1).
+                            NameLookupResult::Value(MontyObject::function(name, None))
+                        }
                         _ => {
-                            let specs = session_tool_specs(&self.registry, self.session).await;
+                            let specs = deck_tool_specs(&self.registry, self.session).await;
                             match find_session_tool(&specs, &name) {
                                 Some(spec) => NameLookupResult::Value(MontyObject::function(
                                     name,
@@ -500,7 +623,7 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                         }
                         "tools" => {
                             let query = first_arg(&args, "query").and_then(|q| q.as_str());
-                            let specs = session_tool_specs(&self.registry, self.session).await;
+                            let specs = deck_tool_specs(&self.registry, self.session).await;
                             ResumeValue::Return(MontyObject::list(
                                 specs
                                     .iter()
@@ -511,7 +634,7 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                         }
                         "help" => match first_arg(&args, "name").and_then(|q| q.as_str()) {
                             Some(name) => {
-                                let specs = session_tool_specs(&self.registry, self.session).await;
+                                let specs = deck_tool_specs(&self.registry, self.session).await;
                                 match find_session_tool(&specs, name) {
                                     Some(spec) => {
                                         ResumeValue::Return(MontyObject::string(help(spec)))
@@ -527,8 +650,16 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                                 Some("help(name: str) takes one string argument".into()),
                             )),
                         },
+                        blocked if is_blocked_deck_tool(blocked) => {
+                            ResumeValue::Error(MontyException::new(
+                                ExcType::RuntimeError,
+                                Some(format!(
+                                    "tool `{blocked}` cannot be called from inside a Deck script (re-entrant or direct-only)"
+                                )),
+                            ))
+                        }
                         _ => {
-                            let specs = session_tool_specs(&self.registry, self.session).await;
+                            let specs = deck_tool_specs(&self.registry, self.session).await;
                             match find_session_tool(&specs, &function_name) {
                                 Some(spec) => {
                                     inner_seq += 1;
@@ -653,6 +784,14 @@ fn handle_deck_emit(
     effects: &mut TurnEffects,
     on_emit: &mut (dyn FnMut(&EmittedPayload) + Send),
 ) -> ResumeValue {
+    if effects.emits.len() >= MAX_EMITS_PER_TURN {
+        return ResumeValue::Error(MontyException::new(
+            ExcType::ValueError,
+            Some(format!(
+                "deck_emit per-turn cap ({MAX_EMITS_PER_TURN}) exceeded"
+            )),
+        ));
+    }
     let Some(data_ref) = first_arg(args, "data") else {
         return ResumeValue::Error(MontyException::new(
             ExcType::TypeError,
@@ -668,11 +807,27 @@ fn handle_deck_emit(
         .map(from_monty)
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let section = args
+    let raw_section = args
         .arg(2)
         .or_else(|| args.kwarg("section"))
         .and_then(|s| s.as_str().map(str::to_owned))
         .filter(|s| !s.is_empty());
+    let section = match raw_section {
+        Some(s) => {
+            let redacted = tools::secrets::redact(&s).into_owned();
+            if redacted.len() > MAX_SECTION_NAME_BYTES {
+                return ResumeValue::Error(MontyException::new(
+                    ExcType::ValueError,
+                    Some(format!(
+                        "deck_emit section ({} bytes) exceeds cap ({MAX_SECTION_NAME_BYTES} bytes)",
+                        redacted.len()
+                    )),
+                ));
+            }
+            Some(redacted)
+        }
+        None => None,
+    };
 
     let max_bytes = if durable {
         MAX_SNAPSHOT_BYTES

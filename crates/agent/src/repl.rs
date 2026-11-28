@@ -263,17 +263,31 @@ pub async fn open_default_pool(max_workers: usize) -> Option<Arc<MontyPool>> {
     }
 }
 
+const STUBS_BEGIN: &str = "# --- theuth-stubs-begin ---\n";
+const STUBS_END: &str = "# --- theuth-stubs-end ---\n";
+
+/// Render sentinel-delimited `.pyi` stubs for `specs` plus optional `extra_stubs`
+/// so [`rebase_dump_stubs`] can atomically replace the entire managed block on warm restore.
+pub fn managed_stubs(specs: &[ToolSpec], extra_stubs: &str) -> String {
+    let mut out = String::from(STUBS_BEGIN);
+    out.push_str(&stubs(specs));
+    if !extra_stubs.is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(extra_stubs);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push_str(STUBS_END);
+    out
+}
+
 /// Build a session [`ReplConfig`] matching [`Repl::open_with`] (with optional extra `.pyi` stubs
 /// appended after the session tool stubs, e.g. for Deck cooperative builtins).
 pub fn session_repl_config(specs: &[ToolSpec], extra_stubs: &str, max_memory: usize) -> ReplConfig {
-    let mut type_stubs = stubs(specs);
-    if !extra_stubs.is_empty() {
-        type_stubs.push('\n');
-        type_stubs.push_str(extra_stubs);
-        if !type_stubs.ends_with('\n') {
-            type_stubs.push('\n');
-        }
-    }
+    let type_stubs = managed_stubs(specs, extra_stubs);
     ReplConfig {
         limits: Some(ResourceLimits {
             max_memory: Some(max_memory),
@@ -283,6 +297,9 @@ pub fn session_repl_config(specs: &[ToolSpec], extra_stubs: &str, max_memory: us
         }),
         type_check: true,
         type_check_stubs: Some(type_stubs),
+        // The worker answers `datetime.now()`/`date.today()` itself (beta.2
+        // `OsPolicy`); pin its zone to the host's so naive values read as
+        // host local time, as the host-answered calls did before.
         os_policy: OsPolicy {
             timezone: SandboxTimeZone::Fixed {
                 offset_seconds: chrono::Local::now().offset().local_minus_utc(),
@@ -330,8 +347,27 @@ pub async fn session_tool_specs(
 }
 
 /// Find the tool whose sanitised Python identifier matches `ident`.
+/// Prefers an exact tool name match; warns and chooses deterministically if
+/// multiple distinct tools collide on `sanitize_ident`.
 pub fn find_session_tool<'a>(specs: &'a [ToolSpec], ident: &str) -> Option<&'a ToolSpec> {
-    specs.iter().find(|s| sanitize_ident(&s.name) == ident)
+    if let Some(exact) = specs.iter().find(|s| s.name == ident) {
+        return Some(exact);
+    }
+    let mut matches: Vec<&ToolSpec> = specs
+        .iter()
+        .filter(|s| sanitize_ident(&s.name) == ident)
+        .collect();
+    if matches.len() > 1 {
+        matches.sort_by(|a, b| a.name.cmp(&b.name));
+        let names: Vec<&str> = matches.iter().map(|s| s.name.as_str()).collect();
+        tracing::warn!(
+            ident,
+            ?names,
+            chosen = matches[0].name.as_str(),
+            "multiple session tools collide on Python identifier"
+        );
+    }
+    matches.first().copied()
 }
 
 /// Test-only: a pool on the first python worker that answers a real checkout and
@@ -1258,8 +1294,9 @@ struct Snapshot {
 }
 
 /// Monty's Load adopts the dump's typing state, not the checkout's fresh
-/// configuration. Replace only our known stub prefix, preserving committed
-/// user declarations; a reopened/legacy dump gets missing runtime names only.
+/// configuration. Replace our sentinel-delimited stub block (or known stub
+/// prefix), preserving committed user declarations; a reopened/legacy dump
+/// without sentinels gets missing runtime `async def` and `def` declarations.
 pub fn rebase_dump_stubs(bytes: &mut Vec<u8>, previous: Option<&str>, fresh: &str) {
     let rebase = || -> anyhow::Result<Option<Vec<u8>>> {
         let mut dump = monty::Dump::load(bytes)?;
@@ -1267,20 +1304,27 @@ pub fn rebase_dump_stubs(bytes: &mut Vec<u8>, previous: Option<&str>, fresh: &st
             return Ok(None);
         };
         let committed = &mut typing.committed_stubs;
-        if previous.is_none() && committed.starts_with(fresh) {
-            return Ok(None);
-        }
-        if let Some(previous) = previous.filter(|old| committed.starts_with(*old)) {
+        if let Some(start) = committed.find(STUBS_BEGIN)
+            && let Some(end_rel) = committed[start + STUBS_BEGIN.len()..].find(STUBS_END)
+        {
+            let end_after = start + STUBS_BEGIN.len() + end_rel + STUBS_END.len();
+            if &committed[start..end_after] == fresh {
+                return Ok(None);
+            }
+            committed.replace_range(start..end_after, fresh);
+        } else if let Some(previous) = previous.filter(|old| committed.starts_with(*old)) {
             if previous == fresh {
                 return Ok(None);
             }
             committed.replace_range(..previous.len(), fresh);
+        } else if previous.is_none() && committed.starts_with(fresh) {
+            return Ok(None);
         } else {
             let missing: Vec<_> = {
                 let declared: BTreeSet<_> = committed.lines().filter_map(stub_name).collect();
                 fresh
                     .lines()
-                    .filter(|line| line.starts_with("async def "))
+                    .filter(|line| line.starts_with("async def ") || line.starts_with("def "))
                     .filter(|line| stub_name(line).is_some_and(|name| !declared.contains(name)))
                     .collect()
             };
@@ -1401,31 +1445,7 @@ impl Repl {
         soft_bytes: u64,
     ) -> Repl {
         let specs = specs(&cx).await;
-        let cfg = ReplConfig {
-            limits: Some(ResourceLimits {
-                max_memory: Some(max_memory),
-                max_suspensions: MAX_SUSPENSIONS,
-                max_total_sleep: Some(MAX_TOTAL_SLEEP),
-                ..ResourceLimits::default()
-            }),
-            type_check: true,
-            type_check_stubs: Some(stubs(&specs)),
-            // The worker answers `datetime.now()`/`date.today()` itself (beta.2
-            // `OsPolicy`); pin its zone to the host's so naive values read as
-            // host local time, as the host-answered calls did before.
-            // ponytail: fixed offset sampled per turn, no DST rule; use
-            // `SandboxTimeZone::named` (needs the `tzdb` feature) if a turn
-            // spanning a DST switch matters.
-            os_policy: OsPolicy {
-                timezone: SandboxTimeZone::Fixed {
-                    offset_seconds: chrono::Local::now().offset().local_minus_utc(),
-                    name: None,
-                },
-                sleep: SleepMode::System(MAX_SLEEP),
-                ..OsPolicy::default()
-            },
-            ..ReplConfig::default()
-        };
+        let cfg = session_repl_config(&specs, "", max_memory);
         let dir = data_dir.join("runtime");
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!("runtime dir {}: {e}", dir.display());
@@ -1472,29 +1492,8 @@ impl Repl {
             })
         };
         let candidates = names.keys().cloned().collect();
-        let mut mounts = Vec::with_capacity(2);
         let spill = cx.spill_dir.join(session.to_string());
-        let _ = std::fs::create_dir_all(&spill);
-        // beta.2 refuses mounts whose host directories nest (cwd = home with
-        // the data dir under it); the spill is then reachable through `/cwd`.
-        let nested = match (
-            std::fs::canonicalize(&cx.cwd),
-            std::fs::canonicalize(&spill),
-        ) {
-            (Ok(a), Ok(b)) => a.starts_with(&b) || b.starts_with(&a),
-            _ => false,
-        };
-        let spill_mount = if nested {
-            None
-        } else {
-            Some(("/spill", &spill))
-        };
-        for (virt, host) in std::iter::once(("/cwd", &cx.cwd)).chain(spill_mount) {
-            match MountSpec::new(virt, host, MountSpecMode::ReadOnly) {
-                Ok(m) => mounts.push(m),
-                Err(e) => tracing::warn!("mount {virt} → {}: {e}", host.display()),
-            }
-        }
+        let mounts = session_mounts(&cx.cwd, &spill);
         let mut repl = Repl {
             pool: Arc::clone(pool),
             cfg,
@@ -1612,7 +1611,7 @@ impl Repl {
     /// the dump's own typing state, so rebase its harness declarations before
     /// handing it to a fresh checkout.
     async fn refresh_stubs(&mut self) {
-        let fresh = stubs(&specs(&self.cx).await);
+        let fresh = managed_stubs(&specs(&self.cx).await, "");
         if self.cfg.type_check_stubs.as_deref() == Some(fresh.as_str()) {
             return;
         }
@@ -4355,6 +4354,125 @@ mod tests {
             other => panic!("expected Complete('echo:ios-ready'), got {other:?}"),
         }
         checkout2.finish().await.expect("finish 2");
+        pool.close().await;
+    }
+
+    #[test]
+    fn find_session_tool_prefers_exact_and_resolves_collisions_deterministically() {
+        let make = |name: &str| ToolSpec {
+            name: name.to_string(),
+            description: String::new(),
+            schema: serde_json::json!({"type": "object", "properties": {}}),
+            risk: tools::Risk::ReadOnly,
+            returns: "Any".to_string(),
+            direct: false,
+        };
+        let specs = vec![make("a-b"), make("a.b"), make("a_b")];
+        assert_eq!(find_session_tool(&specs, "a_b").unwrap().name, "a_b");
+        let colliding = vec![make("z.b"), make("z-b")];
+        assert_eq!(find_session_tool(&colliding, "z_b").unwrap().name, "z-b");
+    }
+
+    #[cfg(feature = "inproc-monty")]
+    #[tokio::test]
+    async fn rebase_dump_stubs_replaces_sentinel_block_and_preserves_sync_defs() {
+        let pool = Pool::new(2);
+        let spec_a = ToolSpec {
+            name: "old_tool".to_string(),
+            description: String::new(),
+            schema: serde_json::json!({"type": "object", "properties": {}}),
+            risk: tools::Risk::ReadOnly,
+            returns: "Any".to_string(),
+            direct: false,
+        };
+        let spec_b = ToolSpec {
+            name: "new_tool".to_string(),
+            description: String::new(),
+            schema: serde_json::json!({"type": "object", "properties": {}}),
+            risk: tools::Risk::ReadOnly,
+            returns: "Any".to_string(),
+            direct: false,
+        };
+        let cfg1 = session_repl_config(
+            std::slice::from_ref(&spec_a),
+            "def deck_emit(data: Any) -> None: ...\n",
+            MAX_MEMORY,
+        );
+        let mut quiet = on_print_sync(|_, _| {});
+        let mut c1 = pool.checkout(&cfg1).await.expect("checkout 1");
+        c1.feed(
+            "user_val: int = 42\n",
+            Vec::new(),
+            Vec::new(),
+            false,
+            &mut quiet,
+        )
+        .await
+        .expect("seed");
+        let mut dump = c1.dump().await.expect("dump");
+        c1.finish().await.expect("finish 1");
+
+        // Warm restore passes previous = None with updated tool set + updated sync def signature.
+        let fresh = managed_stubs(
+            std::slice::from_ref(&spec_b),
+            "def deck_emit(data: Any, durable: bool = True, section: str | None = None) -> None: ...\ndef deck_sleep(seconds: float) -> None: ...\n",
+        );
+        rebase_dump_stubs(&mut dump, None, &fresh);
+
+        let parsed = monty::Dump::load(&dump).expect("parse rebased dump");
+        let committed = &parsed
+            .type_check
+            .as_ref()
+            .expect("type_check")
+            .committed_stubs;
+        assert!(
+            !committed.contains("async def old_tool("),
+            "deleted tool must be removed from managed sentinel block: {committed}"
+        );
+        assert!(
+            committed.contains("async def new_tool("),
+            "new tool must be present: {committed}"
+        );
+        assert!(
+            committed.contains("def deck_emit(data: Any, durable: bool = True"),
+            "sync def signature must be updated: {committed}"
+        );
+        assert!(
+            committed.contains("def deck_sleep("),
+            "new sync def must be added: {committed}"
+        );
+        assert!(
+            committed.contains("user_val"),
+            "user declarations must be preserved: {committed}"
+        );
+
+        // Also verify legacy dump (no sentinels) still adds missing sync `def ` stubs.
+        let mut legacy = parsed;
+        legacy.type_check.as_mut().unwrap().committed_stubs =
+            "from typing import Any\nuser_x: int = 1\n".to_string();
+        let state = match &legacy.state {
+            monty::Session::Idle(s) => monty::SessionRef::Idle(s),
+            monty::Session::Suspended(s) => monty::SessionRef::Suspended(s),
+            monty::Session::Running(s) => monty::SessionRef::Running(s),
+        };
+        let mut legacy_bytes = monty::dump(
+            &legacy.script_name,
+            legacy.type_check.as_ref(),
+            &legacy.module_stubs,
+            state,
+        )
+        .expect("legacy dump");
+        rebase_dump_stubs(&mut legacy_bytes, None, &fresh);
+        let parsed_legacy = monty::Dump::load(&legacy_bytes).expect("parse legacy");
+        let legacy_stubs = &parsed_legacy.type_check.unwrap().committed_stubs;
+        assert!(
+            legacy_stubs.contains("def deck_emit("),
+            "legacy fallback must add sync def stubs: {legacy_stubs}"
+        );
+        assert!(
+            legacy_stubs.contains("async def new_tool("),
+            "legacy fallback must add async def stubs: {legacy_stubs}"
+        );
         pool.close().await;
     }
 }

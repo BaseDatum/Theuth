@@ -24,7 +24,7 @@ use crate::owner::{
     SectionHistoryMsg, SectionMoveMsg, SectionPatchMsg,
 };
 
-/// Embedded onboarding & authoring guide for Decks (installed into `<data_dir>/skills/decks/SKILL.md`).
+/// Embedded onboarding & authoring guide for Decks (installed into `<data_dir>/skills/decks.md`).
 pub const DECKS_SKILL: &str = include_str!("../decks.md");
 
 const PROMPT_REMINDER: &str = "\
@@ -734,11 +734,32 @@ impl Tool for DeckScriptRunTool {
 // deck_runtime
 // ---------------------------------------------------------------------------
 
+/// Subset of runtime lifecycle operations permitted for agent tools (229 B3).
+/// Agents may pause, stop, or request a single `run_once` step on an already
+/// owner-approved revision, but NEVER `start` or `resume` recurring/streaming execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeOp {
+    Pause,
+    Stop,
+    RunOnce,
+}
+
+impl From<AgentRuntimeOp> for RuntimeControlOp {
+    fn from(op: AgentRuntimeOp) -> Self {
+        match op {
+            AgentRuntimeOp::Pause => RuntimeControlOp::Pause,
+            AgentRuntimeOp::Stop => RuntimeControlOp::Stop,
+            AgentRuntimeOp::RunOnce => RuntimeControlOp::RunOnce,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DeckRuntimeArgs {
     pub deck_id: String,
-    /// Lifecycle operation: `start`, `pause`, `resume`, `stop`, or `run_once`.
-    pub op: RuntimeControlOp,
+    /// Lifecycle operation: `pause`, `stop`, or `run_once`. Recurring `start`/`resume` require an explicit human owner action.
+    pub op: AgentRuntimeOp,
 }
 
 pub struct DeckRuntimeTool(DecksTools);
@@ -751,16 +772,17 @@ impl Tool for DeckRuntimeTool {
     type Args = DeckRuntimeArgs;
 
     fn description(&self) -> String {
-        "Control a Deck's runtime lifecycle (`start`, `pause`, `resume`, `stop`, `run_once`). Only owner-approved script revisions may start.".into()
+        "Control a Deck's runtime lifecycle (`pause`, `stop`, `run_once`). Only owner-approved script revisions may run; recurring `start` and `resume` require explicit human owner control.".into()
     }
 
     async fn call(&self, a: DeckRuntimeArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let op: RuntimeControlOp = a.op.into();
         let status = self
             .0
             .actor
             .ask(RuntimeControlMsg {
                 deck_id: clean_deck_id(&a.deck_id),
-                op: a.op,
+                op,
             })
             .send()
             .await
@@ -768,7 +790,7 @@ impl Tool for DeckRuntimeTool {
         Ok(structured(
             format!(
                 "Deck {} runtime op {:?} -> state={:?}, epoch={}, checkout_alive={}",
-                status.deck_id, a.op, status.state, status.run_epoch, status.checkout_alive
+                status.deck_id, op, status.state, status.run_epoch, status.checkout_alive
             ),
             &status,
         ))
@@ -819,7 +841,7 @@ impl Tool for DeckInteractTool {
             .ask(InteractMsg {
                 deck_id: clean_deck_id(&a.deck_id),
                 request_id: a.request_id.unwrap_or_default(),
-                caller_id: format!("session:{}", cx.session.0),
+                caller_id: format!("agent:{}", cx.session.0),
                 action: a.action,
                 args: a.args,
                 expected_rev: a.expected_rev,

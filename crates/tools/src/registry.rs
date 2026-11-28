@@ -32,13 +32,13 @@ use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::journal::{InstallJournal, Journal, NoopJournal, QuestionRow};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
-#[cfg(not(target_os = "ios"))]
-use crate::{pty, shell};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, PreviewCx, REGISTRY_ACTOR, Risk,
     ToolCall, ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs,
     reminder, schema,
 };
+#[cfg(not(target_os = "ios"))]
+use crate::{pty, shell};
 
 /// [`CloseTreeAll`]'s wait on one participant before its ack is `timeout`.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1567,11 +1567,16 @@ impl ToolRegistry {
         let server = self.tools.get(name).and_then(|t| match t.source() {
             ToolSource::Mcp { server, .. } => Some(mcp_server_key(&server)),
             // 216: a plugin's tools sit under its `plugin.<name>` server key.
-            ToolSource::Plugin { name, .. } => Some(mcp_server_key(&crate::mcp::plugin_server_key(&name))),
+            ToolSource::Plugin { name, .. } => {
+                Some(mcp_server_key(&crate::mcp::plugin_server_key(&name)))
+            }
             ToolSource::Native { .. } => None,
         });
-        entries_why(&sets, std::iter::once(name.to_owned()).chain(server))
-            .or_else(|| MCP_ADMIN_TOOLS.contains(&name).then_some(AlwaysAskWhy::McpAdmin))
+        entries_why(&sets, std::iter::once(name.to_owned()).chain(server)).or_else(|| {
+            MCP_ADMIN_TOOLS
+                .contains(&name)
+                .then_some(AlwaysAskWhy::McpAdmin)
+        })
     }
 
     /// The harness-wide always-ask set, then `session`'s and each ancestor's.
@@ -1605,7 +1610,9 @@ impl ToolRegistry {
         }
         entries_why(
             &self.always_ask_sets(session),
-            access.iter().map(crate::secrets::ExternalAccess::always_ask_key),
+            access
+                .iter()
+                .map(crate::secrets::ExternalAccess::always_ask_key),
         )
     }
 
@@ -1667,6 +1674,101 @@ impl ToolRegistry {
     /// `at`, `src`); `copy_text` (`before`/`after`/`at`); `doc_export` (`dest`). Every other
     /// native writer takes only a name inside a fixed directory. A new path-writing tool must
     /// use one of these names or extend the lists.
+    /// Collect raw target paths from a native mutating tool's arguments.
+    fn native_write_paths<'a>(
+        &self,
+        name: &str,
+        risk: Risk,
+        args: &'a serde_json::Value,
+    ) -> Option<Vec<&'a str>> {
+        const PLAIN: &[&str] = &["path", "dest", "destination", "to", "file", "out", "output"];
+        const REFS: &[&str] = &["before", "after", "at"];
+        if risk < Risk::Mutating || !self.is_native(name) {
+            return None;
+        }
+        let obj = args.as_object()?;
+        let plain = PLAIN.iter().filter_map(|k| obj.get(*k)?.as_str());
+        let refs = REFS
+            .iter()
+            .chain((name == "move_text").then_some(&"src"))
+            .filter_map(|k| obj.get(*k)?.as_str())
+            .map(|r| r.split_once('#').map_or(r, |(p, _)| p));
+        Some(
+            plain
+                .chain(refs)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect(),
+        )
+    }
+
+    fn resolve_write_arg(session: SessionId, raw: &str) -> PathBuf {
+        let expanded = match raw.strip_prefix("~") {
+            Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+                match std::env::home_dir() {
+                    Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
+                    None => PathBuf::from(raw),
+                }
+            }
+            _ => PathBuf::from(raw),
+        };
+        crate::seat::resolve(session, &expanded)
+    }
+
+    fn data_dirs_for_guard(&self) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(d) = self
+            .config_path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+        {
+            if let Some(r) = crate::seat::real(d) {
+                dirs.push(r);
+            } else {
+                dirs.push(d.to_path_buf());
+            }
+        }
+        if let Some(d) = crate::seat::engine_data_dir() {
+            let cand = crate::seat::real(&d).unwrap_or(d);
+            if !dirs.contains(&cand) {
+                dirs.push(cand);
+            }
+        }
+        dirs
+    }
+
+    /// 229 B2: hard-refuse any native mutating tool writing under `<data_dir>/decks`
+    /// (which holds `decks.sqlite` and `.monty` heap dumps), and fail closed when a
+    /// path cannot be safely resolved.
+    fn internal_state_write(
+        &self,
+        session: SessionId,
+        name: &str,
+        risk: Risk,
+        args: &serde_json::Value,
+    ) -> Option<String> {
+        let paths = self.native_write_paths(name, risk, args)?;
+        if paths.is_empty() {
+            return None;
+        }
+        let dirs = self.data_dirs_for_guard();
+        if dirs.is_empty() {
+            return None;
+        }
+        for raw in paths {
+            let path = Self::resolve_write_arg(session, raw);
+            let Some(real) = crate::seat::real(&path) else {
+                return Some(format!(
+                    "{name}: cannot safely resolve path `{raw}` against protected engine state"
+                ));
+            };
+            if crate::seat::is_deck_state(&dirs, &real) {
+                return Some(format!("{name}: {raw}: {}", crate::seat::DECK_STATE));
+            }
+        }
+        None
+    }
+
     fn protected_write(
         &self,
         session: SessionId,
@@ -1674,9 +1776,10 @@ impl ToolRegistry {
         risk: Risk,
         args: &serde_json::Value,
     ) -> bool {
-        const PLAIN: &[&str] = &["path", "dest", "destination", "to", "file", "out", "output"];
-        const REFS: &[&str] = &["before", "after", "at"];
-        if risk < Risk::Mutating || !self.is_native(name) {
+        let Some(paths) = self.native_write_paths(name, risk, args) else {
+            return false;
+        };
+        if paths.is_empty() {
             return false;
         }
         let Some(data_dir) = self
@@ -1686,31 +1789,22 @@ impl ToolRegistry {
         else {
             return false;
         };
-        let Some(obj) = args.as_object() else {
-            return false;
-        };
         let protected = [
             self.config_path.clone(),
             data_dir.join("mcp").join("config.yaml"),
         ];
         let protected_real: Vec<Option<PathBuf>> =
             protected.iter().map(|p| crate::seat::real(p)).collect();
+        let data_dirs = self.data_dirs_for_guard();
         let hits = |raw: &str| {
-            let raw = raw.trim();
-            if raw.is_empty() {
-                return false;
-            }
-            let expanded = match raw.strip_prefix("~") {
-                Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
-                    match std::env::home_dir() {
-                        Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
-                        None => PathBuf::from(raw),
-                    }
-                }
-                _ => PathBuf::from(raw),
+            let path = Self::resolve_write_arg(session, raw);
+            let Some(real) = crate::seat::real(&path) else {
+                // Fail closed when a path cannot be resolved cleanly (e.g. root escape).
+                return true;
             };
-            let path = crate::seat::resolve(session, &expanded);
-            let real = crate::seat::real(&path);
+            if crate::seat::is_deck_state(&data_dirs, &real) {
+                return true;
+            }
             protected.iter().zip(&protected_real).any(|(p, pr)| {
                 let same = |a: &std::path::Path, b: &std::path::Path| {
                     a == b
@@ -1720,20 +1814,13 @@ impl ToolRegistry {
                                 .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy()))
                 };
                 same(&path, p)
-                    || match (&real, pr) {
-                        (Some(a), Some(b)) => same(a, b),
-                        (Some(a), None) => same(a, p),
-                        _ => false,
+                    || match pr {
+                        Some(b) => same(&real, b),
+                        None => same(&real, p),
                     }
             })
         };
-        let plain = PLAIN.iter().filter_map(|k| obj.get(*k)?.as_str());
-        let refs = REFS
-            .iter()
-            .chain((name == "move_text").then_some(&"src"))
-            .filter_map(|k| obj.get(*k)?.as_str())
-            .map(|r| r.split_once('#').map_or(r, |(p, _)| p));
-        plain.chain(refs).any(hits)
+        paths.into_iter().any(hits)
     }
 
     /// 206: a name [`SetBuiltinsDisabled`] accepts: a registered builtin or the key of
@@ -2089,15 +2176,7 @@ impl ToolRegistry {
         call: &ToolCall,
         activation: Option<&UserActivation>,
         expected_identity: &str,
-    ) -> Result<
-        (
-            DynTool,
-            ToolSpec,
-            Option<Admitted>,
-            Option<Card>,
-        ),
-        Refused,
-    > {
+    ) -> Result<(DynTool, ToolSpec, Option<Admitted>, Option<Card>), Refused> {
         use Refused::Unavailable;
         let name = &call.name;
         let tool = self
@@ -2132,6 +2211,9 @@ impl ToolRegistry {
         let mentions = mentions(&tool, &call.args);
         // The identity above binds the declared spec; the gate sees the call's risk.
         spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
+        if let Some(why) = self.internal_state_write(call.session, name, spec.risk, &call.args) {
+            return Err(Unavailable(why));
+        }
         let forced = self.forced(call.session, &tool, name, spec.risk, &call.args);
         let always = self.always(Some(call.session), name, spec.risk, forced.as_ref());
         let mut card = None;
@@ -2495,7 +2577,11 @@ impl Message<ListBuiltins> for ToolRegistry {
                 secret_asks: if name.starts_with("secret_") {
                     secret_keys.clone()
                 } else if tool.consumes_secrets() {
-                    secret_keys.iter().filter(|k| k.ends_with(":read")).cloned().collect()
+                    secret_keys
+                        .iter()
+                        .filter(|k| k.ends_with(":read"))
+                        .cloned()
+                        .collect()
                 } else {
                     Vec::new()
                 },
@@ -3374,6 +3460,12 @@ impl ToolRegistry {
         let mentions = mentions(&tool, &call.args);
         // 209 D14: the approval card and the gate both see the call's risk.
         spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
+        if let Some(why) =
+            self.internal_state_write(call.session, &call.name, spec.risk, &call.args)
+        {
+            tx.send(ToolOutput::err(why));
+            return reply;
+        }
         let forced = self.forced(call.session, &tool, &call.name, spec.risk, &call.args);
         let card = match self.gate(
             call.session,
@@ -3393,7 +3485,10 @@ impl ToolRegistry {
             }
         };
         let tool: DynTool = match requester {
-            Some(requester) => Arc::new(Brokered { inner: tool, requester }),
+            Some(requester) => Arc::new(Brokered {
+                inner: tool,
+                requester,
+            }),
             None => tool,
         };
         let promote_after = self.promote_after.get(&call.session).copied();
@@ -3446,8 +3541,10 @@ impl crate::ErasedTool for Brokered {
         &self,
         args: &serde_json::Value,
         cx: PreviewCx,
-    ) -> futures::future::BoxFuture<'_, anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>>>
-    {
+    ) -> futures::future::BoxFuture<
+        '_,
+        anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>>,
+    > {
         let inner = self.inner.approval_preview(args, cx);
         let line = format!("{} wants to run {}", self.requester, self.inner.spec().name);
         Box::pin(async move {
@@ -5168,7 +5265,11 @@ pub(crate) mod tests {
         assert_eq!(reg.ask(HiddenEpoch).await.unwrap(), before + 1);
         assert!(tool_names(reg.ask(ListTools(Some(session))).await.unwrap()).is_empty());
         assert_eq!(
-            tool_category(&reg.ask(ListToolCategories(None)).await.unwrap(), "interface").mcp_servers,
+            tool_category(
+                &reg.ask(ListToolCategories(None)).await.unwrap(),
+                "interface"
+            )
+            .mcp_servers,
             ["files"]
         );
 
@@ -5211,7 +5312,10 @@ pub(crate) mod tests {
         )
         .unwrap();
         let infos = reg.ask(ListToolCategories(None)).await.unwrap();
-        assert_eq!(tool_category(&infos, "interface").builtin_tools, ["doc_read"]);
+        assert_eq!(
+            tool_category(&infos, "interface").builtin_tools,
+            ["doc_read"]
+        );
         assert!(
             tool_category(&infos, "documentation")
                 .builtin_tools
@@ -7247,7 +7351,11 @@ pub(crate) mod tests {
             ..build(vec![Arc::new(Echo)], None)
         });
         assert_eq!(ask.ask(brokered("echo")).await.unwrap().content, "hi");
-        assert_eq!(*lock(&seen), [(true, false)], "human-only card, double refused");
+        assert_eq!(
+            *lock(&seen),
+            [(true, false)],
+            "human-only card, double refused"
+        );
     }
 
     /// A human-only tool with a card preview: it keeps what it showed under the call's key and
@@ -7649,38 +7757,69 @@ pub(crate) mod tests {
         let action = |reg: &ToolRegistry, name: &str, risk: Risk, mentions: bool| {
             reg.effective(Some(s), name, risk, mentions, None, Some(&args))
         };
-        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Allow);
-        assert_eq!(action(&reg, "shell", Risk::Destructive, true), PolicyAction::Allow);
-        assert_eq!(action(&reg, "touch", Risk::Mutating, false), PolicyAction::Allow);
+        assert_eq!(
+            action(&reg, "shell", Risk::Destructive, false),
+            PolicyAction::Allow
+        );
+        assert_eq!(
+            action(&reg, "shell", Risk::Destructive, true),
+            PolicyAction::Allow
+        );
+        assert_eq!(
+            action(&reg, "touch", Risk::Mutating, false),
+            PolicyAction::Allow
+        );
         assert_eq!(reg.always(Some(s), "shell", Risk::Destructive, None), None);
         // A subagent of the chat inherits the same (no pin anywhere up the chain).
         let child = SessionId::new();
         reg.parents.insert(child, s);
         assert_eq!(
-            reg.effective(Some(child), "shell", Risk::Destructive, false, None, Some(&args)),
+            reg.effective(
+                Some(child),
+                "shell",
+                Risk::Destructive,
+                false,
+                None,
+                Some(&args)
+            ),
             PolicyAction::Allow
         );
 
         // The chat's pin on asks; a pin off with approvals on does not.
         reg.pin.insert(s, true);
-        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Ask);
+        assert_eq!(
+            action(&reg, "shell", Risk::Destructive, false),
+            PolicyAction::Ask
+        );
         reg.pin.insert(s, false);
         reg.approvals = true;
-        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Allow);
+        assert_eq!(
+            action(&reg, "shell", Risk::Destructive, false),
+            PolicyAction::Allow
+        );
         reg.pin.clear();
-        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Ask);
+        assert_eq!(
+            action(&reg, "shell", Risk::Destructive, false),
+            PolicyAction::Ask
+        );
         reg.approvals = false;
 
         // An entry naming the tool asks with approvals off, and names itself as the reason.
         reg.always_ask.insert("shell".into());
-        assert_eq!(action(&reg, "shell", Risk::Destructive, false), PolicyAction::Ask);
+        assert_eq!(
+            action(&reg, "shell", Risk::Destructive, false),
+            PolicyAction::Ask
+        );
         assert_eq!(
             reg.always(Some(s), "shell", Risk::Destructive, None),
             Some(AlwaysAskWhy::Entries {
                 entries: vec!["shell".into()]
             })
         );
-        assert_eq!(action(&reg, "touch", Risk::Mutating, false), PolicyAction::Allow);
+        assert_eq!(
+            action(&reg, "touch", Risk::Mutating, false),
+            PolicyAction::Allow
+        );
     }
 
     /// The mandatory gates say which they are: an args-forced reason wins (a marked secret
@@ -7698,7 +7837,14 @@ pub(crate) mod tests {
             Some(secret.clone())
         );
         assert_eq!(
-            reg.effective(Some(s), "shell", Risk::Destructive, false, Some(&secret), None),
+            reg.effective(
+                Some(s),
+                "shell",
+                Risk::Destructive,
+                false,
+                Some(&secret),
+                None
+            ),
             PolicyAction::Ask
         );
         assert_eq!(
@@ -7713,7 +7859,10 @@ pub(crate) mod tests {
         assert_eq!(reg.always(Some(s), "echo", Risk::ReadOnly, None), None);
         reg.always_ask.clear();
         reg.always_ask_unreadable.clear();
-        assert_eq!(reg.always(Some(s), "add_mcp_server", Risk::Mutating, None), None);
+        assert_eq!(
+            reg.always(Some(s), "add_mcp_server", Risk::Mutating, None),
+            None
+        );
     }
 
     /// `list_builtins` shows each builtin's effective action (approvals off: `allow`) and the
@@ -8385,7 +8534,10 @@ pub(crate) mod tests {
     fn ext_tools() -> (Vec<DynTool>, Arc<std::sync::atomic::AtomicUsize>) {
         crate::secrets::install(Arc::new(ExtHook));
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        (vec![Arc::new(Show(entered.clone())), Arc::new(FakeOp)], entered)
+        (
+            vec![Arc::new(Show(entered.clone())), Arc::new(FakeOp)],
+            entered,
+        )
     }
 
     /// The owner's card of 2026-11-26 23:36: approvals off, `shell` not marked, yet an
@@ -8417,14 +8569,28 @@ pub(crate) mod tests {
             Some(read)
         );
         assert_eq!(
-            reg.effective(Some(s), "shell", Risk::Destructive, false, forced.as_ref(), Some(&with_ref)),
+            reg.effective(
+                Some(s),
+                "shell",
+                Risk::Destructive,
+                false,
+                forced.as_ref(),
+                Some(&with_ref)
+            ),
             PolicyAction::Ask
         );
         let plain = serde_json::json!({ "command": command, "timeout_secs": 900 });
         let forced = reg.forced(s, &tool, "shell", Risk::Destructive, &plain);
         assert_eq!(forced, None);
         assert_eq!(
-            reg.effective(Some(s), "shell", Risk::Destructive, false, None, Some(&plain)),
+            reg.effective(
+                Some(s),
+                "shell",
+                Risk::Destructive,
+                false,
+                None,
+                Some(&plain)
+            ),
             PolicyAction::Allow
         );
     }
@@ -8436,21 +8602,34 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn external_read_entry_forces_a_card_and_resolves_after_it() {
         let (tools, entered) = ext_tools();
-        let (reg, cards) =
-            always_ask_registry(tools, &["secret:bw/c:read"], PathBuf::new(), Decision::Allow).await;
+        let (reg, cards) = always_ask_registry(
+            tools,
+            &["secret:bw/c:read"],
+            PathBuf::new(),
+            Decision::Allow,
+        )
+        .await;
         let session = SessionId::new();
         let out = reg
             .ask(Invoke(show(session, "v={{secret:bw/c/x}}")))
             .await
             .unwrap();
         assert_eq!(out.content, format!("v={EXT_VALUE}"), "{out:?}");
-        assert_eq!(*lock(&cards), [(true, false)], "always ask; the double refused");
+        assert_eq!(
+            *lock(&cards),
+            [(true, false)],
+            "always ask; the double refused"
+        );
         let out = reg
             .ask(Invoke(show(session, "v={{secret:bw/other/x}}")))
             .await
             .unwrap();
         assert_eq!(out.content, format!("v={EXT_VALUE}"));
-        assert_eq!(lock(&cards).len(), 1, "another connection's read is not marked");
+        assert_eq!(
+            lock(&cards).len(),
+            1,
+            "another connection's read is not marked"
+        );
         let before = entered.load(Ordering::SeqCst);
         let out = reg
             .ask(Invoke(show(session, "{{secret:bw/missing/x}}")))
@@ -8525,7 +8704,11 @@ pub(crate) mod tests {
                 "secret:bw/c:write"
             ]
         );
-        assert!(std::fs::read_to_string(&path).unwrap().contains("secret:bw/c:send"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("secret:bw/c:send")
+        );
         let session = SessionId::new();
         for d in ["read", "write", "delete", "send"] {
             let op = || ToolCall {
@@ -8547,5 +8730,65 @@ pub(crate) mod tests {
             assert_eq!(out.content, "done");
             assert_eq!(lock(&cards).len(), n + 1, "{d} removed: no card");
         }
+    }
+
+    #[tokio::test]
+    async fn deck_internal_state_and_nonexistent_parent_traversal_refused() {
+        let dir = scratch_dir();
+        let config_path = dir.join("config.yaml");
+        std::fs::write(&config_path, "tools:\n  approvals: false\n").unwrap();
+        std::fs::create_dir_all(dir.join("decks/runtime")).unwrap();
+        std::fs::write(dir.join("decks/decks.sqlite"), b"real-db").unwrap();
+
+        let (reg, cards) = always_ask_registry(
+            vec![Arc::new(crate::fs::WriteFile)],
+            &[],
+            config_path.clone(),
+            Decision::Allow,
+        )
+        .await;
+        let session = SessionId::new();
+
+        // Direct and <nonexistent>/.. writes to <data_dir>/decks/* are hard-refused (no approval card, never runs).
+        for bad in [
+            dir.join("decks/decks.sqlite"),
+            dir.join("decks/runtime/s1.monty"),
+            dir.join("decks/nonexistent/../decks.sqlite"),
+            dir.join("nonexistent/../decks/decks.sqlite"),
+        ] {
+            let out = reg
+                .ask(Invoke(ToolCall {
+                    args: serde_json::json!({"path": bad.to_string_lossy(), "content": "forged"}),
+                    ..call("write_file", session)
+                }))
+                .await
+                .unwrap();
+            assert!(out.is_error, "expected hard refusal for {bad:?}: {out:?}");
+            assert!(
+                out.content.contains(crate::seat::DECK_STATE),
+                "unexpected error for {bad:?}: {}",
+                out.content
+            );
+        }
+        assert_eq!(lock(&cards).len(), 0, "hard refusal must not ask");
+        assert_eq!(
+            std::fs::read(dir.join("decks/decks.sqlite")).unwrap(),
+            b"real-db"
+        );
+
+        // <nonexistent>/.. traversal to config.yaml still forces an approval card (cannot bypass).
+        let cfg_bypass = dir.join("nonexistent/../config.yaml");
+        let _ = reg
+            .ask(Invoke(ToolCall {
+                args: serde_json::json!({"path": cfg_bypass.to_string_lossy(), "content": "x: 1\n"}),
+                ..call("write_file", session)
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            lock(&cards).len(),
+            1,
+            "<nonexistent>/.. config.yaml write must force approval card"
+        );
     }
 }

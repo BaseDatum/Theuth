@@ -2040,6 +2040,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(secrets::SecretsPlugin),
             Box::new(external_backends::ExternalBackendsPlugin), // 221
             Box::new(document::DocumentPlugin),
+            Box::new(decks::DecksPlugin),
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),

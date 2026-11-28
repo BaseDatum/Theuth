@@ -4,13 +4,16 @@
 //! - Exactly one `DeckOwner` task owns at most one `DeckCheckout` per Deck.
 //! - Stream steps (`on_step`/`collect`) and interactive actions (`on_action`) are serialized
 //!   strictly at cooperative turn boundaries — Python never runs concurrently for a Deck.
-//! - `run_epoch` increments on start, stop, and revision upgrade so stale frames/events are fenced.
-//! - Streaming keeps the checkout and Python globals alive with zero UI views open.
-//! - Snapshot failures preserve the durable last-good snapshot and mark the Deck `stale = true`.
-//! - Tool approvals (`ApprovalRequested` / `ApprovalResolved`) for a Deck's `SessionId` are
-//!   surfaced in real time on the per-Deck subscription hub without blocking the turn driver.
+//! - Read-only queries (`deck_get`, `deck_list`, `deck_subscribe`) read from `SharedDeckState::live_cache`
+//!   without ever round-tripping through a potentially blocked `DeckOwner` (229 B4).
+//! - `run_epoch` increments on start, stop, deletion, and revision upgrade so stale frames/events
+//!   are fenced and late writes after deletion or revision upgrade are discarded (229 H2/H7).
+//! - Each Deck runs in its own isolated work directory (`<data_dir>/deck-work/<deck_id>`) with
+//!   seated `cwd`, `write_root`, and `SetApprovals(session, true)` pinned (229 H1).
+//! - Concurrent tool approvals are queued per Deck and restore the exact pre-approval runtime state
+//!   when cleared (229 M1).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -22,7 +25,7 @@ use document::deck::{
     CreateDeck, DeckCall, DeckCallReply, DeckCreated, DeckDocError, DeckDocSnapshot, DeckOp,
     DeckScriptRef, DeckSection, SectionKind, SectionRevision,
 };
-use document::{DocId, DocKind, DocumentActor, ListDocs, Principal};
+use document::{DocId, DocKind, DocumentActor, DocumentChanged, ListDocs, Principal};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use parking_lot::Mutex;
@@ -30,16 +33,21 @@ use runtime::{Runtime, SessionId};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
-use tools::{ApprovalId, ApprovalRequested, ApprovalResolved, Decision, ToolRegistry};
+use tools::{
+    ApprovalId, ApprovalRequested, ApprovalResolved, Decision, SetApprovals, ToolRegistry,
+};
 
 use crate::hub::{DeckHub, MAX_SNAPSHOT_BYTES};
 use crate::model::{
     DeckChanged, DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary,
-    DeclaredAction, InteractErrorCode, InteractResponse, LiveFrame, PendingApproval,
-    RuntimeControlOp, RuntimeState, ScriptMode, ScriptRevision, ScriptStatus,
+    DeclaredAction, InteractErrorCode, InteractResponse, LiveFrame, MAX_INTERVAL_SECS,
+    PendingApproval, RuntimeControlOp, RuntimeState, ScriptMode, ScriptRevision, ScriptStatus,
+    canonical_json_string, clamp_interval_secs,
 };
 use crate::runtime::{DECK_POOL_MAX, DeckCheckout, EmittedPayload, TurnContext, TurnEffects};
-use crate::store::{DeckRecord, DeckStore};
+use crate::store::{
+    DeckRecord, DeckStore, IdempotencyLookup, sha256_hex, validate_script_proposal,
+};
 
 /// Actor registry name for [`DeckSupervisor`].
 pub const DECKS_ACTOR: &str = "decks";
@@ -48,7 +56,15 @@ pub const DECKS_ACTOR: &str = "decks";
 const DEFAULT_INTERACT_TIMEOUT_MS: u64 = 15_000;
 const MAX_INTERACT_TIMEOUT_MS: u64 = 60_000;
 
-/// Shared state read by both the approval bus watcher and per-Deck owners.
+/// Cached live runtime state served directly by `DeckSupervisor` without awaiting `DeckOwner` (229 B4).
+#[derive(Clone, Debug)]
+pub struct LiveDeckCache {
+    pub status: DeckRuntimeStatus,
+    pub last_snapshot: Option<DeckSnapshot>,
+    pub live_frame: Option<LiveFrame>,
+}
+
+/// Shared state read by the approval/delete watcher, `DeckSupervisor`, and per-Deck owners.
 #[derive(Clone)]
 pub struct SharedDeckState {
     pub store: DeckStore,
@@ -56,14 +72,20 @@ pub struct SharedDeckState {
     pub runtime: Runtime,
     pub document: ActorRef<DocumentActor>,
     pub registry: ActorRef<ToolRegistry>,
-    pub cwd: PathBuf,
-    pub pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    /// Queued pending approvals per Deck so concurrent `asyncio.gather` approvals never clobber (229 M1).
+    pub pending_approvals: Arc<Mutex<HashMap<String, Vec<PendingApproval>>>>,
+    /// Pre-approval runtime state recorded when entering `WaitingApproval` (229 M1).
+    pub pre_approval_state: Arc<Mutex<HashMap<String, RuntimeState>>>,
     pub session_index: Arc<Mutex<HashMap<SessionId, String>>>,
-    pub live_statuses: Arc<Mutex<HashMap<String, DeckRuntimeStatus>>>,
+    /// Lock-free (non-blocking) snapshot of live Deck state for `GetDeck`/`ListDecks`/`Subscribe` (229 B4).
+    pub live_cache: Arc<Mutex<HashMap<String, LiveDeckCache>>>,
+    /// Tombstone set preventing late SQLite/hub writes from an in-flight turn after Deck deletion (229 H2).
+    pub deleted_decks: Arc<Mutex<HashSet<String>>>,
 }
 
 impl SharedDeckState {
     pub fn register_session(&self, deck_id: &str, session_id: SessionId) {
+        self.deleted_decks.lock().remove(deck_id);
         self.session_index
             .lock()
             .insert(session_id, deck_id.to_owned());
@@ -73,10 +95,38 @@ impl SharedDeckState {
         self.session_index.lock().get(&session_id).cloned()
     }
 
+    pub fn mark_deleted(&self, deck_id: &str) {
+        self.deleted_decks.lock().insert(deck_id.to_owned());
+        self.live_cache.lock().remove(deck_id);
+        self.pending_approvals.lock().remove(deck_id);
+        self.pre_approval_state.lock().remove(deck_id);
+    }
+
+    pub fn is_deleted(&self, deck_id: &str) -> bool {
+        self.deleted_decks.lock().contains(deck_id)
+    }
+
+    pub fn head_pending_approval(&self, deck_id: &str) -> Option<PendingApproval> {
+        self.pending_approvals
+            .lock()
+            .get(deck_id)
+            .and_then(|q| q.first().cloned())
+    }
+
+    pub fn has_pending_approvals(&self, deck_id: &str) -> bool {
+        self.pending_approvals
+            .lock()
+            .get(deck_id)
+            .is_some_and(|q| !q.is_empty())
+    }
+
     pub fn on_approval_requested(&self, ev: &ApprovalRequested) {
         let Some(deck_id) = self.deck_for_session(ev.session) else {
             return;
         };
+        if self.is_deleted(&deck_id) {
+            return;
+        }
         let mut redacted_args = ev.args.clone();
         tools::secrets::redact_value(&mut redacted_args);
         let pending = PendingApproval {
@@ -86,42 +136,71 @@ impl SharedDeckState {
             risk: ev.risk,
             args: redacted_args,
         };
-        self.pending_approvals
-            .lock()
-            .insert(deck_id.clone(), pending.clone());
+
+        let head = {
+            let mut map = self.pending_approvals.lock();
+            let q = map.entry(deck_id.clone()).or_default();
+            if !q.iter().any(|p| p.approval_id == pending.approval_id) {
+                q.push(pending.clone());
+            }
+            q.first().cloned()
+        };
+
         self.hub.broadcast(
             &deck_id,
             DeckRuntimeEvent::ApprovalPending {
                 approval: pending.clone(),
             },
         );
-        let current = self.live_statuses.lock().get(&deck_id).cloned();
-        if let Some(mut st) = current {
-            st.state = RuntimeState::WaitingApproval;
-            st.pending_approval = Some(pending);
-            self.live_statuses
-                .lock()
-                .insert(deck_id.clone(), st.clone());
+
+        let updated_status = {
+            let mut cache = self.live_cache.lock();
+            if let Some(entry) = cache.get_mut(&deck_id) {
+                if entry.status.state != RuntimeState::WaitingApproval {
+                    self.pre_approval_state
+                        .lock()
+                        .entry(deck_id.clone())
+                        .or_insert(entry.status.state);
+                }
+                entry.status.state = RuntimeState::WaitingApproval;
+                entry.status.pending_approval = head;
+                Some(entry.status.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(st) = updated_status {
             self.hub
                 .broadcast(&deck_id, DeckRuntimeEvent::Status { status: st });
         }
     }
 
     pub fn on_approval_resolved(&self, ev: &ApprovalResolved) {
-        let deck_id = {
-            let mut guard = self.pending_approvals.lock();
-            let found = guard
-                .iter()
-                .find(|(_, p)| p.approval_id == ev.id)
-                .map(|(k, _)| k.clone());
-            if let Some(ref id) = found {
-                guard.remove(id);
+        let (deck_id, next_head) = {
+            let mut map = self.pending_approvals.lock();
+            let mut found = None;
+            let mut next = None;
+            for (k, q) in map.iter_mut() {
+                if let Some(pos) = q.iter().position(|p| p.approval_id == ev.id) {
+                    q.remove(pos);
+                    found = Some(k.clone());
+                    next = q.first().cloned();
+                    break;
+                }
             }
-            found
+            if let Some(ref id) = found
+                && next.is_none()
+            {
+                map.remove(id);
+            }
+            (found, next)
         };
         let Some(deck_id) = deck_id else {
             return;
         };
+        if self.is_deleted(&deck_id) {
+            return;
+        }
         let approved = ev.decision == Decision::Allow && !ev.timed_out && !ev.dismissed;
         self.hub.broadcast(
             &deck_id,
@@ -130,19 +209,42 @@ impl SharedDeckState {
                 approved,
             },
         );
-        let current = self.live_statuses.lock().get(&deck_id).cloned();
-        if let Some(mut st) = current {
-            st.pending_approval = None;
-            if st.state == RuntimeState::WaitingApproval {
-                st.state = if st.checkout_alive {
-                    RuntimeState::Streaming
+
+        if let Some(ref next_pending) = next_head {
+            self.hub.broadcast(
+                &deck_id,
+                DeckRuntimeEvent::ApprovalPending {
+                    approval: next_pending.clone(),
+                },
+            );
+        }
+
+        let updated_status = {
+            let mut cache = self.live_cache.lock();
+            if let Some(entry) = cache.get_mut(&deck_id) {
+                if let Some(next_pending) = next_head {
+                    entry.status.state = RuntimeState::WaitingApproval;
+                    entry.status.pending_approval = Some(next_pending);
                 } else {
-                    RuntimeState::Stopped
-                };
+                    let restored = self.pre_approval_state.lock().remove(&deck_id);
+                    entry.status.pending_approval = None;
+                    if entry.status.state == RuntimeState::WaitingApproval {
+                        entry.status.state = restored.unwrap_or(if entry.status.checkout_alive {
+                            RuntimeState::Streaming
+                        } else {
+                            RuntimeState::Stopped
+                        });
+                    }
+                }
+                Some(entry.status.clone())
+            } else {
+                if next_head.is_none() {
+                    self.pre_approval_state.lock().remove(&deck_id);
+                }
+                None
             }
-            self.live_statuses
-                .lock()
-                .insert(deck_id.clone(), st.clone());
+        };
+        if let Some(st) = updated_status {
             self.hub
                 .broadcast(&deck_id, DeckRuntimeEvent::Status { status: st });
         }
@@ -165,11 +267,8 @@ enum OwnerCmd {
     },
     RevisionApproved {
         script: ScriptRevision,
-        reply: oneshot::Sender<Result<DeckRuntimeStatus, String>>,
     },
-    GetState {
-        reply: oneshot::Sender<(DeckRuntimeStatus, Option<DeckSnapshot>, Option<LiveFrame>)>,
-    },
+    Delete,
     Shutdown,
 }
 
@@ -206,7 +305,6 @@ impl DeckSupervisor {
         runtime: Runtime,
         document: ActorRef<DocumentActor>,
         registry: ActorRef<ToolRegistry>,
-        cwd: PathBuf,
         pool: Option<Arc<MontyPool>>,
     ) -> (Self, SharedDeckState) {
         let shared = SharedDeckState {
@@ -215,10 +313,11 @@ impl DeckSupervisor {
             runtime,
             document,
             registry,
-            cwd,
             pending_approvals: Arc::new(Mutex::new(HashMap::new())),
+            pre_approval_state: Arc::new(Mutex::new(HashMap::new())),
             session_index: Arc::new(Mutex::new(HashMap::new())),
-            live_statuses: Arc::new(Mutex::new(HashMap::new())),
+            live_cache: Arc::new(Mutex::new(HashMap::new())),
+            deleted_decks: Arc::new(Mutex::new(HashSet::new())),
         };
         let sup = Self {
             shared: shared.clone(),
@@ -239,7 +338,41 @@ impl DeckSupervisor {
         Ok(arc)
     }
 
+    /// Verify the Deck document exists in `DocumentActor` before creating SQLite metadata or owners (229 H2).
+    async fn verify_deck_exists(&self, deck_id: &str) -> Result<DeckDocSnapshot, String> {
+        if self.shared.is_deleted(deck_id) {
+            return Err(format!("deck `{deck_id}` has been deleted"));
+        }
+        self.read_doc(deck_id, Principal::Helper).await
+    }
+
+    /// Seat isolated per-Deck working dir, write root, and forced approvals for a Deck session (229 H1).
+    async fn configure_deck_session(
+        &self,
+        deck_id: &str,
+        session_id: SessionId,
+    ) -> Result<PathBuf, String> {
+        let work_dir = self
+            .shared
+            .store
+            .deck_work_dir(deck_id)
+            .map_err(|e| format!("{e:#}"))?;
+        tools::seat::set_cwd(session_id, Some(work_dir.clone()));
+        tools::seat::set_write_root(session_id, Some(work_dir.clone()));
+        let _ = self
+            .shared
+            .registry
+            .ask(SetApprovals {
+                session: Some(session_id),
+                enabled: true,
+                clear: false,
+            })
+            .await;
+        Ok(work_dir)
+    }
+
     async fn ensure_owner(&mut self, deck_id: &str) -> Result<mpsc::Sender<OwnerCmd>, String> {
+        self.verify_deck_exists(deck_id).await?;
         if let Some(tx) = self.owners.get(deck_id)
             && !tx.is_closed()
         {
@@ -252,28 +385,32 @@ impl DeckSupervisor {
             .await
             .map_err(|e| format!("{e:#}"))?;
         self.shared.register_session(deck_id, rec.session_id);
+        let work_dir = self.configure_deck_session(deck_id, rec.session_id).await?;
         let pool = self.resolve_pool().await?;
         let (tx, rx) = mpsc::channel(64);
-        let owner = DeckOwner::load(deck_id.to_owned(), rec, self.shared.clone(), pool).await?;
+        let owner =
+            DeckOwner::load(deck_id.to_owned(), rec, work_dir, self.shared.clone(), pool).await?;
         tokio::spawn(owner.run(rx));
         self.owners.insert(deck_id.to_owned(), tx.clone());
         Ok(tx)
     }
 
+    /// Read live runtime status/snapshot/frame directly from `live_cache` or SQLite
+    /// WITHOUT ever awaiting `DeckOwner` (prevents global supervisor deadlock during approvals, 229 B4).
+    /// Caller must ensure `deck_id` exists in `DocumentActor` first!
     async fn get_runtime_snapshot(
         &mut self,
         deck_id: &str,
     ) -> Result<(DeckRuntimeStatus, Option<DeckSnapshot>, Option<LiveFrame>), String> {
-        if let Some(tx) = self.owners.get(deck_id)
-            && !tx.is_closed()
-        {
-            let (rtx, rrx) = oneshot::channel();
-            if tx.send(OwnerCmd::GetState { reply: rtx }).await.is_ok()
-                && let Ok(res) = rrx.await
-            {
-                return Ok(res);
+        if let Some(cached) = self.shared.live_cache.lock().get(deck_id).cloned() {
+            let mut st = cached.status;
+            if let Some(pa) = self.shared.head_pending_approval(deck_id) {
+                st.state = RuntimeState::WaitingApproval;
+                st.pending_approval = Some(pa);
             }
+            return Ok((st, cached.last_snapshot, cached.live_frame));
         }
+
         // Cold read from SQLite without spinning up a Monty pool if not yet running.
         let rec = self
             .shared
@@ -294,7 +431,7 @@ impl DeckSupervisor {
             .get_last_snapshot(deck_id)
             .await
             .unwrap_or(None);
-        let pending_approval = self.shared.pending_approvals.lock().get(deck_id).cloned();
+        let pending_approval = self.shared.head_pending_approval(deck_id);
         let status = DeckRuntimeStatus {
             deck_id: deck_id.to_owned(),
             session_id: rec.session_id,
@@ -375,6 +512,13 @@ impl DeckSupervisor {
         }
     }
 
+    async fn deck_title(&self, deck_id: &str) -> String {
+        self.read_doc(deck_id, Principal::Helper)
+            .await
+            .map(|d| d.title)
+            .unwrap_or_default()
+    }
+
     async fn publish_changed(&self, deck_id: &str, title: String, deleted: bool) {
         self.shared
             .runtime
@@ -386,6 +530,38 @@ impl DeckSupervisor {
             })
             .await;
     }
+
+    async fn cleanup_deleted_deck(&mut self, deck_id: &str, title: String) {
+        // 1. Mark tombstoned immediately so any in-flight turn in DeckOwner is fenced out.
+        self.shared.mark_deleted(deck_id);
+
+        // 2. Stop & reap the DeckOwner if active.
+        if let Some(tx) = self.owners.remove(deck_id) {
+            let _ = tx.try_send(OwnerCmd::Delete);
+        }
+
+        // 3. Clean up SQLite rows, `.monty` dump, spill dir, seat, and isolated work dir.
+        if let Ok(Some(session_id)) = self.shared.store.delete_deck_state(deck_id).await {
+            self.shared.session_index.lock().remove(&session_id);
+            tools::seat::forget(session_id);
+            let _ = std::fs::remove_file(self.shared.store.monty_dump_path(session_id));
+            let _ =
+                std::fs::remove_dir_all(self.shared.store.spill_dir().join(session_id.to_string()));
+        }
+        if let Ok(work_dir) = self.shared.store.deck_work_dir(deck_id) {
+            let _ = std::fs::remove_dir_all(work_dir);
+        }
+
+        // 4. Close any remaining subscribers AFTER state teardown completes.
+        self.shared.hub.broadcast(
+            deck_id,
+            DeckRuntimeEvent::Closed {
+                reason: "deck_deleted".into(),
+            },
+        );
+
+        self.publish_changed(deck_id, title, true).await;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +571,7 @@ impl DeckSupervisor {
 struct DeckOwner {
     deck_id: String,
     session_id: SessionId,
+    work_dir: PathBuf,
     shared: SharedDeckState,
     pool: Arc<MontyPool>,
     checkout: Option<DeckCheckout>,
@@ -420,6 +597,7 @@ impl DeckOwner {
     async fn load(
         deck_id: String,
         rec: DeckRecord,
+        work_dir: PathBuf,
         shared: SharedDeckState,
         pool: Arc<MontyPool>,
     ) -> Result<Self, String> {
@@ -447,6 +625,7 @@ impl DeckOwner {
         let owner = Self {
             deck_id,
             session_id: rec.session_id,
+            work_dir,
             shared,
             pool,
             checkout: None,
@@ -467,17 +646,12 @@ impl DeckOwner {
             consecutive_failures: log.consecutive_failures,
             next_wake: None,
         };
-        owner.sync_live_status();
+        owner.sync_live_cache();
         Ok(owner)
     }
 
     fn status(&self) -> DeckRuntimeStatus {
-        let pending_approval = self
-            .shared
-            .pending_approvals
-            .lock()
-            .get(&self.deck_id)
-            .cloned();
+        let pending_approval = self.shared.head_pending_approval(&self.deck_id);
         let state = if pending_approval.is_some() {
             RuntimeState::WaitingApproval
         } else {
@@ -502,22 +676,49 @@ impl DeckOwner {
         }
     }
 
-    fn sync_live_status(&self) {
-        self.shared
-            .live_statuses
-            .lock()
-            .insert(self.deck_id.clone(), self.status());
+    fn sync_live_cache(&self) {
+        if self.shared.is_deleted(&self.deck_id) {
+            return;
+        }
+        self.shared.live_cache.lock().insert(
+            self.deck_id.clone(),
+            LiveDeckCache {
+                status: self.status(),
+                last_snapshot: self.last_snapshot.clone(),
+                live_frame: self.live_frame.clone(),
+            },
+        );
     }
 
     fn broadcast_status(&self) {
+        if self.shared.is_deleted(&self.deck_id) {
+            return;
+        }
         let st = self.status();
-        self.shared
-            .live_statuses
-            .lock()
-            .insert(self.deck_id.clone(), st.clone());
+        self.shared.live_cache.lock().insert(
+            self.deck_id.clone(),
+            LiveDeckCache {
+                status: st.clone(),
+                last_snapshot: self.last_snapshot.clone(),
+                live_frame: self.live_frame.clone(),
+            },
+        );
         self.shared
             .hub
             .broadcast(&self.deck_id, DeckRuntimeEvent::Status { status: st });
+    }
+
+    /// Returns `true` when the Deck was deleted, `run_epoch` moved, or `script_rev` is no longer active (229 H2).
+    async fn is_fenced(&mut self, turn_epoch: u64, script_rev: u64) -> bool {
+        if self.shared.is_deleted(&self.deck_id) || self.run_epoch != turn_epoch {
+            return true;
+        }
+        !self
+            .shared
+            .store
+            .is_active_rev(&self.deck_id, script_rev)
+            .await
+            .unwrap_or(false)
     }
 
     fn turn_context(&self) -> TurnContext {
@@ -532,6 +733,7 @@ impl DeckOwner {
     }
 
     async fn run(mut self, mut rx: mpsc::Receiver<OwnerCmd>) {
+        let mut deleted = false;
         loop {
             match self.next_wake {
                 Some(deadline) => {
@@ -539,50 +741,75 @@ impl DeckOwner {
                         biased;
                         cmd = rx.recv() => {
                             let Some(cmd) = cmd else { break };
-                            if self.handle_cmd(cmd).await {
-                                break;
+                            match self.handle_cmd(cmd).await {
+                                CmdFlow::Continue => {}
+                                CmdFlow::Stop => break,
+                                CmdFlow::Deleted => { deleted = true; break; }
                             }
                         }
                         _ = tokio::time::sleep_until(deadline) => {
                             self.next_wake = None;
+                            if self.shared.is_deleted(&self.deck_id) {
+                                deleted = true;
+                                break;
+                            }
                             self.handle_tick().await;
                         }
                     }
                 }
                 None => {
                     let Some(cmd) = rx.recv().await else { break };
-                    if self.handle_cmd(cmd).await {
-                        break;
+                    match self.handle_cmd(cmd).await {
+                        CmdFlow::Continue => {}
+                        CmdFlow::Stop => break,
+                        CmdFlow::Deleted => {
+                            deleted = true;
+                            break;
+                        }
                     }
                 }
             }
         }
-        // Clean shutdown: checkpoint & release checkout.
-        let _ = self.stop_checkout().await;
-        self.shared.hub.broadcast(
-            &self.deck_id,
-            DeckRuntimeEvent::Closed {
-                reason: "deck_owner_stopped".into(),
-            },
-        );
+        if deleted || self.shared.is_deleted(&self.deck_id) {
+            // Drop checkout without writing any checkpoint to SQLite or disk;
+            // `DeckSupervisor::cleanup_deleted_deck` broadcasts `Closed { reason: "deck_deleted" }`
+            // once SQLite, `.monty`, work_dir, and seat teardown completes.
+            if let Some(checkout) = self.checkout.take() {
+                drop(checkout);
+            }
+        } else {
+            let _ = self.stop_checkout().await;
+            self.shared.hub.broadcast(
+                &self.deck_id,
+                DeckRuntimeEvent::Closed {
+                    reason: "deck_owner_stopped".into(),
+                },
+            );
+        }
     }
 
-    /// Returns `true` when the owner loop should exit.
-    async fn handle_cmd(&mut self, cmd: OwnerCmd) -> bool {
+    async fn handle_cmd(&mut self, cmd: OwnerCmd) -> CmdFlow {
         match cmd {
             OwnerCmd::Shutdown => {
                 let _ = self.stop_checkout().await;
-                return true;
+                return CmdFlow::Stop;
             }
-            OwnerCmd::GetState { reply } => {
-                let _ = reply.send((
-                    self.status(),
-                    self.last_snapshot.clone(),
-                    self.live_frame.clone(),
-                ));
+            OwnerCmd::Delete => {
+                self.next_wake = None;
+                self.live_frame = None;
+                self.run_epoch += 1;
+                self.state = RuntimeState::Stopped;
+                if let Some(checkout) = self.checkout.take() {
+                    drop(checkout);
+                }
+                return CmdFlow::Deleted;
             }
             OwnerCmd::Control { op, reply } => {
-                let res = self.handle_control(op).await;
+                let res = if self.shared.is_deleted(&self.deck_id) {
+                    Err(format!("deck `{}` has been deleted", self.deck_id))
+                } else {
+                    self.handle_control(op).await
+                };
                 let _ = reply.send(res);
             }
             OwnerCmd::Interact {
@@ -595,58 +822,62 @@ impl DeckOwner {
             } => {
                 if reply.is_closed() {
                     // Caller disconnected before execution began — do not replay mutation.
-                    return false;
+                    return CmdFlow::Continue;
                 }
                 let resp = self
                     .handle_interact(request_id, caller_id, action, args, expected_rev)
                     .await;
                 let _ = reply.send(resp);
             }
-            OwnerCmd::RevisionApproved { script, reply } => {
-                let res = self.handle_revision_approved(script).await;
-                let _ = reply.send(res);
+            OwnerCmd::RevisionApproved { script } => {
+                if !self.shared.is_deleted(&self.deck_id) {
+                    self.handle_revision_approved(script).await;
+                }
             }
         }
-        false
+        CmdFlow::Continue
     }
 
-    async fn refresh_scripts_from_store(&mut self) {
+    async fn refresh_scripts_from_store(&mut self) -> Result<(), String> {
         if let Ok(Some(rec)) = self.shared.store.get_deck(&self.deck_id).await {
             self.pending_rev = rec.pending_rev;
         }
-        if let Ok(active) = self.shared.store.get_active_script(&self.deck_id).await {
-            self.active_script = active;
+        match self.shared.store.get_active_script(&self.deck_id).await {
+            Ok(active) => {
+                self.active_script = active;
+                Ok(())
+            }
+            Err(e) => {
+                self.active_script = None;
+                Err(format!("{e:#}"))
+            }
         }
     }
 
-    async fn handle_revision_approved(
-        &mut self,
-        script: ScriptRevision,
-    ) -> Result<DeckRuntimeStatus, String> {
-        let was_running = matches!(
-            self.state,
-            RuntimeState::Streaming | RuntimeState::ScheduledIdle
-        );
-        let was_paused = self.state == RuntimeState::Paused;
+    /// 229 B3 & H7: Approving a new revision stops any previous checkout, clears stale transient
+    /// `live_frame`, bumps `run_epoch` (even if paused/stopped), and leaves the Deck in `Stopped`
+    /// so "Approve only" NEVER enables recurring streaming or scheduling until explicit owner `Start`.
+    async fn handle_revision_approved(&mut self, script: ScriptRevision) {
+        self.next_wake = None;
         self.active_script = Some(script);
-        self.refresh_scripts_from_store().await;
+        let _ = self.refresh_scripts_from_store().await;
 
-        // Fence old revision & drop old checkout cleanly so new revision loads fresh with last_state.
         if self.checkout.is_some() {
             let _ = self.stop_checkout().await;
         }
-        if was_running {
-            return self.handle_control(RuntimeControlOp::Start).await;
-        }
-        if was_paused {
-            self.state = RuntimeState::Stopped;
-        }
+        self.live_frame = None;
+        self.run_epoch += 1;
+        self.state = RuntimeState::Stopped;
         self.broadcast_status();
-        Ok(self.status())
     }
 
     async fn handle_control(&mut self, op: RuntimeControlOp) -> Result<DeckRuntimeStatus, String> {
-        self.refresh_scripts_from_store().await;
+        if let Err(err) = self.refresh_scripts_from_store().await {
+            self.record_failure(&err).await;
+            self.state = RuntimeState::Error;
+            self.broadcast_status();
+            return Err(err);
+        }
         match op {
             RuntimeControlOp::Start => {
                 let Some(script) = self.active_script.clone() else {
@@ -657,35 +888,54 @@ impl DeckOwner {
                 if script.status != ScriptStatus::Approved {
                     return Err("script revision is not approved".into());
                 }
-                if self.state == RuntimeState::Paused && self.checkout.is_some() {
+                if self.state == RuntimeState::Paused
+                    && self
+                        .checkout
+                        .as_ref()
+                        .is_some_and(|c| c.is_alive() && c.script_rev() == script.rev)
+                {
                     return self.resume_stream(&script).await;
                 }
                 if matches!(
                     self.state,
                     RuntimeState::Streaming | RuntimeState::ScheduledIdle
-                ) && self
-                    .checkout
-                    .as_ref()
-                    .is_some_and(|c| c.script_rev() == script.rev && c.is_alive())
-                {
+                ) && self.checkout.as_ref().is_some_and(|c| {
+                    c.script_rev() == script.rev
+                        && c.revision_sha256() == script.revision_sha256
+                        && c.is_alive()
+                }) {
                     return Ok(self.status());
                 }
 
                 self.run_epoch += 1;
+                let turn_epoch = self.run_epoch;
+                self.live_frame = None;
                 self.state = RuntimeState::Starting;
                 self.broadcast_status();
 
-                if let Err(err) = self.ensure_checkout(&script).await {
-                    self.record_failure(&err).await;
-                    self.state = RuntimeState::Error;
-                    self.broadcast_status();
+                if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
+                    if !self.is_fenced(turn_epoch, script.rev).await {
+                        self.record_failure(&err).await;
+                        self.state = RuntimeState::Error;
+                        self.broadcast_status();
+                    }
                     return Err(err);
                 }
+                if self.is_fenced(turn_epoch, script.rev).await {
+                    return Err("script revision changed or Deck was deleted during start".into());
+                }
 
+                let (stream_en, sched_en) = match script.mode {
+                    ScriptMode::Oneshot => (false, true),
+                    ScriptMode::Streaming | ScriptMode::Hybrid => (
+                        true,
+                        script.interval_secs.is_some() || script.schedule_cron.is_some(),
+                    ),
+                };
                 let _ = self
                     .shared
                     .store
-                    .set_stream_enabled(&self.deck_id, true)
+                    .set_runtime_enabled(&self.deck_id, stream_en, sched_en)
                     .await;
                 self.state = match script.mode {
                     ScriptMode::Oneshot => RuntimeState::ScheduledIdle,
@@ -693,8 +943,9 @@ impl DeckOwner {
                 };
                 // Execute first step right away so callers see fresh data immediately.
                 self.next_wake = None;
-                self.execute_one_step(&script).await;
+                self.execute_one_step(&script, turn_epoch).await;
                 if self.next_wake.is_none()
+                    && !self.is_fenced(turn_epoch, script.rev).await
                     && matches!(
                         self.state,
                         RuntimeState::Streaming | RuntimeState::ScheduledIdle
@@ -711,7 +962,7 @@ impl DeckOwner {
                 let _ = self
                     .shared
                     .store
-                    .set_stream_enabled(&self.deck_id, false)
+                    .set_runtime_enabled(&self.deck_id, false, false)
                     .await;
                 if self.checkout.as_ref().is_some_and(DeckCheckout::is_alive) {
                     self.state = RuntimeState::Paused;
@@ -725,6 +976,9 @@ impl DeckOwner {
                 let Some(script) = self.active_script.clone() else {
                     return Err("no approved script revision to resume".into());
                 };
+                if script.status != ScriptStatus::Approved {
+                    return Err("script revision is not approved".into());
+                }
                 self.resume_stream(&script).await
             }
             RuntimeControlOp::Stop => {
@@ -732,9 +986,10 @@ impl DeckOwner {
                 let _ = self
                     .shared
                     .store
-                    .set_stream_enabled(&self.deck_id, false)
+                    .set_runtime_enabled(&self.deck_id, false, false)
                     .await;
                 self.stop_checkout().await?;
+                self.live_frame = None;
                 self.run_epoch += 1;
                 self.state = RuntimeState::Stopped;
                 self.broadcast_status();
@@ -753,12 +1008,15 @@ impl DeckOwner {
                 if was_stopped {
                     self.run_epoch += 1;
                 }
-                if let Err(err) = self.ensure_checkout(&script).await {
-                    self.record_failure(&err).await;
-                    self.broadcast_status();
+                let turn_epoch = self.run_epoch;
+                if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
+                    if !self.is_fenced(turn_epoch, script.rev).await {
+                        self.record_failure(&err).await;
+                        self.broadcast_status();
+                    }
                     return Err(err);
                 }
-                let step_err = self.execute_one_step(&script).await;
+                let step_err = self.execute_one_step(&script, turn_epoch).await;
                 if was_stopped && script.mode == ScriptMode::Oneshot {
                     let _ = self.stop_checkout().await;
                 }
@@ -775,21 +1033,31 @@ impl DeckOwner {
         &mut self,
         script: &ScriptRevision,
     ) -> Result<DeckRuntimeStatus, String> {
+        let (stream_en, sched_en) = match script.mode {
+            ScriptMode::Oneshot => (false, true),
+            ScriptMode::Streaming | ScriptMode::Hybrid => (
+                true,
+                script.interval_secs.is_some() || script.schedule_cron.is_some(),
+            ),
+        };
         let _ = self
             .shared
             .store
-            .set_stream_enabled(&self.deck_id, true)
+            .set_runtime_enabled(&self.deck_id, stream_en, sched_en)
             .await;
-        if self
-            .checkout
-            .as_ref()
-            .is_none_or(|c| !c.is_alive() || c.script_rev() != script.rev)
-        {
+        if self.checkout.as_ref().is_none_or(|c| {
+            !c.is_alive()
+                || c.script_rev() != script.rev
+                || c.revision_sha256() != script.revision_sha256
+        }) {
             self.run_epoch += 1;
-            if let Err(err) = self.ensure_checkout(script).await {
-                self.record_failure(&err).await;
-                self.state = RuntimeState::Error;
-                self.broadcast_status();
+            let turn_epoch = self.run_epoch;
+            if let Err(err) = self.ensure_checkout(script, turn_epoch).await {
+                if !self.is_fenced(turn_epoch, script.rev).await {
+                    self.record_failure(&err).await;
+                    self.state = RuntimeState::Error;
+                    self.broadcast_status();
+                }
                 return Err(err);
             }
         }
@@ -810,30 +1078,38 @@ impl DeckOwner {
         ) {
             return;
         }
-        self.refresh_scripts_from_store().await;
+        if let Err(err) = self.refresh_scripts_from_store().await {
+            self.record_failure(&err).await;
+            self.state = RuntimeState::Error;
+            self.broadcast_status();
+            return;
+        }
         let Some(script) = self.active_script.clone() else {
             self.state = RuntimeState::Stopped;
             self.broadcast_status();
             return;
         };
-        if let Err(err) = self.ensure_checkout(&script).await {
-            self.record_failure(&err).await;
-            self.schedule_backoff();
-            self.broadcast_status();
+        let turn_epoch = self.run_epoch;
+        if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
+            if !self.is_fenced(turn_epoch, script.rev).await {
+                self.record_failure(&err).await;
+                self.schedule_backoff();
+                self.broadcast_status();
+            }
             return;
         }
-        let step_err = self.execute_one_step(&script).await;
+        let step_err = self.execute_one_step(&script, turn_epoch).await;
+        if self.is_fenced(turn_epoch, script.rev).await {
+            return;
+        }
         if matches!(
             self.state,
             RuntimeState::Streaming | RuntimeState::ScheduledIdle
         ) {
             if step_err.is_some() {
                 self.schedule_backoff();
-            } else {
-                // `execute_one_step` may have set `self.next_wake` from cooperative `deck_sleep`.
-                if self.next_wake.is_none() {
-                    self.schedule_next_wake(&script, None);
-                }
+            } else if self.next_wake.is_none() {
+                self.schedule_next_wake(&script, None);
             }
         }
         self.broadcast_status();
@@ -842,12 +1118,13 @@ impl DeckOwner {
     fn schedule_backoff(&mut self) {
         let shift = self.consecutive_failures.min(6);
         let secs = (1u64 << shift).clamp(2, 60);
-        self.next_wake = Some(Instant::now() + Duration::from_secs(secs));
+        self.next_wake = checked_wake(Duration::from_secs(secs));
     }
 
     fn schedule_next_wake(&mut self, script: &ScriptRevision, sleep_override: Option<f64>) {
         if let Some(secs) = sleep_override {
-            self.next_wake = Some(Instant::now() + Duration::from_secs_f64(secs));
+            let clamped = secs.clamp(0.1, 3600.0);
+            self.next_wake = checked_wake(Duration::from_secs_f64(clamped));
             return;
         }
         if let Some(expr) = script.schedule_cron.as_deref()
@@ -856,31 +1133,48 @@ impl DeckOwner {
         {
             let delta = (next_dt - Utc::now())
                 .to_std()
-                .unwrap_or(Duration::from_secs(60));
-            self.next_wake = Some(Instant::now() + delta.max(Duration::from_secs(1)));
+                .unwrap_or(Duration::from_secs(60))
+                .clamp(
+                    Duration::from_secs(1),
+                    Duration::from_secs(MAX_INTERVAL_SECS),
+                );
+            self.next_wake = checked_wake(delta);
             return;
         }
-        let interval = script
-            .interval_secs
-            .unwrap_or(match script.mode {
-                ScriptMode::Streaming | ScriptMode::Hybrid => 3,
-                ScriptMode::Oneshot => 60,
-            })
-            .max(1);
-        self.next_wake = Some(Instant::now() + Duration::from_secs(interval));
+        let raw_interval = script.interval_secs.unwrap_or(match script.mode {
+            ScriptMode::Streaming | ScriptMode::Hybrid => 3,
+            ScriptMode::Oneshot => 60,
+        });
+        let interval = clamp_interval_secs(raw_interval);
+        self.next_wake = checked_wake(Duration::from_secs(interval));
     }
 
-    async fn ensure_checkout(&mut self, script: &ScriptRevision) -> Result<(), String> {
+    async fn ensure_checkout(
+        &mut self,
+        script: &ScriptRevision,
+        turn_epoch: u64,
+    ) -> Result<(), String> {
+        let mut allow_warm_restore = true;
         let compatible = self.checkout.as_ref().is_some_and(|c| {
-            c.is_alive() && c.script_rev() == script.rev && c.code_sha256() == script.code_sha256
+            c.is_alive()
+                && c.script_rev() == script.rev
+                && c.revision_sha256() == script.revision_sha256
         });
         if compatible {
             if let Some(c) = self.checkout.as_mut() {
                 match c.maybe_refresh_or_rollover().await {
                     Ok(_) => return Ok(()),
                     Err(e) => {
-                        tracing::warn!(deck = %self.deck_id, "rollover failed ({e}); cold-restarting");
+                        tracing::warn!(
+                            deck = %self.deck_id,
+                            "rollover failed ({e}); clearing stale dump and cold-restarting"
+                        );
                         self.checkout = None;
+                        allow_warm_restore = false;
+                        let _ = std::fs::remove_file(
+                            self.shared.store.monty_dump_path(self.session_id),
+                        );
+                        let _ = self.shared.store.clear_monty_dump_meta(&self.deck_id).await;
                     }
                 }
             }
@@ -902,17 +1196,27 @@ impl DeckOwner {
             self.pool.clone(),
             self.shared.registry.clone(),
             self.session_id,
-            &self.shared.cwd,
+            &self.work_dir,
             &self.shared.store.spill_dir(),
             dump_path,
             script,
             cp.as_ref(),
+            allow_warm_restore,
             &turn_cx,
             &mut |p| collected_emits.push(p.clone()),
         )
         .await?;
+
+        if self.is_fenced(turn_epoch, script.rev).await {
+            drop(checkout);
+            return Err("deck deleted or revision superseded during startup".into());
+        }
+
+        let dump_sha = checkout.last_dump_sha256().map(str::to_owned);
         self.checkout = Some(checkout);
-        // Record initial dump compatibility stamp in SQLite.
+        let dump_meta = dump_sha
+            .as_deref()
+            .map(|sha| (script.rev, script.revision_sha256.as_str(), sha));
         let _ = self
             .shared
             .store
@@ -921,10 +1225,11 @@ impl DeckOwner {
                 script.rev,
                 &script.code_sha256,
                 effects.checkpoint_state.as_ref(),
-                Some((script.rev, &script.code_sha256)),
+                dump_meta,
             )
             .await;
-        self.apply_turn_effects(script, effects, None).await;
+        self.apply_turn_effects(script, turn_epoch, effects, None)
+            .await;
         Ok(())
     }
 
@@ -933,26 +1238,63 @@ impl DeckOwner {
             return Ok(());
         };
         let rev = checkout.script_rev();
-        let sha = checkout.code_sha256().to_owned();
-        let saved = checkout.stop_and_release().await.unwrap_or(false);
-        if saved {
+        let code_sha = checkout.code_sha256().to_owned();
+        let rev_sha = checkout.revision_sha256().to_owned();
+        let dump_sha = checkout.stop_and_release().await.ok().flatten();
+        if !self.shared.is_deleted(&self.deck_id)
+            && self
+                .shared
+                .store
+                .is_active_rev(&self.deck_id, rev)
+                .await
+                .unwrap_or(false)
+            && let Some(ref dsha) = dump_sha
+        {
             let _ = self
                 .shared
                 .store
-                .save_checkpoint(&self.deck_id, rev, &sha, None, Some((rev, &sha)))
+                .save_checkpoint(
+                    &self.deck_id,
+                    rev,
+                    &code_sha,
+                    None,
+                    Some((rev, &rev_sha, dsha)),
+                )
                 .await;
         }
         Ok(())
     }
 
-    async fn execute_one_step(&mut self, script: &ScriptRevision) -> Option<String> {
+    async fn execute_one_step(
+        &mut self,
+        script: &ScriptRevision,
+        turn_epoch: u64,
+    ) -> Option<String> {
         let turn_cx = self.turn_context();
         let Some(checkout) = self.checkout.as_mut() else {
             let err = "no active checkout".to_owned();
-            self.record_failure(&err).await;
+            if !self.is_fenced(turn_epoch, script.rev).await {
+                self.record_failure(&err).await;
+            }
             return Some(err);
         };
         let res = checkout.run_step(&turn_cx, &mut |_| {}).await;
+        let dump_sha = self
+            .checkout
+            .as_ref()
+            .and_then(|c| c.last_dump_sha256().map(str::to_owned));
+
+        // 229 H2: verify Deck still exists, epoch unchanged, and script.rev is still active BEFORE committing.
+        if self.is_fenced(turn_epoch, script.rev).await {
+            tracing::info!(
+                deck = %self.deck_id,
+                rev = script.rev,
+                turn_epoch,
+                "discarding stale step output after revision upgrade or Deck deletion"
+            );
+            return None;
+        }
+
         match res {
             Ok(outcome) => {
                 self.step_count += 1;
@@ -963,7 +1305,7 @@ impl DeckOwner {
                 } else {
                     None
                 };
-                self.apply_turn_effects(script, outcome.effects, fallback_return)
+                self.apply_turn_effects(script, turn_epoch, outcome.effects, fallback_return)
                     .await;
                 if matches!(
                     self.state,
@@ -971,18 +1313,19 @@ impl DeckOwner {
                 ) {
                     self.schedule_next_wake(script, sleep_override);
                 }
-                // Keep dump compatibility stamp fresh after periodic heap checkpoint.
-                let _ = self
-                    .shared
-                    .store
-                    .save_checkpoint(
-                        &self.deck_id,
-                        script.rev,
-                        &script.code_sha256,
-                        None,
-                        Some((script.rev, &script.code_sha256)),
-                    )
-                    .await;
+                if let Some(ref dsha) = dump_sha {
+                    let _ = self
+                        .shared
+                        .store
+                        .save_checkpoint(
+                            &self.deck_id,
+                            script.rev,
+                            &script.code_sha256,
+                            None,
+                            Some((script.rev, &script.revision_sha256, dsha)),
+                        )
+                        .await;
+                }
                 None
             }
             Err(err) => {
@@ -995,11 +1338,22 @@ impl DeckOwner {
     async fn apply_turn_effects(
         &mut self,
         script: &ScriptRevision,
+        turn_epoch: u64,
         effects: TurnEffects,
         fallback_snapshot: Option<Value>,
     ) {
+        if self.is_fenced(turn_epoch, script.rev).await {
+            return;
+        }
+        let dump_sha = self
+            .checkout
+            .as_ref()
+            .and_then(|c| c.last_dump_sha256().map(str::to_owned));
         if let Some(state) = effects.checkpoint_state {
             self.last_state = state.clone();
+            let dump_meta = dump_sha
+                .as_deref()
+                .map(|sha| (script.rev, script.revision_sha256.as_str(), sha));
             let _ = self
                 .shared
                 .store
@@ -1008,7 +1362,7 @@ impl DeckOwner {
                     script.rev,
                     &script.code_sha256,
                     Some(&state),
-                    Some((script.rev, &script.code_sha256)),
+                    dump_meta,
                 )
                 .await;
         }
@@ -1031,9 +1385,13 @@ impl DeckOwner {
                 .await;
             }
         }
+        self.sync_live_cache();
     }
 
     async fn handle_emit(&mut self, script: &ScriptRevision, emit: EmittedPayload) {
+        if self.shared.is_deleted(&self.deck_id) {
+            return;
+        }
         if !self.shared.hub.admit_emit(&self.deck_id) {
             tracing::debug!(deck = %self.deck_id, "deck emit rate-limited");
             return;
@@ -1060,6 +1418,7 @@ impl DeckOwner {
             self.last_ok_snapshot_id = Some(snap.snapshot_id.clone());
             self.last_ok_at = Some(now);
             self.last_snapshot = Some(snap.clone());
+            self.sync_live_cache();
             self.shared
                 .hub
                 .broadcast(&self.deck_id, DeckRuntimeEvent::Snapshot { snapshot: snap });
@@ -1074,6 +1433,7 @@ impl DeckOwner {
                 emitted_at: now,
             };
             self.live_frame = Some(frame.clone());
+            self.sync_live_cache();
             self.shared
                 .hub
                 .broadcast(&self.deck_id, DeckRuntimeEvent::LiveFrame { frame });
@@ -1081,6 +1441,9 @@ impl DeckOwner {
     }
 
     async fn record_failure(&mut self, error: &str) {
+        if self.shared.is_deleted(&self.deck_id) {
+            return;
+        }
         let redacted = tools::secrets::redact(error).into_owned();
         if let Ok(log) = self
             .shared
@@ -1098,6 +1461,7 @@ impl DeckOwner {
             self.last_error = Some(redacted);
             self.last_error_at = Some(Utc::now().to_rfc3339());
         }
+        self.sync_live_cache();
     }
 
     async fn handle_interact(
@@ -1108,18 +1472,6 @@ impl DeckOwner {
         args: Value,
         expected_rev: Option<u64>,
     ) -> InteractResponse {
-        self.refresh_scripts_from_store().await;
-
-        // 1. Idempotency check BEFORE any validation/execution so duplicate request_ids never replay.
-        if let Ok(Some(cached)) = self
-            .shared
-            .store
-            .get_idempotent_action(&self.deck_id, &request_id)
-            .await
-        {
-            return cached;
-        }
-
         let err_resp =
             |code: InteractErrorCode, msg: String, rev: u64, epoch: u64| InteractResponse {
                 request_id: request_id.clone(),
@@ -1134,7 +1486,20 @@ impl DeckOwner {
                 script_rev: rev,
             };
 
-        // 2. Approved script required.
+        if self.shared.is_deleted(&self.deck_id) {
+            return err_resp(
+                InteractErrorCode::ExecutionError,
+                format!("deck `{}` has been deleted", self.deck_id),
+                0,
+                self.run_epoch,
+            );
+        }
+
+        if let Err(err) = self.refresh_scripts_from_store().await {
+            return err_resp(InteractErrorCode::ExecutionError, err, 0, self.run_epoch);
+        }
+
+        // 1. Approved script required.
         let Some(script) = self.active_script.clone() else {
             return err_resp(
                 InteractErrorCode::NoApprovedScript,
@@ -1152,7 +1517,7 @@ impl DeckOwner {
             );
         }
 
-        // 3. Revision fencing.
+        // 2. Revision fencing.
         if let Some(exp) = expected_rev
             && exp != script.rev
         {
@@ -1164,13 +1529,31 @@ impl DeckOwner {
             );
         }
 
-        // 4. Approval pause check.
-        if self
+        // 3. Caller-scoped idempotency lookup (229 B7): strictly keyed on
+        // (deck_id, caller_id, request_id) and verified against (action, args_sha256, script.rev).
+        let args_sha256 = sha256_hex(&canonical_json_string(&args));
+        match self
             .shared
-            .pending_approvals
-            .lock()
-            .contains_key(&self.deck_id)
+            .store
+            .get_idempotent_action(
+                &self.deck_id,
+                &caller_id,
+                &request_id,
+                &action,
+                &args_sha256,
+                script.rev,
+            )
+            .await
         {
+            Ok(IdempotencyLookup::Hit(cached)) => return cached,
+            Ok(IdempotencyLookup::Conflict(msg)) => {
+                return err_resp(InteractErrorCode::Conflict, msg, script.rev, self.run_epoch);
+            }
+            Ok(IdempotencyLookup::Miss) | Err(_) => {}
+        }
+
+        // 4. Approval pause check.
+        if self.shared.has_pending_approvals(&self.deck_id) {
             return err_resp(
                 InteractErrorCode::WaitingApproval,
                 "Deck is waiting for a pending tool approval".into(),
@@ -1216,14 +1599,14 @@ impl DeckOwner {
         if self.run_epoch == 0 {
             self.run_epoch = 1;
         }
-        if let Err(err) = self.ensure_checkout(&script).await {
-            let resp = err_resp(
+        let turn_epoch = self.run_epoch;
+        if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
+            return err_resp(
                 InteractErrorCode::ExecutionError,
                 err,
                 script.rev,
                 self.run_epoch,
             );
-            return resp;
         }
 
         // 9. Execute `on_action(action, args, ctx)` on the SAME checkout.
@@ -1244,14 +1627,25 @@ impl DeckOwner {
             None => Err("checkout missing".into()),
         };
 
+        // 10. Fence out late writes if Deck was deleted or script revision changed mid-action (229 H2).
+        if self.is_fenced(turn_epoch, script.rev).await {
+            return err_resp(
+                InteractErrorCode::RevisionMismatch,
+                "Deck was deleted or script revision changed while action was running".into(),
+                script.rev,
+                self.run_epoch,
+            );
+        }
+
         let resp = match outcome {
             Ok(out) => {
                 // Only explicit `deck_emit(...)` calls inside Python broadcast to shared subscribers!
                 // The return value is strictly private to this caller.
-                self.apply_turn_effects(&script, out.effects, None).await;
+                self.apply_turn_effects(&script, turn_epoch, out.effects, None)
+                    .await;
                 if decl.mutates_state
                     && let Some(c) = self.checkout.as_mut()
-                    && c.checkpoint_heap().await.is_ok()
+                    && let Ok(dump_sha) = c.checkpoint_heap().await
                 {
                     let _ = self
                         .shared
@@ -1261,7 +1655,7 @@ impl DeckOwner {
                             script.rev,
                             &script.code_sha256,
                             None,
-                            Some((script.rev, &script.code_sha256)),
+                            Some((script.rev, &script.revision_sha256, &dump_sha)),
                         )
                         .await;
                 }
@@ -1289,11 +1683,22 @@ impl DeckOwner {
         let _ = self
             .shared
             .store
-            .save_idempotent_action(&self.deck_id, &caller_id, &resp)
+            .save_idempotent_action(&self.deck_id, &caller_id, &args_sha256, &resp)
             .await;
         self.broadcast_status();
         resp
     }
+}
+
+enum CmdFlow {
+    Continue,
+    Stop,
+    Deleted,
+}
+
+fn checked_wake(delta: Duration) -> Option<Instant> {
+    let clamped = delta.min(Duration::from_secs(MAX_INTERVAL_SECS));
+    Instant::now().checked_add(clamped)
 }
 
 fn validate_action_args(decl: &DeclaredAction, args: &Value) -> Result<(), String> {
@@ -1332,6 +1737,9 @@ impl Message<ListDecks> for DeckSupervisor {
         let mut out = Vec::with_capacity(docs.len());
         for d in docs {
             let id = d.id.as_str().to_owned();
+            if self.shared.is_deleted(&id) {
+                continue;
+            }
             let (status, _, _) = self.get_runtime_snapshot(&id).await?;
             let doc_snap = self.read_doc(&id, Principal::Helper).await.ok();
             out.push(DeckSummary {
@@ -1469,6 +1877,92 @@ impl DeckSupervisor {
     }
 }
 
+/// Tear down runtime & storage state when a `DocKind::Deck` document is deleted (229 H2).
+#[derive(Clone, Debug)]
+pub struct DeckDeletedMsg {
+    pub deck_id: String,
+    pub title: String,
+}
+
+impl Message<DeckDeletedMsg> for DeckSupervisor {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        m: DeckDeletedMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.cleanup_deleted_deck(&m.deck_id, m.title).await;
+    }
+}
+
+/// Cold restart recovery (229 H3): resume previously `stream_enabled`/`schedule_enabled` Decks.
+#[derive(Clone, Debug)]
+pub struct RecoverEnabledDecksMsg;
+
+impl Message<RecoverEnabledDecksMsg> for DeckSupervisor {
+    type Reply = Result<usize, String>;
+
+    async fn handle(
+        &mut self,
+        _: RecoverEnabledDecksMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let records = self
+            .shared
+            .store
+            .list_auto_resume_decks()
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        let mut resumed = 0usize;
+        for rec in records {
+            if self.verify_deck_exists(&rec.deck_id).await.is_err() {
+                tracing::info!(
+                    deck = %rec.deck_id,
+                    "skipping recovery of deleted Deck and cleaning up orphaned state"
+                );
+                self.cleanup_deleted_deck(&rec.deck_id, String::new()).await;
+                continue;
+            }
+            match self.shared.store.get_active_script(&rec.deck_id).await {
+                Ok(Some(script)) if script.status == ScriptStatus::Approved => {}
+                Ok(_) => continue,
+                Err(e) => {
+                    tracing::warn!(
+                        deck = %rec.deck_id,
+                        "refusing to auto-resume Deck with invalid script digest: {e:#}"
+                    );
+                    continue;
+                }
+            }
+            match self.ensure_owner(&rec.deck_id).await {
+                Ok(tx) => {
+                    let deck_id = rec.deck_id.clone();
+                    tokio::spawn(async move {
+                        let (rtx, rrx) = oneshot::channel();
+                        if tx
+                            .send(OwnerCmd::Control {
+                                op: RuntimeControlOp::Start,
+                                reply: rtx,
+                            })
+                            .await
+                            .is_ok()
+                            && let Ok(Err(err)) = rrx.await
+                        {
+                            tracing::warn!(deck = %deck_id, "boot recovery start failed: {err}");
+                        }
+                    });
+                    resumed += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(deck = %rec.deck_id, "boot recovery owner spawn failed: {e}");
+                }
+            }
+        }
+        Ok(resumed)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SectionAddMsg {
     pub deck_id: String,
@@ -1504,7 +1998,11 @@ impl Message<SectionAddMsg> for DeckSupervisor {
             )
             .await?
         {
-            DeckCallReply::Section(s) => Ok(s),
+            DeckCallReply::Section(s) => {
+                let title = self.deck_title(&m.deck_id).await;
+                self.publish_changed(&m.deck_id, title, false).await;
+                Ok(s)
+            }
             _ => Err(DeckDocError::Internal("unexpected reply".into())),
         }
     }
@@ -1547,7 +2045,11 @@ impl Message<SectionPatchMsg> for DeckSupervisor {
             )
             .await?
         {
-            DeckCallReply::Section(s) => Ok(s),
+            DeckCallReply::Section(s) => {
+                let title = self.deck_title(&m.deck_id).await;
+                self.publish_changed(&m.deck_id, title, false).await;
+                Ok(s)
+            }
             _ => Err(DeckDocError::Internal("unexpected reply".into())),
         }
     }
@@ -1580,7 +2082,11 @@ impl Message<SectionMoveMsg> for DeckSupervisor {
             )
             .await?
         {
-            DeckCallReply::Order(o) => Ok(o),
+            DeckCallReply::Order(o) => {
+                let title = self.deck_title(&m.deck_id).await;
+                self.publish_changed(&m.deck_id, title, false).await;
+                Ok(o)
+            }
             _ => Err(DeckDocError::Internal("unexpected reply".into())),
         }
     }
@@ -1615,7 +2121,11 @@ impl Message<SectionArchiveMsg> for DeckSupervisor {
             )
             .await?
         {
-            DeckCallReply::Section(s) => Ok(s),
+            DeckCallReply::Section(s) => {
+                let title = self.deck_title(&m.deck_id).await;
+                self.publish_changed(&m.deck_id, title, false).await;
+                Ok(s)
+            }
             _ => Err(DeckDocError::Internal("unexpected reply".into())),
         }
     }
@@ -1675,6 +2185,8 @@ impl Message<FocusSectionMsg> for DeckSupervisor {
             },
         )
         .await?;
+        let title = self.deck_title(&m.deck_id).await;
+        self.publish_changed(&m.deck_id, title, false).await;
         Ok(())
     }
 }
@@ -1699,15 +2211,14 @@ impl Message<ProposeScriptMsg> for DeckSupervisor {
         m: ProposeScriptMsg,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        let doc = self.verify_deck_exists(&m.deck_id).await?;
+        validate_script_proposal(&m.code, &m.declared_actions, &m.change_summary)
+            .map_err(|e| format!("{e:#}"))?;
         if let Some(expr) = m.schedule_cron.as_deref() {
             croner::Cron::from_str(expr)
                 .map_err(|e| format!("invalid cron expression {expr:?}: {e}"))?;
         }
-        // Validate declared action JSON schemas up front.
         for a in &m.declared_actions {
-            if a.name.trim().is_empty() {
-                return Err("declared action name cannot be empty".into());
-            }
             jsonschema::validator_for(&a.schema)
                 .map_err(|e| format!("invalid JSON schema for action {:?}: {e}", a.name))?;
         }
@@ -1726,12 +2237,17 @@ impl Message<ProposeScriptMsg> for DeckSupervisor {
             )
             .await
             .map_err(|e| format!("{e:#}"))?;
+        // Update live_cache pending_rev immediately without blocking on DeckOwner.
+        if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id) {
+            entry.status.pending_rev = Some(rev.rev);
+        }
         self.mirror_script_ref(&m.deck_id).await;
         if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
             self.shared
                 .hub
                 .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
         }
+        self.publish_changed(&m.deck_id, doc.title, false).await;
         Ok(rev)
     }
 }
@@ -1740,6 +2256,7 @@ impl Message<ProposeScriptMsg> for DeckSupervisor {
 pub struct ApproveScriptMsg {
     pub deck_id: String,
     pub rev: u64,
+    pub expected_digest: String,
     pub approved_by: String,
 }
 
@@ -1751,29 +2268,40 @@ impl Message<ApproveScriptMsg> for DeckSupervisor {
         m: ApproveScriptMsg,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        let doc = self.verify_deck_exists(&m.deck_id).await?;
         let script = self
             .shared
             .store
-            .approve_script(&m.deck_id, m.rev, &m.approved_by)
+            .approve_script(&m.deck_id, m.rev, &m.expected_digest, &m.approved_by)
             .await
             .map_err(|e| format!("{e:#}"))?;
         self.mirror_script_ref(&m.deck_id).await;
-        if let Some(tx) = self.owners.get(&m.deck_id)
+
+        // Update live_cache immediately and notify DeckOwner non-blockingly (FIFO channel, 229 B4).
+        if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id) {
+            entry.status.active_rev = Some(script.rev);
+            if entry.status.pending_rev == Some(script.rev) {
+                entry.status.pending_rev = None;
+            }
+            entry.live_frame = None;
+        }
+        if let Some(tx) = self.owners.get(&m.deck_id).cloned()
             && !tx.is_closed()
         {
-            let (rtx, rrx) = oneshot::channel();
-            let _ = tx
-                .send(OwnerCmd::RevisionApproved {
-                    script: script.clone(),
-                    reply: rtx,
-                })
-                .await;
-            let _ = rrx.await;
+            let cmd = OwnerCmd::RevisionApproved {
+                script: script.clone(),
+            };
+            if let Err(mpsc::error::TrySendError::Full(cmd)) = tx.try_send(cmd) {
+                tokio::spawn(async move {
+                    let _ = tx.send(cmd).await;
+                });
+            }
         } else if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
             self.shared
                 .hub
                 .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
         }
+        self.publish_changed(&m.deck_id, doc.title, false).await;
         Ok(script)
     }
 }
@@ -1793,13 +2321,25 @@ impl Message<RejectScriptMsg> for DeckSupervisor {
         m: RejectScriptMsg,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        let doc = self.verify_deck_exists(&m.deck_id).await?;
         let script = self
             .shared
             .store
             .reject_script(&m.deck_id, m.rev, m.reason)
             .await
             .map_err(|e| format!("{e:#}"))?;
+        if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id)
+            && entry.status.pending_rev == Some(m.rev)
+        {
+            entry.status.pending_rev = None;
+        }
         self.mirror_script_ref(&m.deck_id).await;
+        if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
+            self.shared
+                .hub
+                .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
+        }
+        self.publish_changed(&m.deck_id, doc.title, false).await;
         Ok(script)
     }
 }
@@ -1818,6 +2358,7 @@ impl Message<ReadScriptMsg> for DeckSupervisor {
         m: ReadScriptMsg,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        self.verify_deck_exists(&m.deck_id).await?;
         match m.rev {
             Some(r) => self
                 .shared
@@ -2004,6 +2545,7 @@ impl Message<ListSnapshotsMsg> for DeckSupervisor {
         m: ListSnapshotsMsg,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        self.verify_deck_exists(&m.deck_id).await?;
         self.shared
             .store
             .list_snapshots(&m.deck_id, m.limit.unwrap_or(20))
@@ -2026,6 +2568,7 @@ impl Message<GetSnapshotMsg> for DeckSupervisor {
         m: GetSnapshotMsg,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        self.verify_deck_exists(&m.deck_id).await?;
         self.shared
             .store
             .get_snapshot(&m.deck_id, &m.snapshot_id)
@@ -2047,6 +2590,7 @@ impl Message<SubscribeDeckMsg> for DeckSupervisor {
         m: SubscribeDeckMsg,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        self.verify_deck_exists(&m.deck_id).await?;
         let (status, last_snapshot, live_frame) = self.get_runtime_snapshot(&m.deck_id).await?;
         let sync = DeckRuntimeEvent::Sync {
             status,
@@ -2058,14 +2602,26 @@ impl Message<SubscribeDeckMsg> for DeckSupervisor {
     }
 }
 
-/// Bus subscriber forwarding `ApprovalRequested` / `ApprovalResolved` to [`SharedDeckState`].
+/// Bus subscriber forwarding `ApprovalRequested`, `ApprovalResolved`, and `DocumentChanged`
+/// (Deck deletion) to [`SharedDeckState`] and [`DeckSupervisor`].
 pub struct DeckApprovalWatcher {
     shared: SharedDeckState,
+    supervisor: Option<ActorRef<DeckSupervisor>>,
 }
 
 impl DeckApprovalWatcher {
     pub fn new(shared: SharedDeckState) -> Self {
-        Self { shared }
+        Self {
+            shared,
+            supervisor: None,
+        }
+    }
+
+    pub fn with_supervisor(shared: SharedDeckState, supervisor: ActorRef<DeckSupervisor>) -> Self {
+        Self {
+            shared,
+            supervisor: Some(supervisor),
+        }
     }
 }
 
@@ -2102,11 +2658,32 @@ impl Message<ApprovalResolved> for DeckApprovalWatcher {
     }
 }
 
-/// Helper to surface an approval ID cleanly in tests and diagnostics.
+impl Message<DocumentChanged> for DeckApprovalWatcher {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        ev: DocumentChanged,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if ev.kind == DocKind::Deck && ev.deleted {
+            let deck_id = ev.doc.as_str().to_owned();
+            // Immediately tombstone so any in-flight turn is fenced out even before supervisor runs.
+            self.shared.mark_deleted(&deck_id);
+            if let Some(ref sup) = self.supervisor {
+                let _ = sup
+                    .tell(DeckDeletedMsg {
+                        deck_id,
+                        title: ev.title,
+                    })
+                    .send()
+                    .await;
+            }
+        }
+    }
+}
+
+/// Helper to surface the head pending approval ID cleanly in tests and diagnostics.
 pub fn pending_approval_id(shared: &SharedDeckState, deck_id: &str) -> Option<ApprovalId> {
-    shared
-        .pending_approvals
-        .lock()
-        .get(deck_id)
-        .map(|p| p.approval_id)
+    shared.head_pending_approval(deck_id).map(|p| p.approval_id)
 }

@@ -55,14 +55,16 @@ impl DeckHub {
     /// Returns `true` if allowed, `false` if rate-limited.
     pub fn admit_emit(&self, deck_id: &str) -> bool {
         let now = Instant::now();
-        let cutoff = now - Duration::from_secs(1);
+        let cutoff = now.checked_sub(Duration::from_secs(1));
         let mut map = self.decks.lock();
         let entry = map.entry(deck_id.to_owned()).or_insert_with(|| DeckSubs {
             subs: Vec::new(),
             emit_window: VecDeque::new(),
         });
-        while entry.emit_window.front().is_some_and(|t| *t < cutoff) {
-            entry.emit_window.pop_front();
+        if let Some(cutoff) = cutoff {
+            while entry.emit_window.front().is_some_and(|t| *t < cutoff) {
+                entry.emit_window.pop_front();
+            }
         }
         if entry.emit_window.len() >= MAX_EMITS_PER_SEC {
             return false;
@@ -155,8 +157,8 @@ impl DeckHub {
     }
 
     /// Fan out an event to all subscribers of `deck_id`.
-    /// Transient `LiveFrame`s coalesce (newest wins, zero backpressure crash); bounded control queue
-    /// drops genuinely wedged subscribers cleanly.
+    /// Transient `LiveFrame`s coalesce (newest wins, zero backpressure crash); genuinely
+    /// wedged subscribers receive a terminal `Closed` notice before being removed (229 M2).
     pub fn broadcast(&self, deck_id: &str, ev: DeckRuntimeEvent) {
         let mut map = self.decks.lock();
         let Some(entry) = map.get_mut(deck_id) else {
@@ -175,7 +177,12 @@ impl DeckHub {
                 }
                 _ => {
                     if g.control_queue.len() >= SUB_QUEUE_CAP {
-                        tracing::warn!(deck = %deck_id, sub_id = g.id, "deck subscriber too slow; dropped");
+                        tracing::warn!(deck = %deck_id, sub_id = g.id, "deck subscriber too slow; closing");
+                        g.control_queue.clear();
+                        g.pending_frame = None;
+                        g.control_queue.push_back(DeckRuntimeEvent::Closed {
+                            reason: "subscriber_lagged".into(),
+                        });
                         g.closed = true;
                         g.notify.notify_one();
                         return false;

@@ -1,11 +1,51 @@
 //! Wire, RPC, and storage data models for Decks (design doc 229).
 
+use std::collections::BTreeMap;
+
 use document::deck::{DeckDocSnapshot, DeckSection, SectionKind, SectionRevision};
 use runtime::SessionId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tools::{ApprovalId, Risk};
+
+/// Upper bounds for script proposals, scheduling, and interactive outputs (229 H4).
+pub const MAX_SCRIPT_CODE_BYTES: usize = 256 * 1024;
+pub const MAX_DECLARED_ACTIONS: usize = 32;
+pub const MAX_ACTION_NAME_BYTES: usize = 64;
+pub const MAX_CHANGE_SUMMARY_BYTES: usize = 1024;
+pub const MIN_INTERVAL_SECS: u64 = 1;
+pub const MAX_INTERVAL_SECS: u64 = 86_400 * 30;
+pub const MAX_ACTION_RESULT_BYTES: usize = 256 * 1024;
+
+/// Clamp a script's polling/step interval into the safe bounded range `[1s, 30d]`.
+pub fn clamp_interval_secs(secs: u64) -> u64 {
+    secs.clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS)
+}
+
+/// Recursively sort JSON object keys so hashing/canonicalization is key-order independent.
+pub fn canonicalize_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted: BTreeMap<&str, Value> = map
+                .iter()
+                .map(|(k, v)| (k.as_str(), canonicalize_json(v)))
+                .collect();
+            let mut out = serde_json::Map::with_capacity(sorted.len());
+            for (k, v) in sorted {
+                out.insert(k.to_owned(), v);
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Serialize `value` with recursively sorted object keys for deterministic digests.
+pub fn canonical_json_string(value: &Value) -> String {
+    serde_json::to_string(&canonicalize_json(value)).unwrap_or_else(|_| "null".to_owned())
+}
 
 /// Execution mode of a Deck script revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -100,6 +140,9 @@ pub struct ScriptRevision {
     pub rev: u64,
     pub code: String,
     pub code_sha256: String,
+    /// Canonical SHA-256 digest over `(code, declared_actions, mode, interval_secs, schedule_cron)`.
+    /// Bound into `deck_script_approve(deck_id, rev, expected_digest)` to prevent mid-review swap.
+    pub revision_sha256: String,
     pub declared_actions: Vec<DeclaredAction>,
     pub mode: ScriptMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -225,6 +268,7 @@ pub enum InteractErrorCode {
     WaitingApproval,
     Paused,
     ExecutionError,
+    Conflict,
 }
 
 /// Per-caller response to an interactive Deck action (`deck_interact`).
