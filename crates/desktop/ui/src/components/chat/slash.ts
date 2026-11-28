@@ -381,16 +381,28 @@ export async function draftSkill(
   words = '',
   suffixFrom?: string,
 ): Promise<string> {
-  const id = session ?? (await openDraftSession(api)).id
-  if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
-  useSkillDraft.getState().add(id, name)
-  // A new chat: the prompt suffix turned on in the draft (`suffixFrom`, its key) goes with it, like the words, so the
-  // first message carries skill and suffix together instead of leaving the suffix for the next new chat.
-  if (!session && suffixFrom !== undefined) useSuffixes.getState().carry(suffixFrom, id)
-  // Before `navigate`: the chat's composer reads its text from the draft store as it mounts.
-  useDrafts.getState().set(id, { text: words, pastes: EMPTY.pastes })
-  await navigate({ to: '/c/$session', params: { session: id } })
-  return id
+  const drafted = session ? null : await openDraftSession(api, null, undefined, { deferSpend: true })
+  const id = session ?? drafted!.id
+  try {
+    if (drafted) {
+      const info = useConnection.getState().info
+      useSessions.getState().loadHistory(
+        id,
+        { ...FRESH, model: drafted.pick.model ?? info?.default_model ?? '', effort: drafted.pick.effort ?? info?.default_effort ?? null },
+        'replace',
+      )
+    }
+    useSkillDraft.getState().add(id, name)
+    // A new chat: the prompt suffix turned on in the draft (`suffixFrom`, its key) goes with it, like the words, so the
+    // first message carries skill and suffix together instead of leaving the suffix for the next new chat.
+    if (!session && suffixFrom !== undefined) useSuffixes.getState().carry(suffixFrom, id)
+    // Before `navigate`: the chat's composer reads its text from the draft store as it mounts.
+    useDrafts.getState().set(id, { text: words, pastes: EMPTY.pastes })
+    await navigate({ to: '/c/$session', params: { session: id } })
+    return id
+  } finally {
+    drafted?.spend()
+  }
 }
 
 /**
@@ -847,10 +859,22 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       // `/<skill> [args]` hands the skill to the model now (04 §2.4): `isCommand` let only a known skill (or, before
       // the index loads, a plain word the agent may name) through; unknown words are message text, never an error.
       // `/skill:<name>` never reaches here: the composer parks it (`draftSkill`) and keeps the words typed after it.
-      const id = session ?? (await openDraftSession(api)).id
-      if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
-      await api.use_skill(id, cmd.slice(1), arg)
-      if (!session) await navigate({ to: '/c/$session', params: { session: id } })
+      const drafted = session ? null : await openDraftSession(api, null, undefined, { deferSpend: true })
+      const id = session ?? drafted!.id
+      try {
+        if (drafted) {
+          const info = useConnection.getState().info
+          useSessions.getState().loadHistory(
+            id,
+            { ...FRESH, model: drafted.pick.model ?? info?.default_model ?? '', effort: drafted.pick.effort ?? info?.default_effort ?? null },
+            'replace',
+          )
+        }
+        await api.use_skill(id, cmd.slice(1), arg)
+        if (drafted) await navigate({ to: '/c/$session', params: { session: id } })
+      } finally {
+        drafted?.spend()
+      }
     }
   }
 }

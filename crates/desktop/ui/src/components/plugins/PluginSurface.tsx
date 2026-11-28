@@ -139,14 +139,25 @@ function OpenUI({ plugin, placement, session, source, content }: { plugin: strin
       // 216 §9.4: `@ToAssistant` drafts a new chat with the text; sending stays the owner's press.
       const context = typeof ev.params.context === 'string' ? ev.params.context : ''
       const text = [ev.humanFriendlyMessage, context].filter(Boolean).join('\n\n')
-      void openDraftSession(api).then(
-        ({ id }) => {
-          useSessions.getState().loadHistory(id, FRESH, 'replace')
-          useDrafts.getState().set(id, { text, pastes: EMPTY.pastes })
-          return navigate({ to: '/c/$session', params: { session: id } })
-        },
-        (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)),
-      )
+      void (async () => {
+        try {
+          const { id, pick, spend } = await openDraftSession(api, null, undefined, { deferSpend: true })
+          try {
+            const info = useConnection.getState().info
+            useSessions.getState().loadHistory(
+              id,
+              { ...FRESH, model: pick.model ?? info?.default_model ?? '', effort: pick.effort ?? info?.default_effort ?? null },
+              'replace',
+            )
+            useDrafts.getState().set(id, { text, pastes: EMPTY.pastes })
+            await navigate({ to: '/c/$session', params: { session: id } })
+          } finally {
+            spend()
+          }
+        } catch (e: unknown) {
+          toast.error(e instanceof Error ? e.message : String(e))
+        }
+      })()
     }
   }
   return (

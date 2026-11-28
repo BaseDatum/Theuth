@@ -150,3 +150,71 @@ test('183 §5.6: the chat route on "no such session": a chat just created elsewh
   useRemoteStart.getState().forget('young')
   expect(useRemoteStart.getState().by.young).toBeUndefined()
 })
+
+test('remote start: pick and target stay intact while open is in flight, spend once open resolves, and a later send failure keeps target and reuse intact', async () => {
+  useDrafts.getState().setPick({ model: 'openai/gpt-5.4', effort: 'high' })
+  useDrafts.getState().setText('', 'hello xeus')
+  useDrafts.getState().sending('', 'input-remote')
+  useDraftTarget.getState().set(XEUS)
+  const api = {
+    create_session: vi.fn(async () => ({ session: 's-remote', retention: 'durable' })),
+    new_session: vi.fn(async () => 'local'),
+  } as unknown as Api
+  let releaseOpen!: () => void
+  let rejectSend!: (e: Error) => void
+  let markOpenEntered!: () => void
+  const openEntered = new Promise<void>((r) => (markOpenEntered = r))
+  let markSendEntered!: () => void
+  const sendEntered = new Promise<void>((r) => (markSendEntered = r))
+  const visited: string[] = []
+
+  const run = sendFirst({
+    api,
+    options: null,
+    input: 'input-remote',
+    deferSpend: true,
+    machine: (engine) => (engine === XEUS.engine ? 'xeus' : null),
+    created: async (id) => {
+      visited.push(`seeded ${id}`)
+    },
+    open: async (id) => {
+      visited.push(`open-start ${id}`)
+      markOpenEntered()
+      await new Promise<void>((res) => {
+        releaseOpen = res
+      })
+      useRemoteStart.getState().live(id)
+      visited.push(`open-end ${id}`)
+    },
+    send: async (id) => {
+      visited.push(`send ${id}`)
+      markSendEntered()
+      await new Promise<void>((_, rej) => {
+        rejectSend = rej
+      })
+    },
+    back: async () => {
+      visited.push('back /new')
+    },
+  })
+
+  await openEntered
+  // While `open` is in flight (after `create_session` and `created`), pick and target are still intact.
+  expect(useDrafts.getState().pick).toEqual({ model: 'openai/gpt-5.4', effort: 'high' })
+  expect(useDraftTarget.getState()).toMatchObject({ ...XEUS, reuse: null })
+
+  releaseOpen()
+  await sendEntered
+  // Once `open` resolved, `onOpened` spent the draft and cleared the target before `send` ran.
+  expect(useDrafts.getState().pick).toEqual(NO_PICK)
+  expect(useDraftTarget.getState()).toMatchObject({ engine: null, cwd: null, reuse: null })
+
+  rejectSend(new Error('send timed out'))
+  await expect(run).rejects.toThrow('xeus did not take the first message')
+  // Restored target and reuse are never clobbered by spend.
+  expect(useDraftTarget.getState()).toMatchObject({
+    ...XEUS,
+    reuse: { session: 's-remote', ...XEUS, input: 'input-remote' },
+  })
+  expect(visited).toEqual(['seeded s-remote', 'open-start s-remote', 'open-end s-remote', 'send s-remote', 'back /new'])
+})
