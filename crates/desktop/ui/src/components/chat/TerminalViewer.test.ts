@@ -1,11 +1,86 @@
-// Node environment (no DOM): the wire is driven through `attachSource` with a fake xterm; the key row is checked as
-// static markup (171 §7.4, §11.6).
-import { createElement } from 'react'
+// Node environment (no DOM): the wire is driven through `attachSource` with a fake xterm; the key row and
+// Terminal mount lifecycle are checked via static markup and a lightweight client hook driver (171 §7.4, §11.6).
+import { createElement, type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { beforeEach, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { PtyChunk } from "@/rpc/bindings/method.agent.output"
 import { RpcError } from '@/rpc/client'
-import { attachSource, CELL_KEYS, clearPopoutMark, liveRows, PoppedTerminal, setPopoutMark, Terminal } from './TerminalViewer'
+
+type EffectSlot = { deps?: readonly unknown[]; cleanup?: (() => void) | void; fn: () => (() => void) | void }
+type HookState = {
+  slots: unknown[]
+  cursor: number
+  effects: EffectSlot[]
+  unsubs: (() => void)[]
+  onNotify: () => void
+}
+let activeHooks: HookState | null = null
+
+vi.mock('react', async (original) => {
+  const actual = await original<typeof import('react')>()
+  return {
+    ...actual,
+    useRef<T>(initial: T) {
+      if (!activeHooks) return actual.useRef(initial)
+      const i = activeHooks.cursor++
+      if (!(i in activeHooks.slots)) activeHooks.slots[i] = { current: initial }
+      return activeHooks.slots[i] as { current: T }
+    },
+    useState<T>(initial: T | (() => T)) {
+      if (!activeHooks) return actual.useState(initial)
+      const h = activeHooks
+      const i = h.cursor++
+      if (!(i in h.slots)) h.slots[i] = typeof initial === 'function' ? (initial as () => T)() : initial
+      const setState = (next: T | ((prev: T) => T)) => {
+        const prev = h.slots[i] as T
+        h.slots[i] = typeof next === 'function' ? (next as (p: T) => T)(prev) : next
+      }
+      return [h.slots[i] as T, setState] as const
+    },
+    useMemo<T>(factory: () => T, deps: readonly unknown[]) {
+      if (!activeHooks) return actual.useMemo(factory, deps)
+      const i = activeHooks.cursor++
+      const prev = activeHooks.slots[i] as { value: T; deps: readonly unknown[] } | undefined
+      if (prev && prev.deps.length === deps.length && prev.deps.every((d, idx) => Object.is(d, deps[idx]))) {
+        return prev.value
+      }
+      const value = factory()
+      activeHooks.slots[i] = { value, deps }
+      return value
+    },
+    useEffect(fn: () => (() => void) | void, deps?: readonly unknown[]) {
+      if (!activeHooks) return actual.useEffect(fn, deps)
+      const i = activeHooks.cursor++
+      const prev = activeHooks.slots[i] as EffectSlot | undefined
+      const changed =
+        !prev ||
+        !deps ||
+        !prev.deps ||
+        prev.deps.length !== deps.length ||
+        prev.deps.some((d, idx) => !Object.is(d, deps[idx]))
+      if (changed) {
+        const next: EffectSlot = { deps, cleanup: prev?.cleanup, fn }
+        activeHooks.slots[i] = next
+        activeHooks.effects.push(next)
+      }
+    },
+    useSyncExternalStore<T>(
+      subscribe: (onStoreChange: () => void) => () => void,
+      getSnapshot: () => T,
+      getServerSnapshot?: () => T,
+    ): T {
+      if (!activeHooks) return actual.useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+      const h = activeHooks
+      const i = h.cursor++
+      if (!(i in h.slots)) {
+        const unsub = subscribe(h.onNotify)
+        h.slots[i] = unsub
+        h.unsubs.push(unsub)
+      }
+      return getSnapshot()
+    },
+  }
+})
 
 const api = {
   cell_input: vi.fn(async () => null),
@@ -17,15 +92,80 @@ const api = {
 const unsub = vi.fn(async () => undefined)
 const client = { stream: vi.fn(async <T,>(_m: string, _p: unknown[], _u: string, _on: (c: T) => void) => unsub) }
 const touch = vi.fn(() => false)
+const mockDesktop = vi.fn(() => false)
+const mockIos = vi.fn(() => false)
+const mockMobile = vi.fn(() => false)
 const popped = vi.fn(() => false)
 const navigate = vi.fn()
 
-vi.mock('@xterm/xterm', () => ({ Terminal: class {} }))
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: class {} }))
+let hwConnected = false
+let hwEventCb: ((connected: boolean) => void) | null = null
+const mockHardwareKeyboardConnected = vi.fn(async () => hwConnected)
+const mockOnHardwareKeyboard = vi.fn(async (cb: (connected: boolean) => void) => {
+  hwEventCb = cb
+  return () => {}
+})
+
+const { xtermSpies, MockXterm, MockFitAddon } = vi.hoisted(() => {
+  const xtermSpies = {
+    constructed: vi.fn(),
+    open: vi.fn(),
+    focus: vi.fn(),
+    dispose: vi.fn(),
+  }
+  class MockXterm {
+    rows = 30
+    cols = 100
+    textarea = { addEventListener: vi.fn(), removeEventListener: vi.fn() }
+    modes = { applicationCursorKeysMode: false }
+    buffer = { active: { type: 'normal', baseY: 0, cursorY: 0 } }
+    parser = { registerCsiHandler: vi.fn(), registerOscHandler: vi.fn() }
+    constructor() {
+      xtermSpies.constructed()
+    }
+    loadAddon() {}
+    open(el: unknown) {
+      xtermSpies.open(el)
+    }
+    focus() {
+      xtermSpies.focus()
+    }
+    blur() {}
+    reset() {}
+    resize() {}
+    write() {}
+    scrollLines() {}
+    onData() {
+      return { dispose: vi.fn() }
+    }
+    onResize() {
+      return { dispose: vi.fn() }
+    }
+    onWriteParsed() {
+      return { dispose: vi.fn() }
+    }
+    attachCustomKeyEventHandler() {}
+    dispose() {
+      xtermSpies.dispose()
+    }
+  }
+  class MockFitAddon {
+    fit() {}
+  }
+  return { xtermSpies, MockXterm, MockFitAddon }
+})
+
+vi.mock('@xterm/xterm', () => ({ Terminal: MockXterm }))
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: MockFitAddon }))
 vi.mock('@/lib/rpc', () => ({ useApi: () => api, queryKeys: { terminals: (s: string) => ['terminals', s] } }))
 vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client , discovery: { phase: 'legacy' } }) }))
 vi.mock('@/store/sessions', async (original) => ({ ...(await original<object>()), useSessionField: () => null }))
-vi.mock('@/lib/platform', async (original) => ({ ...(await original<object>()), touch: () => touch() }))
+vi.mock('@/lib/platform', async (original) => ({
+  ...(await original<object>()),
+  touch: () => touch(),
+  isDesktop: () => mockDesktop(),
+  isIos: () => mockIos(),
+}))
 vi.mock('@/lib/chord', () => ({ isApple: () => true }))
 vi.mock('@/lib/owner', () => ({ useEngineLabel: (owner: string) => owner }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
@@ -40,8 +180,16 @@ vi.mock('@/lib/popout', () => ({
   popoutLabel: (t: { session: string; job: string }) => `popout-pty-${t.session}-${t.job}`,
   popoutOpen: (t: unknown) => mockPopoutOpen(t),
 }))
-vi.mock('@/lib/tauri', () => ({ isTauri: () => false, onPopoutClosed: async () => () => {} }))
-vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
+vi.mock('@/lib/tauri', () => ({
+  isTauri: () => false,
+  onPopoutClosed: async () => () => {},
+  hardwareKeyboardConnected: () => mockHardwareKeyboardConnected(),
+  onHardwareKeyboard: (cb: (connected: boolean) => void) => mockOnHardwareKeyboard(cb),
+}))
+vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => mockMobile() }))
+
+import { _resetHardwareKeyboardForTest, initHardwareKeyboard } from '@/lib/mobile'
+import { attachSource, CELL_KEYS, clearPopoutMark, liveRows, PoppedTerminal, setPopoutMark, Terminal, type TerminalProps } from './TerminalViewer'
 
 /** The slice of xterm `attachSource` touches. */
 const fakeTerm = () => {
@@ -75,10 +223,132 @@ const flush = () => {
 
 const onItem = () => client.stream.mock.calls[0]![3] as (c: PtyChunk) => void
 
+function installClientGlobals() {
+  const mql = () => ({
+    get matches() {
+      return touch()
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  })
+  Object.defineProperty(globalThis, 'matchMedia', { configurable: true, writable: true, value: mql })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      matchMedia: mql,
+      addEventListener() {},
+      removeEventListener() {},
+    },
+  })
+  Object.defineProperty(globalThis, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: class {
+      observe() {}
+      disconnect() {}
+    },
+  })
+  Object.defineProperty(globalThis, 'requestAnimationFrame', {
+    configurable: true,
+    writable: true,
+    value: () => 1,
+  })
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+    configurable: true,
+    writable: true,
+    value: () => {},
+  })
+}
+
+function clearClientGlobals() {
+  // @ts-expect-error clean up Node test globals
+  delete globalThis.matchMedia
+  // @ts-expect-error clean up Node test globals
+  delete globalThis.window
+  // @ts-expect-error clean up Node test globals
+  delete globalThis.ResizeObserver
+  // @ts-expect-error clean up Node test globals
+  delete globalThis.requestAnimationFrame
+  // @ts-expect-error clean up Node test globals
+  delete globalThis.cancelAnimationFrame
+}
+
+/** Mounts `Terminal` with live client hooks + effect tracking, returning HTML and rerender/unmount helpers. */
+function mountTerminal(props: TerminalProps) {
+  installClientGlobals()
+  const hostEl = {
+    clientWidth: 800,
+    clientHeight: 600,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    querySelector: () => null,
+  }
+  let currentProps = props
+  let lastHtml = ''
+  const state: HookState = {
+    slots: [],
+    cursor: 0,
+    effects: [],
+    unsubs: [],
+    onNotify: () => {
+      render(currentProps)
+    },
+  }
+  const render = (nextProps: TerminalProps = currentProps) => {
+    currentProps = nextProps
+    state.cursor = 0
+    state.effects = []
+    activeHooks = state
+    let tree: ReactElement
+    try {
+      tree = Terminal(currentProps) as ReactElement
+    } finally {
+      activeHooks = null
+    }
+    // Bind the `host` ref (`useRef(null)`) once before effects run so `term.open(el)` executes.
+    const hostRef = state.slots.find(
+      (s): s is { current: unknown } => typeof s === 'object' && s !== null && 'current' in s && s.current === null,
+    )
+    if (hostRef) hostRef.current = hostEl
+    for (const eff of state.effects) {
+      eff.cleanup?.()
+      eff.cleanup = eff.fn()
+    }
+    lastHtml = renderToStaticMarkup(tree)
+    return lastHtml
+  }
+  const unmount = () => {
+    for (const slot of state.slots) {
+      if (typeof slot === 'object' && slot !== null && 'cleanup' in slot && typeof (slot as EffectSlot).cleanup === 'function') {
+        ;(slot as EffectSlot).cleanup?.()
+      }
+    }
+    for (const u of state.unsubs) u()
+  }
+  render(props)
+  return {
+    html: () => lastHtml,
+    rerender: (nextProps?: TerminalProps) => render(nextProps),
+    unmount,
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  _resetHardwareKeyboardForTest()
   touch.mockReturnValue(false)
+  mockDesktop.mockReturnValue(false)
+  mockIos.mockReturnValue(false)
+  mockMobile.mockReturnValue(false)
   popped.mockReturnValue(false)
+  hwConnected = false
+  hwEventCb = null
+})
+
+afterEach(() => {
+  _resetHardwareKeyboardForTest()
+  clearClientGlobals()
 })
 
 test('a cell source attaches with cell_attach/cell_detach and types through cell_input as base64 UTF-8', async () => {
@@ -140,7 +410,7 @@ test('224: a pty on another engine passes its id as the trailing engine on subsc
   expect(api.pty_input).toHaveBeenCalledWith('s', 'j', 'x', null, 'node-1')
 })
 
-test('the cell key row: ↑ ↓ ⏎ Esc Tab ^C raw bytes, arrows per cursor-key mode, 48 px targets, only under touch (171 §11.6)', () => {
+test('the cell key row: ↑ ↓ ⏎ Esc Tab ^C raw bytes, arrows per cursor-key mode, 48 px targets, gated by useNeedsTerminalKeys (171 §11.6)', () => {
   const seq = Object.fromEntries(CELL_KEYS)
   expect(seq['↑']!(false)).toBe('\x1b[A')
   expect(seq['↑']!(true)).toBe('\x1bOA')
@@ -148,18 +418,125 @@ test('the cell key row: ↑ ↓ ⏎ Esc Tab ^C raw bytes, arrows per cursor-key 
   expect([seq['⏎']!(false), seq['Esc']!(false), seq['Tab']!(false), seq['^C']!(false)]).toEqual(['\r', '\x1b', '\t', '\x03'])
   expect(btoa(seq['↑']!(false))).toBe('G1tB')
 
-  const cell = () => renderToStaticMarkup(createElement(Terminal, { source: { kind: 'cell', run: 'run-1' }, label: 'python' }))
-  expect(cell()).not.toContain('Terminal keys')
+  const noTouch = mountTerminal({ source: { kind: 'cell', run: 'run-1' }, label: 'python' })
+  expect(noTouch.html()).not.toContain('Terminal keys')
+  noTouch.unmount()
+
   touch.mockReturnValue(true)
-  const html = cell()
+  const coarse = mountTerminal({ source: { kind: 'cell', run: 'run-1' }, label: 'python' })
+  const html = coarse.html()
   expect(html).toContain('role="group" aria-label="Terminal keys"')
   for (const [text] of CELL_KEYS) expect(html).toContain(`>${text}<`)
   expect(html).toContain('h-12 min-w-12')
   expect(html).not.toContain('h-11')
   expect(html).toContain('>python<')
-  // The pty source keeps its own strip: on a desktop (useIsMobile false) nothing, even under touch.
-  expect(renderToStaticMarkup(createElement(Terminal, { session: 's', job: 'j', label: 'sh' }))).not.toContain('Terminal keys')
+  coarse.unmount()
   expect(api.pty_resize).not.toHaveBeenCalled()
+
+  // Desktop shell hides Terminal keys across all sources even when pointer is coarse/touch.
+  mockDesktop.mockReturnValue(true)
+  const deskPty = mountTerminal({ session: 's', job: 'j', label: 'sh' })
+  expect(deskPty.html()).not.toContain('Terminal keys')
+  deskPty.unmount()
+})
+
+test('iPad without hardware keyboard renders Terminal keys for pty, shell, and cell even on wide layout', async () => {
+  mockIos.mockReturnValue(true)
+  mockMobile.mockReturnValue(false)
+  hwConnected = false
+  initHardwareKeyboard()
+  await flush()
+
+  const pty = mountTerminal({ session: 's', job: 'j', label: 'sh' })
+  expect(pty.html()).toContain('role="group" aria-label="Terminal keys"')
+  for (const label of ['Esc', 'Tab', '↑', '↓', '←', '→', '^C']) expect(pty.html()).toContain(`>${label}<`)
+  expect(pty.html()).toContain('tabindex="-1"')
+  expect(pty.html()).toContain('touch-manipulation')
+  pty.unmount()
+
+  const shell = mountTerminal({ source: { kind: 'shell', shell: 'main' }, label: 'cloud' })
+  expect(shell.html()).toContain('role="group" aria-label="Terminal keys"')
+  for (const label of ['Esc', 'Tab', '↑', '↓', '←', '→', '^C']) expect(shell.html()).toContain(`>${label}<`)
+  shell.unmount()
+
+  const cell = mountTerminal({ source: { kind: 'cell', run: 'run-1' }, label: 'python' })
+  expect(cell.html()).toContain('role="group" aria-label="Terminal keys"')
+  for (const [text] of CELL_KEYS) expect(cell.html()).toContain(`>${text}<`)
+  cell.unmount()
+})
+
+test('iPad with hardware keyboard connected hides Terminal keys', async () => {
+  mockIos.mockReturnValue(true)
+  mockMobile.mockReturnValue(false)
+  touch.mockReturnValue(true)
+  hwConnected = true
+  initHardwareKeyboard()
+  await flush()
+
+  const pty = mountTerminal({ session: 's', job: 'j', label: 'sh' })
+  expect(pty.html()).not.toContain('Terminal keys')
+  // With hardware keyboard attached, xterm focuses on mount so typing works immediately.
+  expect(xtermSpies.focus).toHaveBeenCalledTimes(1)
+  pty.unmount()
+})
+
+test('desktop shell hides Terminal keys even when touch() is true', () => {
+  mockDesktop.mockReturnValue(true)
+  touch.mockReturnValue(true)
+  mockMobile.mockReturnValue(true)
+
+  for (const props of [
+    { session: 's', job: 'j', label: 'sh' } as TerminalProps,
+    { source: { kind: 'shell', shell: 'main' }, label: 'cloud' } as TerminalProps,
+    { source: { kind: 'cell', run: 'run-1' }, label: 'python' } as TerminalProps,
+  ]) {
+    const mounted = mountTerminal(props)
+    expect(mounted.html()).not.toContain('Terminal keys')
+    mounted.unmount()
+  }
+})
+
+test('live hardware keyboard attach/detach and viewport crossing 768px toggle toolbar without tearing down xterm', async () => {
+  mockIos.mockReturnValue(true)
+  mockMobile.mockReturnValue(false)
+  hwConnected = false
+  initHardwareKeyboard()
+  await flush()
+
+  const mounted = mountTerminal({ session: 's', job: 'j', label: 'sh' })
+  expect(mounted.html()).toContain('role="group" aria-label="Terminal keys"')
+  expect(xtermSpies.constructed).toHaveBeenCalledTimes(1)
+  expect(xtermSpies.open).toHaveBeenCalledTimes(1)
+  expect(xtermSpies.focus).not.toHaveBeenCalled()
+  expect(xtermSpies.dispose).not.toHaveBeenCalled()
+  expect(client.stream).toHaveBeenCalledTimes(1)
+
+  // Hot-plug hardware keyboard → toolbar disappears, xterm stays alive.
+  hwEventCb!(true)
+  expect(mounted.html()).not.toContain('Terminal keys')
+  expect(xtermSpies.constructed).toHaveBeenCalledTimes(1)
+  expect(xtermSpies.open).toHaveBeenCalledTimes(1)
+  expect(xtermSpies.dispose).not.toHaveBeenCalled()
+  expect(client.stream).toHaveBeenCalledTimes(1)
+
+  // Resize Stage Manager across 768px → xterm still not torn down or re-opened.
+  mockMobile.mockReturnValue(true)
+  mounted.rerender()
+  expect(mounted.html()).not.toContain('Terminal keys')
+  expect(xtermSpies.constructed).toHaveBeenCalledTimes(1)
+  expect(xtermSpies.dispose).not.toHaveBeenCalled()
+  expect(client.stream).toHaveBeenCalledTimes(1)
+
+  // Unplug hardware keyboard → toolbar returns, xterm still untouched.
+  hwEventCb!(false)
+  expect(mounted.html()).toContain('role="group" aria-label="Terminal keys"')
+  expect(xtermSpies.constructed).toHaveBeenCalledTimes(1)
+  expect(xtermSpies.open).toHaveBeenCalledTimes(1)
+  expect(xtermSpies.dispose).not.toHaveBeenCalled()
+  expect(client.stream).toHaveBeenCalledTimes(1)
+
+  mounted.unmount()
+  expect(xtermSpies.dispose).toHaveBeenCalledTimes(1)
 })
 
 test('171F B12: a cell terminal opens at 12 rows and grows with the rows in use to the 30-row grid; a pty box keeps its own size', () => {

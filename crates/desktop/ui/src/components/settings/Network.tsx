@@ -505,7 +505,7 @@ function MachineTerminalSheet({ t, onClose }: { t: TerminalOpen & { name: string
   useEffect(() => () => end(), [end])
   return (
     <Sheet open onOpenChange={(o) => !o && close()}>
-      <SheetContent side="bottom" className="flex h-[85dvh] flex-col">
+      <SheetContent side="bottom" className="top-[max(0px,calc(var(--visible-band,100dvh)-85dvh))] bottom-auto flex h-[min(85dvh,var(--visible-band,100dvh))] flex-col overflow-hidden">
         <SheetHeader>
           <SheetTitle>{t.name}</SheetTitle>
           <SheetDescription className="sr-only">A shell on {t.name}.</SheetDescription>

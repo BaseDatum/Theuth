@@ -11,6 +11,7 @@ import { GuestApp } from '@/components/share/GuestApp'
 import { isGuest } from '@/link/guest'
 import { notify } from '@/lib/notify'
 import { installMacStrayKeyGuard } from '@/lib/mac-stray-key-text'
+import { initHardwareKeyboard } from '@/lib/mobile'
 import { container, markContainer } from '@/lib/platform'
 import { initAnimations } from '@/lib/animations'
 import { initTheme } from '@/lib/theme'
@@ -20,6 +21,7 @@ initTheme()
 initAnimations()
 trackViewport()
 markContainer()
+initHardwareKeyboard()
 installMacStrayKeyGuard()
 // The webview has no popup handler, so `window.open` (Streamdown's link-safety modal, etc.) is a silent no-op; hand it to the system browser.
 if (container() !== 'web') {

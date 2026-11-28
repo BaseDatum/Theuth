@@ -231,3 +231,11 @@ export const closeAuthBrowser = (): Promise<void> =>
 /** Fired when the user manually closes the iOS auth browser before `LoginFinished`; no-op outside iOS. */
 export const onAuthBrowserDismissed = (cb: () => void): Promise<UnlistenFn> =>
   isIos() ? on<null>('auth-browser-dismissed', () => cb()) : Promise.resolve(() => {})
+
+// iOS hardware keyboard detection (`GCKeyboard.coalescedKeyboard`). No-ops outside iOS.
+/** Whether a hardware keyboard is currently attached on iOS; `false` outside iOS. */
+export const hardwareKeyboardConnected = (): Promise<boolean> =>
+  isIos() ? invoke<boolean>('hardware_keyboard_connected') : Promise.resolve(false)
+/** Fired on iOS when a hardware keyboard connects or disconnects; no-op outside iOS. */
+export const onHardwareKeyboard = (cb: (connected: boolean) => void): Promise<UnlistenFn> =>
+  isIos() ? on<boolean>('hardware-keyboard', cb) : Promise.resolve(() => {})
