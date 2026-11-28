@@ -30,6 +30,8 @@ import { isIsland, isOverlay } from '@/lib/tauri'
 import { PhoneStatusLine } from '@/components/status/PhoneStatusLine'
 import { StatusBar } from '@/components/status/StatusBar'
 import { OnboardingHost } from '@/components/onboarding/OnboardingHost'
+import { NewTaskHost } from '@/components/tasks/TaskModal'
+import { useLiveTasks } from '@/components/tasks/queries'
 import { useInsideTile } from '@/components/tiles/tile-context'
 
 /** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route; the trail overlay (96 §5.3) likewise. A popout gets the routed column alone. Inside a view tile, render only the routed page without duplicating the shell chrome. */
@@ -52,6 +54,7 @@ function RootSwitch() {
  * targets or the meeting bar. `SidebarProvider` stays because the headers read it, `open` because there is no rail to
  * reopen: no page shows a "Show sidebar" toggle or clears traffic lights (a popped window has its own OS title bar). */
 function Popped() {
+  useLiveTasks()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   useEffect(() => {
     const title = POPOUT?.kind === 'page' ? pageTitle(pathname) : undefined
@@ -62,6 +65,7 @@ function Popped() {
       {/* A window has its own query cache: a page window (Costs among its pages) loads the cube itself; the shell's
        * resident costs host stays out, so `/costs` renders the page in the column. */}
       {POPOUT?.kind === 'page' && <Capability required={costsRequirements} hide><CostsPrefetch /></Capability>}
+      <Capability required={{ methods: ['task_create'] }} hide><NewTaskHost /></Capability>
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
         <Outlet />
       </SidebarInset>
@@ -76,6 +80,7 @@ function Root() {
   const { session } = useParams({ strict: false })
   const navigate = useNavigate()
   useHotkeys()
+  useLiveTasks()
   // Opening a chat re-reads the viewport: an iPad window that changed size with no event left since keeps its old band.
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   useEffect(remeasureViewport, [pathname])
@@ -101,6 +106,7 @@ function Root() {
       <SidebarProvider rail className="min-h-0 flex-1">
         <AppSidebar session={session} />
         <Capability required={searchRequirements} hide><SearchHost /></Capability>
+        <Capability required={{ methods: ['task_create'] }} hide><NewTaskHost /></Capability>
         <Capability required={routineRequirements} hide><RoutineDraftBridge /></Capability>
         <Capability required={costsRequirements} hide><CostsPrefetch /></Capability>
         <Capability required={studyRequirements} hide><StudyDraftBridge /></Capability>

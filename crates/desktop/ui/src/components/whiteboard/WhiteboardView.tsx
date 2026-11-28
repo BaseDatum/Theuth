@@ -22,10 +22,9 @@ import { listenPencil, recognizeText } from '@/lib/ink-native'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useConnection } from '@/store/connection'
-import { useApprovals } from '@/store/approvals'
 import { useNotices } from '@/store/notices'
-import { statusLine, useSessionField, useSessions } from '@/store/sessions'
-import { ApprovalCard } from '@/components/chat/ApprovalCard'
+import { useSessionField, useSessions } from '@/store/sessions'
+import { useLoadedSession, useTurnReply } from '@/components/chat/floating/useTurnReply'
 import { useTerminals } from '@/components/chat/TerminalViewer'
 import { type AddKind, Cluster, type ClusterProps } from './Cluster'
 import { Bubble } from './Bubble'
@@ -34,7 +33,7 @@ import { OutlineView, outlineText } from './OutlineView'
 import { type SessionPick, WhiteboardComposer, useSessionTitle } from './WhiteboardComposer'
 import { asUrl, excerptOf, parseFileRef, place, placeFromClipboard, placeImage } from './add'
 import { ViewPicker } from './ViewPicker'
-import { bubbleAnchor, lastReply } from './reply'
+import { bubbleAnchor } from './reply'
 import type { PlannedImage, SendPlan, WhiteboardCanvasHandle } from './canvas/api'
 import type { Board, Id, Meta } from './canvas/model'
 import * as ops from './canvas/ops'
@@ -91,22 +90,6 @@ type Chooser = { title: string; items: { key: string; label: string; detail?: st
 const cardsOf = (b: Board) => Object.values(b.cards).filter((c) => c.state !== 'archived').length
 const NO_PLAN: SendPlan = { marks: [], images: [], offScreen: 0 }
 
-/** The bound session's history, loaded once, so the reply bubble has its text. */
-function useLoadedSession(session: string | null) {
-  const api = useApi()
-  const can = useQuerySupport(['load_session'])
-  useEffect(() => {
-    if (!session || !can) return
-    const st = useSessions.getState()
-    st.ensure(session)
-    if (st.sessions[session]?.loaded) return
-    api.load_session(session, null, 60).then(
-      (page) => useSessions.getState().loadHistory(session, page, 'replace'),
-      () => {},
-    )
-  }, [api, session, can])
-}
-
 /** The whiteboard on an open document (tests and the dev fixture mount it on a local provider). */
 export function WhiteboardShell({ doc, session: wanted = null, embedded = false, onSession, onClose, provider, frame }: WhiteboardViewProps & { provider: EngineProvider; frame: string }) {
   const api = useApi()
@@ -152,8 +135,6 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   )
   useLoadedSession(session)
   const running = (useSessionField(session ?? '', 'running') ?? false) as boolean
-  const activity = useSessionField(session ?? '', 'activity')
-  const statusText = useSessionField(session ?? '', 'statusText')
   const sessionTitle = useSessionTitle(session, boundList)
   const refreshBound = () => void qc.invalidateQueries({ queryKey: ['whiteboard', 'sessions', doc] })
   const pick: SessionPick = {
@@ -173,20 +154,9 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
     onOpen: (s) => void navigate({ to: '/c/$session', params: { session: s } }),
   }
 
-  // ── The composer dock: its top edge (from the frame's bottom, plus a gap) is `--wb-dock`, what floats above it.
+  // ── The composer dock: `FloatingComposerDock` measures `--wb-dock` on `frameEl` so overlays sit above it.
   const frameEl = useRef<HTMLDivElement>(null)
   const dock = useRef<HTMLDivElement>(null)
-  useLayoutEffect(() => {
-    const f = frameEl.current
-    const d = dock.current
-    if (!f || !d) return
-    const measure = () => f.style.setProperty('--wb-dock', `${Math.round(f.getBoundingClientRect().bottom - d.getBoundingClientRect().top + 12)}px`)
-    const ro = new ResizeObserver(measure)
-    ro.observe(f)
-    ro.observe(d)
-    measure()
-    return () => ro.disconnect()
-  }, [])
 
   // ── Notices while full-window show above the composer (the status bar is covered).
   const notice = useNotices((s) => s.current)
@@ -197,11 +167,6 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
     const t = setTimeout(() => setNoticeShown(null), Math.max(0, notice.expiresAt - Date.now()))
     return () => clearTimeout(t)
   }, [notice, embedded])
-  const working = running ? (statusLine(activity ?? 'thinking', statusText) ?? (activity === 'tool' ? 'working…' : activity === 'idle' || !activity ? 'thinking…' : `${activity}…`)) : null
-  // A tool call of the target session waiting on Allow / Deny (a wb_* write in the default approval mode): full-window,
-  // the transcript is covered, so the card shows here and the pill says so instead of "working…".
-  const waiting = useApprovals((s) => s.pending.find((p) => p.session === session))
-  const status = noticeShown ?? (waiting ? `waiting for you: ${waiting.tool}` : working)
 
   // ── Cluster: timer (B4) mirrored into the store (B3 reads it for the attribution panel).
   const timer = useMemo(() => clusterTimer({ onChange: (open) => store.getState().set({ clusterOpen: open }) }), [store])
@@ -302,37 +267,22 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   const noVision = !!info && !info.image && !visionModel
 
   // ── The reply bubble: after a turn of the target session ends.
-  type BubbleState = { text: string; turn: WbTurnInfo | null; session: string }
-  const [bubble, setBubble] = useState<BubbleState | null>(null)
+  const [turnInfo, setTurnInfo] = useState<{ session: string; turn: WbTurnInfo } | null>(null)
   const [undoing, setUndoing] = useState(false)
-  // The whiteboard does not stream the session's transcript (only its state), so the turn's final text is not in the
-  // store when `running` drops: the end of a turn re-reads the history and arms `awaiting`; the bubble opens once that
-  // session has a reply row.
-  const [awaiting, setAwaiting] = useState<string | null>(null)
-  const wasRunning = useRef(running)
-  useEffect(() => {
-    const was = wasRunning.current
-    wasRunning.current = running
-    if (running) return setAwaiting(null)
-    if (!session || !was) return
-    setAwaiting(session)
-    api.load_session(session, null, 60).then(
-      (page) => useSessions.getState().loadHistory(session, page, 'replace'),
-      () => {},
-    )
-  }, [running, session, api])
-  // Subscribed only while awaiting: streaming deltas of a running turn do not re-render the view.
-  const reply = useSessions((s) => (awaiting ? lastReply(s.sessions[awaiting]?.entries ?? []) : null))
-  useEffect(() => {
-    if (!awaiting || !reply) return
-    const s = awaiting
-    setAwaiting(null)
-    setBubble({ text: reply, turn: null, session: s })
-    rpc?.turn(doc, s).then(
-      (turn) => setBubble((b) => (b && b.session === s ? { ...b, turn } : b)),
-      () => {},
-    )
-  }, [awaiting, reply, rpc, doc])
+  const { reply: turnReply, dismiss: dismissReply } = useTurnReply({
+    session,
+    running,
+    onReply: (r) => {
+      setTurnInfo(null)
+      rpc?.turn(doc, r.session).then(
+        (turn) => turn && setTurnInfo({ session: r.session, turn }),
+        () => {},
+      )
+    },
+  })
+  const bubble = turnReply
+    ? { text: turnReply.text, session: turnReply.session, turn: turnInfo?.session === turnReply.session ? turnInfo.turn : null }
+    : null
   const anchor = bubble ? bubbleAnchor(bubble.turn, board) : null
 
   // ── Off-screen work (design §4.5): placeholders and the cards the target session's latest turn touched, when out
@@ -390,7 +340,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
       const skipped = r.skipped.map((s) => `${s.alias ?? s.id}: ${s.why}`)
       if (skipped.length) notify.warning(`Undid ${r.undone} ${r.undone === 1 ? 'change' : 'changes'}; kept ${skipped.length}`, { description: skipped.join('; ') })
       else notify.success(r.undone ? `Undid the agent's turn (${r.undone} ${r.undone === 1 ? 'change' : 'changes'})` : 'Nothing to undo')
-      setBubble((b) => (b?.turn ? { ...b, turn: { ...b.turn, undone: true } } : b))
+      setTurnInfo((t) => (t ? { ...t, turn: { ...t.turn, undone: true } } : t))
     } catch (e) {
       notify.error(e instanceof Error ? e.message : String(e))
     } finally {
@@ -405,7 +355,8 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   const deliver = async (m: { text: string; files: string[]; clientId: string }): Promise<string> => {
     const h = handle.current
     if (!h || !rpc) throw new Error('The whiteboard is still opening')
-    setBubble(null)
+    dismissReply()
+    setTurnInfo(null)
     try {
       const r = await sendWhiteboard(
         {
@@ -661,18 +612,20 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
   )
 
   const card = openCard ? board.cards[openCard] : undefined
-  const bubbleNode = bubble ? (
-    <Bubble
-      text={bubble.text}
-      canUndo={!!bubble.turn && !bubble.turn.undone && bubble.turn.writes > 0}
-      undoing={undoing}
-      onUndo={() => void undoTurn()}
-      onDismiss={() => setBubble(null)}
-      onOpenSession={() => openSession(bubble.session)}
-      floating={!anchor || fullOutline}
-      beside={clusterOpen}
-    />
-  ) : null
+  const replyBubbleProps = bubble
+    ? {
+        text: bubble.text,
+        canUndo: !!bubble.turn && !bubble.turn.undone && bubble.turn.writes > 0,
+        undoing,
+        onUndo: () => void undoTurn(),
+        onDismiss: () => {
+          dismissReply()
+          setTurnInfo(null)
+        },
+        onOpenSession: () => openSession(bubble.session),
+      }
+    : null
+  const anchoredBubble = replyBubbleProps && anchor && !fullOutline && !present ? <Bubble {...replyBubbleProps} floating={false} /> : null
   const controls: Omit<ClusterProps, 'onHold'> = {
     store,
     onActivity: () => timer.activity(),
@@ -801,7 +754,7 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
               readOnly={readOnly || phone}
               embedded={embedded}
               className="size-full"
-              anchored={bubble && anchor && !fullOutline && !present ? [{ key: 'reply', card: anchor, node: bubbleNode }] : []}
+              anchored={anchoredBubble && anchor ? [{ key: 'reply', card: anchor, node: anchoredBubble }] : []}
               onCanvasTap={() => (store.getState().present ? exitPeek.poke() : timer.tap())}
               onPenActivity={(down) => down && timer.pen()}
               onViewChange={() => {
@@ -847,15 +800,6 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
           Stop presenting
         </button>
       )}
-      {bubble && !present && (!anchor || fullOutline) && bubbleNode}
-      {waiting && !present && (
-        <div
-          className={`wb-rise absolute z-20 bottom-[var(--wb-dock,calc(80px+var(--safe-bottom,0px)))] w-[min(360px,calc(100vw-48px))] rounded-xl shadow-lg [&>*]:my-0 ${clusterOpen && !fullOutline ? 'right-[calc(94px+var(--safe-right,0px))]' : 'right-[calc(24px+var(--safe-right,0px))]'}`}
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <ApprovalCard approval={waiting} />
-        </div>
-      )}
       <WhiteboardComposer
         doc={doc}
         pick={pick}
@@ -871,11 +815,15 @@ export function WhiteboardShell({ doc, session: wanted = null, embedded = false,
           },
           compose: composeThumb,
           noVision,
-          status,
+          status: noticeShown,
         }}
         deliver={deliver}
         onSent={sent}
         dockRef={dock}
+        containerRef={frameEl}
+        reply={!anchor || fullOutline ? replyBubbleProps : null}
+        beside={clusterOpen && !fullOutline}
+        hideOverlays={present}
       />
       {card && !present && <CardSheet card={card} phone={phone} blobUrl={host.blobUrl} onClose={() => setOpenCard(null)} onSession={(s) => openSession(s)} />}
       {chooser && <ChooserDialog c={chooser} onDone={() => setChooser(null)} />}

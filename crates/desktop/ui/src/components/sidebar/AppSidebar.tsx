@@ -10,7 +10,7 @@ import { requirements as costsRequirements } from '@/components/costs/requiremen
 import { broadcastRequirements } from '@/components/chat/requirements'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { AudioLines, Bot, ChartColumn, FolderKanban, Inbox, Library, Megaphone, PanelLeft, Plus, Settings, SquarePen, StickyNote, Users } from 'lucide-react'
+import { AudioLines, Bot, ChartColumn, FolderKanban, Inbox, Library, ListTodo, Megaphone, PanelLeft, Plus, Settings, SquarePen, StickyNote, Users } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
@@ -30,6 +30,7 @@ import { BroadcastDialog } from '@/components/chat/BroadcastDialog'
 import { openBroadcastDialog } from '@/components/chat/broadcast'
 import { NewChatOnMenu, machineRows, openNewChat } from '@/components/chat/NewChatPane'
 import { useMesh } from '@/components/tasks/queries'
+import { openNewTaskModal } from '@/components/tasks/TaskModal'
 import { createNote } from '@/components/notes/create'
 import { useSessionDrag, useViewDrag } from '@/components/chat/Panes'
 import { AttentionBadge } from '@/components/hud/AttentionBadge'
@@ -62,6 +63,8 @@ declare const __APP_VERSION__: string
 
 /** 143 D2: the plus on the Note row — malachite (`--status-success-fg`); one token to swap for `text-project-nile` (olive). */
 export const NOTE_PLUS = 'text-success'
+/** The plus on the Task row — lapis (`--primary`), paired with `NOTE_PLUS`. */
+export const TASK_PLUS = 'text-primary'
 
 /** A rail icon's name, to its right on hover (the rail shows no labels). */
 function RailTip({ label, children }: { label: string; children: ReactNode }) {
@@ -240,6 +243,16 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 </button>
               </RailTip>
             </Capability>
+            <Capability required={{ methods: ['task_create'] }} hide>
+              <RailTip label="New task">
+                <button type="button" aria-label="New task" className={RAIL_ITEM} onClick={() => openNewTaskModal()}>
+                  <span className="relative inline-flex">
+                    <ListTodo className="size-[18px]" />
+                    <Plus className={cn(ICON_PLUS, TASK_PLUS)} strokeWidth={3.5} aria-hidden />
+                  </span>
+                </button>
+              </RailTip>
+            </Capability>
             <Capability required={whiteboardRequirements} hide>
               <WhiteboardsRail itemClass={RAIL_ITEM} wrap={(t) => <RailTip label="Whiteboards">{t}</RailTip>} />
             </Capability>
@@ -403,6 +416,24 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </button>
             </SidebarMenuButton>
             <SidebarPopoutButton target={() => { if (!createNoteAndOpen.isPending) createNoteAndOpen.mutate(true) }} className="top-2 right-2" />
+          </SidebarMenuItem></Capability>
+          <Capability required={{ methods: ['task_create'] }} hide><SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <button
+                type="button"
+                aria-label="New task"
+                onClick={() => {
+                  if (isMobile) setOpenMobile(false)
+                  openNewTaskModal()
+                }}
+              >
+                <span className="relative inline-flex">
+                  <ListTodo className="size-4" />
+                  <Plus className={cn(ICON_PLUS, TASK_PLUS)} strokeWidth={3.5} aria-hidden />
+                </span>
+                <span>Task</span>
+              </button>
+            </SidebarMenuButton>
           </SidebarMenuItem></Capability>
           <Capability required={whiteboardRequirements} hide><WhiteboardsRow className="h-9 rounded-[10px] px-2.5" /></Capability>
           {canRecord && (

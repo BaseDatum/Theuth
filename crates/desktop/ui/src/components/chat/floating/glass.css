@@ -1,0 +1,98 @@
+/* Shared floating bottom-right glass dock styles (used by Whiteboard and Task Graph composers).
+   A tint strong enough that text keeps ≥ 4.5 : 1 over paper and over a dark card, blur + saturate behind it. */
+
+.wb-glass {
+  background: color-mix(in oklab, white 52%, transparent);
+  border: 1px solid color-mix(in oklab, white 70%, transparent);
+  box-shadow:
+    0 8px 30px color-mix(in oklab, #1e1400 14%, transparent),
+    inset 0 1px 0 color-mix(in oklab, white 80%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
+  color: #1a1612;
+}
+
+.dark .wb-glass {
+  background: color-mix(in oklab, #0b0a09 48%, transparent);
+  border: 1px solid color-mix(in oklab, white 14%, transparent);
+  box-shadow:
+    0 8px 30px color-mix(in oklab, black 40%, transparent),
+    inset 0 1px 0 color-mix(in oklab, white 8%, transparent);
+  color: #f1e9dc;
+}
+
+/* Text that sits on glass: a muted line still clears 4.5 : 1 on both tints. */
+.wb-glass .wb-muted {
+  color: color-mix(in oklab, currentColor 74%, transparent);
+}
+
+/* A chip or button surface inside the glass. */
+/* `wb-well`, not `wb-chip`: that name is the card-body chip of `canvas/canvas.css` (absolute, inset 0). */
+.wb-well {
+  background: color-mix(in oklab, white 62%, transparent);
+}
+.dark .wb-well {
+  background: color-mix(in oklab, white 10%, transparent);
+}
+.wb-press:hover {
+  background: color-mix(in oklab, currentColor 8%, transparent);
+}
+.wb-press[aria-pressed='true'],
+.wb-press[data-on='true'] {
+  /* `--fg-accent` (Egyptian blue), not `--accent`: in this app that is shadcn's muted layer colour, invisible as a state. */
+  background: color-mix(in oklab, var(--fg-accent) 16%, transparent);
+  color: var(--fg-accent);
+}
+
+/* The session dot; green when connected to a session (set inline), grey with no session. */
+.wb-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  flex: none;
+  background: color-mix(in oklab, currentColor 35%, transparent);
+}
+.wb-dot[data-busy='true'] {
+  animation: wb-pulse 1.1s ease-in-out infinite;
+}
+@keyframes wb-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* The composer dock: bottom right, iPhone-wide at most (shrinks on a narrow window), clear of the safe areas and the
+   window corner. The frame is the visible band (`h-band`), so with the software keyboard up the dock sits on top of it. */
+.wb-dock {
+  right: calc(12px + var(--safe-right, 0px));
+  bottom: calc(12px + var(--safe-bottom, 0px));
+  width: min(390px, calc(100% - 24px - var(--safe-left, 0px) - var(--safe-right, 0px)));
+}
+
+.wb-rise {
+  animation: wb-rise 160ms ease-out;
+}
+@keyframes wb-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+.wb-slide {
+  animation: wb-slide 200ms ease-out;
+}
+@keyframes wb-slide {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+/* Reduce Motion: cuts, not animations. */
+@media (prefers-reduced-motion: reduce) {
+  .wb-dot[data-busy='true'],
+  .wb-rise,
+  .wb-slide {
+    animation: none;
+  }
+}
