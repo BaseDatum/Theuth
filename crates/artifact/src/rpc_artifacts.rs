@@ -489,7 +489,9 @@ impl ArtifactArtifactsApiServer for Server {
             Some(s) => self.authorize(ext, s).await?.resources.root.clone(),
             None => self.rt.data_dir.clone(),
         };
-        let real = match std::fs::canonicalize(&path) {
+        let candidate = resolve_attachment_candidate(&self.rt.data_dir, &path)
+            .map_err(|msg| failed(format!("{}: {msg}", path.display())))?;
+        let real = match std::fs::canonicalize(&candidate) {
             Ok(p) => p,
             // 68 §7: a blob (`…/artifacts/<hash>.<ext>`), spill file
             // (`…/spill/<session>/<call_id>.txt`) or attachment
@@ -502,12 +504,13 @@ impl ArtifactArtifactsApiServer for Server {
                 };
                 let prefer = prefer.as_ref();
                 let dir = |n: usize| {
-                    path.ancestors()
+                    candidate
+                        .ancestors()
                         .nth(n)
                         .and_then(Path::file_name)
                         .and_then(|d| d.to_str())
                 };
-                let fetched = match (path.file_name().and_then(|n| n.to_str()), dir(1), dir(2)) {
+                let fetched = match (candidate.file_name().and_then(|n| n.to_str()), dir(1), dir(2)) {
                     (Some(name), Some("artifacts"), _) => {
                         artifact::mesh::fetch_blob(&root.join("artifacts"), name, prefer).await
                     }
@@ -516,7 +519,7 @@ impl ArtifactArtifactsApiServer for Server {
                             .await
                     }
                     (Some(_), Some(session), Some("spill")) => {
-                        match (session.parse(), path.file_stem().and_then(|s| s.to_str())) {
+                        match (session.parse(), candidate.file_stem().and_then(|s| s.to_str())) {
                             (Ok(session), Some(call_id)) => {
                                 artifact::mesh::fetch_spill(&root, session, call_id, prefer).await
                             }
@@ -530,10 +533,7 @@ impl ArtifactArtifactsApiServer for Server {
                     .map_err(|e| failed(format!("{}: {e}", fetched.display())))?
             }
         };
-        let allowed = ["attachments", "browser", "computer", "artifacts", "spill"]
-            .iter()
-            .any(|d| std::fs::canonicalize(root.join(d)).is_ok_and(|dir| real.starts_with(dir)));
-        if !allowed {
+        if !is_allowed_attachment(&root, &real) {
             return Err(failed(format!("{}: not an attachment", path.display())));
         }
         let bytes = tokio::fs::read(&real)
@@ -543,7 +543,95 @@ impl ArtifactArtifactsApiServer for Server {
     }
 }
 
+const ATTACHMENT_DIRS: &[&str] = &["attachments", "browser", "computer", "artifacts", "spill"];
+
+/// Resolve an incoming `get_attachment` path before canonicalization or mesh fetch:
+/// - Reject any `..` traversal component outright.
+/// - For relative paths (e.g. `attachments/<sha16>.pdf`), require the first normal component
+///   to be one of [`ATTACHMENT_DIRS`] and resolve against `data_dir`.
+/// - Preserve existing absolute paths unchanged.
+fn resolve_attachment_candidate(data_dir: &Path, path: &Path) -> Result<PathBuf, &'static str> {
+    use std::path::Component;
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("not an attachment");
+    }
+    if path.is_relative() {
+        let mut normals = path.components().filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        });
+        let Some(first) = normals.next() else {
+            return Err("not an attachment");
+        };
+        if !ATTACHMENT_DIRS.contains(&first) || normals.next().is_none() {
+            return Err("not an attachment");
+        }
+        return Ok(data_dir.join(path));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Check that a canonicalized path lies strictly inside one of `<root>/{attachments,browser,computer,artifacts,spill}`.
+fn is_allowed_attachment(root: &Path, real: &Path) -> bool {
+    ATTACHMENT_DIRS
+        .iter()
+        .any(|d| std::fs::canonicalize(root.join(d)).is_ok_and(|dir| real.starts_with(dir)))
+}
+
 pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::DescribedModule::new(ArtifactArtifactsApiServer::into_rpc(server), rpc_descriptors())
         .expect("artifact RPC descriptors")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_attachment_candidate_handles_relative_absolute_and_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let att_dir = data_dir.join("attachments");
+        std::fs::create_dir_all(&att_dir).unwrap();
+        let file = att_dir.join("deadbeef12345678.pdf");
+        std::fs::write(&file, b"pdf-bytes").unwrap();
+
+        // Relative path under attachments/ resolves against data_dir and passes allowlist.
+        let rel = Path::new("attachments/deadbeef12345678.pdf");
+        let cand = resolve_attachment_candidate(data_dir, rel).unwrap();
+        assert_eq!(cand, file);
+        let real = std::fs::canonicalize(&cand).unwrap();
+        assert!(is_allowed_attachment(data_dir, &real));
+
+        // Absolute path behavior is preserved.
+        let abs = resolve_attachment_candidate(data_dir, &file).unwrap();
+        assert_eq!(abs, file);
+        assert!(is_allowed_attachment(data_dir, &std::fs::canonicalize(&abs).unwrap()));
+
+        // Path traversal is strictly rejected.
+        assert!(resolve_attachment_candidate(data_dir, Path::new("../secret.txt")).is_err());
+        assert!(
+            resolve_attachment_candidate(data_dir, Path::new("attachments/../../etc/passwd"))
+                .is_err()
+        );
+        assert!(resolve_attachment_candidate(
+            data_dir,
+            &data_dir.join("attachments/../config.yaml")
+        )
+        .is_err());
+
+        // Non-allowlisted relative paths are rejected.
+        assert!(resolve_attachment_candidate(data_dir, Path::new("config.yaml")).is_err());
+        assert!(resolve_attachment_candidate(data_dir, Path::new("attachments")).is_err());
+        assert!(
+            resolve_attachment_candidate(data_dir, Path::new("other/attachments/deadbeef.pdf"))
+                .is_err()
+        );
+
+        // A file outside allowlisted subdirs fails allowlist check even when absolute.
+        let outside = data_dir.join("config.yaml");
+        std::fs::write(&outside, b"secret").unwrap();
+        let real_outside = std::fs::canonicalize(&outside).unwrap();
+        assert!(!is_allowed_attachment(data_dir, &real_outside));
+    }
 }

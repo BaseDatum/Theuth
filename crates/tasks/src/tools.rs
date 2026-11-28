@@ -20,8 +20,10 @@ use crate::place;
 use crate::thread::Thread;
 use crate::types::{
     Disposition, DoneBecause, Owner, Priority, Task, TaskCreate, TaskFilter, TaskId, TaskPatch,
-    TaskState, parse_accent,
+    TaskState,
 };
+#[cfg(test)]
+use crate::types::parse_accent;
 use crate::{
     AnswerDecision, AwaitDecision, CheckBoard, CheckoutTask, CommentTask, CreateTask,
     EffectiveReviewer, Escalate, GetTask, ListTasks, MoveTask, NoteDisposition, PlaceTask,
@@ -211,7 +213,7 @@ pub struct TaskCreateArgs {
     #[serde(default)]
     pub done_when: Option<String>,
     /// Things the task is about, as references the owner reads with the per-kind tools (design 66):
-    /// `{kind: note|knowledge|artifact|session|meeting|notebook|source|whiteboard, id, title}`. Carry over the `[attached …]` lines of the
+    /// `{kind: note|knowledge|artifact|session|meeting|notebook|source|whiteboard|file, id, title}`. Carry over the `[attached …]` lines of the
     /// user's message when the task is drafted from it.
     #[serde(default)]
     pub attachments: Vec<AttachRef>,
@@ -271,11 +273,6 @@ impl Tool for TaskCreateTool {
             Ok(s) => s,
             Err(e) => return Ok(ToolOutput::err(e)),
         };
-        // Refused before anything is written; set right after the create.
-        let accent = match a.accent.as_deref().map(parse_accent).transpose() {
-            Ok(v) => v,
-            Err(e) => return Ok(ToolOutput::err(e)),
-        };
         let input = TaskCreate {
             state,
             title: a.title,
@@ -294,31 +291,17 @@ impl Tool for TaskCreateTool {
             attachments: a.attachments,
             priority: a.priority,
             blockers: a.blockers,
+            accent: a.accent,
         };
-        let mut r = flat(
+        let r = flat(
             actor
                 .ask(CreateTask {
                     input,
-                    created_by: me.clone(),
+                    created_by: me,
                     session: Some(cx.session.to_string()),
                 })
                 .await,
         );
-        if let (Ok(t), Some(Some(accent))) = (&r, accent) {
-            r = flat(
-                actor
-                    .ask(UpdateTask {
-                        id: t.id.clone(),
-                        patch: TaskPatch {
-                            accent: Some(accent),
-                            ..Default::default()
-                        },
-                        actor: me,
-                        session: Some(cx.session.to_string()),
-                    })
-                    .await,
-            );
-        }
         Ok(match r {
             Ok(t) => ToolOutput::ok(format!(
                 "created task {} — owner {}, reviewer {}, project {}, state {}{}",
@@ -583,6 +566,12 @@ impl Tool for TaskCheckoutTool {
             for r in &t.attachments {
                 text.push_str(&agent::attach::marker(r));
                 text.push('\n');
+                if r.kind == agent::attach::Kind::File && r.id.starts_with("attachments/") {
+                    text.push_str(&format!(
+                        "  path: {}\n",
+                        cx.resources.root.join(&r.id).display()
+                    ));
+                }
             }
         }
         if let Some(doc) = &t.thread

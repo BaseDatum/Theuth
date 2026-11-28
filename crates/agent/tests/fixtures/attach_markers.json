@@ -240,6 +240,12 @@
       "body": "which mock should we keep?"
     },
     {
+      "name": "file",
+      "input": "[attached file attachments/deadbeef12345678.pdf \"spec.pdf\" · pdf · 420 KB]\nreview section 2",
+      "refs": [{"kind": "file", "id": "attachments/deadbeef12345678.pdf", "title": "spec.pdf", "meta": "pdf · 420 KB"}],
+      "body": "review section 2"
+    },
+    {
       "name": "empty text",
       "input": "",
       "refs": [],

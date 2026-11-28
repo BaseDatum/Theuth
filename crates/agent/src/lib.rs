@@ -149,6 +149,7 @@ pub mod store;
 pub mod status;
 pub mod supervisor;
 pub mod suggest;
+pub mod task_graph;
 pub mod title;
 pub mod todo;
 pub mod tokens;

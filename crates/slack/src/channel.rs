@@ -1553,6 +1553,7 @@ impl Channel {
                             attachments: vec![],
                             priority: None,
                             blockers: vec![],
+                            accent: None,
                         },
                         created_by: "user".into(),
                         session: None,

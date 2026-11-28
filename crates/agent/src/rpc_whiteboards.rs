@@ -74,6 +74,15 @@ pub trait AgentWhiteboardsApi {
         whiteboard: document::DocId,
         send: WbSendContext,
     ) -> RpcResult<()>;
+    /// Hand over the live Task Graph view context (active project, selected task, visible tasks)
+    /// from the floating Task Graph composer; consumed by the next turn of `session`, dropped after
+    /// 120 s. Call it right before `send_input`/`steer`. Owner only.
+    #[method(name = "task_graph_send_context", with_extensions)]
+    async fn task_graph_send_context(
+        &self,
+        session: SessionId,
+        #[argument(rename = "context")] ctx: agent::task_graph::TaskGraphSendContext,
+    ) -> RpcResult<()>;
 }
 
 #[async_trait]
@@ -125,6 +134,17 @@ impl AgentWhiteboardsApiServer for Server {
     ) -> RpcResult<()> {
         owner(ext)?;
         agent::whiteboards::rpc::send_context(session, whiteboard, send).await
+    }
+
+    async fn task_graph_send_context(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        ctx: agent::task_graph::TaskGraphSendContext,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        agent::task_graph::put_context(session, ctx);
+        Ok(())
     }
 }
 
