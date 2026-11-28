@@ -3875,7 +3875,7 @@ mod fire_tests {
                 vec![]
             }
         }
-        let _ = ::tools::secrets::install(Arc::new(TestSecrets));
+        ::tools::secrets::install(Arc::new(TestSecrets));
 
         let (mut s, rec) = actor(
             dir.path(),

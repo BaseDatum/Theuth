@@ -1114,7 +1114,7 @@ mod tests {
             60,
             TriggerResetMode::ReArmOnClear,
         );
-        assert!(validate_triggers(&[ok.clone()]).is_ok());
+        assert!(validate_triggers(std::slice::from_ref(&ok)).is_ok());
         assert!(validate_triggers(&[ok.clone(), ok]).is_err());
 
         // Count cap enforced.

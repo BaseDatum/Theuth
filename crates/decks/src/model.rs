@@ -185,7 +185,7 @@ impl MetricValue {
     /// Normalize `-0.0` to `0.0` so serialization and canonical hashes stay deterministic.
     pub fn normalized(self) -> Self {
         match self {
-            Self::Number(n) if n == 0.0 => Self::Number(0.0),
+            Self::Number(0.0) => Self::Number(0.0),
             other => other,
         }
     }
