@@ -16,15 +16,20 @@ use rpc_core::{NOT_RUNNING, Server, UNAUTHORIZED, failed, lookup, owner};
 use serde_json::Value;
 
 use crate::hub::DeckHub;
+use crate::mesh::{
+    DeckMeshStatus, DeckMoveHomeResult, DeckSourceEvent, DeckSourceStatus, IngestSourceAck,
+};
 use crate::model::{
     DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary, DeclaredAction,
     InteractResponse, RuntimeControlOp, ScriptMode, ScriptRevision, TriggerSpec,
 };
 use crate::owner::{
     ApproveScriptMsg, CreateDeckMsg, DECKS_ACTOR, DeckSupervisor, FocusSectionMsg, GetDeck,
-    GetSnapshotMsg, InteractMsg, ListDecks, ListSnapshotsMsg, ProposeScriptMsg, ReadScriptMsg,
+    GetLocalEngineIdMsg, GetMeshStatusMsg, GetSnapshotMsg, IngestSourceEventMsg, InteractMsg,
+    ListDecks, ListSnapshotsMsg, MoveHomeMsg, ProposeScriptMsg, ReadScriptMsg, RegisterSourceMsg,
     RejectScriptMsg, RuntimeControlMsg, SectionAddMsg, SectionArchiveMsg, SectionHistoryMsg,
     SectionMoveMsg, SectionPatchMsg, SubscribeDeckMsg, UNAUTHORIZED_INTERACT_ERR,
+    UnregisterSourceMsg,
 };
 
 fn decks_actor() -> RpcResult<ActorRef<DeckSupervisor>> {
@@ -56,7 +61,8 @@ pub(crate) fn owner_only(ext: &Extensions) -> RpcResult<(String, Principal)> {
 
 /// 229 B1: Human-press gate (equivalent to `plugins::HumanPress`) for security-sensitive
 /// Deck operations (`deck_script_approve`, `deck_script_reject`, `deck_runtime_control`,
-/// and mutating `deck_interact` actions).
+/// mutating `deck_interact` actions, `deck_source_register`, `deck_source_unregister`,
+/// and `deck_move_home`).
 /// Rejects missing peer, share guests, engine-internal peers, closed peers, and `Forwarded` calls.
 pub(crate) fn human_press(ext: &Extensions) -> RpcResult<(String, Principal)> {
     let p = owner(ext)?;
@@ -74,6 +80,29 @@ pub(crate) fn human_press(ext: &Extensions) -> RpcResult<(String, Principal)> {
             device: Some(p.id()),
         },
     ))
+}
+
+/// Resolve the authenticated source engine identity strictly from the transport layer:
+/// - Paired mesh peer calls over `theuth/rpc/1` carry `agent::rpc_forward::Forwarded(PeerId)`,
+///   authenticated by the peer's iroh Ed25519 identity.
+/// - Local authenticated owner calls bind to this engine's own `local_engine_id`.
+///
+/// Source engine identity is NEVER trusted from untrusted JSON-RPC arguments.
+pub(crate) async fn authenticated_source_engine(
+    ext: &Extensions,
+    actor: &ActorRef<DeckSupervisor>,
+) -> RpcResult<String> {
+    let _ = owner_only(ext)?;
+    if let Some(agent::rpc_forward::Forwarded(peer)) =
+        ext.get::<agent::rpc_forward::Forwarded>()
+    {
+        return Ok(peer.0.clone());
+    }
+    actor
+        .ask(GetLocalEngineIdMsg)
+        .send()
+        .await
+        .map_err(|e| failed(e.to_string()))
 }
 
 fn map_doc_err(e: DeckDocError) -> ErrorObjectOwned {
@@ -99,6 +128,16 @@ fn map_send_err<M>(e: kameo::error::SendError<M, String>) -> ErrorObjectOwned {
                 failed(msg)
             }
         }
+        other => failed(other.to_string()),
+    }
+}
+
+fn map_ingest_send_err<M>(e: kameo::error::SendError<M, String>) -> ErrorObjectOwned {
+    match e {
+        kameo::error::SendError::HandlerError(msg) if msg.starts_with("unauthorized_source:") => {
+            ErrorObjectOwned::owned(UNAUTHORIZED, msg, None::<()>)
+        }
+        kameo::error::SendError::HandlerError(msg) => failed(msg),
         other => failed(other.to_string()),
     }
 }
@@ -305,7 +344,45 @@ pub trait DecksApi {
         snapshot_id: String,
     ) -> RpcResult<Option<DeckSnapshot>>;
 
-    /// Subscribe to bounded, coalesced per-Deck runtime events (sync, live frames, durable snapshots, status, approvals).
+    /// Read a Deck's authoritative home engine and registered mesh sources' live/stale/offline/replay state.
+    #[method(name = "deck_mesh_status", with_extensions)]
+    async fn deck_mesh_status(&self, deck_id: String) -> RpcResult<DeckMeshStatus>;
+
+    /// Register or update a Deck source binding a typed `source_id` to an authenticated mesh `engine_id` (home engine, human press only).
+    #[method(name = "deck_source_register", with_extensions)]
+    async fn deck_source_register(
+        &self,
+        deck_id: String,
+        source_id: String,
+        engine_id: String,
+        label: Option<String>,
+        heartbeat_secs: Option<u64>,
+        stale_after_secs: Option<u64>,
+        offline_after_secs: Option<u64>,
+    ) -> RpcResult<DeckSourceStatus>;
+
+    /// Unregister a Deck source and clear its home dedup/runtime state (home engine, human press only).
+    #[method(name = "deck_source_unregister", with_extensions)]
+    async fn deck_source_unregister(&self, deck_id: String, source_id: String) -> RpcResult<()>;
+
+    /// Home ingest endpoint for redacted source node envelopes.
+    /// Source identity is bound strictly to the authenticated transport peer (`Forwarded(PeerId)` or local engine).
+    /// Provides persistent deduplicated dispatch (NOT distributed exactly-once execution).
+    #[method(name = "deck_source_ingest", with_extensions)]
+    async fn deck_source_ingest(&self, event: DeckSourceEvent) -> RpcResult<IngestSourceAck>;
+
+    /// Explicitly move a Deck's authoritative home engine (no automatic failover).
+    /// Requires `confirm_cold_start = true` and `verify_local_mcp_and_approvals = true`.
+    #[method(name = "deck_move_home", with_extensions)]
+    async fn deck_move_home(
+        &self,
+        deck_id: String,
+        target_engine_id: String,
+        confirm_cold_start: bool,
+        verify_local_mcp_and_approvals: bool,
+    ) -> RpcResult<DeckMoveHomeResult>;
+
+    /// Subscribe to bounded, coalesced per-Deck runtime events (sync, live frames, durable snapshots, status, source status, approvals).
     #[subscription(
         name = "deck_subscribe",
         unsubscribe = "deck_unsubscribe",
@@ -660,6 +737,103 @@ impl DecksApiServer for Server {
             .ask(GetSnapshotMsg {
                 deck_id,
                 snapshot_id,
+            })
+            .send()
+            .await
+            .map_err(map_send_err)
+    }
+
+    async fn deck_mesh_status(
+        &self,
+        ext: &Extensions,
+        deck_id: String,
+    ) -> RpcResult<DeckMeshStatus> {
+        let _ = owner_only(ext)?;
+        let actor = decks_actor()?;
+        actor
+            .ask(GetMeshStatusMsg { deck_id })
+            .send()
+            .await
+            .map_err(map_send_err)
+    }
+
+    async fn deck_source_register(
+        &self,
+        ext: &Extensions,
+        deck_id: String,
+        source_id: String,
+        engine_id: String,
+        label: Option<String>,
+        heartbeat_secs: Option<u64>,
+        stale_after_secs: Option<u64>,
+        offline_after_secs: Option<u64>,
+    ) -> RpcResult<DeckSourceStatus> {
+        let _ = human_press(ext)?;
+        let actor = decks_actor()?;
+        actor
+            .ask(RegisterSourceMsg {
+                deck_id,
+                source_id,
+                engine_id,
+                label,
+                heartbeat_secs,
+                stale_after_secs,
+                offline_after_secs,
+            })
+            .send()
+            .await
+            .map_err(map_send_err)
+    }
+
+    async fn deck_source_unregister(
+        &self,
+        ext: &Extensions,
+        deck_id: String,
+        source_id: String,
+    ) -> RpcResult<()> {
+        let _ = human_press(ext)?;
+        let actor = decks_actor()?;
+        actor
+            .ask(UnregisterSourceMsg { deck_id, source_id })
+            .send()
+            .await
+            .map_err(map_send_err)
+    }
+
+    async fn deck_source_ingest(
+        &self,
+        ext: &Extensions,
+        event: DeckSourceEvent,
+    ) -> RpcResult<IngestSourceAck> {
+        let actor = decks_actor()?;
+        let authenticated_engine_id = authenticated_source_engine(ext, &actor).await?;
+        actor
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id,
+                event,
+                received_at_override: None,
+            })
+            .send()
+            .await
+            .map_err(map_ingest_send_err)
+    }
+
+    async fn deck_move_home(
+        &self,
+        ext: &Extensions,
+        deck_id: String,
+        target_engine_id: String,
+        confirm_cold_start: bool,
+        verify_local_mcp_and_approvals: bool,
+    ) -> RpcResult<DeckMoveHomeResult> {
+        let _ = human_press(ext)?;
+        let actor = decks_actor()?;
+        actor
+            .ask(MoveHomeMsg {
+                deck_id,
+                target_engine_id,
+                confirm_cold_start,
+                verify_local_mcp_and_approvals,
             })
             .send()
             .await

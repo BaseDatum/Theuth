@@ -10,7 +10,9 @@ description = "Native collaborative live Decks: pure-Yjs sections, Monty session
 agent = { workspace = true }
 artifact = { workspace = true }
 document = { workspace = true }
+mesh = { workspace = true }
 platform = { workspace = true }
+replica = { workspace = true }
 rpc-core = { workspace = true }
 rpc-core-macros = { workspace = true }
 runtime = { workspace = true }

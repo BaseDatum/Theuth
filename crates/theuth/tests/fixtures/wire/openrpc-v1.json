@@ -93901,6 +93901,85 @@
         ],
         "type": "object"
       },
+      "method.decks.input.DeckSourceEvent": {
+        "description": "Wire envelope emitted by a source node to the Deck's authoritative home engine.\n\nNote: intentionally carries NO untrusted `engine_id` field for authentication — the home engine\nbinds `source_id` strictly against the transport-authenticated engine/peer identity.",
+        "properties": {
+          "deck_id": {
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.input.SourceEventKind"
+              }
+            ],
+            "default": "frame"
+          },
+          "metric_samples": {
+            "description": "Optional structured `deck_metric(name, value, meta=None)` samples (numbers or booleans)\nemitted by a source script turn.",
+            "items": {
+              "$ref": "#/components/schemas/method.decks.input.MetricSample"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "metrics": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "description": "Optional numeric metrics extracted from the payload for fast trigger evaluation.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "observed_at": {
+            "description": "RFC 3339 timestamp when the source observed this reading.",
+            "type": "string"
+          },
+          "payload": {
+            "default": null,
+            "description": "Redacted metric/frame payload."
+          },
+          "replay": {
+            "default": false,
+            "description": "`true` when replayed from the source's offline spool. Replayed history MUST NOT mark a\nsource healthy (`Live`) or create/advance a fresh sustained-time trigger breach.",
+            "type": "boolean"
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "description": "Monotonically increasing sequence number within `(source_id, source_epoch)` (`>= 1`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_epoch": {
+            "description": "Monotonically increasing epoch per source start/restart (`>= 1`). Fences stale epochs.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deck_id",
+          "source_id",
+          "source_epoch",
+          "seq",
+          "observed_at"
+        ],
+        "type": "object"
+      },
       "method.decks.input.DeclaredAction": {
         "description": "A declared interactive action accepted by a Deck script.\nOnly declared actions whose `args` validate against `schema` can enter the Monty checkout.",
         "properties": {
@@ -93935,6 +94014,28 @@
           "name",
           "title",
           "schema"
+        ],
+        "type": "object"
+      },
+      "method.decks.input.MetricSample": {
+        "description": "One metric sample emitted by `deck_metric(name, value, meta=None)` during a Monty turn.",
+        "properties": {
+          "meta": true,
+          "name": {
+            "type": "string"
+          },
+          "observed_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "value": {
+            "$ref": "#/components/schemas/method.decks.input.MetricValue"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "observed_at_ms"
         ],
         "type": "object"
       },
@@ -94025,6 +94126,26 @@
           }
         ]
       },
+      "method.decks.input.SourceEventKind": {
+        "description": "Kind of event emitted by a source node to its Deck's home engine.",
+        "oneOf": [
+          {
+            "const": "frame",
+            "description": "Transient redacted live frame / metric payload.",
+            "type": "string"
+          },
+          {
+            "const": "snapshot",
+            "description": "Durable redacted snapshot payload persisted on home.",
+            "type": "string"
+          },
+          {
+            "const": "heartbeat",
+            "description": "Liveness heartbeat (does not overwrite last-good frame/snapshot data).",
+            "type": "string"
+          }
+        ]
+      },
       "method.decks.input.TriggerOp": {
         "description": "Comparison operator for a host-evaluated Deck trigger.",
         "enum": [
@@ -94105,6 +94226,13 @@
           "routine": {
             "description": "Existing owner-approved routine name (`schedules/<routine>.md`) to fire.",
             "type": "string"
+          },
+          "source_id": {
+            "description": "Optional mesh source scope (`source_id`). When set, only fresh authenticated live samples\nfrom that registered mesh source evaluate this trigger (local `deck_metric` turns ignore\nsource-scoped triggers). Multi-source `any`/`all`/`quorum`/`aggregate` scopes are a follow-up.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "sustain_secs": {
             "default": 0,
@@ -94277,6 +94405,104 @@
         ],
         "type": "object"
       },
+      "method.decks.output.DeckMeshStatus": {
+        "description": "Observable mesh ownership and per-source health model for a Deck.",
+        "properties": {
+          "deck_id": {
+            "type": "string"
+          },
+          "execution_paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "home_engine_id": {
+            "type": "string"
+          },
+          "home_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "home_online": {
+            "type": "boolean"
+          },
+          "is_home": {
+            "type": "boolean"
+          },
+          "local_engine_id": {
+            "type": "string"
+          },
+          "sources": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/method.decks.output.DeckSourceStatus"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "deck_id",
+          "home_engine_id",
+          "local_engine_id",
+          "is_home",
+          "home_online",
+          "home_epoch",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckMoveHomeResult": {
+        "description": "Result of an explicit owner-initiated `deck_move_home` transfer.\n\nTransfers NEVER auto-failover and ALWAYS cold-start the new home (clearing `.monty` heap dumps,\nbumping `home_epoch` + `run_epoch`, and pausing recurring execution until local MCP/approvals\nare verified and the owner explicitly starts the Deck).",
+        "properties": {
+          "cold_started": {
+            "type": "boolean"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "home_engine_id": {
+            "type": "string"
+          },
+          "home_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "local_mcp_verified": {
+            "type": "boolean"
+          },
+          "previous_home_engine_id": {
+            "type": "string"
+          },
+          "requires_owner_start": {
+            "type": "boolean"
+          },
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "verified_tool_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "previous_home_engine_id",
+          "home_engine_id",
+          "home_epoch",
+          "run_epoch",
+          "cold_started",
+          "local_mcp_verified",
+          "verified_tool_count",
+          "requires_owner_start"
+        ],
+        "type": "object"
+      },
       "method.decks.output.DeckRuntimeEvent": {
         "description": "Per-Deck bounded subscription event (`deck_subscribe`).\nFlows over per-Deck channels, NEVER the global `RuntimeWire`.",
         "oneOf": [
@@ -94365,6 +94591,31 @@
             "required": [
               "type",
               "status"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Per-source mesh health/sequence/lag/replay/error update emitted by home.",
+            "properties": {
+              "deck_id": {
+                "type": "string"
+              },
+              "home_engine_id": {
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/method.decks.output.DeckSourceStatus"
+              },
+              "type": {
+                "const": "source_status",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "deck_id",
+              "home_engine_id",
+              "source"
             ],
             "type": "object"
           },
@@ -94470,6 +94721,17 @@
               "string",
               "null"
             ]
+          },
+          "mesh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.DeckMeshStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Native Mesh Decks home ownership & per-source health model."
           },
           "pending_approval": {
             "anyOf": [
@@ -94700,6 +94962,106 @@
         ],
         "type": "object"
       },
+      "method.decks.output.DeckSourceStatus": {
+        "description": "Observable runtime status of one registered source on a Deck (rendered in Deck UI).",
+        "properties": {
+          "deck_id": {
+            "type": "string"
+          },
+          "dropped_count": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "engine_id": {
+            "type": "string"
+          },
+          "health": {
+            "$ref": "#/components/schemas/method.decks.output.SourceHealthState"
+          },
+          "label": {
+            "type": "string"
+          },
+          "lag_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_live_received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_live_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "replaying": {
+            "type": "boolean"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "spool_depth": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "source_id",
+          "engine_id",
+          "label",
+          "health",
+          "replaying",
+          "enabled",
+          "last_epoch",
+          "last_seq",
+          "last_live_seq",
+          "spool_depth",
+          "dropped_count"
+        ],
+        "type": "object"
+      },
       "method.decks.output.DeckSummary": {
         "description": "Summary row for listing Decks (left rail popover & `/decks`).",
         "properties": {
@@ -94713,6 +95075,12 @@
           },
           "description": {
             "type": "string"
+          },
+          "home_engine_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "type": "string"
@@ -94799,6 +95167,108 @@
         ],
         "type": "object"
       },
+      "method.decks.output.IngestSourceAck": {
+        "description": "Persisted acknowledgment returned by home `deck_source_ingest`.\n\nDuplicate retries for an already-accepted `(deck_id, source_id, source_epoch, seq)` return the\npersisted acknowledgment with `duplicate = true` without re-emitting frames/snapshots or\nre-dispatching triggers (persistent deduplicated dispatch, not distributed exactly-once).",
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "duplicate": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "frame_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "home_engine_id": {
+            "type": "string"
+          },
+          "home_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "replay": {
+            "type": "boolean"
+          },
+          "seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_health": {
+            "$ref": "#/components/schemas/method.decks.output.SourceHealthState"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/method.decks.output.IngestStatus"
+          },
+          "trigger_dedup_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger_dispatched": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted",
+          "duplicate",
+          "status",
+          "deck_id",
+          "source_id",
+          "source_epoch",
+          "seq",
+          "home_engine_id",
+          "home_epoch",
+          "source_health",
+          "replay",
+          "trigger_dispatched"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.IngestStatus": {
+        "description": "Outcome classification for [`IngestSourceAck`].",
+        "enum": [
+          "accepted",
+          "duplicate",
+          "rejected_stale_epoch",
+          "rejected_rate_limited",
+          "rejected_not_home",
+          "rejected_unauthorized_source",
+          "rejected_invalid"
+        ],
+        "type": "string"
+      },
       "method.decks.output.InteractErrorCode": {
         "description": "Structured error codes for [`InteractResponse`].",
         "enum": [
@@ -94811,7 +95281,8 @@
           "waiting_approval",
           "paused",
           "execution_error",
-          "conflict"
+          "conflict",
+          "not_home"
         ],
         "type": "string"
       },
@@ -95192,6 +95663,31 @@
         "format": "uuid",
         "type": "string"
       },
+      "method.decks.output.SourceHealthState": {
+        "description": "Health state of a registered Deck source as tracked by the Deck's authoritative home engine.",
+        "oneOf": [
+          {
+            "const": "live",
+            "description": "Receiving fresh non-replay events/heartbeats within `stale_after_secs`.",
+            "type": "string"
+          },
+          {
+            "const": "stale",
+            "description": "No fresh live event/heartbeat within `stale_after_secs` (still under `offline_after_secs`).",
+            "type": "string"
+          },
+          {
+            "const": "offline",
+            "description": "No fresh live event/heartbeat within `offline_after_secs` (or never seen live).",
+            "type": "string"
+          },
+          {
+            "const": "replaying",
+            "description": "Actively replaying historical spooled events (`replay: true`).\nExplicitly NOT healthy (`is_healthy() == false`) until a fresh live event arrives.",
+            "type": "string"
+          }
+        ]
+      },
       "method.decks.output.TriggerOp": {
         "description": "Comparison operator for a host-evaluated Deck trigger.",
         "enum": [
@@ -95272,6 +95768,13 @@
           "routine": {
             "description": "Existing owner-approved routine name (`schedules/<routine>.md`) to fire.",
             "type": "string"
+          },
+          "source_id": {
+            "description": "Optional mesh source scope (`source_id`). When set, only fresh authenticated live samples\nfrom that registered mesh source evaluate this trigger (local `deck_metric` turns ignore\nsource-scoped triggers). Multi-source `any`/`all`/`quorum`/`aggregate` scopes are a follow-up.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "sustain_secs": {
             "default": 0,
@@ -95447,6 +95950,103 @@
         ],
         "type": "object"
       },
+      "method.decks.receiver.DeckMeshStatus": {
+        "description": "Observable mesh ownership and per-source health model for a Deck.",
+        "properties": {
+          "deck_id": {
+            "type": "string"
+          },
+          "execution_paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "home_engine_id": {
+            "type": "string"
+          },
+          "home_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "home_online": {
+            "type": "boolean"
+          },
+          "is_home": {
+            "type": "boolean"
+          },
+          "local_engine_id": {
+            "type": "string"
+          },
+          "sources": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/method.decks.receiver.DeckSourceStatus"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "deck_id",
+          "home_engine_id",
+          "local_engine_id",
+          "is_home",
+          "home_online",
+          "home_epoch"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeckMoveHomeResult": {
+        "description": "Result of an explicit owner-initiated `deck_move_home` transfer.\n\nTransfers NEVER auto-failover and ALWAYS cold-start the new home (clearing `.monty` heap dumps,\nbumping `home_epoch` + `run_epoch`, and pausing recurring execution until local MCP/approvals\nare verified and the owner explicitly starts the Deck).",
+        "properties": {
+          "cold_started": {
+            "type": "boolean"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "home_engine_id": {
+            "type": "string"
+          },
+          "home_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "local_mcp_verified": {
+            "type": "boolean"
+          },
+          "previous_home_engine_id": {
+            "type": "string"
+          },
+          "requires_owner_start": {
+            "type": "boolean"
+          },
+          "run_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "verified_tool_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "previous_home_engine_id",
+          "home_engine_id",
+          "home_epoch",
+          "run_epoch",
+          "cold_started",
+          "local_mcp_verified",
+          "verified_tool_count",
+          "requires_owner_start"
+        ],
+        "type": "object"
+      },
       "method.decks.receiver.DeckRuntimeEvent": {
         "description": "Per-Deck bounded subscription event (`deck_subscribe`).\nFlows over per-Deck channels, NEVER the global `RuntimeWire`.",
         "oneOf": [
@@ -95535,6 +96135,31 @@
             "required": [
               "type",
               "status"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Per-source mesh health/sequence/lag/replay/error update emitted by home.",
+            "properties": {
+              "deck_id": {
+                "type": "string"
+              },
+              "home_engine_id": {
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/method.decks.receiver.DeckSourceStatus"
+              },
+              "type": {
+                "const": "source_status",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "deck_id",
+              "home_engine_id",
+              "source"
             ],
             "type": "object"
           },
@@ -95640,6 +96265,17 @@
               "string",
               "null"
             ]
+          },
+          "mesh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.DeckMeshStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Native Mesh Decks home ownership & per-source health model."
           },
           "pending_approval": {
             "anyOf": [
@@ -95867,6 +96503,104 @@
         ],
         "type": "object"
       },
+      "method.decks.receiver.DeckSourceStatus": {
+        "description": "Observable runtime status of one registered source on a Deck (rendered in Deck UI).",
+        "properties": {
+          "deck_id": {
+            "type": "string"
+          },
+          "dropped_count": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "engine_id": {
+            "type": "string"
+          },
+          "health": {
+            "$ref": "#/components/schemas/method.decks.receiver.SourceHealthState"
+          },
+          "label": {
+            "type": "string"
+          },
+          "lag_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_live_received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_live_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "replaying": {
+            "type": "boolean"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "spool_depth": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deck_id",
+          "source_id",
+          "engine_id",
+          "label",
+          "health",
+          "replaying",
+          "enabled",
+          "last_epoch",
+          "last_seq",
+          "last_live_seq"
+        ],
+        "type": "object"
+      },
       "method.decks.receiver.DeckSummary": {
         "description": "Summary row for listing Decks (left rail popover & `/decks`).",
         "properties": {
@@ -95880,6 +96614,12 @@
           },
           "description": {
             "type": "string"
+          },
+          "home_engine_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "type": "string"
@@ -95963,6 +96703,107 @@
         ],
         "type": "object"
       },
+      "method.decks.receiver.IngestSourceAck": {
+        "description": "Persisted acknowledgment returned by home `deck_source_ingest`.\n\nDuplicate retries for an already-accepted `(deck_id, source_id, source_epoch, seq)` return the\npersisted acknowledgment with `duplicate = true` without re-emitting frames/snapshots or\nre-dispatching triggers (persistent deduplicated dispatch, not distributed exactly-once).",
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "duplicate": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "frame_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "home_engine_id": {
+            "type": "string"
+          },
+          "home_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "replay": {
+            "type": "boolean"
+          },
+          "seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_health": {
+            "$ref": "#/components/schemas/method.decks.receiver.SourceHealthState"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/method.decks.receiver.IngestStatus"
+          },
+          "trigger_dedup_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger_dispatched": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted",
+          "duplicate",
+          "status",
+          "deck_id",
+          "source_id",
+          "source_epoch",
+          "seq",
+          "home_engine_id",
+          "home_epoch",
+          "source_health",
+          "replay"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.IngestStatus": {
+        "description": "Outcome classification for [`IngestSourceAck`].",
+        "enum": [
+          "accepted",
+          "duplicate",
+          "rejected_stale_epoch",
+          "rejected_rate_limited",
+          "rejected_not_home",
+          "rejected_unauthorized_source",
+          "rejected_invalid"
+        ],
+        "type": "string"
+      },
       "method.decks.receiver.InteractErrorCode": {
         "description": "Structured error codes for [`InteractResponse`].",
         "enum": [
@@ -95975,7 +96816,8 @@
           "waiting_approval",
           "paused",
           "execution_error",
-          "conflict"
+          "conflict",
+          "not_home"
         ],
         "type": "string"
       },
@@ -96355,6 +97197,31 @@
         "format": "uuid",
         "type": "string"
       },
+      "method.decks.receiver.SourceHealthState": {
+        "description": "Health state of a registered Deck source as tracked by the Deck's authoritative home engine.",
+        "oneOf": [
+          {
+            "const": "live",
+            "description": "Receiving fresh non-replay events/heartbeats within `stale_after_secs`.",
+            "type": "string"
+          },
+          {
+            "const": "stale",
+            "description": "No fresh live event/heartbeat within `stale_after_secs` (still under `offline_after_secs`).",
+            "type": "string"
+          },
+          {
+            "const": "offline",
+            "description": "No fresh live event/heartbeat within `offline_after_secs` (or never seen live).",
+            "type": "string"
+          },
+          {
+            "const": "replaying",
+            "description": "Actively replaying historical spooled events (`replay: true`).\nExplicitly NOT healthy (`is_healthy() == false`) until a fresh live event arrives.",
+            "type": "string"
+          }
+        ]
+      },
       "method.decks.receiver.TriggerOp": {
         "description": "Comparison operator for a host-evaluated Deck trigger.",
         "enum": [
@@ -96435,6 +97302,13 @@
           "routine": {
             "description": "Existing owner-approved routine name (`schedules/<routine>.md`) to fire.",
             "type": "string"
+          },
+          "source_id": {
+            "description": "Optional mesh source scope (`source_id`). When set, only fresh authenticated live samples\nfrom that registered mesh source evaluate this trigger (local `deck_metric` turns ignore\nsource-scoped triggers). Multi-source `any`/`all`/`quorum`/`aggregate` scopes are a follow-up.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "sustain_secs": {
             "default": 0,
@@ -154330,6 +155204,92 @@
       "x-theuth-owner": "decks"
     },
     {
+      "name": "deck_mesh_status",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckMeshStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckMeshStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_move_home",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "target_engine_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "targetEngineId"
+          ]
+        },
+        {
+          "name": "confirm_cold_start",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": [
+            "confirmColdStart"
+          ]
+        },
+        {
+          "name": "verify_local_mcp_and_approvals",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": [
+            "verifyLocalMcpAndApprovals"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckMoveHomeResult"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckMoveHomeResult"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
       "name": "deck_runtime_control",
       "paramStructure": "by-position",
       "params": [
@@ -155103,6 +156063,174 @@
             "$ref": "#/components/schemas/method.decks.receiver.DeckSnapshot"
           },
           "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_source_ingest",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "event",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.decks.input.DeckSourceEvent"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.IngestSourceAck"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.IngestSourceAck"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_source_register",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "source_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "sourceId"
+          ]
+        },
+        {
+          "name": "engine_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "engineId"
+          ]
+        },
+        {
+          "name": "label",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "heartbeat_secs",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "heartbeatSecs"
+          ]
+        },
+        {
+          "name": "stale_after_secs",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "staleAfterSecs"
+          ]
+        },
+        {
+          "name": "offline_after_secs",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "offlineAfterSecs"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckSourceStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckSourceStatus"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_source_unregister",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "source_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "sourceId"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
         }
       },
       "x-theuth-audience": "owner",

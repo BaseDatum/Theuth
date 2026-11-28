@@ -12,6 +12,7 @@
 
 pub mod example;
 pub mod hub;
+pub mod mesh;
 pub mod model;
 pub mod owner;
 pub mod rpc;
@@ -24,6 +25,14 @@ use ::runtime::Runtime;
 use ::tools::{ApprovalRequested, ApprovalResolved, ToolRegistry};
 use kameo::actor::Spawn;
 
+pub use mesh::{
+    DeckMeshStatus, DeckMoveHomeResult, DeckSourceEvent, DeckSourceRegistration, DeckSourceRuntime,
+    DeckSourceStatus, IngestSourceAck, IngestStatus, MeshRpcSourceTransport, ReplayFlushReport,
+    SourceEmitOutcome, SourceEventKind, SourceHealthState, SourceSendError, SourceSpoolLimits,
+    SourceTransport, SourceTriggerAdapter, SourceTriggerSample, SpoolError, SpoolStats,
+    SustainedThresholdRule, SustainedTriggerAdapter, TriggerDispatchRecord,
+    TriggerEvidenceDecision, TriggerFireState, classify_trigger_evidence,
+};
 pub use model::{
     DeckChanged, DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary,
     DeclaredAction, InteractErrorCode, InteractResponse, LiveFrame, MetricSample, MetricValue,
@@ -91,6 +100,11 @@ impl ::runtime::Plugin for DecksPlugin {
 
         let (sup, shared) =
             DeckSupervisor::new(store, rt.clone(), doc_actor, registry.clone(), None);
+        if let Ok(Some(mesh_actor)) = kameo::actor::ActorRef::<::mesh::Mesh>::lookup(::mesh::MESH_ACTOR)
+            && let Ok(status) = mesh_actor.ask(::mesh::Status).send().await
+        {
+            shared.set_local_engine_id(status.self_id.0);
+        }
         let actor = DeckSupervisor::spawn(sup);
         if let Err(e) = actor.register(DECKS_ACTOR) {
             tracing::warn!("decks: failed to register actor: {e:#}");
@@ -110,6 +124,29 @@ impl ::runtime::Plugin for DecksPlugin {
         if let Err(e) = actor.ask(owner::RecoverEnabledDecksMsg).send().await {
             tracing::warn!("decks: boot recovery failed: {e}");
         }
+
+        // Periodic liveness sweeper for registered mesh Deck sources (`Live -> Stale -> Offline`).
+        let sweep_actor = actor.clone();
+        let shutdown = rt.shutdown.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = interval.tick() => {
+                        let _ = sweep_actor
+                            .ask(owner::SweepSourceLivenessMsg {
+                                deck_id: None,
+                                now: None,
+                            })
+                            .send()
+                            .await;
+                    }
+                }
+            }
+        });
+
         tracing::info!("decks plugin started");
         Ok(())
     }
@@ -195,6 +232,10 @@ mod tests {
             actor.kill();
             actor.wait_for_shutdown().await;
         }
+        kameo::registry::ACTOR_REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(name);
     }
 
     async fn setup_harness() -> Harness {
@@ -3137,6 +3178,7 @@ async def on_action(action, args, ctx):
                     step_count: 1,
                     checkout_alive: true,
                     pending_approval: None,
+                    mesh: None,
                 },
                 last_snapshot: None,
                 live_frame: None,
@@ -3636,6 +3678,12 @@ async def on_action(action, args, ctx):
         calls: parking_lot::Mutex<Vec<(String, String, String)>>,
     }
 
+    impl RecordingTaskCreator {
+        fn snapshot(&self) -> Vec<(String, String, String)> {
+            self.calls.lock().clone()
+        }
+    }
+
     #[async_trait::async_trait]
     impl schedule::TaskCreator for RecordingTaskCreator {
         async fn create_for_schedule(
@@ -3726,6 +3774,7 @@ async def on_action(action, args, ctx):
             cooldown_secs: 0,
             reset_mode: TriggerResetMode::ReArmOnClear,
             routine: "no-such-routine".into(),
+            source_id: None,
         };
         let err = h
             .sup
@@ -3757,6 +3806,7 @@ async def on_action(action, args, ctx):
             cooldown_secs: 0,
             reset_mode: TriggerResetMode::ReArmOnClear,
             routine: "temp-routine".into(),
+            source_id: None,
         };
         let temp_rev = h
             .sup
@@ -3812,6 +3862,7 @@ async def on_step():
             cooldown_secs: 60,
             reset_mode: TriggerResetMode::ReArmOnClear,
             routine: "ops-alert".into(),
+            source_id: None,
         };
         let rev = h
             .sup
@@ -4176,6 +4227,7 @@ async def on_step():
             cooldown_secs: 0,
             reset_mode: TriggerResetMode::ReArmOnClear,
             routine: "ops-alert".into(),
+            source_id: None,
         };
         let slow_rev = h
             .sup
@@ -4369,6 +4421,1755 @@ async def on_step():
         let structured = ok.structured.expect("structured receipt");
         assert_eq!(structured["deck_id"], json!(created.doc.doc_id));
         assert_eq!(structured["pane"], json!("v42"));
+    }
+
+
+    // =========================================================================
+    // Native Mesh Decks tests (single authoritative home + multi-source nodes)
+    // =========================================================================
+
+    struct SimulatedHomeTransport {
+        authenticated_engine_id: String,
+        sup: ActorRef<DeckSupervisor>,
+        online: Arc<std::sync::atomic::AtomicBool>,
+        sent_log: Arc<parking_lot::Mutex<Vec<(u64, u64, bool)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::mesh::SourceTransport for SimulatedHomeTransport {
+        async fn send_event(
+            &self,
+            _home_engine_id: &str,
+            event: &crate::mesh::DeckSourceEvent,
+        ) -> Result<crate::mesh::IngestSourceAck, crate::mesh::SourceSendError> {
+            if !self.online.load(Ordering::SeqCst) {
+                return Err(crate::mesh::SourceSendError::Unavailable(
+                    "simulated_home_offline".into(),
+                ));
+            }
+            self.sent_log
+                .lock()
+                .push((event.source_epoch, event.seq, event.replay));
+            self.sup
+                .ask(crate::owner::IngestSourceEventMsg {
+                    authenticated_engine_id: self.authenticated_engine_id.clone(),
+                    event: event.clone(),
+                    received_at_override: None,
+                })
+                .send()
+                .await
+                .map_err(|e| match e {
+                    kameo::error::SendError::HandlerError(s) => {
+                        crate::mesh::SourceSendError::Rejected(s)
+                    }
+                    other => crate::mesh::SourceSendError::Unavailable(format!("{other}")),
+                })
+        }
+    }
+
+    // ---- Mesh Test 1: Two source nodes with independent epochs/seq, auth binding, dedup, old epoch fencing, RPC peer auth ----
+    #[tokio::test]
+    async fn mesh_two_sources_auth_binding_dedup_and_epoch_fencing() {
+        use crate::mesh::{DeckSourceEvent, IngestStatus, SourceEventKind, SourceHealthState};
+        use crate::owner::{
+            GetMeshStatusMsg, IngestSourceEventMsg, RegisterSourceMsg, SetLocalEngineIdMsg,
+        };
+        use crate::rpc::DecksApiServer;
+
+        let h = setup_harness().await;
+        evict_actor::<DeckSupervisor>(crate::DECKS_ACTOR).await;
+        h.sup.register(crate::DECKS_ACTOR).unwrap();
+        h.sup
+            .ask(SetLocalEngineIdMsg("engine-home".into()))
+            .send()
+            .await
+            .unwrap();
+        let deck_id = new_deck(&h, "Mesh Multi Source").await;
+
+        // Register two independent source nodes bound to two distinct engines.
+        let s_a = h
+            .sup
+            .ask(RegisterSourceMsg {
+                deck_id: deck_id.clone(),
+                source_id: "node-alpha".into(),
+                engine_id: "engine-alpha".into(),
+                label: Some("Alpha Sensor".into()),
+                heartbeat_secs: Some(5),
+                stale_after_secs: Some(15),
+                offline_after_secs: Some(45),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(s_a.engine_id, "engine-alpha");
+        assert_eq!(s_a.health, SourceHealthState::Offline);
+
+        let s_b = h
+            .sup
+            .ask(RegisterSourceMsg {
+                deck_id: deck_id.clone(),
+                source_id: "node-beta".into(),
+                engine_id: "engine-beta".into(),
+                label: Some("Beta Sensor".into()),
+                heartbeat_secs: Some(5),
+                stale_after_secs: Some(15),
+                offline_after_secs: Some(45),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(s_b.engine_id, "engine-beta");
+
+        let now = chrono::Utc::now();
+
+        // Source A emits epoch 1, seq 1 (Snapshot) and Source B emits epoch 5, seq 1 (Snapshot) independently.
+        let ev_a1 = DeckSourceEvent {
+            deck_id: deck_id.clone(),
+            source_id: "node-alpha".into(),
+            source_epoch: 1,
+            seq: 1,
+            observed_at: now.to_rfc3339(),
+            replay: false,
+            kind: SourceEventKind::Snapshot,
+            section: Some("sec-a".into()),
+            payload: json!({ "temp": 41.5 }),
+            metrics: None,
+            metric_samples: None,
+        };
+        let ack_a1 = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-alpha".into(),
+                event: ev_a1.clone(),
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(ack_a1.accepted);
+        assert!(!ack_a1.duplicate);
+        assert_eq!(ack_a1.status, IngestStatus::Accepted);
+        assert_eq!(ack_a1.source_health, SourceHealthState::Live);
+        let first_snap_id = ack_a1.snapshot_id.clone().expect("snapshot created");
+
+        let ev_b1 = DeckSourceEvent {
+            deck_id: deck_id.clone(),
+            source_id: "node-beta".into(),
+            source_epoch: 5,
+            seq: 1,
+            observed_at: now.to_rfc3339(),
+            replay: false,
+            kind: SourceEventKind::Snapshot,
+            section: Some("sec-b".into()),
+            payload: json!({ "temp": 72.0 }),
+            metrics: None,
+            metric_samples: None,
+        };
+        let ack_b1 = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-beta".into(),
+                event: ev_b1,
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(ack_b1.accepted);
+        assert_eq!(ack_b1.source_epoch, 5);
+        assert_eq!(ack_b1.seq, 1);
+
+        // Spoofed engine trying to emit under node-alpha's source_id MUST be rejected.
+        let spoof_err = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-beta".into(),
+                event: DeckSourceEvent {
+                    seq: 2,
+                    ..ev_a1.clone()
+                },
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{spoof_err}").contains("unauthorized_source:"),
+            "expected unauthorized_source error, got: {spoof_err}"
+        );
+
+        // Verify RPC transport-peer binding directly via `DecksApiServer::deck_source_ingest`
+        // with `Forwarded(PeerId)` vs spoofed `Forwarded(PeerId)`.
+        let rpc_api = rpc_core::Server::new(h.rt.clone());
+        let mut ext_spoof = jsonrpsee::Extensions::new();
+        ext_spoof.insert(rpc_core::RpcPeer::internal());
+        ext_spoof.insert(agent::rpc_forward::Forwarded(replica::PeerId(
+            "engine-evil".into(),
+        )));
+        let rpc_spoof = rpc_api
+            .deck_source_ingest(
+                &ext_spoof,
+                DeckSourceEvent {
+                    seq: 2,
+                    ..ev_a1.clone()
+                },
+            )
+            .await;
+        assert!(rpc_spoof.is_err());
+        assert_eq!(rpc_spoof.unwrap_err().code(), rpc_core::UNAUTHORIZED);
+
+        let mut ext_alpha = jsonrpsee::Extensions::new();
+        ext_alpha.insert(rpc_core::RpcPeer::internal());
+        ext_alpha.insert(agent::rpc_forward::Forwarded(replica::PeerId(
+            "engine-alpha".into(),
+        )));
+        let rpc_ok = rpc_api
+            .deck_source_ingest(
+                &ext_alpha,
+                DeckSourceEvent {
+                    seq: 2,
+                    payload: json!({ "temp": 42.0 }),
+                    ..ev_a1.clone()
+                },
+            )
+            .await
+            .expect("authenticated Forwarded(PeerId) should succeed");
+        assert!(rpc_ok.accepted);
+        assert_eq!(rpc_ok.seq, 2);
+
+        // Duplicate retry returns exact prior receipt without duplicating snapshots.
+        let snaps_before = h.shared.store.list_snapshots(&deck_id, 50).await.unwrap();
+        let dup_ack = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-alpha".into(),
+                event: ev_a1.clone(),
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(dup_ack.accepted);
+        assert!(dup_ack.duplicate);
+        assert_eq!(dup_ack.status, IngestStatus::Duplicate);
+        assert_eq!(dup_ack.snapshot_id, Some(first_snap_id));
+        let snaps_after = h.shared.store.list_snapshots(&deck_id, 50).await.unwrap();
+        assert_eq!(
+            snaps_before.len(),
+            snaps_after.len(),
+            "duplicate retry must not create another snapshot"
+        );
+
+        // Advance node-alpha to epoch 2, then reject old epoch 1 with RejectedStaleEpoch.
+        let ack_a_e2 = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-alpha".into(),
+                event: DeckSourceEvent {
+                    source_epoch: 2,
+                    seq: 1,
+                    payload: json!({ "temp": 43.0 }),
+                    ..ev_a1.clone()
+                },
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(ack_a_e2.accepted);
+        assert_eq!(ack_a_e2.source_epoch, 2);
+
+        let stale_epoch_ack = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-alpha".into(),
+                event: DeckSourceEvent {
+                    source_epoch: 1,
+                    seq: 99,
+                    payload: json!({ "temp": 10.0 }),
+                    ..ev_a1
+                },
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!stale_epoch_ack.accepted);
+        assert_eq!(stale_epoch_ack.status, IngestStatus::RejectedStaleEpoch);
+
+        // Mesh status reports home + both sources with independent cursors.
+        let mesh = h
+            .sup
+            .ask(GetMeshStatusMsg {
+                deck_id: deck_id.clone(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(mesh.home_engine_id, "engine-home");
+        assert!(mesh.is_home);
+        assert_eq!(mesh.sources.len(), 2);
+        let alpha = mesh.sources.iter().find(|s| s.source_id == "node-alpha").unwrap();
+        let beta = mesh.sources.iter().find(|s| s.source_id == "node-beta").unwrap();
+        assert_eq!((alpha.last_epoch, alpha.last_seq), (2, 1));
+        assert_eq!((beta.last_epoch, beta.last_seq), (5, 1));
+        evict_actor::<DeckSupervisor>(crate::DECKS_ACTOR).await;
+        let _ = h.rt;
+    }
+
+    // ---- Mesh Test 2: Offline bounded spool + backpressure + ordered reconnect replay + replay NEVER becomes healthy or sustained trigger evidence ----
+    #[tokio::test]
+    async fn mesh_offline_spool_backpressure_ordered_replay_and_trigger_invariants() {
+        use crate::mesh::{
+            DeckSourceEvent, DeckSourceRuntime, IngestStatus, SourceEmitOutcome, SourceEventKind,
+            SourceHealthState, SourceSpoolLimits, SpoolError, SustainedThresholdRule,
+            SustainedTriggerAdapter,
+        };
+        use crate::owner::{
+            IngestSourceEventMsg, RegisterSourceMsg, SetLocalEngineIdMsg, SweepSourceLivenessMsg,
+        };
+
+        let h = setup_harness().await;
+        h.sup
+            .ask(SetLocalEngineIdMsg("engine-home".into()))
+            .send()
+            .await
+            .unwrap();
+        let deck_id = new_deck(&h, "Mesh Spool & Triggers").await;
+
+        // Install a sustained threshold trigger rule: cpu >= 80 sustained for 10s.
+        let trigger_adapter = Arc::new(SustainedTriggerAdapter::new(
+            h.shared.store.clone(),
+            vec![SustainedThresholdRule {
+                trigger_key: "high-cpu".into(),
+                metric: "cpu".into(),
+                threshold: 80.0,
+                sustained_secs: 10,
+                source_id: Some("node-a".into()),
+            }],
+        ));
+        *h.shared.trigger_adapter.write() = trigger_adapter;
+
+        h.sup
+            .ask(RegisterSourceMsg {
+                deck_id: deck_id.clone(),
+                source_id: "node-a".into(),
+                engine_id: "engine-a".into(),
+                label: Some("Node A".into()),
+                heartbeat_secs: Some(5),
+                stale_after_secs: Some(15),
+                offline_after_secs: Some(45),
+            })
+            .send()
+            .await
+            .unwrap();
+
+        // Separate local store for source node A's durable offline spool.
+        let src_tmp = tempfile::tempdir().unwrap();
+        let src_store = DeckStore::open(src_tmp.path()).await.unwrap();
+        let online = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sent_log = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let transport = Arc::new(SimulatedHomeTransport {
+            authenticated_engine_id: "engine-a".into(),
+            sup: h.sup.clone(),
+            online: online.clone(),
+            sent_log: sent_log.clone(),
+        });
+
+        let mut runtime = DeckSourceRuntime::start(
+            deck_id.clone(),
+            "node-a".into(),
+            "engine-home".into(),
+            src_store,
+            transport,
+            SourceSpoolLimits {
+                max_events: 3,
+                max_bytes: 32 * 1024,
+            },
+        )
+        .await
+        .unwrap();
+        let epoch1 = runtime.source_epoch();
+        assert_eq!(epoch1, 1);
+
+        // Home is offline: events 1, 2, 3 spool durably; event 4 hits bounded backpressure!
+        let t0 = chrono::Utc::now() - chrono::Duration::seconds(60);
+        for i in 0..3_i64 {
+            let outcome = runtime
+                .emit_payload(
+                    SourceEventKind::Snapshot,
+                    json!({ "cpu": 95.0, "step": i + 1 }),
+                    None,
+                    None,
+                    t0 + chrono::Duration::seconds(i * 15),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(outcome, SourceEmitOutcome::Spooled { .. }));
+        }
+        let bp = runtime
+            .emit_payload(
+                SourceEventKind::Snapshot,
+                json!({ "cpu": 99.0, "step": 4 }),
+                None,
+                None,
+                t0 + chrono::Duration::seconds(45),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            bp,
+            SourceEmitOutcome::Backpressured {
+                error: SpoolError::Backpressure { depth: 3, max_events: 3, .. }
+            }
+        ));
+        assert!(runtime.is_backpressured());
+        assert_eq!(runtime.dropped_count(), 1);
+
+        // Home comes back online: flush spool in strict (source_epoch ASC, seq ASC) order with replay=true!
+        online.store(true, Ordering::SeqCst);
+        let flush = runtime.flush_spool(10).await.unwrap();
+        assert_eq!(flush.replayed, 3);
+        assert_eq!(flush.remaining, 0);
+        assert!(!runtime.is_backpressured());
+        assert_eq!(
+            *sent_log.lock(),
+            vec![(1, 1, true), (1, 2, true), (1, 3, true)]
+        );
+
+        // CRITICAL INVARIANT: Replayed history (even with cpu=95 across 30s!) MUST NOT:
+        // 1) mark the source healthy (`Live`) — it stays `Replaying`
+        // 2) open/advance/fire a fresh sustained-time threshold breach
+        // 3) create fresh live snapshots from historical replay
+        let status_after_replay = h
+            .shared
+            .store
+            .get_source_status(&deck_id, "node-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status_after_replay.health, SourceHealthState::Replaying);
+        assert!(!status_after_replay.health.is_healthy());
+        assert!(status_after_replay.replaying);
+        assert_eq!(status_after_replay.last_seq, 3);
+        assert_eq!(status_after_replay.last_live_seq, 0);
+        assert!(
+            h.shared
+                .store
+                .list_snapshots(&deck_id, 20)
+                .await
+                .unwrap()
+                .is_empty(),
+            "replay must not emit fresh live snapshots"
+        );
+        let fire_states = h
+            .shared
+            .store
+            .list_trigger_fire_states(&deck_id)
+            .await
+            .unwrap();
+        assert!(
+            fire_states.is_empty(),
+            "replayed events must not open or fire trigger state: {fire_states:?}"
+        );
+
+        // Now send FRESH live events (replay=false): first opens sustained window, second (>= 10s later) fires ONCE.
+        let t_live_1 = chrono::Utc::now();
+        let ev_live_1 = DeckSourceEvent {
+            deck_id: deck_id.clone(),
+            source_id: "node-a".into(),
+            source_epoch: 1,
+            seq: 4,
+            observed_at: t_live_1.to_rfc3339(),
+            replay: false,
+            kind: SourceEventKind::Snapshot,
+            section: None,
+            payload: json!({ "cpu": 91.0 }),
+            metrics: None,
+            metric_samples: None,
+        };
+        let ack_live_1 = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: ev_live_1,
+                received_at_override: Some(t_live_1),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ack_live_1.source_health, SourceHealthState::Live);
+        assert!(!ack_live_1.trigger_dispatched);
+
+        let t_live_2 = t_live_1 + chrono::Duration::seconds(12);
+        let ev_live_2 = DeckSourceEvent {
+            deck_id: deck_id.clone(),
+            source_id: "node-a".into(),
+            source_epoch: 1,
+            seq: 5,
+            observed_at: t_live_2.to_rfc3339(),
+            replay: false,
+            kind: SourceEventKind::Snapshot,
+            section: None,
+            payload: json!({ "cpu": 92.0 }),
+            metrics: None,
+            metric_samples: None,
+        };
+        let ack_live_2 = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: ev_live_2.clone(),
+                received_at_override: Some(t_live_2),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(ack_live_2.trigger_dispatched);
+        let dedup_key = ack_live_2
+            .trigger_dedup_key
+            .clone()
+            .expect("trigger dedup key");
+
+        // Duplicate retry of firing event returns identical dedup key without double firing!
+        let ack_live_2_dup = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: ev_live_2,
+                received_at_override: Some(t_live_2),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ack_live_2_dup.status, IngestStatus::Duplicate);
+        assert_eq!(ack_live_2_dup.trigger_dedup_key, Some(dedup_key));
+        let states = h
+            .shared
+            .store
+            .list_trigger_fire_states(&deck_id)
+            .await
+            .unwrap();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].fired_count, 1);
+
+        // Open a new sustained breach at seq 6, then sweep liveness past stale_after (15s) -> Stale,
+        // and past offline_after (45s) -> Offline. Becoming Stale MUST break the sustained window!
+        let t_live_3 = t_live_2 + chrono::Duration::seconds(2);
+        let _ = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "node-a".into(),
+                    source_epoch: 1,
+                    seq: 6,
+                    observed_at: t_live_3.to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Frame,
+                    section: None,
+                    payload: json!({ "cpu": 88.0 }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: Some(t_live_3),
+            })
+            .send()
+            .await
+            .unwrap();
+
+        let (_hub, sub_id, mut rx) = h
+            .sup
+            .ask(SubscribeDeckMsg {
+                deck_id: deck_id.clone(),
+            })
+            .send()
+            .await
+            .unwrap();
+        let _ = rx.recv().await; // Sync
+
+        let stale_changed = h
+            .sup
+            .ask(SweepSourceLivenessMsg {
+                deck_id: Some(deck_id.clone()),
+                now: Some(t_live_3 + chrono::Duration::seconds(20)),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stale_changed.len(), 1);
+        assert_eq!(stale_changed[0].health, SourceHealthState::Stale);
+
+        // Confirm SourceStatus event streamed to subscriber and sustained window was reset.
+        let ev = rx.recv().await.expect("SourceStatus event");
+        assert!(matches!(
+            ev,
+            DeckRuntimeEvent::SourceStatus { ref source, .. } if source.health == SourceHealthState::Stale
+        ));
+        let states_after_stale = h
+            .shared
+            .store
+            .list_trigger_fire_states(&deck_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            states_after_stale[0].sustained_since_ms, None,
+            "stale transition must clear in-progress sustained window"
+        );
+
+        let offline_changed = h
+            .sup
+            .ask(SweepSourceLivenessMsg {
+                deck_id: Some(deck_id.clone()),
+                now: Some(t_live_3 + chrono::Duration::seconds(60)),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(offline_changed.len(), 1);
+        assert_eq!(offline_changed[0].health, SourceHealthState::Offline);
+
+        h.shared.hub.unsubscribe(&deck_id, sub_id);
+        let _ = h.rt;
+    }
+
+    // ---- Mesh Test 3: Non-home refuses ingest/runtime/interact/auto-resume while keeping last-good visible + explicit deck_move_home ----
+    #[tokio::test]
+    async fn mesh_non_home_refuses_execution_keeps_last_good_and_explicit_move_home() {
+        use crate::mesh::{DeckSourceEvent, SourceEventKind};
+        use crate::owner::{
+            GetMeshStatusMsg, IngestSourceEventMsg, MoveHomeMsg, RecoverEnabledDecksMsg,
+            RegisterSourceMsg, SetLocalEngineIdMsg,
+        };
+
+        let h = setup_harness().await;
+        h.sup
+            .ask(SetLocalEngineIdMsg("engine-home".into()))
+            .send()
+            .await
+            .unwrap();
+        let deck_id = new_deck(&h, "Home Ownership & Move").await;
+
+        // Approve a simple script and run once on home to create a last-good snapshot + .monty dump.
+        let script = r#"
+async def on_start(last_state):
+    pass
+
+async def collect():
+    deck_emit({"status": "last-good-from-home"}, durable=True)
+
+async def on_action(action, args, ctx):
+    return {"acted": action}
+"#;
+        let rev = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: script.into(),
+                declared_actions: vec![DeclaredAction {
+                    name: "ping".into(),
+                    title: "Ping".into(),
+                    description: "Ping".into(),
+                    schema: json!({"type": "object"}),
+                    mutates_state: false,
+                    allow_while_paused: true,
+                }],
+                triggers: vec![],
+                mode: ScriptMode::Oneshot,
+                interval_secs: Some(60),
+                schedule_cron: None,
+                proposed_by: "owner".into(),
+                change_summary: "v1".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        h.sup
+            .ask(ApproveScriptMsg {
+                deck_id: deck_id.clone(),
+                rev: rev.rev,
+                expected_digest: rev.revision_sha256,
+                approved_by: "owner".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        h.sup
+            .ask(RuntimeControlMsg {
+                deck_id: deck_id.clone(),
+                op: RuntimeControlOp::RunOnce,
+            })
+            .send()
+            .await
+            .unwrap();
+        h.sup
+            .ask(RegisterSourceMsg {
+                deck_id: deck_id.clone(),
+                source_id: "src-1".into(),
+                engine_id: "engine-src".into(),
+                label: None,
+                heartbeat_secs: None,
+                stale_after_secs: None,
+                offline_after_secs: None,
+            })
+            .send()
+            .await
+            .unwrap();
+
+        // Simulate switching to a non-home viewer engine while the home engine is offline.
+        h.sup
+            .ask(SetLocalEngineIdMsg("engine-viewer".into()))
+            .send()
+            .await
+            .unwrap();
+        h.shared
+            .home_online_override
+            .lock()
+            .insert("engine-home".into(), false);
+
+        // Last-good Deck stays readable/visible even while home is offline.
+        let detail = h
+            .sup
+            .ask(GetDeck {
+                deck_id: deck_id.clone(),
+                by: Principal::Owner { device: None },
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            detail.last_snapshot.as_ref().unwrap().data["status"],
+            "last-good-from-home"
+        );
+        let mesh = h
+            .sup
+            .ask(GetMeshStatusMsg {
+                deck_id: deck_id.clone(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!mesh.is_home);
+        assert!(!mesh.home_online);
+        assert_eq!(mesh.home_engine_id, "engine-home");
+        assert_eq!(mesh.execution_paused_reason.as_deref(), Some("home_offline"));
+
+        // Non-home MUST refuse: ingest, runtime control, source registration, interact, and boot auto-resume!
+        let ingest_err = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-src".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "src-1".into(),
+                    source_epoch: 1,
+                    seq: 1,
+                    observed_at: chrono::Utc::now().to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Frame,
+                    section: None,
+                    payload: json!({ "x": 1 }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: None,
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(format!("{ingest_err}").contains("not_home:"));
+
+        let ctl_err = h
+            .sup
+            .ask(RuntimeControlMsg {
+                deck_id: deck_id.clone(),
+                op: RuntimeControlOp::Start,
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(format!("{ctl_err}").contains("not_home:"));
+
+        let reg_err = h
+            .sup
+            .ask(RegisterSourceMsg {
+                deck_id: deck_id.clone(),
+                source_id: "src-2".into(),
+                engine_id: "engine-src-2".into(),
+                label: None,
+                heartbeat_secs: None,
+                stale_after_secs: None,
+                offline_after_secs: None,
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(format!("{reg_err}").contains("not_home:"));
+
+        let interact_resp = h
+            .sup
+            .ask(InteractMsg {
+                deck_id: deck_id.clone(),
+                request_id: "req-non-home".into(),
+                caller_id: "owner".into(),
+                action: "ping".into(),
+                args: json!({}),
+                expected_rev: Some(1),
+                timeout_ms: Some(1_000),
+                allow_mutating: false,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!interact_resp.ok);
+        assert_eq!(interact_resp.error_code, Some(InteractErrorCode::NotHome));
+
+        // Even if stream_enabled was previously set, boot recovery on non-home MUST NOT auto-resume!
+        h.shared
+            .store
+            .set_stream_enabled(&deck_id, true)
+            .await
+            .unwrap();
+        let resumed = h.sup.ask(RecoverEnabledDecksMsg).send().await.unwrap();
+        assert_eq!(resumed, 0, "non-home must never auto-resume Deck runtime");
+
+        // Explicit move_home refuses without confirm_cold_start and verify_local_mcp_and_approvals.
+        let no_cold = h
+            .sup
+            .ask(MoveHomeMsg {
+                deck_id: deck_id.clone(),
+                target_engine_id: "engine-viewer".into(),
+                confirm_cold_start: false,
+                verify_local_mcp_and_approvals: true,
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(format!("{no_cold}").contains("confirm_cold_start"));
+
+        let no_mcp = h
+            .sup
+            .ask(MoveHomeMsg {
+                deck_id: deck_id.clone(),
+                target_engine_id: "engine-viewer".into(),
+                confirm_cold_start: true,
+                verify_local_mcp_and_approvals: false,
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(format!("{no_mcp}").contains("verify_local_mcp_and_approvals"));
+
+        // Explicit move_home succeeds with both flags -> cold start, bumps epochs, transfers authority!
+        h.shared.home_online_override.lock().remove("engine-home");
+        let moved = h
+            .sup
+            .ask(MoveHomeMsg {
+                deck_id: deck_id.clone(),
+                target_engine_id: "engine-viewer".into(),
+                confirm_cold_start: true,
+                verify_local_mcp_and_approvals: true,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(moved.previous_home_engine_id, "engine-home");
+        assert_eq!(moved.home_engine_id, "engine-viewer");
+        assert!(moved.home_epoch >= 2);
+        assert!(moved.cold_started);
+        assert!(moved.local_mcp_verified);
+        assert!(moved.requires_owner_start);
+
+        // Now engine-viewer is home and accepts ingest cleanly.
+        let ack = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-src".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "src-1".into(),
+                    source_epoch: 1,
+                    seq: 1,
+                    observed_at: chrono::Utc::now().to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Snapshot,
+                    section: None,
+                    payload: json!({ "after_move": true }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: None,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(ack.accepted);
+        assert_eq!(ack.home_engine_id, "engine-viewer");
+        assert_eq!(ack.home_epoch, moved.home_epoch);
+        let _ = h.rt;
+    }
+
+    // ---- Mesh Test 4: Redaction, payload/metric caps, per-source rate limit, and local Monty DeckSourceRuntime ----
+    #[tokio::test]
+    async fn mesh_redaction_caps_rate_limit_and_local_monty_source_runtime() {
+        use crate::mesh::{
+            DeckSourceEvent, DeckSourceRuntime, IngestStatus, MAX_HEARTBEAT_PAYLOAD_BYTES,
+            MAX_SOURCE_INGEST_PER_SEC, MAX_SOURCE_METRICS, MAX_SOURCE_PAYLOAD_BYTES,
+            SourceEmitOutcome, SourceEventKind, SourceSpoolLimits,
+        };
+        use crate::owner::{IngestSourceEventMsg, RegisterSourceMsg, SetLocalEngineIdMsg};
+        use std::collections::BTreeMap;
+
+        let h = setup_harness().await;
+        h.sup
+            .ask(SetLocalEngineIdMsg("engine-home".into()))
+            .send()
+            .await
+            .unwrap();
+        let deck_id = new_deck(&h, "Redaction Caps & Local Monty").await;
+
+        h.sup
+            .ask(RegisterSourceMsg {
+                deck_id: deck_id.clone(),
+                source_id: "src-local".into(),
+                engine_id: "engine-source-box".into(),
+                label: Some("Source Box".into()),
+                heartbeat_secs: Some(5),
+                stale_after_secs: Some(15),
+                offline_after_secs: Some(45),
+            })
+            .send()
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now();
+
+        // 1. Secret redaction in source payload and section before storage/broadcast.
+        let ack_secret = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-source-box".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "src-local".into(),
+                    source_epoch: 1,
+                    seq: 1,
+                    observed_at: now.to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Snapshot,
+                    section: Some("sec-tok-deck-secret-99999".into()),
+                    payload: json!({ "note": "leaked tok-deck-secret-99999 here", "ok": 1 }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(ack_secret.accepted);
+        let snap = h
+            .shared
+            .store
+            .get_snapshot(&deck_id, ack_secret.snapshot_id.as_deref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let snap_text = snap.data.to_string();
+        assert!(!snap_text.contains("tok-deck-secret-99999"));
+        assert!(snap_text.contains("[REDACTED:DECK_TOKEN]"));
+        assert!(!snap.section.as_deref().unwrap_or("").contains("tok-deck-secret-99999"));
+
+        // 2. Oversized payload cap rejected.
+        let big_payload = "x".repeat(MAX_SOURCE_PAYLOAD_BYTES + 128);
+        let big_err = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-source-box".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "src-local".into(),
+                    source_epoch: 1,
+                    seq: 2,
+                    observed_at: now.to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Frame,
+                    section: None,
+                    payload: json!({ "blob": big_payload }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(format!("{big_err}").contains("exceeds cap"), "{big_err}");
+
+        // 3. Oversized heartbeat payload cap rejected.
+        let big_hb = "h".repeat(MAX_HEARTBEAT_PAYLOAD_BYTES + 64);
+        let hb_err = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-source-box".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "src-local".into(),
+                    source_epoch: 1,
+                    seq: 2,
+                    observed_at: now.to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Heartbeat,
+                    section: None,
+                    payload: json!({ "blob": big_hb }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(format!("{hb_err}").contains("exceeds cap"), "{hb_err}");
+
+        // 4. Excessive metric count cap rejected.
+        let mut too_many = BTreeMap::new();
+        for i in 0..=MAX_SOURCE_METRICS {
+            too_many.insert(format!("m_{i}"), i as f64);
+        }
+        let metrics_err = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-source-box".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "src-local".into(),
+                    source_epoch: 1,
+                    seq: 2,
+                    observed_at: now.to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Frame,
+                    section: None,
+                    payload: json!({}),
+                    metrics: Some(too_many),
+                    metric_samples: None,
+                },
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{metrics_err}").contains("metrics count")
+                && format!("{metrics_err}").contains("exceeds cap"),
+            "{metrics_err}"
+        );
+
+        // 5. Per-source rate limit enforced on home.
+        h.shared
+            .source_ingest_rate_cap
+            .store(1, Ordering::Relaxed);
+        // Seq 1 already consumed 1 slot in the current 1s window, so seq 2 hits rate limit!
+        let rl_ack = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-source-box".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "src-local".into(),
+                    source_epoch: 1,
+                    seq: 2,
+                    observed_at: now.to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Frame,
+                    section: None,
+                    payload: json!({ "ok": 2 }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: Some(now),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!rl_ack.accepted);
+        assert_eq!(rl_ack.status, IngestStatus::RejectedRateLimited);
+        h.shared
+            .source_ingest_rate_cap
+            .store(MAX_SOURCE_INGEST_PER_SEC, Ordering::Relaxed);
+
+        // 6. End-to-end local Monty DeckSourceRuntime executes locally (with local ToolRegistry)
+        //    and ships redacted source events to home.
+        let src_tmp = tempfile::tempdir().unwrap();
+        let src_store = DeckStore::open(src_tmp.path()).await.unwrap();
+        // Bump local epoch to 2 so it cleanly fences epoch 1 used above.
+        let _ = src_store
+            .next_local_source_epoch(&deck_id, "src-local")
+            .await
+            .unwrap();
+        let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let sent_log = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let transport = Arc::new(SimulatedHomeTransport {
+            authenticated_engine_id: "engine-source-box".into(),
+            sup: h.sup.clone(),
+            online,
+            sent_log,
+        });
+        let mut src_rt = DeckSourceRuntime::start(
+            deck_id.clone(),
+            "src-local".into(),
+            "engine-home".into(),
+            src_store,
+            transport,
+            SourceSpoolLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(src_rt.source_epoch(), 2);
+
+        let local_script = crate::model::ScriptRevision {
+            deck_id: deck_id.clone(),
+            rev: 1,
+            code: r#"
+async def on_start(last_state):
+    pass
+
+async def collect():
+    deck_emit({"local_metric": 42.5, "secret": "tok-deck-secret-99999"}, durable=True)
+"#
+            .into(),
+            code_sha256: "test".into(),
+            revision_sha256: "test".into(),
+            declared_actions: vec![],
+            triggers: vec![],
+            mode: ScriptMode::Oneshot,
+            interval_secs: None,
+            schedule_cron: None,
+            status: ScriptStatus::Approved,
+            proposed_by: "owner".into(),
+            approved_by: Some("owner".into()),
+            approved_at: Some(now.to_rfc3339()),
+            rejected_reason: None,
+            change_summary: "local source script".into(),
+            created_at: now.to_rfc3339(),
+        };
+        let local_pool = agent::repl::test_pool(2).await.expect("local monty pool");
+        let work_dir = src_tmp.path().join("work");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        src_rt
+            .attach_local_monty(
+                local_pool,
+                h.registry.clone(),
+                ::runtime::SessionId::new(),
+                work_dir,
+                &local_script,
+            )
+            .await
+            .unwrap();
+
+        let outcomes = src_rt.run_local_step_and_emit().await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        match &outcomes[0] {
+            SourceEmitOutcome::Delivered(ack) => {
+                assert!(ack.accepted);
+                assert_eq!(ack.source_epoch, 2);
+                assert_eq!(ack.seq, 1);
+                let snap = h
+                    .shared
+                    .store
+                    .get_snapshot(&deck_id, ack.snapshot_id.as_deref().unwrap())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(snap.data["data"]["local_metric"], 42.5);
+                assert_eq!(snap.data["data"]["secret"], "[REDACTED:DECK_TOKEN]");
+            }
+            other => panic!("expected Delivered outcome, got {other:?}"),
+        }
+        let _ = h.rt;
+    }
+
+    #[tokio::test]
+    async fn mesh_source_triggers_evaluate_real_triggerspec_and_dispatch_routines() {
+        use crate::mesh::{
+            DeckSourceEvent, DeckSourceRuntime, IngestStatus, SourceEmitOutcome, SourceEventKind,
+            SourceHealthState, SourceSendError, SourceSpoolLimits, SourceTransport,
+            TriggerEvidenceDecision, classify_trigger_evidence,
+        };
+        use crate::model::MetricSample;
+        use crate::owner::{
+            IngestSourceEventMsg, RegisterSourceMsg, SetLocalEngineIdMsg, SweepSourceLivenessMsg,
+        };
+
+        let h = setup_harness().await;
+        h.sup
+            .ask(SetLocalEngineIdMsg("engine-home".into()))
+            .send()
+            .await
+            .unwrap();
+        let (_sched, rec) = start_test_schedule(
+            &h.rt,
+            &[
+                (
+                    "ops-alert",
+                    "---\ncron: \"0 0 1 1 *\"\nagent: ops\n---\nHandle mesh cpu alert.\n",
+                ),
+                (
+                    "health-alert",
+                    "---\ncron: \"0 0 1 1 *\"\nagent: ops\n---\nHandle mesh health alert.\n",
+                ),
+            ],
+        )
+        .await;
+
+        let deck_id = new_deck(&h, "Mesh Host TriggerSpec").await;
+
+        // Register two distinct authenticated sources on two distinct engines.
+        for (sid, eid) in [("node-a", "engine-a"), ("node-b", "engine-b")] {
+            h.sup
+                .ask(RegisterSourceMsg {
+                    deck_id: deck_id.clone(),
+                    source_id: sid.into(),
+                    engine_id: eid.into(),
+                    label: Some(sid.into()),
+                    heartbeat_secs: Some(20),
+                    stale_after_secs: Some(45),
+                    offline_after_secs: Some(120),
+                })
+                .send()
+                .await
+                .unwrap();
+        }
+
+        // Propose and owner-approve a revision with:
+        // 1. Per-source scoped sustained trigger for `node-a` only (min_samples=2, sustain_secs=10).
+        // 2. Unscoped bool trigger (`healthy == false`, min_samples=2) whose persistent state must
+        //    stay strictly isolated per source (`node-a` vs `node-b`).
+        let rev = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: r#"
+async def on_step():
+    deck_metric("cpu", 99.0, {"origin": "local"})
+    deck_emit({"local": True}, durable=True)
+"#
+                .into(),
+                declared_actions: vec![],
+                triggers: vec![
+                    TriggerSpec {
+                        id: "node-a-cpu".into(),
+                        metric: "cpu".into(),
+                        op: TriggerOp::Gt,
+                        threshold: MetricValue::Number(80.0),
+                        reset_threshold: Some(60.0),
+                        min_samples: 2,
+                        sustain_secs: 10,
+                        cooldown_secs: 60,
+                        reset_mode: TriggerResetMode::ReArmOnClear,
+                        routine: "ops-alert".into(),
+                        source_id: Some("node-a".into()),
+                    },
+                    TriggerSpec {
+                        id: "any-node-down".into(),
+                        metric: "healthy".into(),
+                        op: TriggerOp::Eq,
+                        threshold: MetricValue::Bool(false),
+                        reset_threshold: None,
+                        min_samples: 2,
+                        sustain_secs: 0,
+                        cooldown_secs: 0,
+                        reset_mode: TriggerResetMode::ReArmOnClear,
+                        routine: "health-alert".into(),
+                        source_id: None,
+                    },
+                ],
+                mode: ScriptMode::Oneshot,
+                interval_secs: Some(60),
+                schedule_cron: None,
+                proposed_by: "owner".into(),
+                change_summary: "mesh triggers".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        h.sup
+            .ask(ApproveScriptMsg {
+                deck_id: deck_id.clone(),
+                rev: rev.rev,
+                expected_digest: rev.revision_sha256.clone(),
+                approved_by: "owner".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+
+        // 1. Local `deck_metric("cpu", 99.0)` turn MUST NOT fire `source_id: Some("node-a")` trigger.
+        h.sup
+            .ask(RuntimeControlMsg {
+                deck_id: deck_id.clone(),
+                op: RuntimeControlOp::RunOnce,
+            })
+            .send()
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            rec.snapshot().len(),
+            0,
+            "local deck_metric must not trigger a source-scoped TriggerSpec"
+        );
+
+        let t0 = chrono::Utc::now();
+
+        // 2. Replay evidence MUST NOT open/advance/fire sustained threshold.
+        for (seq, dt) in [(1_u64, 0_i64), (2, 15)] {
+            let ack = h
+                .sup
+                .ask(IngestSourceEventMsg {
+                    authenticated_engine_id: "engine-a".into(),
+                    event: DeckSourceEvent {
+                        deck_id: deck_id.clone(),
+                        source_id: "node-a".into(),
+                        source_epoch: 1,
+                        seq,
+                        observed_at: (t0 + chrono::Duration::seconds(dt)).to_rfc3339(),
+                        replay: true,
+                        kind: SourceEventKind::Frame,
+                        section: None,
+                        payload: json!({ "cpu": 95.0 }),
+                        metrics: None,
+                        metric_samples: Some(vec![MetricSample {
+                            name: "cpu".into(),
+                            value: MetricValue::Number(95.0),
+                            meta: None,
+                            observed_at_ms: (t0 + chrono::Duration::seconds(dt)).timestamp_millis(),
+                        }]),
+                    },
+                    received_at_override: Some(t0 + chrono::Duration::seconds(dt)),
+                })
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(ack.source_health, SourceHealthState::Replaying);
+            assert!(!ack.trigger_dispatched);
+        }
+        assert_eq!(rec.snapshot().len(), 0, "replay must never dispatch routines");
+
+        // 3. Heartbeat carrying high cpu MUST NOT open/advance/fire sustained threshold.
+        let hb_ack = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "node-a".into(),
+                    source_epoch: 1,
+                    seq: 3,
+                    observed_at: (t0 + chrono::Duration::seconds(20)).to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Heartbeat,
+                    section: None,
+                    payload: json!({ "cpu": 99.0 }),
+                    metrics: Some(std::collections::BTreeMap::from([("cpu".into(), 99.0)])),
+                    metric_samples: Some(vec![MetricSample {
+                        name: "cpu".into(),
+                        value: MetricValue::Number(99.0),
+                        meta: None,
+                        observed_at_ms: (t0 + chrono::Duration::seconds(20)).timestamp_millis(),
+                    }]),
+                },
+                received_at_override: Some(t0 + chrono::Duration::seconds(20)),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(hb_ack.source_health, SourceHealthState::Live);
+        assert!(!hb_ack.trigger_dispatched);
+
+        // Verify pure classifier blocks heartbeat explicitly.
+        assert_eq!(
+            classify_trigger_evidence(
+                true,
+                &crate::mesh::SourceTriggerSample {
+                    deck_id: deck_id.clone(),
+                    source_id: "node-a".into(),
+                    source_epoch: 1,
+                    seq: 3,
+                    observed_at: t0,
+                    received_at: t0,
+                    replay: false,
+                    kind: SourceEventKind::Heartbeat,
+                    source_health: SourceHealthState::Live,
+                    payload: Value::Null,
+                    metrics: Default::default(),
+                    metric_samples: vec![],
+                }
+            ),
+            TriggerEvidenceDecision::IgnoredHeartbeat
+        );
+
+        // 4. Wrong source (`node-b`) breaching cpu MUST NOT fire `node-a-cpu`.
+        for (seq, dt) in [(1_u64, 25_i64), (2, 40)] {
+            let ack_b = h
+                .sup
+                .ask(IngestSourceEventMsg {
+                    authenticated_engine_id: "engine-b".into(),
+                    event: DeckSourceEvent {
+                        deck_id: deck_id.clone(),
+                        source_id: "node-b".into(),
+                        source_epoch: 1,
+                        seq,
+                        observed_at: (t0 + chrono::Duration::seconds(dt)).to_rfc3339(),
+                        replay: false,
+                        kind: SourceEventKind::Frame,
+                        section: None,
+                        payload: json!({ "cpu": 98.0 }),
+                        metrics: None,
+                        metric_samples: None,
+                    },
+                    received_at_override: Some(t0 + chrono::Duration::seconds(dt)),
+                })
+                .send()
+                .await
+                .unwrap();
+            assert!(!ack_b.trigger_dispatched);
+        }
+        assert_eq!(
+            rec.snapshot().len(),
+            0,
+            "node-b samples must not fire trigger scoped to node-a"
+        );
+
+        // 5. Open sustained window on `node-a` at t+30s, then let `node-a` go Stale at t+90s ->
+        //    stale sweep clears in-progress streak so a single fresh reading at t+100s MUST NOT fire!
+        let ack_a4 = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "node-a".into(),
+                    source_epoch: 1,
+                    seq: 4,
+                    observed_at: (t0 + chrono::Duration::seconds(30)).to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Frame,
+                    section: None,
+                    payload: json!({ "cpu": 92.0 }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: Some(t0 + chrono::Duration::seconds(30)),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!ack_a4.trigger_dispatched);
+
+        let swept = h
+            .sup
+            .ask(SweepSourceLivenessMsg {
+                deck_id: Some(deck_id.clone()),
+                now: Some(t0 + chrono::Duration::seconds(90)),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(swept.iter().any(|s| s.source_id == "node-a" && s.health == SourceHealthState::Stale));
+
+        // First fresh reading after stale recovery starts a NEW sustained window (does NOT bridge t+30s!).
+        let t_fresh_1 = t0 + chrono::Duration::seconds(100);
+        let ack_a5 = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "node-a".into(),
+                    source_epoch: 1,
+                    seq: 5,
+                    observed_at: t_fresh_1.to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Frame,
+                    section: None,
+                    payload: json!({ "cpu": 93.0 }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: Some(t_fresh_1),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ack_a5.source_health, SourceHealthState::Live);
+        assert!(
+            !ack_a5.trigger_dispatched,
+            "stale gap must reset sustained window so first fresh sample does not fire"
+        );
+
+        // Heartbeat at t_fresh_1 + 12s MUST NOT advance or fire the open sustained window!
+        let ack_hb2 = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "node-a".into(),
+                    source_epoch: 1,
+                    seq: 6,
+                    observed_at: (t_fresh_1 + chrono::Duration::seconds(12)).to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Heartbeat,
+                    section: None,
+                    payload: json!({ "cpu": 95.0 }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: Some(t_fresh_1 + chrono::Duration::seconds(12)),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!ack_hb2.trigger_dispatched);
+        assert_eq!(rec.snapshot().len(), 0);
+
+        // 6. Confirming fresh reading at t_fresh_1 + 15s (min_samples=2, sustain_secs=10) FIRES `ops-alert`!
+        let t_fresh_2 = t_fresh_1 + chrono::Duration::seconds(15);
+        let ev_fire = DeckSourceEvent {
+            deck_id: deck_id.clone(),
+            source_id: "node-a".into(),
+            source_epoch: 1,
+            seq: 7,
+            observed_at: t_fresh_2.to_rfc3339(),
+            replay: false,
+            kind: SourceEventKind::Frame,
+            section: None,
+            payload: json!({ "cpu": 94.0 }),
+            metrics: None,
+            metric_samples: Some(vec![MetricSample {
+                name: "cpu".into(),
+                value: MetricValue::Number(94.0),
+                meta: Some(json!({ "secret": "tok-deck-secret-99999" })),
+                observed_at_ms: t_fresh_2.timestamp_millis(),
+            }]),
+        };
+        let ack_fire = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: ev_fire.clone(),
+                received_at_override: Some(t_fresh_2),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(ack_fire.trigger_dispatched, "confirming fresh sample must fire routine");
+        let dedup_key = ack_fire
+            .trigger_dedup_key
+            .clone()
+            .expect("trigger_dedup_key persisted");
+
+        let fired = rec.snapshot();
+        assert_eq!(fired.len(), 1, "routine must be dispatched once");
+        assert_eq!(fired[0].0, "ops-alert");
+        assert!(fired[0].2.contains("\"source_id\":\"node-a\"") || fired[0].2.contains("\"source_id\": \"node-a\""));
+        assert!(!fired[0].2.contains("tok-deck-secret-99999"), "trigger meta must be redacted");
+
+        // Duplicate retry returns exact deduped receipt and MUST NOT dispatch a second routine run!
+        let ack_dup = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: ev_fire,
+                received_at_override: Some(t_fresh_2),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ack_dup.status, IngestStatus::Duplicate);
+        assert!(ack_dup.trigger_dispatched);
+        assert_eq!(ack_dup.trigger_dedup_key, Some(dedup_key));
+        assert_eq!(rec.snapshot().len(), 1, "duplicate ingest must not double-dispatch");
+
+        // 7. Per-source state isolation on unscoped trigger (`healthy == false`, min_samples=2):
+        //    1 sample from node-a + 1 sample from node-b must NOT combine to 2; a 2nd from node-b DOES fire!
+        let t_iso = t_fresh_2 + chrono::Duration::seconds(5);
+        for (sid, eid, seq) in [("node-a", "engine-a", 8_u64), ("node-b", "engine-b", 3_u64)] {
+            let ack = h
+                .sup
+                .ask(IngestSourceEventMsg {
+                    authenticated_engine_id: eid.into(),
+                    event: DeckSourceEvent {
+                        deck_id: deck_id.clone(),
+                        source_id: sid.into(),
+                        source_epoch: 1,
+                        seq,
+                        observed_at: t_iso.to_rfc3339(),
+                        replay: false,
+                        kind: SourceEventKind::Frame,
+                        section: None,
+                        payload: json!({ "healthy": false }),
+                        metrics: None,
+                        metric_samples: None,
+                    },
+                    received_at_override: Some(t_iso),
+                })
+                .send()
+                .await
+                .unwrap();
+            assert!(!ack.trigger_dispatched, "single sample per source must not cross-contaminate");
+        }
+        assert_eq!(rec.snapshot().len(), 1);
+
+        // Second fresh `healthy: false` from `node-b` via local `DeckSourceRuntime::run_local_step_and_emit`
+        // calling `deck_metric("healthy", False)` fires `health-alert`!
+        struct LocalSourceTransport {
+            sup: ActorRef<DeckSupervisor>,
+            engine_id: String,
+        }
+        #[async_trait::async_trait]
+        impl SourceTransport for LocalSourceTransport {
+            async fn send_event(
+                &self,
+                _home_engine_id: &str,
+                event: &DeckSourceEvent,
+            ) -> Result<crate::mesh::IngestSourceAck, SourceSendError> {
+                self.sup
+                    .ask(IngestSourceEventMsg {
+                        authenticated_engine_id: self.engine_id.clone(),
+                        event: event.clone(),
+                        received_at_override: None,
+                    })
+                    .send()
+                    .await
+                    .map_err(|e| SourceSendError::Rejected(format!("{e}")))
+            }
+        }
+        let src_tmp = tempfile::tempdir().unwrap();
+        let src_store = DeckStore::open(src_tmp.path()).await.unwrap();
+        let src_rt = DeckSourceRuntime::start(
+            deck_id.clone(),
+            "node-b".into(),
+            "engine-home".into(),
+            src_store.clone(),
+            Arc::new(LocalSourceTransport {
+                sup: h.sup.clone(),
+                engine_id: "engine-b".into(),
+            }),
+            SourceSpoolLimits::default(),
+        )
+        .await
+        .unwrap();
+        // Bump epoch once so epoch=2 > epoch=1 on home (also proves epoch fencing resets streak!).
+        let src_script = crate::model::ScriptRevision {
+            deck_id: deck_id.clone(),
+            rev: 1,
+            code: "async def on_step():\n    deck_metric('healthy', False)\n".into(),
+            code_sha256: "src-code-health".into(),
+            declared_actions: vec![],
+            triggers: vec![],
+            mode: ScriptMode::Oneshot,
+            interval_secs: None,
+            schedule_cron: None,
+            status: ScriptStatus::Approved,
+            revision_sha256: "src-rev-health".into(),
+            proposed_by: "owner".into(),
+            approved_by: Some("owner".into()),
+            approved_at: Some(chrono::Utc::now().to_rfc3339()),
+            rejected_reason: None,
+            change_summary: "source health".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let src_rt2 = DeckSourceRuntime::start(
+            deck_id.clone(),
+            "node-b".into(),
+            "engine-home".into(),
+            src_store.clone(),
+            Arc::new(LocalSourceTransport {
+                sup: h.sup.clone(),
+                engine_id: "engine-b".into(),
+            }),
+            SourceSpoolLimits::default(),
+        )
+        .await
+        .unwrap();
+        drop(src_rt);
+        let mut src_rt = src_rt2;
+        assert_eq!(src_rt.source_epoch(), 2);
+        let pool = agent::repl::open_default_pool(2).await.unwrap();
+        let src_work = src_tmp.path().join("src_work");
+        std::fs::create_dir_all(&src_work).unwrap();
+        src_rt
+            .attach_local_monty(
+                pool,
+                h.registry.clone(),
+                ::runtime::SessionId::new(),
+                src_work,
+                &src_script,
+            )
+            .await
+            .unwrap();
+
+        // Step 1 on new epoch=2 resets prior epoch=1 streak (does NOT fire on 1st sample of epoch=2!).
+        let out1 = src_rt.run_local_step_and_emit().await.unwrap();
+        assert_eq!(out1.len(), 1);
+        match &out1[0] {
+            SourceEmitOutcome::Delivered(ack) => {
+                assert!(ack.accepted);
+                assert!(!ack.trigger_dispatched, "epoch restart must reset in-progress streak");
+            }
+            other => panic!("expected Delivered, got {other:?}"),
+        }
+        assert_eq!(rec.snapshot().len(), 1);
+
+        // Step 2 on epoch=2 meets min_samples=2 on `node-b` -> fires `health-alert`!
+        let out2 = src_rt.run_local_step_and_emit().await.unwrap();
+        assert_eq!(out2.len(), 1);
+        match &out2[0] {
+            SourceEmitOutcome::Delivered(ack) => {
+                assert!(ack.accepted);
+                assert!(ack.trigger_dispatched, "2nd fresh deck_metric sample on node-b must fire");
+                assert!(ack.trigger_dedup_key.is_some());
+            }
+            other => panic!("expected Delivered, got {other:?}"),
+        }
+        assert_eq!(rec.snapshot().len(), 2, "health-alert must dispatch");
+
+        // 8. Non-home engine refuses source ingest and never dispatches triggers.
+        h.sup
+            .ask(SetLocalEngineIdMsg("engine-viewer".into()))
+            .send()
+            .await
+            .unwrap();
+        let non_home_err = h
+            .sup
+            .ask(IngestSourceEventMsg {
+                authenticated_engine_id: "engine-a".into(),
+                event: DeckSourceEvent {
+                    deck_id: deck_id.clone(),
+                    source_id: "node-a".into(),
+                    source_epoch: 2,
+                    seq: 1,
+                    observed_at: chrono::Utc::now().to_rfc3339(),
+                    replay: false,
+                    kind: SourceEventKind::Frame,
+                    section: None,
+                    payload: json!({ "healthy": false }),
+                    metrics: None,
+                    metric_samples: None,
+                },
+                received_at_override: None,
+            })
+            .send()
+            .await
+            .unwrap_err();
+        assert!(format!("{non_home_err}").contains("not_home:"));
+        assert_eq!(rec.snapshot().len(), 2);
+
+        evict_actor::<schedule::Schedule>(schedule::SCHEDULE_ACTOR).await;
+        let _ = h.rt;
     }
 }
 
@@ -4575,6 +6376,7 @@ mod unit_tests {
             step_count: 1,
             checkout_alive: true,
             pending_approval: None,
+            mesh: None,
         };
         let (sub_id, mut rx) = hub.subscribe(
             "d1",
@@ -4648,6 +6450,7 @@ mod unit_tests {
             step_count: 1,
             checkout_alive: true,
             pending_approval: None,
+            mesh: None,
         };
         let (sub_id, mut rx) = hub.subscribe(
             "d_sec",
@@ -4760,6 +6563,7 @@ mod unit_tests {
             cooldown_secs: 60,
             reset_mode: TriggerResetMode::ReArmOnClear,
             routine: "ops-alert".into(),
+            source_id: None,
         };
         let rev2 = store
             .propose_script(
@@ -4790,6 +6594,7 @@ mod unit_tests {
             cooldown_secs: 60,
             reset_mode: TriggerResetMode::ReArmOnClear,
             routine: "evil-routine".into(),
+            source_id: None,
         }])
         .unwrap();
         sqlx::query(

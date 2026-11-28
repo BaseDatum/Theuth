@@ -245,10 +245,15 @@ pub struct TriggerSpec {
     pub reset_mode: TriggerResetMode,
     /// Existing owner-approved routine name (`schedules/<routine>.md`) to fire.
     pub routine: String,
+    /// Optional mesh source scope (`source_id`). When set, only fresh authenticated live samples
+    /// from that registered mesh source evaluate this trigger (local `deck_metric` turns ignore
+    /// source-scoped triggers). Multi-source `any`/`all`/`quorum`/`aggregate` scopes are a follow-up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 /// One metric sample emitted by `deck_metric(name, value, meta=None)` during a Monty turn.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MetricSample {
     pub name: String,
     pub value: MetricValue,
@@ -365,6 +370,9 @@ pub struct DeckRuntimeStatus {
     pub checkout_alive: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_approval: Option<PendingApproval>,
+    /// Native Mesh Decks home ownership & per-source health model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<crate::mesh::DeckMeshStatus>,
 }
 
 /// Lifecycle control operations on a Deck runtime.
@@ -397,6 +405,7 @@ pub enum InteractErrorCode {
     Paused,
     ExecutionError,
     Conflict,
+    NotHome,
 }
 
 /// Per-caller response to an interactive Deck action (`deck_interact`).
@@ -434,6 +443,8 @@ pub struct DeckSummary {
     pub active_rev: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_rev: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_engine_id: Option<String>,
     pub updated_ms: i64,
 }
 
@@ -472,6 +483,12 @@ pub enum DeckRuntimeEvent {
     Snapshot { snapshot: DeckSnapshot },
     /// Runtime status change (streaming/paused/stopped/stale/error/epoch).
     Status { status: DeckRuntimeStatus },
+    /// Per-source mesh health/sequence/lag/replay/error update emitted by home.
+    SourceStatus {
+        deck_id: String,
+        home_engine_id: String,
+        source: crate::mesh::DeckSourceStatus,
+    },
     /// Tool approval pause surfaced to the Deck view.
     ApprovalPending { approval: PendingApproval },
     /// Tool approval resolved; Deck resumes or records denial.

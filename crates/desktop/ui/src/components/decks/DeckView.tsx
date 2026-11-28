@@ -15,7 +15,9 @@ import {
   Pencil,
   Play,
   Plus,
+  Radio,
   RefreshCw,
+  Server,
   ShieldAlert,
   Square,
   X,
@@ -39,11 +41,13 @@ import { DeckSurfaceSection, lookupPath } from './DeckSurfaceSection'
 import {
   deckControlAvailability,
   safeIsoTimestamp,
+  type DeckMeshStatus,
   type DeckSection,
   type RuntimeState,
   type ScriptRevision,
   type SectionKind,
   type SectionRevision,
+  type SourceHealthState,
   type TriggerSpec,
 } from './types'
 import { type DeckLiveState, selectSectionDeckData, useDeckLive } from './useDeckLive'
@@ -56,6 +60,122 @@ const STATE_STYLE: Record<RuntimeState, string> = {
   scheduled_idle: 'bg-info/15 text-info',
   waiting_approval: 'bg-warning/20 text-warning',
   error: 'bg-danger/15 text-danger',
+}
+
+const SOURCE_HEALTH_STYLE: Record<SourceHealthState, string> = {
+  live: 'bg-success/15 text-success',
+  stale: 'bg-warning/15 text-warning',
+  offline: 'bg-danger/15 text-danger',
+  replaying: 'bg-info/15 text-info',
+}
+
+export function formatLagMs(lagMs?: number | null): string {
+  if (lagMs === null || lagMs === undefined || !Number.isFinite(lagMs)) return '—'
+  const clamped = Math.max(0, Math.round(lagMs))
+  if (clamped < 1000) return `${clamped}ms`
+  if (clamped < 60_000) return `${(clamped / 1000).toFixed(1)}s`
+  return `${Math.round(clamped / 1000)}s`
+}
+
+export function DeckMeshBar({
+  mesh,
+  hasLastSnapshot,
+  embedded = false,
+}: {
+  mesh: DeckMeshStatus
+  hasLastSnapshot: boolean
+  embedded?: boolean
+}) {
+  const pausedBecauseRemote = !mesh.is_home
+  const pausedOffline = !mesh.home_online || mesh.execution_paused_reason === 'home_offline'
+  return (
+    <div
+      className={cn(
+        'rounded-xl border border-border-subtle bg-layer-1/50 text-xs',
+        embedded ? 'p-2' : 'px-3 py-2.5',
+      )}
+      data-deck-mesh-status
+      data-deck-home-engine={mesh.home_engine_id}
+      data-deck-is-home={mesh.is_home ? 'true' : 'false'}
+      data-deck-home-online={mesh.home_online ? 'true' : 'false'}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 font-medium text-fg-primary">
+          <Server className="size-3.5 text-fg-secondary" />
+          Home:{' '}
+          <code className="rounded bg-layer-2 px-1 py-0.5 font-mono text-[11px]">{mesh.home_engine_id}</code>
+        </span>
+        <span className="rounded bg-layer-2 px-1.5 py-0.5 font-mono text-[10px] text-fg-tertiary">
+          home e{mesh.home_epoch}
+        </span>
+        <span
+          className={cn(
+            'rounded-full px-2 py-0.5 text-[10px] font-medium',
+            mesh.is_home ? 'bg-success/15 text-success' : 'bg-info/15 text-info',
+          )}
+        >
+          {mesh.is_home ? 'authoritative home' : `viewer (${mesh.local_engine_id})`}
+        </span>
+        {pausedOffline && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-medium text-warning"
+            data-deck-home-offline
+          >
+            <AlertTriangle className="size-3" />
+            home offline — execution paused{hasLastSnapshot ? ' (last-good Deck visible)' : ''}
+          </span>
+        )}
+        {!pausedOffline && pausedBecauseRemote && (
+          <span className="text-[11px] text-fg-tertiary" data-deck-remote-readonly>
+            Read-only viewer · runtime and triggers execute on home engine
+          </span>
+        )}
+      </div>
+
+      {mesh.sources.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5" data-deck-mesh-sources>
+          {mesh.sources.map((src) => (
+            <div
+              key={src.source_id}
+              data-deck-source={src.source_id}
+              data-deck-source-health={src.health}
+              className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border-subtle bg-background/70 px-2 py-1 text-[11px]"
+            >
+              <Radio className="size-3 text-fg-tertiary" />
+              <span className="font-medium text-fg-primary">{src.label || src.source_id}</span>
+              <span
+                className={cn(
+                  'rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+                  SOURCE_HEALTH_STYLE[src.health],
+                )}
+              >
+                {src.health}
+              </span>
+              <span className="font-mono text-[10px] text-fg-tertiary">
+                {src.engine_id} · e{src.last_epoch} #{src.last_seq}
+              </span>
+              {src.lag_ms != null && (
+                <span className="font-mono text-[10px] text-fg-tertiary" data-deck-source-lag={src.source_id}>
+                  lag {formatLagMs(src.lag_ms)}
+                </span>
+              )}
+              {(src.spool_depth > 0 || src.dropped_count > 0) && (
+                <span className="font-mono text-[10px] text-warning" data-deck-source-spool={src.source_id}>
+                  spool {src.spool_depth}
+                  {src.dropped_count > 0 ? ` · dropped ${src.dropped_count}` : ''}
+                </span>
+              )}
+              {src.last_error && (
+                <span className="max-w-60 truncate text-[10px] text-danger" data-deck-source-error={src.source_id}>
+                  err: {src.last_error}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 /**
@@ -113,6 +233,7 @@ function formatTriggerCondition(t: TriggerSpec): string {
       ? `${t.metric} ${op}`
       : `${t.metric} ${op} ${String(t.threshold ?? '')}`
   const clauses: string[] = []
+  if (t.source_id) clauses.push(`source ${t.source_id}`)
   if (t.min_samples > 1) clauses.push(`min ${t.min_samples} samples`)
   if (t.sustain_secs > 0) clauses.push(`sustain ${t.sustain_secs}s`)
   if (t.reset_threshold !== undefined && t.reset_threshold !== null) {
@@ -713,6 +834,11 @@ function DeckViewInner({
     }
   }
 
+  const isNonHome = Boolean(rt?.mesh && !rt.mesh.is_home)
+  const nonHomeTitle = rt?.mesh && !rt.mesh.is_home
+    ? `Execution is owned by home engine ${rt.mesh.home_engine_id}`
+    : undefined
+
   const renderRuntimeControls = () => (
     <div className="flex flex-wrap items-center gap-1.5">
       {!pinned && controls.start && (
@@ -720,7 +846,8 @@ function DeckViewInner({
           size="sm"
           variant="default"
           data-deck-chrome-control="start"
-          disabled={state.controlBusy}
+          title={nonHomeTitle}
+          disabled={state.controlBusy || isNonHome}
           onClick={() => void state.controlRuntime('start')}
         >
           <Play className="size-3.5" /> Start
@@ -731,7 +858,8 @@ function DeckViewInner({
           size="sm"
           variant="outline"
           data-deck-chrome-control="pause"
-          disabled={state.controlBusy}
+          title={nonHomeTitle}
+          disabled={state.controlBusy || isNonHome}
           onClick={() => void state.controlRuntime('pause')}
         >
           <Pause className="size-3.5" /> Pause
@@ -742,7 +870,8 @@ function DeckViewInner({
           size="sm"
           variant="default"
           data-deck-chrome-control="resume"
-          disabled={state.controlBusy}
+          title={nonHomeTitle}
+          disabled={state.controlBusy || isNonHome}
           onClick={() => void state.controlRuntime('resume')}
         >
           <Play className="size-3.5" /> Resume
@@ -753,7 +882,8 @@ function DeckViewInner({
           size="sm"
           variant="ghost"
           data-deck-chrome-control="stop"
-          disabled={state.controlBusy}
+          title={nonHomeTitle}
+          disabled={state.controlBusy || isNonHome}
           onClick={() => void state.controlRuntime('stop')}
         >
           <Square className="size-3.5" /> Stop
@@ -764,7 +894,8 @@ function DeckViewInner({
           size="sm"
           variant="ghost"
           data-deck-chrome-control="run_once"
-          disabled={state.controlBusy}
+          title={nonHomeTitle}
+          disabled={state.controlBusy || isNonHome}
           onClick={() => void state.controlRuntime('run_once')}
         >
           <RefreshCw className="size-3.5" /> Run once
@@ -915,6 +1046,11 @@ function DeckViewInner({
           >
             Live stream disconnected: {state.subscriptionError} — retrying…
           </div>
+        )}
+
+        {/* Mesh home engine & source node status */}
+        {rt?.mesh && (
+          <DeckMeshBar mesh={rt.mesh} hasLastSnapshot={Boolean(state.lastSnapshot)} embedded={embedded} />
         )}
 
         {/* Pending script approval gate banner */}

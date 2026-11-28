@@ -17,10 +17,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use agent::repl::MontyPool;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use document::deck::{
     CreateDeck, DeckCall, DeckCallReply, DeckCreated, DeckDocError, DeckDocSnapshot, DeckOp,
     DeckScriptRef, DeckSection, SectionKind, SectionRevision,
@@ -28,7 +29,7 @@ use document::deck::{
 use document::{DocId, DocKind, DocumentActor, DocumentChanged, ListDocs, Principal};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use runtime::{Runtime, SessionId};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -38,19 +39,28 @@ use tools::{
 };
 
 use crate::hub::{DeckHub, MAX_SNAPSHOT_BYTES};
+use crate::mesh::{
+    DeckMeshStatus, DeckMoveHomeResult, DeckSourceEvent, DeckSourceStatus, IngestSourceAck,
+    IngestStatus, MAX_SOURCE_INGEST_PER_SEC, SourceEventKind, SourceHealthState,
+    SourceTriggerAdapter, SourceTriggerSample, classify_trigger_evidence, extract_numeric_metrics,
+    sanitize_and_validate_source_event, validate_engine_id,
+};
 use crate::model::{
     DeckChanged, DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary,
     DeclaredAction, InteractErrorCode, InteractResponse, LiveFrame, MAX_INTERVAL_SECS,
     MetricSample, PendingApproval, RuntimeControlOp, RuntimeState, ScriptMode, ScriptRevision,
     ScriptStatus, TriggerSpec, canonical_json_string, clamp_interval_secs,
 };
-use crate::runtime::{DECK_POOL_MAX, DeckCheckout, EmittedPayload, TurnContext, TurnEffects};
+use crate::runtime::{
+    DECK_POOL_MAX, DeckCheckout, EmittedPayload, TurnContext, TurnEffects, deck_tool_specs,
+};
 use crate::store::{
     DeckRecord, DeckStore, IdempotencyLookup, sha256_hex, validate_script_proposal,
 };
 use crate::triggers::{
-    TriggerDecision, TriggerState, build_trigger_event, commit_fire_state, dispatch_trigger,
-    evaluate_sample, mark_missing_metric, trigger_spec_sha256, verify_routines_exist,
+    HostTriggerSpecAdapter, TriggerDecision, TriggerState, build_trigger_event, commit_fire_state,
+    dispatch_trigger, evaluate_sample, mark_missing_metric, trigger_spec_sha256,
+    verify_routines_exist,
 };
 
 /// Actor registry name for [`DeckSupervisor`].
@@ -76,6 +86,16 @@ pub struct SharedDeckState {
     pub runtime: Runtime,
     pub document: ActorRef<DocumentActor>,
     pub registry: ActorRef<ToolRegistry>,
+    /// This engine's authenticated mesh identity (defaults to `"local"` when mesh is absent).
+    pub local_engine_id: Arc<RwLock<String>>,
+    /// Optional per-Deck home reachability overrides (used in tests to simulate offline home).
+    pub home_online_override: Arc<Mutex<HashMap<String, bool>>>,
+    /// Per-source rolling 1-second ingest rate cap enforced on home.
+    pub source_ingest_rate_cap: Arc<AtomicUsize>,
+    /// Pluggable home trigger evaluator (`feat/decks-triggers` adapter seam).
+    pub trigger_adapter: Arc<RwLock<Arc<dyn SourceTriggerAdapter>>>,
+    /// Monotonic home frame/snapshot sequence allocator for source-ingested payloads.
+    pub home_seq: Arc<Mutex<HashMap<String, Arc<AtomicU64>>>>,
     /// Queued pending approvals per Deck so concurrent `asyncio.gather` approvals never clobber (229 M1).
     pub pending_approvals: Arc<Mutex<HashMap<String, Vec<PendingApproval>>>>,
     /// Pre-approval runtime state recorded when entering `WaitingApproval` (229 M1).
@@ -88,6 +108,37 @@ pub struct SharedDeckState {
 }
 
 impl SharedDeckState {
+    pub fn local_engine_id(&self) -> String {
+        self.local_engine_id.read().clone()
+    }
+
+    pub fn set_local_engine_id(&self, engine_id: String) {
+        if let Ok(valid) = validate_engine_id(&engine_id) {
+            *self.local_engine_id.write() = valid;
+        }
+    }
+
+    pub fn set_trigger_adapter(&self, adapter: Arc<dyn SourceTriggerAdapter>) {
+        *self.trigger_adapter.write() = adapter;
+    }
+
+    pub fn set_source_ingest_rate_cap(&self, cap: usize) {
+        self.source_ingest_rate_cap
+            .store(cap.max(1), Ordering::Relaxed);
+    }
+
+    pub fn set_home_online_override(&self, deck_id: &str, online: Option<bool>) {
+        let mut map = self.home_online_override.lock();
+        match online {
+            Some(flag) => {
+                map.insert(deck_id.to_owned(), flag);
+            }
+            None => {
+                map.remove(deck_id);
+            }
+        }
+    }
+
     pub fn register_session(&self, deck_id: &str, session_id: SessionId) {
         self.deleted_decks.lock().remove(deck_id);
         self.session_index
@@ -102,8 +153,113 @@ impl SharedDeckState {
     pub fn mark_deleted(&self, deck_id: &str) {
         self.deleted_decks.lock().insert(deck_id.to_owned());
         self.live_cache.lock().remove(deck_id);
+        self.home_online_override.lock().remove(deck_id);
+        self.home_seq.lock().remove(deck_id);
         self.pending_approvals.lock().remove(deck_id);
         self.pre_approval_state.lock().remove(deck_id);
+    }
+
+    /// Resolve (and initialize if unset) a Deck's authoritative persisted home engine.
+    pub async fn resolve_deck_home(&self, deck_id: &str) -> Result<(DeckRecord, String, bool), String> {
+        let mut rec = self
+            .store
+            .ensure_deck(deck_id)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        let local = self.local_engine_id();
+        let home = match rec.home_engine_id.clone() {
+            Some(h) => h,
+            None => {
+                let from_doc = self
+                    .document
+                    .ask(document::hub::DocServer {
+                        doc: DocId(deck_id.to_owned()),
+                    })
+                    .send()
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|eid| eid.0);
+                let chosen = from_doc.unwrap_or_else(|| local.clone());
+                rec = self
+                    .store
+                    .set_home_if_unset(deck_id, &chosen)
+                    .await
+                    .map_err(|e| format!("{e:#}"))?;
+                rec.home_engine_id.clone().unwrap_or(chosen)
+            }
+        };
+        let is_home = home == local;
+        Ok((rec, home, is_home))
+    }
+
+    pub async fn is_home_online(&self, deck_id: &str, home_engine_id: &str, is_home: bool) -> bool {
+        if let Some(&forced) = self.home_online_override.lock().get(deck_id) {
+            return forced;
+        }
+        if is_home {
+            return true;
+        }
+        if let Ok(Some(mesh_actor)) = ActorRef::<mesh::Mesh>::lookup(mesh::MESH_ACTOR)
+            && let Ok(status) = mesh_actor.ask(mesh::Status).send().await
+        {
+            return status
+                .peers
+                .iter()
+                .any(|p| p.id.0 == home_engine_id && p.reachable);
+        }
+        false
+    }
+
+    pub async fn build_mesh_status(&self, deck_id: &str) -> Result<DeckMeshStatus, String> {
+        let (rec, home_engine_id, is_home) = self.resolve_deck_home(deck_id).await?;
+        let local_engine_id = self.local_engine_id();
+        let home_online = self.is_home_online(deck_id, &home_engine_id, is_home).await;
+        let execution_paused_reason = if is_home {
+            None
+        } else if !home_online {
+            Some("home_offline".to_owned())
+        } else {
+            Some("not_home_engine".to_owned())
+        };
+        let sources = self
+            .store
+            .list_source_statuses(deck_id)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(DeckMeshStatus {
+            deck_id: deck_id.to_owned(),
+            home_engine_id,
+            local_engine_id,
+            is_home,
+            home_online,
+            home_epoch: rec.home_epoch,
+            execution_paused_reason,
+            sources,
+        })
+    }
+
+    pub fn update_cached_mesh(&self, deck_id: &str, mesh_status: DeckMeshStatus) {
+        if let Some(entry) = self.live_cache.lock().get_mut(deck_id) {
+            entry.status.mesh = Some(mesh_status);
+        }
+    }
+
+    pub fn next_home_seq(&self, deck_id: &str, floor: u64) -> u64 {
+        let counter = {
+            let mut map = self.home_seq.lock();
+            map.entry(deck_id.to_owned())
+                .or_insert_with(|| Arc::new(AtomicU64::new(floor)))
+                .clone()
+        };
+        let mut cur = counter.load(Ordering::Relaxed);
+        loop {
+            let next = cur.max(floor).saturating_add(1);
+            match counter.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => return next,
+                Err(actual) => cur = actual,
+            }
+        }
     }
 
     pub fn is_deleted(&self, deck_id: &str) -> bool {
@@ -316,12 +472,19 @@ impl DeckSupervisor {
         registry: ActorRef<ToolRegistry>,
         pool: Option<Arc<MontyPool>>,
     ) -> (Self, SharedDeckState) {
+        let default_adapter: Arc<dyn SourceTriggerAdapter> =
+            Arc::new(HostTriggerSpecAdapter::new(store.clone(), document.clone()));
         let shared = SharedDeckState {
             store,
             hub: Arc::new(DeckHub::new()),
             runtime,
             document,
             registry,
+            local_engine_id: Arc::new(RwLock::new("local".to_owned())),
+            home_online_override: Arc::new(Mutex::new(HashMap::new())),
+            source_ingest_rate_cap: Arc::new(AtomicUsize::new(MAX_SOURCE_INGEST_PER_SEC)),
+            trigger_adapter: Arc::new(RwLock::new(default_adapter)),
+            home_seq: Arc::new(Mutex::new(HashMap::new())),
             pending_approvals: Arc::new(Mutex::new(HashMap::new())),
             pre_approval_state: Arc::new(Mutex::new(HashMap::new())),
             session_index: Arc::new(Mutex::new(HashMap::new())),
@@ -353,6 +516,19 @@ impl DeckSupervisor {
             return Err(format!("deck `{deck_id}` has been deleted"));
         }
         self.read_doc(deck_id, Principal::Helper).await
+    }
+
+    /// Enforce single authoritative home engine ownership (runtime execution is NOT CRDT-elected).
+    async fn require_home(&self, deck_id: &str) -> Result<(DeckRecord, String), String> {
+        self.verify_deck_exists(deck_id).await?;
+        let (rec, home, is_home) = self.shared.resolve_deck_home(deck_id).await?;
+        if !is_home {
+            return Err(format!(
+                "not_home: deck `{deck_id}` is homed on `{home}`, this engine is `{}` (execution is paused on non-home engines)",
+                self.shared.local_engine_id()
+            ));
+        }
+        Ok((rec, home))
     }
 
     /// Seat isolated per-Deck working dir, write root, and forced approvals for a Deck session (229 H1).
@@ -411,13 +587,17 @@ impl DeckSupervisor {
         &mut self,
         deck_id: &str,
     ) -> Result<(DeckRuntimeStatus, Option<DeckSnapshot>, Option<LiveFrame>), String> {
-        if let Some(cached) = self.shared.live_cache.lock().get(deck_id).cloned() {
-            let mut st = cached.status;
+        let mesh_status = self.shared.build_mesh_status(deck_id).await.ok();
+        if let Some(cached) = self.shared.live_cache.lock().get_mut(deck_id) {
+            if let Some(ref ms) = mesh_status {
+                cached.status.mesh = Some(ms.clone());
+            }
+            let mut st = cached.status.clone();
             if let Some(pa) = self.shared.head_pending_approval(deck_id) {
                 st.state = RuntimeState::WaitingApproval;
                 st.pending_approval = Some(pa);
             }
-            return Ok((st, cached.last_snapshot, cached.live_frame));
+            return Ok((st, cached.last_snapshot.clone(), cached.live_frame.clone()));
         }
 
         // Cold read from SQLite without spinning up a Monty pool if not yet running.
@@ -461,6 +641,7 @@ impl DeckSupervisor {
             step_count: 0,
             checkout_alive: false,
             pending_approval,
+            mesh: mesh_status,
         };
         Ok((status, snap, None))
     }
@@ -674,6 +855,12 @@ impl DeckOwner {
         } else {
             self.state
         };
+        let cached_mesh = self
+            .shared
+            .live_cache
+            .lock()
+            .get(&self.deck_id)
+            .and_then(|c| c.status.mesh.clone());
         DeckRuntimeStatus {
             deck_id: self.deck_id.clone(),
             session_id: self.session_id,
@@ -690,6 +877,7 @@ impl DeckOwner {
             step_count: self.step_count,
             checkout_alive: self.checkout.as_ref().is_some_and(DeckCheckout::is_alive),
             pending_approval,
+            mesh: cached_mesh,
         }
     }
 
@@ -697,10 +885,11 @@ impl DeckOwner {
         if self.shared.is_deleted(&self.deck_id) {
             return;
         }
+        let status = self.status();
         self.shared.live_cache.lock().insert(
             self.deck_id.clone(),
             LiveDeckCache {
-                status: self.status(),
+                status,
                 last_snapshot: self.last_snapshot.clone(),
                 live_frame: self.live_frame.clone(),
             },
@@ -1460,6 +1649,9 @@ impl DeckOwner {
             return;
         }
         for spec in &script.triggers {
+            if spec.source_id.is_some() {
+                continue;
+            }
             let spec_sha = trigger_spec_sha256(spec);
             let Ok(Some(mut state)) = self
                 .shared
@@ -1500,7 +1692,7 @@ impl DeckOwner {
         for sample in metrics {
             reported_metrics.insert(sample.name.as_str());
             for spec in &script.triggers {
-                if spec.metric != sample.name {
+                if spec.source_id.is_some() || spec.metric != sample.name {
                     continue;
                 }
                 if self.is_fenced(turn_epoch, script.rev).await {
@@ -1639,10 +1831,10 @@ impl DeckOwner {
             }
         }
 
-        // On step/collection turns, any trigger whose metric was omitted experiences a sample gap.
+        // On step/collection turns, any local trigger whose metric was omitted experiences a sample gap.
         if is_step_turn && !self.is_fenced(turn_epoch, script.rev).await {
             for spec in &script.triggers {
-                if reported_metrics.contains(spec.metric.as_str()) {
+                if spec.source_id.is_some() || reported_metrics.contains(spec.metric.as_str()) {
                     continue;
                 }
                 let spec_sha = trigger_spec_sha256(spec);
@@ -2049,6 +2241,7 @@ impl Message<ListDecks> for DeckSupervisor {
                 stale: status.stale,
                 active_rev: status.active_rev,
                 pending_rev: status.pending_rev,
+                home_engine_id: status.mesh.as_ref().map(|m| m.home_engine_id.clone()),
                 updated_ms: d.updated_ms,
             });
         }
@@ -2093,6 +2286,8 @@ impl Message<CreateDeckMsg> for DeckSupervisor {
                 .ensure_deck(&deck_id)
                 .await
                 .map_err(|e| format!("{e:#}"))?;
+            let local = self.shared.local_engine_id();
+            let _ = self.shared.store.set_home_if_unset(&deck_id, &local).await;
             self.shared.register_session(&deck_id, rec.session_id);
             self.publish_changed(&deck_id, created.title, false).await;
             self.build_detail(&deck_id, m.by).await?
@@ -2205,7 +2400,8 @@ impl Message<DeckDeletedMsg> for DeckSupervisor {
 }
 
 /// Cold restart recovery (229 H3): repopulate `session_index` & seats for all live Decks,
-/// clean up orphaned deleted Decks, and resume previously `stream_enabled`/`schedule_enabled` Decks.
+/// clean up orphaned deleted Decks, and resume previously `stream_enabled`/`schedule_enabled` Decks
+/// ONLY when this engine is the Deck's authoritative home engine.
 #[derive(Clone, Debug)]
 pub struct RecoverEnabledDecksMsg;
 
@@ -2223,6 +2419,7 @@ impl Message<RecoverEnabledDecksMsg> for DeckSupervisor {
             .list_decks()
             .await
             .map_err(|e| format!("{e:#}"))?;
+        let local_engine = self.shared.local_engine_id();
         let mut resumed = 0usize;
         for rec in records {
             if self.verify_deck_exists(&rec.deck_id).await.is_err() {
@@ -2244,6 +2441,20 @@ impl Message<RecoverEnabledDecksMsg> for DeckSupervisor {
                     deck = %rec.deck_id,
                     "failed to seat Deck session during boot recovery: {e}"
                 );
+            }
+
+            if rec
+                .home_engine_id
+                .as_deref()
+                .is_some_and(|home| home != local_engine)
+            {
+                tracing::info!(
+                    deck = %rec.deck_id,
+                    home = ?rec.home_engine_id,
+                    local = %local_engine,
+                    "skipping boot auto-resume on non-home engine"
+                );
+                continue;
             }
 
             if !(rec.stream_enabled || rec.schedule_enabled) || rec.active_rev.is_none() {
@@ -2757,6 +2968,10 @@ impl Message<RuntimeControlMsg> for DeckSupervisor {
         let Some(tx_reply) = tx_reply else {
             return reply;
         };
+        if let Err(e) = self.require_home(&m.deck_id).await {
+            tx_reply.send(Err(e));
+            return reply;
+        }
         let tx = match self.ensure_owner(&m.deck_id).await {
             Ok(tx) => tx,
             Err(e) => {
@@ -2820,6 +3035,36 @@ impl Message<InteractMsg> for DeckSupervisor {
         } else {
             m.request_id
         };
+        if let Err(e) = self.verify_deck_exists(&m.deck_id).await {
+            tx_reply.send(Err(e));
+            return reply;
+        }
+        match self.shared.resolve_deck_home(&m.deck_id).await {
+            Ok((rec, home, false)) => {
+                tx_reply.send(Ok(InteractResponse {
+                    request_id,
+                    action: m.action,
+                    ok: false,
+                    result: None,
+                    error: Some(format!(
+                        "not_home: deck `{}` is homed on `{home}`, this engine is `{}`",
+                        m.deck_id,
+                        self.shared.local_engine_id()
+                    )),
+                    error_code: Some(InteractErrorCode::NotHome),
+                    private: true,
+                    cached: false,
+                    run_epoch: rec.run_epoch,
+                    script_rev: rec.active_rev.unwrap_or(0),
+                }));
+                return reply;
+            }
+            Err(e) => {
+                tx_reply.send(Err(e));
+                return reply;
+            }
+            Ok((_, _, true)) => {}
+        }
         if self.shared.has_pending_approvals(&m.deck_id) {
             let (run_epoch, script_rev) = self
                 .shared
@@ -2971,6 +3216,642 @@ impl Message<SubscribeDeckMsg> for DeckSupervisor {
         };
         let (sub_id, rx) = self.shared.hub.subscribe(&m.deck_id, sync);
         Ok((self.shared.hub.clone(), sub_id, rx))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native Mesh Decks Supervisor Messages
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct GetLocalEngineIdMsg;
+
+impl Message<GetLocalEngineIdMsg> for DeckSupervisor {
+    type Reply = String;
+
+    async fn handle(
+        &mut self,
+        _: GetLocalEngineIdMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.shared.local_engine_id()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SetLocalEngineIdMsg(pub String);
+
+impl Message<SetLocalEngineIdMsg> for DeckSupervisor {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        m: SetLocalEngineIdMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.shared.set_local_engine_id(m.0);
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GetMeshStatusMsg {
+    pub deck_id: String,
+}
+
+impl Message<GetMeshStatusMsg> for DeckSupervisor {
+    type Reply = Result<DeckMeshStatus, String>;
+
+    async fn handle(
+        &mut self,
+        m: GetMeshStatusMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.verify_deck_exists(&m.deck_id).await?;
+        let status = self.shared.build_mesh_status(&m.deck_id).await?;
+        self.shared.update_cached_mesh(&m.deck_id, status.clone());
+        Ok(status)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RegisterSourceMsg {
+    pub deck_id: String,
+    pub source_id: String,
+    pub engine_id: String,
+    pub label: Option<String>,
+    pub heartbeat_secs: Option<u64>,
+    pub stale_after_secs: Option<u64>,
+    pub offline_after_secs: Option<u64>,
+}
+
+impl Message<RegisterSourceMsg> for DeckSupervisor {
+    type Reply = Result<DeckSourceStatus, String>;
+
+    async fn handle(
+        &mut self,
+        m: RegisterSourceMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (_, home_engine_id) = self.require_home(&m.deck_id).await?;
+        let reg = self
+            .shared
+            .store
+            .register_source(
+                &m.deck_id,
+                &m.source_id,
+                &m.engine_id,
+                m.label,
+                m.heartbeat_secs,
+                m.stale_after_secs,
+                m.offline_after_secs,
+            )
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        let source_status = self
+            .shared
+            .store
+            .get_source_status(&m.deck_id, &reg.source_id)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            .ok_or_else(|| "registered source missing".to_owned())?;
+        if let Ok(mesh_status) = self.shared.build_mesh_status(&m.deck_id).await {
+            self.shared.update_cached_mesh(&m.deck_id, mesh_status);
+        }
+        self.shared.hub.broadcast(
+            &m.deck_id,
+            DeckRuntimeEvent::SourceStatus {
+                deck_id: m.deck_id.clone(),
+                home_engine_id,
+                source: source_status.clone(),
+            },
+        );
+        if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
+            self.shared
+                .hub
+                .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
+        }
+        Ok(source_status)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UnregisterSourceMsg {
+    pub deck_id: String,
+    pub source_id: String,
+}
+
+impl Message<UnregisterSourceMsg> for DeckSupervisor {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: UnregisterSourceMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let _ = self.require_home(&m.deck_id).await?;
+        self.shared
+            .store
+            .unregister_source(&m.deck_id, &m.source_id)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if let Ok(mesh_status) = self.shared.build_mesh_status(&m.deck_id).await {
+            self.shared.update_cached_mesh(&m.deck_id, mesh_status);
+        }
+        if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
+            self.shared
+                .hub
+                .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
+        }
+        Ok(())
+    }
+}
+
+/// Home ingest message for source node metric/frame/snapshot/heartbeat envelopes.
+///
+/// `authenticated_engine_id` MUST come from the authenticated transport peer (`Forwarded(PeerId)`
+/// on `theuth/rpc/1`, or local engine ID for local owner connections) — never untrusted RPC args.
+#[derive(Clone, Debug)]
+pub struct IngestSourceEventMsg {
+    pub authenticated_engine_id: String,
+    pub event: DeckSourceEvent,
+    /// Optional clock override for deterministic unit tests.
+    pub received_at_override: Option<DateTime<Utc>>,
+}
+
+impl Message<IngestSourceEventMsg> for DeckSupervisor {
+    type Reply = Result<IngestSourceAck, String>;
+
+    async fn handle(
+        &mut self,
+        mut m: IngestSourceEventMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        // 1. Validate & redact payload/section/metrics/caps before touching state.
+        let (observed_at, _payload_bytes) = sanitize_and_validate_source_event(&mut m.event)?;
+        let deck_id = m.event.deck_id.clone();
+        let source_id = m.event.source_id.clone();
+
+        // 2. Verify Deck exists and this engine is the authoritative home engine.
+        self.verify_deck_exists(&deck_id).await?;
+        let (rec, home_engine_id, is_home) = self.shared.resolve_deck_home(&deck_id).await?;
+        if !is_home {
+            return Err(format!(
+                "not_home: deck `{deck_id}` is homed on `{home_engine_id}`, this engine is `{}` (non-home refuses source ingest)",
+                self.shared.local_engine_id()
+            ));
+        }
+
+        // 3. Verify source registration and bind strictly to authenticated engine/peer.
+        let reg = self
+            .shared
+            .store
+            .get_source(&deck_id, &source_id)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            .ok_or_else(|| {
+                format!("unauthorized_source: source `{source_id}` is not registered on deck `{deck_id}`")
+            })?;
+        if !reg.enabled {
+            return Err(format!(
+                "unauthorized_source: source `{source_id}` is disabled on deck `{deck_id}`"
+            ));
+        }
+        if reg.engine_id != m.authenticated_engine_id {
+            let err_msg = format!(
+                "unauthorized_source: source `{source_id}` is bound to engine `{}`, caller authenticated as `{}`",
+                reg.engine_id, m.authenticated_engine_id
+            );
+            let _ = self
+                .shared
+                .store
+                .record_source_error(&deck_id, &source_id, &err_msg)
+                .await;
+            return Err(err_msg);
+        }
+
+        // 4. Persistent dedup fast-path: return exact prior receipt without duplicating frames/triggers.
+        if let Some(prev) = self
+            .shared
+            .store
+            .lookup_source_dedup(&deck_id, &source_id, m.event.source_epoch, m.event.seq)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+        {
+            return Ok(prev);
+        }
+
+        // 5. Epoch fencing & older-sequence dedup fast-path.
+        let (last_epoch, last_seq, cur_health, last_live_at) = self
+            .shared
+            .store
+            .get_source_cursor_and_live_ts(&deck_id, &source_id)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if m.event.source_epoch < last_epoch {
+            let err = format!(
+                "stale source_epoch {} < active epoch {last_epoch}",
+                m.event.source_epoch
+            );
+            let _ = self
+                .shared
+                .store
+                .record_source_error(&deck_id, &source_id, &err)
+                .await;
+            return Ok(IngestSourceAck {
+                accepted: false,
+                duplicate: false,
+                status: IngestStatus::RejectedStaleEpoch,
+                deck_id,
+                source_id,
+                source_epoch: m.event.source_epoch,
+                seq: m.event.seq,
+                home_engine_id,
+                home_epoch: rec.home_epoch,
+                source_health: cur_health,
+                replay: m.event.replay,
+                snapshot_id: None,
+                frame_seq: None,
+                trigger_dispatched: false,
+                trigger_dedup_key: None,
+                error: Some(err),
+            });
+        }
+        if m.event.source_epoch == last_epoch && m.event.seq <= last_seq {
+            return Ok(IngestSourceAck {
+                accepted: true,
+                duplicate: true,
+                status: IngestStatus::Duplicate,
+                deck_id,
+                source_id,
+                source_epoch: m.event.source_epoch,
+                seq: m.event.seq,
+                home_engine_id,
+                home_epoch: rec.home_epoch,
+                source_health: cur_health,
+                replay: m.event.replay,
+                snapshot_id: None,
+                frame_seq: None,
+                trigger_dispatched: false,
+                trigger_dedup_key: None,
+                error: None,
+            });
+        }
+
+        // 6. Per-source ingest rate cap on home.
+        let cap = self.shared.source_ingest_rate_cap.load(Ordering::Relaxed);
+        if !self.shared.hub.admit_source_ingest(&deck_id, &source_id, cap) {
+            return Ok(IngestSourceAck {
+                accepted: false,
+                duplicate: false,
+                status: IngestStatus::RejectedRateLimited,
+                deck_id,
+                source_id,
+                source_epoch: m.event.source_epoch,
+                seq: m.event.seq,
+                home_engine_id,
+                home_epoch: rec.home_epoch,
+                source_health: cur_health,
+                replay: m.event.replay,
+                snapshot_id: None,
+                frame_seq: None,
+                trigger_dispatched: false,
+                trigger_dedup_key: None,
+                error: Some(format!("source ingest rate limit exceeded ({cap}/s)")),
+            });
+        }
+
+        let received_at = m.received_at_override.unwrap_or_else(Utc::now);
+        let projected_health = if m.event.replay {
+            SourceHealthState::Replaying
+        } else {
+            SourceHealthState::Live
+        };
+
+        // If this source was previously unhealthy (Stale/Offline/Replaying) or exceeded its
+        // `stale_after_secs` liveness window since its last live event, break any pre-outage
+        // in-progress sustained streak before evaluating this fresh live sample (so silence or
+        // an offline gap can never bridge a sustained threshold window even if ingest races
+        // ahead of the background liveness sweeper).
+        if !m.event.replay {
+            let exceeded_stale_gap = last_live_at.is_some_and(|ts| {
+                received_at.signed_duration_since(ts).num_seconds()
+                    >= reg.stale_after_secs.max(1) as i64
+            });
+            if !cur_health.is_healthy() || exceeded_stale_gap {
+                let _ = self
+                    .shared
+                    .store
+                    .clear_source_trigger_streaks(&deck_id, &source_id)
+                    .await;
+            }
+        }
+
+        // 7. Host-side sustained TriggerSpec evaluation via SourceTriggerAdapter.
+        // Replay, heartbeat, unhealthy source, and non-home evidence MUST NEVER advance or fire
+        // sustained thresholds.
+        let metrics = m
+            .event
+            .metrics
+            .clone()
+            .unwrap_or_else(|| extract_numeric_metrics(&m.event.payload));
+        let sample = SourceTriggerSample {
+            deck_id: deck_id.clone(),
+            source_id: source_id.clone(),
+            source_epoch: m.event.source_epoch,
+            seq: m.event.seq,
+            observed_at,
+            received_at,
+            replay: m.event.replay,
+            kind: m.event.kind,
+            source_health: projected_health,
+            payload: m.event.payload.clone(),
+            metrics,
+            metric_samples: m.event.metric_samples.clone().unwrap_or_default(),
+        };
+        let decision = classify_trigger_evidence(true, &sample);
+        let adapter = self.shared.trigger_adapter.read().clone();
+        let dispatch = adapter.on_source_sample(&sample, decision).await?;
+
+        // 8. Only FRESH non-replay Frame/Snapshot payloads advance home's live frame / durable snapshot.
+        let mut snapshot_id = None;
+        let mut frame_seq = None;
+        let mut broadcast_snapshot: Option<DeckSnapshot> = None;
+        let mut broadcast_frame: Option<LiveFrame> = None;
+        if !m.event.replay && m.event.kind != SourceEventKind::Heartbeat {
+            let floor = self
+                .shared
+                .live_cache
+                .lock()
+                .get(&deck_id)
+                .map(|c| {
+                    let s1 = c.last_snapshot.as_ref().map(|s| s.seq).unwrap_or(0);
+                    let s2 = c.live_frame.as_ref().map(|f| f.seq).unwrap_or(0);
+                    s1.max(s2)
+                })
+                .unwrap_or(0);
+            let seq = self.shared.next_home_seq(&deck_id, floor);
+            let now_str = received_at.to_rfc3339();
+            let enriched_data = json!({
+                "source_id": source_id,
+                "source_epoch": m.event.source_epoch,
+                "source_seq": m.event.seq,
+                "observed_at": m.event.observed_at,
+                "data": m.event.payload,
+            });
+            match m.event.kind {
+                SourceEventKind::Snapshot => {
+                    let snap = DeckSnapshot {
+                        snapshot_id: format!("snap_{}", uuid::Uuid::now_v7().simple()),
+                        deck_id: deck_id.clone(),
+                        script_rev: rec.active_rev.unwrap_or(0),
+                        run_epoch: rec.run_epoch,
+                        seq,
+                        data: enriched_data,
+                        section: m.event.section.clone(),
+                        created_at: now_str,
+                    };
+                    self.shared
+                        .store
+                        .save_snapshot(&snap)
+                        .await
+                        .map_err(|e| format!("{e:#}"))?;
+                    snapshot_id = Some(snap.snapshot_id.clone());
+                    frame_seq = Some(seq);
+                    broadcast_snapshot = Some(snap);
+                }
+                SourceEventKind::Frame => {
+                    let frame = LiveFrame {
+                        deck_id: deck_id.clone(),
+                        script_rev: rec.active_rev.unwrap_or(0),
+                        run_epoch: rec.run_epoch,
+                        seq,
+                        data: enriched_data,
+                        section: m.event.section.clone(),
+                        emitted_at: now_str,
+                    };
+                    frame_seq = Some(seq);
+                    broadcast_frame = Some(frame);
+                }
+                SourceEventKind::Heartbeat => {}
+            }
+        }
+
+        let ack = IngestSourceAck {
+            accepted: true,
+            duplicate: false,
+            status: IngestStatus::Accepted,
+            deck_id: deck_id.clone(),
+            source_id: source_id.clone(),
+            source_epoch: m.event.source_epoch,
+            seq: m.event.seq,
+            home_engine_id: home_engine_id.clone(),
+            home_epoch: rec.home_epoch,
+            source_health: projected_health,
+            replay: m.event.replay,
+            snapshot_id,
+            frame_seq,
+            trigger_dispatched: dispatch.is_some(),
+            trigger_dedup_key: dispatch.map(|d| d.dedup_key),
+            error: None,
+        };
+
+        // 9. Atomically commit source cursor, health, and persistent dedup receipt.
+        let (committed_ack, source_status) = self
+            .shared
+            .store
+            .commit_source_ingest(&m.event, observed_at, received_at, ack)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+
+        // 10. Update live_cache and fan out bounded per-Deck events.
+        if let Some(snap) = broadcast_snapshot {
+            if let Some(entry) = self.shared.live_cache.lock().get_mut(&deck_id) {
+                entry.last_snapshot = Some(snap.clone());
+                entry.status.last_ok_snapshot_id = Some(snap.snapshot_id.clone());
+                entry.status.last_ok_at = Some(snap.created_at.clone());
+            }
+            self.shared
+                .hub
+                .broadcast(&deck_id, DeckRuntimeEvent::Snapshot { snapshot: snap });
+        }
+        if let Some(frame) = broadcast_frame {
+            if let Some(entry) = self.shared.live_cache.lock().get_mut(&deck_id) {
+                entry.live_frame = Some(frame.clone());
+            }
+            self.shared
+                .hub
+                .broadcast(&deck_id, DeckRuntimeEvent::LiveFrame { frame });
+        }
+
+        if let Ok(mesh_status) = self.shared.build_mesh_status(&deck_id).await {
+            self.shared.update_cached_mesh(&deck_id, mesh_status);
+        }
+        self.shared.hub.broadcast(
+            &deck_id,
+            DeckRuntimeEvent::SourceStatus {
+                deck_id: deck_id.clone(),
+                home_engine_id,
+                source: source_status,
+            },
+        );
+        if let Ok((st, _, _)) = self.get_runtime_snapshot(&deck_id).await {
+            self.shared
+                .hub
+                .broadcast(&deck_id, DeckRuntimeEvent::Status { status: st });
+        }
+
+        Ok(committed_ack)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SweepSourceLivenessMsg {
+    pub deck_id: Option<String>,
+    pub now: Option<DateTime<Utc>>,
+}
+
+impl Message<SweepSourceLivenessMsg> for DeckSupervisor {
+    type Reply = Result<Vec<DeckSourceStatus>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SweepSourceLivenessMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let now = m.now.unwrap_or_else(Utc::now);
+        let changed = self
+            .shared
+            .store
+            .sweep_source_liveness(m.deck_id.as_deref(), now)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        let mut touched_decks = HashSet::new();
+        for src in &changed {
+            touched_decks.insert(src.deck_id.clone());
+            let home_engine_id = self
+                .shared
+                .resolve_deck_home(&src.deck_id)
+                .await
+                .map(|(_, h, _)| h)
+                .unwrap_or_else(|_| self.shared.local_engine_id());
+            self.shared.hub.broadcast(
+                &src.deck_id,
+                DeckRuntimeEvent::SourceStatus {
+                    deck_id: src.deck_id.clone(),
+                    home_engine_id,
+                    source: src.clone(),
+                },
+            );
+        }
+        for did in touched_decks {
+            if let Ok((st, _, _)) = self.get_runtime_snapshot(&did).await {
+                self.shared
+                    .hub
+                    .broadcast(&did, DeckRuntimeEvent::Status { status: st });
+            }
+        }
+        Ok(changed)
+    }
+}
+
+/// Explicit owner-initiated home transfer (NEVER auto-failover).
+///
+/// Requires explicit `confirm_cold_start = true` and `verify_local_mcp_and_approvals = true`.
+#[derive(Clone, Debug)]
+pub struct MoveHomeMsg {
+    pub deck_id: String,
+    pub target_engine_id: String,
+    pub confirm_cold_start: bool,
+    pub verify_local_mcp_and_approvals: bool,
+}
+
+impl Message<MoveHomeMsg> for DeckSupervisor {
+    type Reply = Result<DeckMoveHomeResult, String>;
+
+    async fn handle(
+        &mut self,
+        m: MoveHomeMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let doc = self.verify_deck_exists(&m.deck_id).await?;
+        let target = validate_engine_id(&m.target_engine_id)?;
+        if !m.confirm_cold_start {
+            return Err(
+                "move_home requires confirm_cold_start=true (Deck home transfer never migrates live Python heaps; the new home cold-starts)".into(),
+            );
+        }
+        if !m.verify_local_mcp_and_approvals {
+            return Err(
+                "move_home requires verify_local_mcp_and_approvals=true (local MCP tools and approval policy must be verified before taking home ownership)".into(),
+            );
+        }
+
+        // Stop any running local owner so the old home never continues executing after transfer.
+        if let Some(tx) = self.owners.remove(&m.deck_id) {
+            let _ = tx.send(OwnerCmd::Shutdown).await;
+        }
+
+        let (prev_home_opt, updated_rec) = self
+            .shared
+            .store
+            .move_deck_home(&m.deck_id, &target)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        let previous_home_engine_id =
+            prev_home_opt.unwrap_or_else(|| self.shared.local_engine_id());
+
+        // Remove any local `.monty` dump so cold start is guaranteed.
+        let _ = std::fs::remove_file(self.shared.store.monty_dump_path(updated_rec.session_id));
+
+        // Re-seat local Deck session with forced approvals and verify local MCP/tool registry.
+        let _ = self
+            .configure_deck_session(&m.deck_id, updated_rec.session_id)
+            .await?;
+        let verified_tool_count =
+            deck_tool_specs(&self.shared.registry, updated_rec.session_id)
+                .await
+                .len();
+
+        // Best-effort sync of the underlying `DocKind::Deck` document home lease when mesh homes are active.
+        let _ = self
+            .shared
+            .document
+            .ask(document::hub::MoveHome {
+                doc: DocId(m.deck_id.clone()),
+                to: mesh::EngineId(target.clone()),
+                checks: false,
+            })
+            .send()
+            .await;
+
+        let mesh_status = self.shared.build_mesh_status(&m.deck_id).await.ok();
+        if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id) {
+            entry.live_frame = None;
+            entry.status.state = RuntimeState::Stopped;
+            entry.status.checkout_alive = false;
+            entry.status.run_epoch = updated_rec.run_epoch;
+            if let Some(ref ms) = mesh_status {
+                entry.status.mesh = Some(ms.clone());
+            }
+        }
+        if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
+            self.shared
+                .hub
+                .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
+        }
+        self.publish_changed(&m.deck_id, doc.title, false).await;
+
+        Ok(DeckMoveHomeResult {
+            deck_id: m.deck_id,
+            previous_home_engine_id,
+            home_engine_id: target,
+            home_epoch: updated_rec.home_epoch,
+            run_epoch: updated_rec.run_epoch,
+            cold_started: true,
+            local_mcp_verified: true,
+            verified_tool_count,
+            requires_owner_start: true,
+        })
     }
 }
 

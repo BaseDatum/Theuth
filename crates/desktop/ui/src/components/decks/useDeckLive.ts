@@ -12,6 +12,7 @@ import type {
   DeckRuntimeStatus,
   DeckSection,
   DeckSnapshot,
+  DeckSourceStatus,
   DeckSummary,
   InteractResponse,
   LiveFrame,
@@ -71,7 +72,45 @@ export function mergeDetailRuntime(
   if (next.run_epoch > prev.run_epoch) return next
   if (next.run_epoch < prev.run_epoch) return prev
   if (!hasSynced) return next
-  return next.step_count > prev.step_count ? next : prev
+  if (next.step_count > prev.step_count) {
+    return next.mesh ? next : { ...next, mesh: prev.mesh ?? null }
+  }
+  return !prev.mesh && next.mesh ? { ...prev, mesh: next.mesh } : prev
+}
+
+/**
+ * Upsert a single `source_status` stream update into `runtime.mesh.sources`,
+ * keeping sources deterministically sorted by `source_id`.
+ */
+export function mergeSourceStatus(
+  prev: DeckRuntimeStatus | null,
+  deckId: string,
+  homeEngineId: string,
+  source: DeckSourceStatus,
+): DeckRuntimeStatus | null {
+  if (!prev) return prev
+  if (prev.deck_id && deckId && prev.deck_id !== deckId) return prev
+  const existingMesh = prev.mesh ?? {
+    deck_id: deckId || prev.deck_id,
+    home_engine_id: homeEngineId,
+    local_engine_id: homeEngineId,
+    is_home: true,
+    home_online: true,
+    home_epoch: 1,
+    execution_paused_reason: null,
+    sources: [],
+  }
+  const byId = new Map(existingMesh.sources.map((s) => [s.source_id, s]))
+  byId.set(source.source_id, source)
+  const sources = Array.from(byId.values()).sort((a, b) => a.source_id.localeCompare(b.source_id))
+  return {
+    ...prev,
+    mesh: {
+      ...existingMesh,
+      home_engine_id: homeEngineId || existingMesh.home_engine_id,
+      sources,
+    },
+  }
 }
 
 /** True when `next` is not older than `prev` by `(run_epoch, seq)` and meets `minRunEpoch`. */
@@ -626,6 +665,11 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
             }
             setDataVersion((v) => v + 1)
           }
+          break
+        }
+        case 'source_status': {
+          if (ev.deck_id && ev.deck_id !== deckId) return
+          setRuntime((prev) => mergeSourceStatus(prev, ev.deck_id, ev.home_engine_id, ev.source))
           break
         }
         case 'approval_pending':

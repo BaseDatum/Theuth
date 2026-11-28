@@ -15,14 +15,20 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 use chrono::Utc;
+use document::{DocId, DocumentActor, Principal};
+use kameo::actor::ActorRef;
 use serde_json::{Value, json};
 
+use crate::mesh::{
+    MAX_SOURCE_METRICS, SourceTriggerAdapter, SourceTriggerSample, TriggerDispatchRecord,
+    TriggerEvidenceDecision, validate_source_id,
+};
 use crate::model::{
     MAX_METRIC_NAME_BYTES, MAX_ROUTINE_NAME_BYTES, MAX_TRIGGER_COOLDOWN_SECS, MAX_TRIGGER_ID_BYTES,
     MAX_TRIGGER_MIN_SAMPLES, MAX_TRIGGER_SUSTAIN_SECS, MAX_TRIGGERS_PER_REVISION, MetricSample,
-    MetricValue, TriggerOp, TriggerResetMode, TriggerSpec, canonical_json_string,
+    MetricValue, ScriptStatus, TriggerOp, TriggerResetMode, TriggerSpec, canonical_json_string,
 };
-use crate::store::sha256_hex;
+use crate::store::{DeckStore, sha256_hex};
 
 /// Persisted per-(deck_id, trigger_id) host evaluation state.
 /// Survives restarts and `run_epoch` changes as long as `(script_rev, spec_sha256)` match;
@@ -38,6 +44,34 @@ pub struct TriggerState {
     pub latched: bool,
     pub last_fired_at_ms: Option<i64>,
     pub episode_seq: u64,
+}
+
+/// Persisted per-(deck_id, trigger_id, source_id) host evaluation state for mesh sources.
+/// Isolates sustained windows, streaks, latches, and cooldowns per source node, and tracks
+/// `(source_epoch, last_seq)` for monotonic epoch fencing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceTriggerState {
+    pub state: TriggerState,
+    pub source_id: String,
+    pub source_epoch: u64,
+    pub last_seq: u64,
+}
+
+impl SourceTriggerState {
+    pub fn fresh(
+        deck_id: &str,
+        trigger_id: &str,
+        source_id: &str,
+        script_rev: u64,
+        spec_sha256: String,
+    ) -> Self {
+        Self {
+            state: TriggerState::fresh(deck_id, trigger_id, script_rev, spec_sha256),
+            source_id: source_id.to_owned(),
+            source_epoch: 0,
+            last_seq: 0,
+        }
+    }
 }
 
 impl TriggerState {
@@ -258,6 +292,18 @@ pub fn validate_triggers(triggers: &[TriggerSpec]) -> Result<()> {
                 t.id,
                 t.cooldown_secs
             );
+        }
+        if let Some(ref sid) = t.source_id {
+            if sid.trim() != sid {
+                anyhow::bail!(
+                    "trigger `{}` source_id {:?} must not have leading/trailing whitespace",
+                    t.id,
+                    sid
+                );
+            }
+            if let Err(err) = validate_source_id(sid) {
+                anyhow::bail!("trigger `{}` invalid source_id: {err}", t.id);
+            }
         }
     }
     Ok(())
@@ -538,6 +584,406 @@ pub async fn dispatch_trigger(
     }
 }
 
+/// Restart-safe dedup key for a mesh-source trigger firing, tied to the exact
+/// `(deck_id, trigger_id, source_id, source_epoch, seq, script_rev, spec_sha256, sample_idx)` tuple.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_source_dedup_key(
+    deck_id: &str,
+    trigger_id: &str,
+    source_id: &str,
+    source_epoch: u64,
+    seq: u64,
+    script_rev: u64,
+    spec_sha256: &str,
+    sample_idx: usize,
+) -> String {
+    sha256_hex(&format!(
+        "v1:src:{deck_id}:{trigger_id}:{source_id}:{source_epoch}:{seq}:{script_rev}:{spec_sha256}:{sample_idx}"
+    ))
+}
+
+/// Build the fixed typed JSON [`schedule::TriggerEventPayload`] for a mesh-source Deck trigger firing.
+#[allow(clippy::too_many_arguments)]
+pub fn build_source_trigger_event(
+    deck_id: &str,
+    deck_title: &str,
+    script_rev: u64,
+    spec: &TriggerSpec,
+    source_sample: &SourceTriggerSample,
+    metric_sample: &MetricSample,
+    plan: &TriggerFirePlan,
+) -> schedule::TriggerEventPayload {
+    let mut meta = metric_sample.meta.clone().unwrap_or(Value::Null);
+    tools::secrets::redact_value(&mut meta);
+    let redacted_title = tools::secrets::redact(deck_title).into_owned();
+    let payload = json!({
+        "kind": "deck_trigger",
+        "deck_id": deck_id,
+        "deck_title": redacted_title,
+        "script_rev": script_rev,
+        "trigger_id": spec.id,
+        "metric": spec.metric,
+        "op": spec.op,
+        "threshold": spec.threshold.to_json(),
+        "value": metric_sample.value.to_json(),
+        "consecutive_matches": plan.consecutive_matches,
+        "sustained_secs": (plan.sustained_ms as f64) / 1000.0,
+        "first_match_at_ms": plan.first_match_at_ms,
+        "fired_at_ms": plan.fired_at_ms,
+        "fired_at": Utc::now().to_rfc3339(),
+        "source_id": source_sample.source_id,
+        "source_epoch": source_sample.source_epoch,
+        "source_seq": source_sample.seq,
+        "source_observed_at": source_sample.observed_at.to_rfc3339(),
+        "meta": meta,
+    });
+    schedule::TriggerEventPayload {
+        source: "deck".to_owned(),
+        source_id: deck_id.to_owned(),
+        trigger_id: spec.id.clone(),
+        payload,
+    }
+}
+
+/// Production [`SourceTriggerAdapter`] wired into `DeckSupervisor` on the authoritative home engine.
+///
+/// Evaluates fresh authenticated per-source `deck_metric` / source metric samples against the
+/// Deck's active owner-reviewed `ScriptRevision.triggers` (`TriggerSpec`s), maintains isolated
+/// persistent per-`(deck_id, trigger_id, source_id)` sustained state with monotonic `source_epoch`
+/// fencing, and dispatches only existing owner-approved routines via `schedule::FireTrigger`.
+pub struct HostTriggerSpecAdapter {
+    store: DeckStore,
+    document: ActorRef<DocumentActor>,
+}
+
+impl HostTriggerSpecAdapter {
+    pub fn new(store: DeckStore, document: ActorRef<DocumentActor>) -> Self {
+        Self { store, document }
+    }
+
+    async fn resolve_deck_title(&self, deck_id: &str) -> String {
+        match self
+            .document
+            .ask(document::deck::DeckCall {
+                doc: DocId(deck_id.to_owned()),
+                by: Principal::Helper,
+                op: document::deck::DeckOp::Read,
+            })
+            .send()
+            .await
+        {
+            Ok(document::deck::DeckCallReply::Snapshot(snap)) => snap.title,
+            _ => deck_id.to_owned(),
+        }
+    }
+}
+
+fn build_effective_source_metrics(sample: &SourceTriggerSample) -> Vec<MetricSample> {
+    let received_ms = sample.received_at.timestamp_millis();
+    let mut out = Vec::new();
+    let mut seen_names: HashSet<String> = HashSet::new();
+
+    for ms in &sample.metric_samples {
+        if out.len() >= MAX_SOURCE_METRICS {
+            break;
+        }
+        if !is_safe_metric_name(&ms.name) || !ms.value.is_finite() {
+            continue;
+        }
+        seen_names.insert(ms.name.clone());
+        out.push(MetricSample {
+            name: ms.name.clone(),
+            value: ms.value.normalized(),
+            meta: ms.meta.clone(),
+            // Use authoritative home receive time so untrusted source clocks cannot bypass
+            // sustain_secs or cooldown_secs.
+            observed_at_ms: received_ms,
+        });
+    }
+
+    for (name, &val) in &sample.metrics {
+        if out.len() >= MAX_SOURCE_METRICS {
+            break;
+        }
+        if seen_names.contains(name) || !is_safe_metric_name(name) || !val.is_finite() {
+            continue;
+        }
+        seen_names.insert(name.clone());
+        out.push(MetricSample {
+            name: name.clone(),
+            value: MetricValue::Number(val).normalized(),
+            meta: None,
+            observed_at_ms: received_ms,
+        });
+    }
+
+    if sample.metric_samples.is_empty()
+        && let Some(obj) = sample.payload.as_object()
+    {
+        for (name, val) in obj {
+            if out.len() >= MAX_SOURCE_METRICS {
+                break;
+            }
+            if let Value::Bool(b) = val
+                && !seen_names.contains(name)
+                && is_safe_metric_name(name)
+            {
+                seen_names.insert(name.clone());
+                out.push(MetricSample {
+                    name: name.clone(),
+                    value: MetricValue::Bool(*b),
+                    meta: None,
+                    observed_at_ms: received_ms,
+                });
+            }
+        }
+    }
+
+    out
+}
+
+#[async_trait::async_trait]
+impl SourceTriggerAdapter for HostTriggerSpecAdapter {
+    async fn on_source_sample(
+        &self,
+        sample: &SourceTriggerSample,
+        decision: TriggerEvidenceDecision,
+    ) -> Result<Option<TriggerDispatchRecord>, String> {
+        if decision != TriggerEvidenceDecision::EligibleLive {
+            // Replay, heartbeat, unhealthy source, or non-home MUST NEVER advance or fire triggers.
+            return Ok(None);
+        }
+
+        let Some(rec) = self
+            .store
+            .get_deck(&sample.deck_id)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+        else {
+            return Ok(None);
+        };
+        let Some(active_rev) = rec.active_rev else {
+            return Ok(None);
+        };
+        let Some(script) = self
+            .store
+            .get_script_revision(&sample.deck_id, active_rev)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+        else {
+            return Ok(None);
+        };
+        if script.status != ScriptStatus::Approved || script.triggers.is_empty() {
+            return Ok(None);
+        }
+
+        let effective_samples = build_effective_source_metrics(sample);
+        if effective_samples.is_empty() {
+            return Ok(None);
+        }
+
+        let active_ids: Vec<String> = script.triggers.iter().map(|t| t.id.clone()).collect();
+        let _ = self
+            .store
+            .prune_obsolete_trigger_states(&sample.deck_id, &active_ids)
+            .await;
+
+        let mut deck_title_cache: Option<String> = None;
+        let mut first_dispatch: Option<TriggerDispatchRecord> = None;
+
+        for spec in &script.triggers {
+            if let Some(ref only_source) = spec.source_id
+                && only_source != &sample.source_id
+            {
+                continue;
+            }
+
+            let matching_samples: Vec<&MetricSample> = effective_samples
+                .iter()
+                .filter(|ms| ms.name == spec.metric)
+                .collect();
+            if matching_samples.is_empty() {
+                continue;
+            }
+
+            let spec_sha = trigger_spec_sha256(spec);
+            let mut src_state = match self
+                .store
+                .load_source_trigger_state(&sample.deck_id, &spec.id, &sample.source_id)
+                .await
+            {
+                Ok(Some(st)) => st,
+                Ok(None) => SourceTriggerState::fresh(
+                    &sample.deck_id,
+                    &spec.id,
+                    &sample.source_id,
+                    script.rev,
+                    spec_sha.clone(),
+                ),
+                Err(e) => {
+                    tracing::warn!(
+                        deck = %sample.deck_id,
+                        trigger = %spec.id,
+                        source = %sample.source_id,
+                        "load_source_trigger_state failed: {e:#}"
+                    );
+                    continue;
+                }
+            };
+
+            // Defense-in-depth source epoch & seq fencing.
+            if src_state.source_epoch > sample.source_epoch {
+                continue;
+            }
+            if src_state.source_epoch == sample.source_epoch && sample.seq <= src_state.last_seq {
+                continue;
+            }
+            // A source restart (new monotonic source_epoch) clears any in-progress sustained
+            // streak so a restart cannot silently bridge a sustained window across epochs,
+            // while preserving latch/cooldown/episode_seq state.
+            if src_state.source_epoch != 0 && sample.source_epoch > src_state.source_epoch {
+                src_state.state.first_match_at_ms = None;
+                src_state.state.consecutive_matches = 0;
+            }
+
+            for (sample_idx, ms) in matching_samples.into_iter().enumerate() {
+                match evaluate_sample(spec, script.rev, &spec_sha, &mut src_state.state, ms) {
+                    TriggerDecision::Hold | TriggerDecision::Cleared => {}
+                    TriggerDecision::Fire(mut plan) => {
+                        plan.dedup_key = compute_source_dedup_key(
+                            &sample.deck_id,
+                            &spec.id,
+                            &sample.source_id,
+                            sample.source_epoch,
+                            sample.seq,
+                            script.rev,
+                            &spec_sha,
+                            sample_idx,
+                        );
+                        let reserved = match self
+                            .store
+                            .reserve_trigger_fire(
+                                &plan.dedup_key,
+                                &sample.deck_id,
+                                &spec.id,
+                                script.rev,
+                                &spec.routine,
+                                plan.fired_at_ms,
+                            )
+                            .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::warn!(
+                                    deck = %sample.deck_id,
+                                    trigger = %spec.id,
+                                    source = %sample.source_id,
+                                    "reserve_trigger_fire failed: {e:#}"
+                                );
+                                continue;
+                            }
+                        };
+
+                        if !reserved {
+                            // Already recorded: advance state without double-firing.
+                            commit_fire_state(spec, &mut src_state.state, &plan);
+                            if first_dispatch.is_none() {
+                                first_dispatch = Some(TriggerDispatchRecord {
+                                    deck_id: sample.deck_id.clone(),
+                                    trigger_key: spec.id.clone(),
+                                    source_id: sample.source_id.clone(),
+                                    source_epoch: sample.source_epoch,
+                                    seq: sample.seq,
+                                    dedup_key: plan.dedup_key,
+                                    fired_at: sample.received_at.to_rfc3339(),
+                                });
+                            }
+                            continue;
+                        }
+
+                        let title = match &deck_title_cache {
+                            Some(t) => t.clone(),
+                            None => {
+                                let t = self.resolve_deck_title(&sample.deck_id).await;
+                                deck_title_cache = Some(t.clone());
+                                t
+                            }
+                        };
+                        let event = build_source_trigger_event(
+                            &sample.deck_id,
+                            &title,
+                            script.rev,
+                            spec,
+                            sample,
+                            ms,
+                            &plan,
+                        );
+                        match dispatch_trigger(&spec.routine, event).await {
+                            Ok(target) => {
+                                let target_str = match target {
+                                    schedule::TriggerTarget::Session(s) => format!("session:{s}"),
+                                    schedule::TriggerTarget::Task(id) => format!("task:{id}"),
+                                };
+                                let _ = self
+                                    .store
+                                    .finalize_trigger_fire(
+                                        &plan.dedup_key,
+                                        &sample.deck_id,
+                                        &target_str,
+                                    )
+                                    .await;
+                                commit_fire_state(spec, &mut src_state.state, &plan);
+                                tracing::info!(
+                                    deck = %sample.deck_id,
+                                    trigger = %spec.id,
+                                    source = %sample.source_id,
+                                    routine = %spec.routine,
+                                    target = %target_str,
+                                    "mesh deck source trigger fired routine"
+                                );
+                                if first_dispatch.is_none() {
+                                    first_dispatch = Some(TriggerDispatchRecord {
+                                        deck_id: sample.deck_id.clone(),
+                                        trigger_key: spec.id.clone(),
+                                        source_id: sample.source_id.clone(),
+                                        source_epoch: sample.source_epoch,
+                                        seq: sample.seq,
+                                        dedup_key: plan.dedup_key,
+                                        fired_at: sample.received_at.to_rfc3339(),
+                                    });
+                                }
+                            }
+                            Err(err) => {
+                                let _ = self.store.release_trigger_fire(&plan.dedup_key).await;
+                                tracing::warn!(
+                                    deck = %sample.deck_id,
+                                    trigger = %spec.id,
+                                    source = %sample.source_id,
+                                    routine = %spec.routine,
+                                    "mesh deck source trigger dispatch rejected/failed: {err}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            src_state.source_epoch = sample.source_epoch;
+            src_state.last_seq = sample.seq;
+            if let Err(e) = self.store.save_source_trigger_state(&src_state).await {
+                tracing::warn!(
+                    deck = %sample.deck_id,
+                    trigger = %spec.id,
+                    source = %sample.source_id,
+                    "save_source_trigger_state failed: {e:#}"
+                );
+            }
+        }
+
+        Ok(first_dispatch)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +1017,7 @@ mod tests {
             cooldown_secs,
             reset_mode,
             routine: "ops-alert".into(),
+            source_id: None,
         }
     }
 
@@ -601,6 +1048,7 @@ mod tests {
             cooldown_secs: 0,
             reset_mode: TriggerResetMode::ReArmOnClear,
             routine: "ops-alert".into(),
+            source_id: None,
         };
         assert!(matches_condition(&b_eq, MetricValue::Bool(false)));
         assert!(!matches_condition(&b_eq, MetricValue::Bool(true)));
@@ -640,6 +1088,7 @@ mod tests {
             cooldown_secs: 0,
             reset_mode: TriggerResetMode::ReArmOnClear,
             routine: "ops-alert".into(),
+            source_id: None,
         };
         assert!(validate_triggers(&[bad_bool_op]).is_err());
 

@@ -92,6 +92,7 @@ export type TriggerSpec = {
   cooldown_secs: number
   reset_mode: TriggerResetMode
   routine: string
+  source_id?: string | null
 }
 
 export type ScriptRevision = {
@@ -146,6 +147,51 @@ export type PendingApproval = {
   args: unknown
 }
 
+export type SourceHealthState = 'live' | 'stale' | 'offline' | 'replaying'
+
+export type DeckSourceStatus = {
+  deck_id: string
+  source_id: string
+  engine_id: string
+  label: string
+  health: SourceHealthState
+  replaying: boolean
+  enabled: boolean
+  last_epoch: number
+  last_seq: number
+  last_live_seq: number
+  last_observed_at?: string | null
+  last_received_at?: string | null
+  last_live_received_at?: string | null
+  lag_ms?: number | null
+  spool_depth: number
+  dropped_count: number
+  last_error?: string | null
+}
+
+export type DeckMeshStatus = {
+  deck_id: string
+  home_engine_id: string
+  local_engine_id: string
+  is_home: boolean
+  home_online: boolean
+  home_epoch: number
+  execution_paused_reason?: string | null
+  sources: DeckSourceStatus[]
+}
+
+export type DeckMoveHomeResult = {
+  deck_id: string
+  previous_home_engine_id: string
+  home_engine_id: string
+  home_epoch: number
+  run_epoch: number
+  cold_started: boolean
+  local_mcp_verified: boolean
+  verified_tool_count: number
+  requires_owner_start: boolean
+}
+
 export type DeckRuntimeStatus = {
   deck_id: string
   session_id: string
@@ -162,6 +208,7 @@ export type DeckRuntimeStatus = {
   step_count: number
   checkout_alive: boolean
   pending_approval?: PendingApproval | null
+  mesh?: DeckMeshStatus | null
 }
 
 export type InteractErrorCode =
@@ -175,6 +222,7 @@ export type InteractErrorCode =
   | 'paused'
   | 'execution_error'
   | 'conflict'
+  | 'not_home'
 
 export type InteractResponse = {
   request_id: string
@@ -223,6 +271,7 @@ export type DeckSummary = {
   stale: boolean
   active_rev?: number | null
   pending_rev?: number | null
+  home_engine_id?: string | null
   updated_ms: number
 }
 
@@ -240,6 +289,7 @@ export type DeckRuntimeEvent =
   | { type: 'live_frame'; frame: LiveFrame }
   | { type: 'snapshot'; snapshot: DeckSnapshot }
   | { type: 'status'; status: DeckRuntimeStatus }
+  | { type: 'source_status'; deck_id: string; home_engine_id: string; source: DeckSourceStatus }
   | { type: 'approval_pending'; approval: PendingApproval }
   | { type: 'approval_cleared'; approval_id: string; approved: boolean }
   | { type: 'closed'; reason: string }

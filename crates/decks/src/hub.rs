@@ -42,11 +42,12 @@ struct DeckSubs {
     emit_window: VecDeque<Instant>,
 }
 
-/// Manages per-Deck bounded, coalescing subscriptions.
+/// Manages per-Deck bounded, coalescing subscriptions and ingest rate windows.
 #[derive(Default)]
 pub struct DeckHub {
     next_id: AtomicU64,
     decks: Mutex<HashMap<String, DeckSubs>>,
+    source_ingest_windows: Mutex<HashMap<(String, String), VecDeque<Instant>>>,
 }
 
 impl DeckHub {
@@ -73,6 +74,30 @@ impl DeckHub {
             return false;
         }
         entry.emit_window.push_back(now);
+        true
+    }
+
+    /// Enforce per-`(deck_id, source_id)` rolling 1-second ingest rate cap.
+    /// Returns `true` if allowed, `false` if rate-limited.
+    pub fn admit_source_ingest(&self, deck_id: &str, source_id: &str, max_per_sec: usize) -> bool {
+        if max_per_sec == 0 {
+            return false;
+        }
+        let now = Instant::now();
+        let cutoff = now.checked_sub(Duration::from_secs(1));
+        let mut map = self.source_ingest_windows.lock();
+        let window = map
+            .entry((deck_id.to_owned(), source_id.to_owned()))
+            .or_default();
+        if let Some(cutoff) = cutoff {
+            while window.front().is_some_and(|t| *t < cutoff) {
+                window.pop_front();
+            }
+        }
+        if window.len() >= max_per_sec {
+            return false;
+        }
+        window.push_back(now);
         true
     }
 
@@ -189,6 +214,9 @@ impl DeckHub {
                 g.notify.notify_one();
             }
         }
+        self.source_ingest_windows
+            .lock()
+            .retain(|(d, _), _| d != deck_id);
     }
 
     /// Fan out an event to all subscribers of `deck_id`.

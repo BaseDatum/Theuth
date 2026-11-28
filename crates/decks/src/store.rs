@@ -5,22 +5,29 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use runtime::SessionId;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
+use crate::mesh::{
+    DeckSourceEvent, DeckSourceRegistration, DeckSourceStatus, IngestSourceAck,
+    MAX_DEDUP_ENTRIES_PER_SOURCE, SourceHealthState, SourceSpoolLimits, SpoolError, SpoolStats,
+    TriggerDispatchRecord, TriggerFireState, normalize_source_timeouts, validate_engine_id,
+    validate_source_id,
+};
 use crate::model::{
     DeckSnapshot, DeclaredAction, InteractErrorCode, InteractResponse, MAX_ACTION_NAME_BYTES,
     MAX_CHANGE_SUMMARY_BYTES, MAX_DECLARED_ACTIONS, MAX_INTERVAL_SECS, MAX_SCRIPT_CODE_BYTES,
     MIN_INTERVAL_SECS, ScriptMode, ScriptRevision, ScriptStatus, TriggerSpec,
     canonical_json_string, clamp_interval_secs,
 };
-use crate::triggers::{TriggerState, normalize_triggers, validate_triggers};
+use crate::triggers::{SourceTriggerState, TriggerState, normalize_triggers, validate_triggers};
 
-/// Durable Deck record tying a `DocKind::Deck` doc ID to its dedicated persisted `SessionId`.
+/// Durable Deck record tying a `DocKind::Deck` doc ID to its dedicated persisted `SessionId`
+/// and authoritative home engine lease.
 #[derive(Clone, Debug)]
 pub struct DeckRecord {
     pub deck_id: String,
@@ -31,6 +38,9 @@ pub struct DeckRecord {
     pub schedule_enabled: bool,
     pub stream_enabled: bool,
     pub run_epoch: u64,
+    pub home_engine_id: Option<String>,
+    pub home_epoch: u64,
+    pub home_moved_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -240,6 +250,9 @@ impl DeckStore {
                 schedule_enabled INTEGER NOT NULL DEFAULT 0,
                 stream_enabled INTEGER NOT NULL DEFAULT 0,
                 run_epoch INTEGER NOT NULL DEFAULT 0,
+                home_engine_id TEXT,
+                home_epoch INTEGER NOT NULL DEFAULT 1,
+                home_moved_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -320,6 +333,22 @@ impl DeckStore {
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (deck_id, trigger_id)
             )",
+            "CREATE TABLE IF NOT EXISTS deck_source_trigger_state (
+                deck_id TEXT NOT NULL,
+                trigger_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                script_rev INTEGER NOT NULL,
+                spec_sha256 TEXT NOT NULL,
+                source_epoch INTEGER NOT NULL DEFAULT 0,
+                last_seq INTEGER NOT NULL DEFAULT 0,
+                first_match_at_ms INTEGER,
+                consecutive_matches INTEGER NOT NULL DEFAULT 0,
+                latched INTEGER NOT NULL DEFAULT 0,
+                last_fired_at_ms INTEGER,
+                episode_seq INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (deck_id, trigger_id, source_id)
+            )",
             "CREATE TABLE IF NOT EXISTS deck_trigger_fires (
                 dedup_key TEXT PRIMARY KEY,
                 deck_id TEXT NOT NULL,
@@ -332,16 +361,99 @@ impl DeckStore {
             )",
             "CREATE INDEX IF NOT EXISTS idx_deck_trigger_fires_deck_fired
                 ON deck_trigger_fires (deck_id, fired_at_ms DESC, dedup_key DESC)",
+            "CREATE TABLE IF NOT EXISTS deck_sources (
+                deck_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                engine_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                heartbeat_secs INTEGER NOT NULL DEFAULT 30,
+                stale_after_secs INTEGER NOT NULL DEFAULT 90,
+                offline_after_secs INTEGER NOT NULL DEFAULT 300,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                registered_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (deck_id, source_id)
+            )",
+            "CREATE TABLE IF NOT EXISTS deck_source_state (
+                deck_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                last_epoch INTEGER NOT NULL DEFAULT 0,
+                last_seq INTEGER NOT NULL DEFAULT 0,
+                last_live_seq INTEGER NOT NULL DEFAULT 0,
+                last_observed_at TEXT,
+                last_received_at TEXT,
+                last_live_received_at TEXT,
+                last_replay_at TEXT,
+                replaying INTEGER NOT NULL DEFAULT 0,
+                health TEXT NOT NULL DEFAULT 'offline',
+                lag_ms INTEGER,
+                dropped_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                last_payload_json TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (deck_id, source_id)
+            )",
+            "CREATE TABLE IF NOT EXISTS deck_source_dedup (
+                deck_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                source_epoch INTEGER NOT NULL,
+                seq INTEGER NOT NULL,
+                result_json TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                PRIMARY KEY (deck_id, source_id, source_epoch, seq)
+            )",
+            "CREATE TABLE IF NOT EXISTS deck_trigger_fire_state (
+                deck_id TEXT NOT NULL,
+                trigger_key TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                source_epoch INTEGER NOT NULL DEFAULT 0,
+                last_seq INTEGER NOT NULL DEFAULT 0,
+                sustained_since_ms INTEGER,
+                fired_count INTEGER NOT NULL DEFAULT 0,
+                last_fired_at TEXT,
+                last_dispatch_dedup_key TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (deck_id, trigger_key)
+            )",
+            "CREATE TABLE IF NOT EXISTS deck_source_local_meta (
+                deck_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                source_epoch INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (deck_id, source_id)
+            )",
+            "CREATE TABLE IF NOT EXISTS deck_source_spool (
+                deck_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                source_epoch INTEGER NOT NULL,
+                seq INTEGER NOT NULL,
+                event_json TEXT NOT NULL,
+                payload_bytes INTEGER NOT NULL,
+                enqueued_at TEXT NOT NULL,
+                PRIMARY KEY (deck_id, source_id, source_epoch, seq)
+            )",
+            "CREATE INDEX IF NOT EXISTS idx_deck_source_spool_order
+                ON deck_source_spool (deck_id, source_id, source_epoch ASC, seq ASC)",
         ];
         for sql in ddl {
             sqlx::query(sql).execute(&self.pool).await?;
         }
 
-        // Additive migrations for pre-hardening SQLite databases.
+        // Additive migrations for pre-hardening / pre-mesh SQLite databases.
         let _ =
             sqlx::query("ALTER TABLE deck_meta ADD COLUMN run_epoch INTEGER NOT NULL DEFAULT 0")
                 .execute(&self.pool)
                 .await;
+        let _ = sqlx::query("ALTER TABLE deck_meta ADD COLUMN home_engine_id TEXT")
+            .execute(&self.pool)
+            .await;
+        let _ =
+            sqlx::query("ALTER TABLE deck_meta ADD COLUMN home_epoch INTEGER NOT NULL DEFAULT 1")
+                .execute(&self.pool)
+                .await;
+        let _ = sqlx::query("ALTER TABLE deck_meta ADD COLUMN home_moved_at TEXT")
+            .execute(&self.pool)
+            .await;
         // Backfill run_epoch floor from existing snapshots so post-restart epochs stay monotonic.
         let _ = sqlx::query(
             "UPDATE deck_meta
@@ -454,8 +566,8 @@ impl DeckStore {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT OR IGNORE INTO deck_meta
-             (deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at)
-             VALUES (?1, ?2, NULL, NULL, NULL, 0, 0, 0, ?3, ?3)",
+             (deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, home_engine_id, home_epoch, home_moved_at, created_at, updated_at)
+             VALUES (?1, ?2, NULL, NULL, NULL, 0, 0, 0, NULL, 1, NULL, ?3, ?3)",
         )
         .bind(deck_id)
         .bind(session_id.0.to_string())
@@ -469,7 +581,7 @@ impl DeckStore {
 
     pub async fn get_deck(&self, deck_id: &str) -> Result<Option<DeckRecord>> {
         let row = sqlx::query(
-            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at
+            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, home_engine_id, home_epoch, home_moved_at, created_at, updated_at
              FROM deck_meta WHERE deck_id = ?1",
         )
         .bind(deck_id)
@@ -488,7 +600,7 @@ impl DeckStore {
 
     pub async fn list_decks(&self) -> Result<Vec<DeckRecord>> {
         let rows = sqlx::query(
-            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at
+            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, home_engine_id, home_epoch, home_moved_at, created_at, updated_at
              FROM deck_meta ORDER BY updated_at DESC",
         )
         .fetch_all(&self.pool)
@@ -499,7 +611,7 @@ impl DeckStore {
     /// List Decks that should auto-resume on engine startup (229 H3).
     pub async fn list_auto_resume_decks(&self) -> Result<Vec<DeckRecord>> {
         let rows = sqlx::query(
-            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at
+            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, home_engine_id, home_epoch, home_moved_at, created_at, updated_at
              FROM deck_meta
              WHERE (stream_enabled = 1 OR schedule_enabled = 1) AND active_rev IS NOT NULL
              ORDER BY updated_at DESC",
@@ -572,7 +684,14 @@ impl DeckStore {
 
             for sql in [
                 "DELETE FROM deck_trigger_fires WHERE deck_id = ?1",
+                "DELETE FROM deck_source_trigger_state WHERE deck_id = ?1",
                 "DELETE FROM deck_trigger_state WHERE deck_id = ?1",
+                "DELETE FROM deck_source_spool WHERE deck_id = ?1",
+                "DELETE FROM deck_source_local_meta WHERE deck_id = ?1",
+                "DELETE FROM deck_trigger_fire_state WHERE deck_id = ?1",
+                "DELETE FROM deck_source_dedup WHERE deck_id = ?1",
+                "DELETE FROM deck_source_state WHERE deck_id = ?1",
+                "DELETE FROM deck_sources WHERE deck_id = ?1",
                 "DELETE FROM deck_action_idempotency WHERE deck_id = ?1",
                 "DELETE FROM deck_run_log WHERE deck_id = ?1",
                 "DELETE FROM deck_state_checkpoints WHERE deck_id = ?1",
@@ -1226,7 +1345,7 @@ impl DeckStore {
         args_sha256: &str,
         resp: &InteractResponse,
     ) -> Result<()> {
-        // Don't cache transient/conflict errors so callers can retry safely.
+        // Don't cache transient/conflict/not-home errors so callers can retry safely.
         if matches!(
             resp.error_code,
             Some(
@@ -1234,6 +1353,7 @@ impl DeckStore {
                     | InteractErrorCode::TimedOut
                     | InteractErrorCode::WaitingApproval
                     | InteractErrorCode::Conflict
+                    | InteractErrorCode::NotHome
             )
         ) {
             return Ok(());
@@ -1339,6 +1459,10 @@ impl DeckStore {
             .bind(deck_id)
             .execute(&self.pool)
             .await?;
+        sqlx::query("DELETE FROM deck_source_trigger_state WHERE deck_id = ?1")
+            .bind(deck_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -1367,6 +1491,130 @@ impl DeckStore {
                 .await?;
             }
         }
+        let existing_src: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT trigger_id FROM deck_source_trigger_state WHERE deck_id = ?1",
+        )
+        .bind(deck_id)
+        .fetch_all(&self.pool)
+        .await?;
+        for tid in existing_src {
+            if !active_trigger_ids.iter().any(|a| a == &tid) {
+                sqlx::query(
+                    "DELETE FROM deck_source_trigger_state WHERE deck_id = ?1 AND trigger_id = ?2",
+                )
+                .bind(deck_id)
+                .bind(&tid)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Load persisted per-source trigger evaluation state for one `(deck_id, trigger_id, source_id)`.
+    pub async fn load_source_trigger_state(
+        &self,
+        deck_id: &str,
+        trigger_id: &str,
+        source_id: &str,
+    ) -> Result<Option<SourceTriggerState>> {
+        let row = sqlx::query(
+            "SELECT deck_id, trigger_id, source_id, script_rev, spec_sha256, source_epoch,
+                    last_seq, first_match_at_ms, consecutive_matches, latched, last_fired_at_ms,
+                    episode_seq
+             FROM deck_source_trigger_state
+             WHERE deck_id = ?1 AND trigger_id = ?2 AND source_id = ?3",
+        )
+        .bind(deck_id)
+        .bind(trigger_id)
+        .bind(source_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| SourceTriggerState {
+            state: TriggerState {
+                deck_id: r.get(0),
+                trigger_id: r.get(1),
+                script_rev: r.get::<i64, _>(3).max(0) as u64,
+                spec_sha256: r.get(4),
+                first_match_at_ms: r.get(7),
+                consecutive_matches: r.get::<i64, _>(8).max(0) as u32,
+                latched: r.get::<i64, _>(9) != 0,
+                last_fired_at_ms: r.get(10),
+                episode_seq: r.get::<i64, _>(11).max(0) as u64,
+            },
+            source_id: r.get(2),
+            source_epoch: r.get::<i64, _>(5).max(0) as u64,
+            last_seq: r.get::<i64, _>(6).max(0) as u64,
+        }))
+    }
+
+    /// Upsert persisted per-source trigger evaluation state.
+    pub async fn save_source_trigger_state(&self, src: &SourceTriggerState) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO deck_source_trigger_state
+             (deck_id, trigger_id, source_id, script_rev, spec_sha256, source_epoch, last_seq,
+              first_match_at_ms, consecutive_matches, latched, last_fired_at_ms, episode_seq,
+              updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(deck_id, trigger_id, source_id) DO UPDATE SET
+               script_rev = excluded.script_rev,
+               spec_sha256 = excluded.spec_sha256,
+               source_epoch = excluded.source_epoch,
+               last_seq = excluded.last_seq,
+               first_match_at_ms = excluded.first_match_at_ms,
+               consecutive_matches = excluded.consecutive_matches,
+               latched = excluded.latched,
+               last_fired_at_ms = excluded.last_fired_at_ms,
+               episode_seq = excluded.episode_seq,
+               updated_at = excluded.updated_at",
+        )
+        .bind(&src.state.deck_id)
+        .bind(&src.state.trigger_id)
+        .bind(&src.source_id)
+        .bind(src.state.script_rev as i64)
+        .bind(&src.state.spec_sha256)
+        .bind(src.source_epoch as i64)
+        .bind(src.last_seq as i64)
+        .bind(src.state.first_match_at_ms)
+        .bind(src.state.consecutive_matches as i64)
+        .bind(i64::from(src.state.latched))
+        .bind(src.state.last_fired_at_ms)
+        .bind(src.state.episode_seq as i64)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Clear in-progress sustained windows for a source (e.g. after a stale/offline/replay gap),
+    /// preserving latch, cooldown, and deduplicated fire history.
+    pub async fn clear_source_trigger_streaks(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE deck_source_trigger_state
+             SET first_match_at_ms = NULL, consecutive_matches = 0, updated_at = ?3
+             WHERE deck_id = ?1 AND source_id = ?2",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE deck_trigger_fire_state
+             SET sustained_since_ms = NULL, updated_at = ?3
+             WHERE deck_id = ?1 AND source_id = ?2",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1425,6 +1673,1143 @@ impl DeckStore {
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Native Mesh Decks: home ownership, sources, dedup/fencing, liveness,
+    // sustained trigger state, and bounded offline spool
+    // -----------------------------------------------------------------------
+
+    /// Initialize `home_engine_id` if it has not been persisted yet.
+    pub async fn set_home_if_unset(&self, deck_id: &str, engine_id: &str) -> Result<DeckRecord> {
+        let engine_id = validate_engine_id(engine_id).map_err(|e| anyhow::anyhow!(e))?;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE deck_meta
+             SET home_engine_id = ?2, updated_at = ?3
+             WHERE deck_id = ?1 AND home_engine_id IS NULL",
+        )
+        .bind(deck_id)
+        .bind(&engine_id)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_deck(deck_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("deck `{deck_id}` not found"))
+    }
+
+    /// Explicitly move a Deck's authoritative home lease to `target_engine_id`.
+    ///
+    /// Atomically bumps `home_epoch` + `run_epoch`, disables auto-resume (`stream_enabled = 0`,
+    /// `schedule_enabled = 0`), clears `.monty` warm-restore metadata for mandatory cold start,
+    /// and clears in-flight sustained trigger windows while preserving dispatch dedup keys.
+    pub async fn move_deck_home(
+        &self,
+        deck_id: &str,
+        target_engine_id: &str,
+    ) -> Result<(Option<String>, DeckRecord)> {
+        let target = validate_engine_id(target_engine_id).map_err(|e| anyhow::anyhow!(e))?;
+        let now = Utc::now().to_rfc3339();
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let res: Result<(Option<String>, DeckRecord)> = async {
+            let row = sqlx::query(
+                "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, home_engine_id, home_epoch, home_moved_at, created_at, updated_at
+                 FROM deck_meta WHERE deck_id = ?1",
+            )
+            .bind(deck_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let existing = row
+                .map(parse_deck_row)
+                .transpose()?
+                .ok_or_else(|| anyhow::anyhow!("deck `{deck_id}` not found"))?;
+            let previous_home = existing.home_engine_id.clone();
+
+            sqlx::query(
+                "UPDATE deck_meta
+                 SET home_engine_id = ?2,
+                     home_epoch = home_epoch + 1,
+                     run_epoch = run_epoch + 1,
+                     home_moved_at = ?3,
+                     stream_enabled = 0,
+                     schedule_enabled = 0,
+                     updated_at = ?3
+                 WHERE deck_id = ?1",
+            )
+            .bind(deck_id)
+            .bind(&target)
+            .bind(&now)
+            .execute(&mut *conn)
+            .await?;
+
+            // Force cold start on next run by clearing .monty dump digests.
+            sqlx::query(
+                "UPDATE deck_state_checkpoints
+                 SET monty_dump_rev = NULL,
+                     monty_dump_revision_sha256 = NULL,
+                     monty_dump_sha256 = NULL,
+                     updated_at = ?2
+                 WHERE deck_id = ?1",
+            )
+            .bind(deck_id)
+            .bind(&now)
+            .execute(&mut *conn)
+            .await?;
+
+            // Clear active sustained-time windows (new home requires fresh live evidence),
+            // preserving latch/cooldown/dedup history.
+            sqlx::query(
+                "UPDATE deck_trigger_fire_state
+                 SET sustained_since_ms = NULL, updated_at = ?2
+                 WHERE deck_id = ?1",
+            )
+            .bind(deck_id)
+            .bind(&now)
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query(
+                "UPDATE deck_trigger_state
+                 SET first_match_at_ms = NULL, consecutive_matches = 0, updated_at = ?2
+                 WHERE deck_id = ?1",
+            )
+            .bind(deck_id)
+            .bind(&now)
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query(
+                "UPDATE deck_source_trigger_state
+                 SET first_match_at_ms = NULL, consecutive_matches = 0, updated_at = ?2
+                 WHERE deck_id = ?1",
+            )
+            .bind(deck_id)
+            .bind(&now)
+            .execute(&mut *conn)
+            .await?;
+
+            let updated_row = sqlx::query(
+                "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, home_engine_id, home_epoch, home_moved_at, created_at, updated_at
+                 FROM deck_meta WHERE deck_id = ?1",
+            )
+            .bind(deck_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            let updated = parse_deck_row(updated_row)?;
+            Ok((previous_home, updated))
+        }
+        .await;
+        match res {
+            Ok(out) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(out)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Register or update a Deck source binding `(deck_id, source_id)` to an authenticated `engine_id`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_source(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+        engine_id: &str,
+        label: Option<String>,
+        heartbeat_secs: Option<u64>,
+        stale_after_secs: Option<u64>,
+        offline_after_secs: Option<u64>,
+    ) -> Result<DeckSourceRegistration> {
+        let source_id = validate_source_id(source_id).map_err(|e| anyhow::anyhow!(e))?;
+        let engine_id = validate_engine_id(engine_id).map_err(|e| anyhow::anyhow!(e))?;
+        let (hb, stale, offline) =
+            normalize_source_timeouts(heartbeat_secs, stale_after_secs, offline_after_secs);
+        let raw_label = label
+            .map(|s| tools::secrets::redact(s.trim()).into_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| source_id.clone());
+        let label = if raw_label.len() > crate::mesh::MAX_SOURCE_LABEL_BYTES {
+            let mut end = crate::mesh::MAX_SOURCE_LABEL_BYTES;
+            while end > 0 && !raw_label.is_char_boundary(end) {
+                end -= 1;
+            }
+            raw_label[..end].to_owned()
+        } else {
+            raw_label
+        };
+
+        let now = Utc::now().to_rfc3339();
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let res: Result<DeckSourceRegistration> = async {
+            let exists: Option<String> =
+                sqlx::query_scalar("SELECT deck_id FROM deck_meta WHERE deck_id = ?1")
+                    .bind(deck_id)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            if exists.is_none() {
+                anyhow::bail!("deck `{deck_id}` not found");
+            }
+
+            sqlx::query(
+                "INSERT INTO deck_sources
+                 (deck_id, source_id, engine_id, label, heartbeat_secs, stale_after_secs, offline_after_secs, enabled, registered_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
+                 ON CONFLICT(deck_id, source_id) DO UPDATE SET
+                    engine_id = excluded.engine_id,
+                    label = excluded.label,
+                    heartbeat_secs = excluded.heartbeat_secs,
+                    stale_after_secs = excluded.stale_after_secs,
+                    offline_after_secs = excluded.offline_after_secs,
+                    enabled = 1,
+                    updated_at = excluded.updated_at",
+            )
+            .bind(deck_id)
+            .bind(&source_id)
+            .bind(&engine_id)
+            .bind(&label)
+            .bind(hb as i64)
+            .bind(stale as i64)
+            .bind(offline as i64)
+            .bind(&now)
+            .execute(&mut *conn)
+            .await?;
+
+            sqlx::query(
+                "INSERT OR IGNORE INTO deck_source_state
+                 (deck_id, source_id, last_epoch, last_seq, last_live_seq, replaying, health, dropped_count, updated_at)
+                 VALUES (?1, ?2, 0, 0, 0, 0, 'offline', 0, ?3)",
+            )
+            .bind(deck_id)
+            .bind(&source_id)
+            .bind(&now)
+            .execute(&mut *conn)
+            .await?;
+
+            let row = sqlx::query(
+                "SELECT deck_id, source_id, engine_id, label, heartbeat_secs, stale_after_secs, offline_after_secs, enabled, registered_at, updated_at
+                 FROM deck_sources WHERE deck_id = ?1 AND source_id = ?2",
+            )
+            .bind(deck_id)
+            .bind(&source_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            Ok(parse_source_registration_row(row))
+        }
+        .await;
+        match res {
+            Ok(reg) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(reg)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Unregister a source and clean up its persisted runtime/dedup/trigger state on home.
+    pub async fn unregister_source(&self, deck_id: &str, source_id: &str) -> Result<bool> {
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let res: Result<bool> = async {
+            let deleted =
+                sqlx::query("DELETE FROM deck_sources WHERE deck_id = ?1 AND source_id = ?2")
+                    .bind(deck_id)
+                    .bind(source_id)
+                    .execute(&mut *conn)
+                    .await?
+                    .rows_affected()
+                    > 0;
+            for sql in [
+                "DELETE FROM deck_source_state WHERE deck_id = ?1 AND source_id = ?2",
+                "DELETE FROM deck_source_dedup WHERE deck_id = ?1 AND source_id = ?2",
+                "DELETE FROM deck_trigger_fire_state WHERE deck_id = ?1 AND source_id = ?2",
+                "DELETE FROM deck_source_trigger_state WHERE deck_id = ?1 AND source_id = ?2",
+            ] {
+                sqlx::query(sql)
+                    .bind(deck_id)
+                    .bind(source_id)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+            Ok(deleted)
+        }
+        .await;
+        match res {
+            Ok(deleted) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(deleted)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
+    }
+
+    pub async fn get_source(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+    ) -> Result<Option<DeckSourceRegistration>> {
+        let row = sqlx::query(
+            "SELECT deck_id, source_id, engine_id, label, heartbeat_secs, stale_after_secs, offline_after_secs, enabled, registered_at, updated_at
+             FROM deck_sources WHERE deck_id = ?1 AND source_id = ?2",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(parse_source_registration_row))
+    }
+
+    pub async fn list_sources(&self, deck_id: &str) -> Result<Vec<DeckSourceRegistration>> {
+        let rows = sqlx::query(
+            "SELECT deck_id, source_id, engine_id, label, heartbeat_secs, stale_after_secs, offline_after_secs, enabled, registered_at, updated_at
+             FROM deck_sources WHERE deck_id = ?1 ORDER BY source_id ASC",
+        )
+        .bind(deck_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(parse_source_registration_row).collect())
+    }
+
+    pub async fn get_source_status(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+    ) -> Result<Option<DeckSourceStatus>> {
+        let row = sqlx::query(
+            "SELECT s.deck_id, s.source_id, s.engine_id, s.label, s.enabled,
+                    COALESCE(st.health, 'offline'), COALESCE(st.replaying, 0),
+                    COALESCE(st.last_epoch, 0), COALESCE(st.last_seq, 0), COALESCE(st.last_live_seq, 0),
+                    st.last_observed_at, st.last_received_at, st.last_live_received_at,
+                    st.lag_ms, COALESCE(st.dropped_count, 0), st.last_error,
+                    (SELECT COUNT(*) FROM deck_source_spool sp WHERE sp.deck_id = s.deck_id AND sp.source_id = s.source_id)
+             FROM deck_sources s
+             LEFT JOIN deck_source_state st ON st.deck_id = s.deck_id AND st.source_id = s.source_id
+             WHERE s.deck_id = ?1 AND s.source_id = ?2",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(parse_source_status_row))
+    }
+
+    pub async fn list_source_statuses(&self, deck_id: &str) -> Result<Vec<DeckSourceStatus>> {
+        let rows = sqlx::query(
+            "SELECT s.deck_id, s.source_id, s.engine_id, s.label, s.enabled,
+                    COALESCE(st.health, 'offline'), COALESCE(st.replaying, 0),
+                    COALESCE(st.last_epoch, 0), COALESCE(st.last_seq, 0), COALESCE(st.last_live_seq, 0),
+                    st.last_observed_at, st.last_received_at, st.last_live_received_at,
+                    st.lag_ms, COALESCE(st.dropped_count, 0), st.last_error,
+                    (SELECT COUNT(*) FROM deck_source_spool sp WHERE sp.deck_id = s.deck_id AND sp.source_id = s.source_id)
+             FROM deck_sources s
+             LEFT JOIN deck_source_state st ON st.deck_id = s.deck_id AND st.source_id = s.source_id
+             WHERE s.deck_id = ?1
+             ORDER BY s.source_id ASC",
+        )
+        .bind(deck_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(parse_source_status_row).collect())
+    }
+
+    pub async fn lookup_source_dedup(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+        source_epoch: u64,
+        seq: u64,
+    ) -> Result<Option<IngestSourceAck>> {
+        let row = sqlx::query(
+            "SELECT result_json FROM deck_source_dedup
+             WHERE deck_id = ?1 AND source_id = ?2 AND source_epoch = ?3 AND seq = ?4",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .bind(source_epoch as i64)
+        .bind(seq as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|r| {
+            let mut ack: IngestSourceAck = serde_json::from_str(&r.get::<String, _>(0))?;
+            ack.duplicate = true;
+            ack.status = crate::mesh::IngestStatus::Duplicate;
+            Ok(ack)
+        })
+        .transpose()
+    }
+
+    /// Return the current persisted `(last_epoch, last_seq, health)` cursor for a source.
+    pub async fn get_source_cursor(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+    ) -> Result<(u64, u64, SourceHealthState)> {
+        let (epoch, seq, health, _) = self.get_source_cursor_and_live_ts(deck_id, source_id).await?;
+        Ok((epoch, seq, health))
+    }
+
+    /// Return the current persisted `(last_epoch, last_seq, health, last_live_received_at)` cursor for a source.
+    pub async fn get_source_cursor_and_live_ts(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+    ) -> Result<(u64, u64, SourceHealthState, Option<DateTime<Utc>>)> {
+        let row = sqlx::query(
+            "SELECT last_epoch, last_seq, health, last_live_received_at
+             FROM deck_source_state WHERE deck_id = ?1 AND source_id = ?2",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match row {
+            Some(r) => {
+                let last_live = r
+                    .get::<Option<String>, _>(3)
+                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|dt| dt.with_timezone(&Utc));
+                (
+                    r.get::<i64, _>(0).max(0) as u64,
+                    r.get::<i64, _>(1).max(0) as u64,
+                    SourceHealthState::parse(&r.get::<String, _>(2)),
+                    last_live,
+                )
+            }
+            None => (0, 0, SourceHealthState::Offline, None),
+        })
+    }
+
+    /// Atomically validate dedup + epoch fencing, advance source state, and persist the dedup receipt.
+    ///
+    /// Enforces:
+    /// - Replayed events (`event.replay == true`) NEVER transition health to `Live` and NEVER touch
+    ///   `last_live_received_at` or `last_live_seq`.
+    /// - Older epochs (`event.source_epoch < last_epoch`) are rejected with `RejectedStaleEpoch`.
+    /// - Duplicate `(deck_id, source_id, source_epoch, seq)` returns the persisted receipt with
+    ///   `duplicate = true`.
+    pub async fn commit_source_ingest(
+        &self,
+        event: &DeckSourceEvent,
+        observed_at: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+        mut ack: IngestSourceAck,
+    ) -> Result<(IngestSourceAck, DeckSourceStatus)> {
+        let received_str = received_at.to_rfc3339();
+        let observed_str = observed_at.to_rfc3339();
+        let lag_ms = received_at
+            .signed_duration_since(observed_at)
+            .num_milliseconds()
+            .max(0);
+        let payload_json = if event.kind == crate::mesh::SourceEventKind::Heartbeat {
+            None
+        } else {
+            Some(serde_json::to_string(&event.payload)?)
+        };
+
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let res: Result<(IngestSourceAck, DeckSourceStatus)> = async {
+            if let Some(dup_row) = sqlx::query(
+                "SELECT result_json FROM deck_source_dedup
+                 WHERE deck_id = ?1 AND source_id = ?2 AND source_epoch = ?3 AND seq = ?4",
+            )
+            .bind(&event.deck_id)
+            .bind(&event.source_id)
+            .bind(event.source_epoch as i64)
+            .bind(event.seq as i64)
+            .fetch_optional(&mut *conn)
+            .await?
+            {
+                let mut prev: IngestSourceAck = serde_json::from_str(&dup_row.get::<String, _>(0))?;
+                prev.duplicate = true;
+                prev.status = crate::mesh::IngestStatus::Duplicate;
+                let status = load_source_status_tx(&mut conn, &event.deck_id, &event.source_id).await?;
+                return Ok((prev, status));
+            }
+
+            let cur_row = sqlx::query(
+                "SELECT last_epoch, last_seq, last_live_seq, last_live_received_at, health
+                 FROM deck_source_state WHERE deck_id = ?1 AND source_id = ?2",
+            )
+            .bind(&event.deck_id)
+            .bind(&event.source_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let (last_epoch, last_seq, prev_live_seq, prev_live_at, cur_health) = match cur_row {
+                Some(r) => (
+                    r.get::<i64, _>(0).max(0) as u64,
+                    r.get::<i64, _>(1).max(0) as u64,
+                    r.get::<i64, _>(2).max(0) as u64,
+                    r.get::<Option<String>, _>(3),
+                    SourceHealthState::parse(&r.get::<String, _>(4)),
+                ),
+                None => (0, 0, 0, None, SourceHealthState::Offline),
+            };
+
+            if event.source_epoch < last_epoch {
+                ack.accepted = false;
+                ack.duplicate = false;
+                ack.status = crate::mesh::IngestStatus::RejectedStaleEpoch;
+                ack.source_health = cur_health;
+                ack.error = Some(format!(
+                    "stale source_epoch {} < active epoch {}",
+                    event.source_epoch, last_epoch
+                ));
+                let status = load_source_status_tx(&mut conn, &event.deck_id, &event.source_id).await?;
+                return Ok((ack, status));
+            }
+
+            if event.source_epoch == last_epoch && event.seq <= last_seq {
+                // Sequence was already processed (older than dedup retention window).
+                ack.accepted = true;
+                ack.duplicate = true;
+                ack.status = crate::mesh::IngestStatus::Duplicate;
+                ack.source_health = cur_health;
+                let status = load_source_status_tx(&mut conn, &event.deck_id, &event.source_id).await?;
+                return Ok((ack, status));
+            }
+
+            // Replayed history MUST NOT mark a source healthy (`Live`) or update `last_live_received_at`.
+            let (new_health, replaying, new_live_seq, new_live_at, new_replay_at) = if event.replay {
+                (
+                    SourceHealthState::Replaying,
+                    1_i64,
+                    prev_live_seq,
+                    prev_live_at,
+                    Some(received_str.clone()),
+                )
+            } else {
+                (
+                    SourceHealthState::Live,
+                    0_i64,
+                    event.seq,
+                    Some(received_str.clone()),
+                    None,
+                )
+            };
+
+            ack.accepted = true;
+            ack.duplicate = false;
+            ack.status = crate::mesh::IngestStatus::Accepted;
+            ack.source_health = new_health;
+            ack.error = None;
+
+            sqlx::query(
+                "INSERT INTO deck_source_state
+                 (deck_id, source_id, last_epoch, last_seq, last_live_seq, last_observed_at, last_received_at,
+                  last_live_received_at, last_replay_at, replaying, health, lag_ms, dropped_count, last_error, last_payload_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?7)
+                 ON CONFLICT(deck_id, source_id) DO UPDATE SET
+                    last_epoch = excluded.last_epoch,
+                    last_seq = excluded.last_seq,
+                    last_live_seq = excluded.last_live_seq,
+                    last_observed_at = excluded.last_observed_at,
+                    last_received_at = excluded.last_received_at,
+                    last_live_received_at = excluded.last_live_received_at,
+                    last_replay_at = COALESCE(excluded.last_replay_at, deck_source_state.last_replay_at),
+                    replaying = excluded.replaying,
+                    health = excluded.health,
+                    lag_ms = excluded.lag_ms,
+                    last_error = NULL,
+                    last_payload_json = COALESCE(excluded.last_payload_json, deck_source_state.last_payload_json),
+                    updated_at = excluded.updated_at",
+            )
+            .bind(&event.deck_id)
+            .bind(&event.source_id)
+            .bind(event.source_epoch as i64)
+            .bind(event.seq as i64)
+            .bind(new_live_seq as i64)
+            .bind(&observed_str)
+            .bind(&received_str)
+            .bind(&new_live_at)
+            .bind(&new_replay_at)
+            .bind(replaying)
+            .bind(new_health.as_str())
+            .bind(lag_ms)
+            .bind(&payload_json)
+            .execute(&mut *conn)
+            .await?;
+
+            let ack_json = serde_json::to_string(&ack)?;
+            sqlx::query(
+                "INSERT OR REPLACE INTO deck_source_dedup
+                 (deck_id, source_id, source_epoch, seq, result_json, received_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .bind(&event.deck_id)
+            .bind(&event.source_id)
+            .bind(event.source_epoch as i64)
+            .bind(event.seq as i64)
+            .bind(&ack_json)
+            .bind(&received_str)
+            .execute(&mut *conn)
+            .await?;
+
+            // Prune dedup table to bounded MAX_DEDUP_ENTRIES_PER_SOURCE per source.
+            sqlx::query(
+                "DELETE FROM deck_source_dedup
+                 WHERE deck_id = ?1 AND source_id = ?2 AND rowid NOT IN (
+                    SELECT rowid FROM deck_source_dedup
+                    WHERE deck_id = ?1 AND source_id = ?2
+                    ORDER BY source_epoch DESC, seq DESC
+                    LIMIT ?3
+                 )",
+            )
+            .bind(&event.deck_id)
+            .bind(&event.source_id)
+            .bind(MAX_DEDUP_ENTRIES_PER_SOURCE as i64)
+            .execute(&mut *conn)
+            .await?;
+
+            let status = load_source_status_tx(&mut conn, &event.deck_id, &event.source_id).await?;
+            Ok((ack, status))
+        }
+        .await;
+        match res {
+            Ok(out) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(out)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Persist a redacted source error on `deck_source_state` without altering epoch/seq cursors.
+    pub async fn record_source_error(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+        error: &str,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let redacted = tools::secrets::redact(error).into_owned();
+        sqlx::query(
+            "UPDATE deck_source_state SET last_error = ?3, updated_at = ?4
+             WHERE deck_id = ?1 AND source_id = ?2",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .bind(&redacted)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Evaluate heartbeat/freshness timeouts (`Live -> Stale -> Offline`) and return every
+    /// source whose health state changed. Clears active sustained-time trigger windows when
+    /// a source becomes `Stale` or `Offline`.
+    pub async fn sweep_source_liveness(
+        &self,
+        deck_id: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<DeckSourceStatus>> {
+        let now_str = now.to_rfc3339();
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let res: Result<Vec<DeckSourceStatus>> = async {
+            let rows = if let Some(did) = deck_id {
+                sqlx::query(
+                    "SELECT s.deck_id, s.source_id, s.stale_after_secs, s.offline_after_secs,
+                            COALESCE(st.health, 'offline'), COALESCE(st.replaying, 0),
+                            st.last_live_received_at, st.last_replay_at
+                     FROM deck_sources s
+                     LEFT JOIN deck_source_state st ON st.deck_id = s.deck_id AND st.source_id = s.source_id
+                     WHERE s.deck_id = ?1",
+                )
+                .bind(did)
+                .fetch_all(&mut *conn)
+                .await?
+            } else {
+                sqlx::query(
+                    "SELECT s.deck_id, s.source_id, s.stale_after_secs, s.offline_after_secs,
+                            COALESCE(st.health, 'offline'), COALESCE(st.replaying, 0),
+                            st.last_live_received_at, st.last_replay_at
+                     FROM deck_sources s
+                     LEFT JOIN deck_source_state st ON st.deck_id = s.deck_id AND st.source_id = s.source_id",
+                )
+                .fetch_all(&mut *conn)
+                .await?
+            };
+
+            let mut changed = Vec::new();
+            for r in rows {
+                let did: String = r.get(0);
+                let sid: String = r.get(1);
+                let stale_after = r.get::<i64, _>(2).max(1) as u64;
+                let offline_after = r.get::<i64, _>(3).max(stale_after as i64) as u64;
+                let cur_health = SourceHealthState::parse(&r.get::<String, _>(4));
+                let cur_replaying = r.get::<i64, _>(5) != 0;
+                let last_live_at: Option<String> = r.get(6);
+                let last_replay_at: Option<String> = r.get(7);
+
+                let live_age_secs = last_live_at
+                    .as_deref()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| {
+                        now.signed_duration_since(dt.with_timezone(&Utc))
+                            .num_seconds()
+                            .max(0) as u64
+                    });
+                let replay_age_secs = last_replay_at
+                    .as_deref()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| {
+                        now.signed_duration_since(dt.with_timezone(&Utc))
+                            .num_seconds()
+                            .max(0) as u64
+                    });
+
+                let (next_health, next_replaying) = match live_age_secs {
+                    None => {
+                        if cur_health == SourceHealthState::Replaying
+                            && replay_age_secs.is_some_and(|a| a < stale_after)
+                        {
+                            (SourceHealthState::Replaying, true)
+                        } else {
+                            (SourceHealthState::Offline, false)
+                        }
+                    }
+                    Some(age) if age >= offline_after => (SourceHealthState::Offline, false),
+                    Some(age) if age >= stale_after => (SourceHealthState::Stale, false),
+                    Some(_) if cur_health == SourceHealthState::Replaying => {
+                        if replay_age_secs.is_some_and(|a| a < stale_after) {
+                            (SourceHealthState::Replaying, true)
+                        } else {
+                            // Do not promote replay directly to Live; require fresh live heartbeat/event.
+                            (SourceHealthState::Stale, false)
+                        }
+                    }
+                    Some(_) => (SourceHealthState::Live, false),
+                };
+
+                if next_health != cur_health || next_replaying != cur_replaying {
+                    sqlx::query(
+                        "UPDATE deck_source_state
+                         SET health = ?3, replaying = ?4, updated_at = ?5
+                         WHERE deck_id = ?1 AND source_id = ?2",
+                    )
+                    .bind(&did)
+                    .bind(&sid)
+                    .bind(next_health.as_str())
+                    .bind(i64::from(next_replaying))
+                    .bind(&now_str)
+                    .execute(&mut *conn)
+                    .await?;
+
+                    if !next_health.is_healthy() {
+                        sqlx::query(
+                            "UPDATE deck_trigger_fire_state
+                             SET sustained_since_ms = NULL, updated_at = ?3
+                             WHERE deck_id = ?1 AND source_id = ?2",
+                        )
+                        .bind(&did)
+                        .bind(&sid)
+                        .bind(&now_str)
+                        .execute(&mut *conn)
+                        .await?;
+                        sqlx::query(
+                            "UPDATE deck_source_trigger_state
+                             SET first_match_at_ms = NULL, consecutive_matches = 0, updated_at = ?3
+                             WHERE deck_id = ?1 AND source_id = ?2",
+                        )
+                        .bind(&did)
+                        .bind(&sid)
+                        .bind(&now_str)
+                        .execute(&mut *conn)
+                        .await?;
+                    }
+
+                    let status = load_source_status_tx(&mut conn, &did, &sid).await?;
+                    changed.push(status);
+                }
+            }
+            Ok(changed)
+        }
+        .await;
+        match res {
+            Ok(out) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(out)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Evaluate and persist a sustained-threshold trigger state transition on the Deck's home engine.
+    ///
+    /// Persistent deduplicated dispatch keyed by `(deck_id, trigger_key, source_id, source_epoch, seq)`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn evaluate_sustained_trigger(
+        &self,
+        deck_id: &str,
+        trigger_key: &str,
+        source_id: &str,
+        source_epoch: u64,
+        seq: u64,
+        received_at: DateTime<Utc>,
+        breached: bool,
+        sustained_secs: u64,
+    ) -> Result<Option<TriggerDispatchRecord>> {
+        let now_str = received_at.to_rfc3339();
+        let now_ms = received_at.timestamp_millis();
+        let dedup_key = format!("{deck_id}:{trigger_key}:{source_id}:{source_epoch}:{seq}");
+
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let res: Result<Option<TriggerDispatchRecord>> = async {
+            let existing = sqlx::query(
+                "SELECT source_id, source_epoch, last_seq, sustained_since_ms, fired_count, last_fired_at, last_dispatch_dedup_key
+                 FROM deck_trigger_fire_state WHERE deck_id = ?1 AND trigger_key = ?2",
+            )
+            .bind(deck_id)
+            .bind(trigger_key)
+            .fetch_optional(&mut *conn)
+            .await?;
+
+            let (prev_source, prev_epoch, prev_sustained, fired_count, last_fired_at, last_dedup) =
+                match existing {
+                    Some(r) => (
+                        r.get::<String, _>(0),
+                        r.get::<i64, _>(1).max(0) as u64,
+                        r.get::<Option<i64>, _>(3),
+                        r.get::<i64, _>(4).max(0) as u64,
+                        r.get::<Option<String>, _>(5),
+                        r.get::<Option<String>, _>(6),
+                    ),
+                    None => (String::new(), 0, None, 0, None, None),
+                };
+
+            if last_dedup.as_deref() == Some(dedup_key.as_str()) {
+                return Ok(None);
+            }
+
+            if !breached {
+                sqlx::query(
+                    "INSERT INTO deck_trigger_fire_state
+                     (deck_id, trigger_key, source_id, source_epoch, last_seq, sustained_since_ms, fired_count, last_fired_at, last_dispatch_dedup_key, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9)
+                     ON CONFLICT(deck_id, trigger_key) DO UPDATE SET
+                        source_id = excluded.source_id,
+                        source_epoch = excluded.source_epoch,
+                        last_seq = excluded.last_seq,
+                        sustained_since_ms = NULL,
+                        updated_at = excluded.updated_at",
+                )
+                .bind(deck_id)
+                .bind(trigger_key)
+                .bind(source_id)
+                .bind(source_epoch as i64)
+                .bind(seq as i64)
+                .bind(fired_count as i64)
+                .bind(&last_fired_at)
+                .bind(&last_dedup)
+                .bind(&now_str)
+                .execute(&mut *conn)
+                .await?;
+                return Ok(None);
+            }
+
+            let start_ms = if prev_source == source_id
+                && prev_epoch == source_epoch
+                && prev_sustained.is_some_and(|s| now_ms >= s)
+            {
+                prev_sustained.unwrap()
+            } else {
+                now_ms
+            };
+            let elapsed_ms = now_ms.saturating_sub(start_ms);
+            let required_ms = i64::try_from(sustained_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
+
+            if elapsed_ms >= required_ms {
+                let new_fired = fired_count.saturating_add(1);
+                sqlx::query(
+                    "INSERT INTO deck_trigger_fire_state
+                     (deck_id, trigger_key, source_id, source_epoch, last_seq, sustained_since_ms, fired_count, last_fired_at, last_dispatch_dedup_key, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?7)
+                     ON CONFLICT(deck_id, trigger_key) DO UPDATE SET
+                        source_id = excluded.source_id,
+                        source_epoch = excluded.source_epoch,
+                        last_seq = excluded.last_seq,
+                        sustained_since_ms = NULL,
+                        fired_count = excluded.fired_count,
+                        last_fired_at = excluded.last_fired_at,
+                        last_dispatch_dedup_key = excluded.last_dispatch_dedup_key,
+                        updated_at = excluded.updated_at",
+                )
+                .bind(deck_id)
+                .bind(trigger_key)
+                .bind(source_id)
+                .bind(source_epoch as i64)
+                .bind(seq as i64)
+                .bind(new_fired as i64)
+                .bind(&now_str)
+                .bind(&dedup_key)
+                .execute(&mut *conn)
+                .await?;
+
+                Ok(Some(TriggerDispatchRecord {
+                    deck_id: deck_id.to_owned(),
+                    trigger_key: trigger_key.to_owned(),
+                    source_id: source_id.to_owned(),
+                    source_epoch,
+                    seq,
+                    dedup_key,
+                    fired_at: now_str,
+                }))
+            } else {
+                sqlx::query(
+                    "INSERT INTO deck_trigger_fire_state
+                     (deck_id, trigger_key, source_id, source_epoch, last_seq, sustained_since_ms, fired_count, last_fired_at, last_dispatch_dedup_key, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(deck_id, trigger_key) DO UPDATE SET
+                        source_id = excluded.source_id,
+                        source_epoch = excluded.source_epoch,
+                        last_seq = excluded.last_seq,
+                        sustained_since_ms = excluded.sustained_since_ms,
+                        updated_at = excluded.updated_at",
+                )
+                .bind(deck_id)
+                .bind(trigger_key)
+                .bind(source_id)
+                .bind(source_epoch as i64)
+                .bind(seq as i64)
+                .bind(start_ms)
+                .bind(fired_count as i64)
+                .bind(&last_fired_at)
+                .bind(&last_dedup)
+                .bind(&now_str)
+                .execute(&mut *conn)
+                .await?;
+                Ok(None)
+            }
+        }
+        .await;
+        match res {
+            Ok(out) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(out)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
+    }
+
+    pub async fn list_trigger_fire_states(&self, deck_id: &str) -> Result<Vec<TriggerFireState>> {
+        let rows = sqlx::query(
+            "SELECT deck_id, trigger_key, source_id, source_epoch, last_seq, sustained_since_ms, fired_count, last_fired_at, last_dispatch_dedup_key
+             FROM deck_trigger_fire_state WHERE deck_id = ?1 ORDER BY trigger_key ASC",
+        )
+        .bind(deck_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| TriggerFireState {
+                deck_id: r.get(0),
+                trigger_key: r.get(1),
+                source_id: r.get(2),
+                source_epoch: r.get::<i64, _>(3).max(0) as u64,
+                last_seq: r.get::<i64, _>(4).max(0) as u64,
+                sustained_since_ms: r.get(5),
+                fired_count: r.get::<i64, _>(6).max(0) as u64,
+                last_fired_at: r.get(7),
+                last_dispatch_dedup_key: r.get(8),
+            })
+            .collect())
+    }
+
+    /// Monotonically allocate the next persisted `source_epoch` on a local source node.
+    pub async fn next_local_source_epoch(&self, deck_id: &str, source_id: &str) -> Result<u64> {
+        let now = Utc::now().to_rfc3339();
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let res: Result<u64> = async {
+            sqlx::query(
+                "INSERT INTO deck_source_local_meta (deck_id, source_id, source_epoch, updated_at)
+                 VALUES (?1, ?2, 1, ?3)
+                 ON CONFLICT(deck_id, source_id) DO UPDATE SET
+                    source_epoch = deck_source_local_meta.source_epoch + 1,
+                    updated_at = excluded.updated_at",
+            )
+            .bind(deck_id)
+            .bind(source_id)
+            .bind(&now)
+            .execute(&mut *conn)
+            .await?;
+            let epoch: i64 = sqlx::query_scalar(
+                "SELECT source_epoch FROM deck_source_local_meta WHERE deck_id = ?1 AND source_id = ?2",
+            )
+            .bind(deck_id)
+            .bind(source_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            Ok(epoch.max(1) as u64)
+        }
+        .await;
+        match res {
+            Ok(epoch) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(epoch)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Durably enqueue an offline source event into the bounded per-source spool.
+    /// Rejects with [`SpoolError::Backpressure`] when `max_events` or `max_bytes` would be exceeded.
+    pub async fn spool_enqueue(
+        &self,
+        event: &DeckSourceEvent,
+        limits: SourceSpoolLimits,
+    ) -> std::result::Result<SpoolStats, SpoolError> {
+        let event_json = serde_json::to_string(event)
+            .map_err(|e| SpoolError::Storage(format!("serialize spool event: {e}")))?;
+        let payload_bytes = event_json.len();
+        let now = Utc::now().to_rfc3339();
+
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| SpoolError::Storage(e.to_string()))?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| SpoolError::Storage(e.to_string()))?;
+
+        let res: std::result::Result<SpoolStats, SpoolError> = async {
+            let row = sqlx::query(
+                "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0)
+                 FROM deck_source_spool WHERE deck_id = ?1 AND source_id = ?2",
+            )
+            .bind(&event.deck_id)
+            .bind(&event.source_id)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| SpoolError::Storage(e.to_string()))?;
+
+            let depth = row.get::<i64, _>(0).max(0) as usize;
+            let bytes = row.get::<i64, _>(1).max(0) as usize;
+
+            if depth >= limits.max_events || bytes.saturating_add(payload_bytes) > limits.max_bytes {
+                return Err(SpoolError::Backpressure {
+                    depth,
+                    max_events: limits.max_events,
+                    bytes,
+                    max_bytes: limits.max_bytes,
+                });
+            }
+
+            sqlx::query(
+                "INSERT OR IGNORE INTO deck_source_spool
+                 (deck_id, source_id, source_epoch, seq, event_json, payload_bytes, enqueued_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )
+            .bind(&event.deck_id)
+            .bind(&event.source_id)
+            .bind(event.source_epoch as i64)
+            .bind(event.seq as i64)
+            .bind(&event_json)
+            .bind(payload_bytes as i64)
+            .bind(&now)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| SpoolError::Storage(e.to_string()))?;
+
+            let updated = sqlx::query(
+                "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0)
+                 FROM deck_source_spool WHERE deck_id = ?1 AND source_id = ?2",
+            )
+            .bind(&event.deck_id)
+            .bind(&event.source_id)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| SpoolError::Storage(e.to_string()))?;
+
+            Ok(SpoolStats {
+                depth: updated.get::<i64, _>(0).max(0) as usize,
+                bytes: updated.get::<i64, _>(1).max(0) as usize,
+            })
+        }
+        .await;
+
+        match res {
+            Ok(stats) => {
+                sqlx::query("COMMIT")
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| SpoolError::Storage(e.to_string()))?;
+                Ok(stats)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Peek up to `limit` spooled events in strict `(source_epoch ASC, seq ASC)` replay order.
+    pub async fn spool_peek_batch(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+        limit: usize,
+    ) -> Result<Vec<DeckSourceEvent>> {
+        let rows = sqlx::query(
+            "SELECT event_json FROM deck_source_spool
+             WHERE deck_id = ?1 AND source_id = ?2
+             ORDER BY source_epoch ASC, seq ASC
+             LIMIT ?3",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .bind(limit.max(1) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(&r.get::<String, _>(0))?))
+            .collect()
+    }
+
+    pub async fn spool_remove(
+        &self,
+        deck_id: &str,
+        source_id: &str,
+        source_epoch: u64,
+        seq: u64,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM deck_source_spool
+             WHERE deck_id = ?1 AND source_id = ?2 AND source_epoch = ?3 AND seq = ?4",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .bind(source_epoch as i64)
+        .bind(seq as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Release a reserved trigger fire row when `schedule::FireTrigger` rejects/fails dispatch.
     pub async fn release_trigger_fire(&self, dedup_key: &str) -> Result<()> {
         sqlx::query("DELETE FROM deck_trigger_fires WHERE dedup_key = ?1")
@@ -1432,6 +2817,21 @@ impl DeckStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn spool_stats(&self, deck_id: &str, source_id: &str) -> Result<SpoolStats> {
+        let row = sqlx::query(
+            "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0)
+             FROM deck_source_spool WHERE deck_id = ?1 AND source_id = ?2",
+        )
+        .bind(deck_id)
+        .bind(source_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(SpoolStats {
+            depth: row.get::<i64, _>(0).max(0) as usize,
+            bytes: row.get::<i64, _>(1).max(0) as usize,
+        })
     }
 
     /// Expose raw pool in unit tests for direct SQLite forgery regression tests.
@@ -1463,8 +2863,8 @@ async fn ensure_deck_tx(
     let session_id = SessionId::new();
     sqlx::query(
         "INSERT OR IGNORE INTO deck_meta
-         (deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at)
-         VALUES (?1, ?2, NULL, NULL, NULL, 0, 0, 0, ?3, ?3)",
+         (deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, home_engine_id, home_epoch, home_moved_at, created_at, updated_at)
+         VALUES (?1, ?2, NULL, NULL, NULL, 0, 0, 0, NULL, 1, NULL, ?3, ?3)",
     )
     .bind(deck_id)
     .bind(session_id.0.to_string())
@@ -1472,13 +2872,73 @@ async fn ensure_deck_tx(
     .execute(&mut *conn)
     .await?;
     let row = sqlx::query(
-        "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at
+        "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, home_engine_id, home_epoch, home_moved_at, created_at, updated_at
          FROM deck_meta WHERE deck_id = ?1",
     )
     .bind(deck_id)
     .fetch_one(&mut *conn)
     .await?;
     parse_deck_row(row)
+}
+
+async fn load_source_status_tx(
+    conn: &mut SqliteConnection,
+    deck_id: &str,
+    source_id: &str,
+) -> Result<DeckSourceStatus> {
+    let row = sqlx::query(
+        "SELECT s.deck_id, s.source_id, s.engine_id, s.label, s.enabled,
+                COALESCE(st.health, 'offline'), COALESCE(st.replaying, 0),
+                COALESCE(st.last_epoch, 0), COALESCE(st.last_seq, 0), COALESCE(st.last_live_seq, 0),
+                st.last_observed_at, st.last_received_at, st.last_live_received_at,
+                st.lag_ms, COALESCE(st.dropped_count, 0), st.last_error,
+                (SELECT COUNT(*) FROM deck_source_spool sp WHERE sp.deck_id = s.deck_id AND sp.source_id = s.source_id)
+         FROM deck_sources s
+         LEFT JOIN deck_source_state st ON st.deck_id = s.deck_id AND st.source_id = s.source_id
+         WHERE s.deck_id = ?1 AND s.source_id = ?2",
+    )
+    .bind(deck_id)
+    .bind(source_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(parse_source_status_row(row))
+}
+
+fn parse_source_registration_row(r: sqlx::sqlite::SqliteRow) -> DeckSourceRegistration {
+    DeckSourceRegistration {
+        deck_id: r.get(0),
+        source_id: r.get(1),
+        engine_id: r.get(2),
+        label: r.get(3),
+        heartbeat_secs: r.get::<i64, _>(4).max(1) as u64,
+        stale_after_secs: r.get::<i64, _>(5).max(1) as u64,
+        offline_after_secs: r.get::<i64, _>(6).max(1) as u64,
+        enabled: r.get::<i64, _>(7) != 0,
+        registered_at: r.get(8),
+        updated_at: r.get(9),
+    }
+}
+
+fn parse_source_status_row(r: sqlx::sqlite::SqliteRow) -> DeckSourceStatus {
+    DeckSourceStatus {
+        deck_id: r.get(0),
+        source_id: r.get(1),
+        engine_id: r.get(2),
+        label: r.get(3),
+        enabled: r.get::<i64, _>(4) != 0,
+        health: SourceHealthState::parse(&r.get::<String, _>(5)),
+        replaying: r.get::<i64, _>(6) != 0,
+        last_epoch: r.get::<i64, _>(7).max(0) as u64,
+        last_seq: r.get::<i64, _>(8).max(0) as u64,
+        last_live_seq: r.get::<i64, _>(9).max(0) as u64,
+        last_observed_at: r.get(10),
+        last_received_at: r.get(11),
+        last_live_received_at: r.get(12),
+        lag_ms: r.get::<Option<i64>, _>(13).map(|v| v.max(0) as u64),
+        dropped_count: r.get::<i64, _>(14).max(0) as u64,
+        last_error: r.get(15),
+        spool_depth: r.get::<i64, _>(16).max(0) as u64,
+    }
 }
 
 async fn get_script_revision_tx(
@@ -1511,8 +2971,11 @@ fn parse_deck_row(r: sqlx::sqlite::SqliteRow) -> Result<DeckRecord> {
         schedule_enabled: r.get::<i64, _>(5) != 0,
         stream_enabled: r.get::<i64, _>(6) != 0,
         run_epoch: r.get::<i64, _>(7).max(0) as u64,
-        created_at: r.get(8),
-        updated_at: r.get(9),
+        home_engine_id: r.get(8),
+        home_epoch: r.get::<i64, _>(9).max(1) as u64,
+        home_moved_at: r.get(10),
+        created_at: r.get(11),
+        updated_at: r.get(12),
     })
 }
 
