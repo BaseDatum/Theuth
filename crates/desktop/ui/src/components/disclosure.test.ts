@@ -43,6 +43,7 @@ const NAME = /^(open|opened|expanded\w*|collapsed|shown|show[A-Z]\w*|raw|all|ful
 const CHROME: Record<string, true> = {
   'chat/AdvisorPill.tsx': true,
   'chat/AttachPicker.tsx': true,
+  'chat/CommunicationNotice.tsx': true,
   'chat/ComposerMeta.tsx': true,
   'chat/CostPill.tsx': true,
   'chat/HeaderMenu.tsx': true,

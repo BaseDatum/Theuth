@@ -142,6 +142,7 @@ function makeLiveState(frame: LiveFrame | null): DeckLiveState {
     controlRuntime: async () => {},
     approveScript: async () => null,
     rejectScript: async () => null,
+    setTrust: async () => null,
     resolveApproval: async () => {},
     sectionAdd: async () => { throw new Error('unused') },
     sectionPatch: async () => { throw new Error('unused') },

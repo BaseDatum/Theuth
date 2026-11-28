@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Layers, MoreHorizontal, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { Layers, MoreHorizontal, Pencil, Plus, ShieldCheck, Sparkles, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useState } from 'react'
 import { useViewDrag } from '@/components/chat/Panes'
 import { SectionBand } from '@/components/nav/SectionBand'
@@ -97,6 +97,14 @@ function DeckRow({ d }: { d: DeckSummary }) {
               >
                 {d.pending_rev && !d.active_rev ? 'pending review' : d.state}
               </span>
+              {d.trusted && (
+                <span
+                  className="inline-flex items-center gap-0.5 rounded-full bg-fg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-fg-accent"
+                  data-deck-row-trusted
+                >
+                  <ShieldCheck className="size-3" /> Trusted
+                </span>
+              )}
               {d.stale && <span className="text-[10px] text-warning">stale</span>}
             </div>
             {d.description && (

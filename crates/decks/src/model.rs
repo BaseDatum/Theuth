@@ -288,9 +288,47 @@ pub struct ScriptRevision {
     pub approved_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_at: Option<String>,
+    /// True when this revision was automatically approved under an active machine-local Deck trust grant.
+    #[serde(default)]
+    pub auto_approved: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejected_reason: Option<String>,
     pub change_summary: String,
+    pub created_at: String,
+}
+
+/// Machine-local owner trust grant for autonomous Deck execution.
+/// Stored exclusively in protected local SQLite (`deck_trust_grants`), NEVER in CRDT,
+/// and never replicated or transferred across mesh home moves.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeckTrustState {
+    pub trusted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Audit trail entry recording trust grants, revocations, and trusted auto-approvals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeckTrustAuditEvent {
+    pub id: i64,
+    pub deck_id: String,
+    /// One of `"granted"`, `"revoked"`, or `"auto_approved"`.
+    pub event: String,
+    pub actor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     pub created_at: String,
 }
 
@@ -368,6 +406,9 @@ pub struct DeckRuntimeStatus {
     pub consecutive_failures: u32,
     pub step_count: u64,
     pub checkout_alive: bool,
+    /// True when this machine's owner has granted permanent autonomous trust to this Deck.
+    #[serde(default)]
+    pub trusted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_approval: Option<PendingApproval>,
     /// Native Mesh Decks home ownership & per-source health model.
@@ -439,6 +480,8 @@ pub struct DeckSummary {
     pub session_id: SessionId,
     pub state: RuntimeState,
     pub stale: bool,
+    #[serde(default)]
+    pub trusted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_rev: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -453,6 +496,12 @@ pub struct DeckSummary {
 pub struct DeckDetail {
     pub doc: DeckDocSnapshot,
     pub runtime: DeckRuntimeStatus,
+    /// Machine-local trust grant state for this Deck (never replicated via CRDT).
+    #[serde(default)]
+    pub trust: DeckTrustState,
+    /// Recent machine-local trust audit events (grants, revocations, trusted auto-approvals).
+    #[serde(default)]
+    pub trust_audit: Vec<DeckTrustAuditEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_script: Option<ScriptRevision>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

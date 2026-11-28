@@ -34,8 +34,10 @@ use runtime::{Runtime, SessionId};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tools::{
-    ApprovalId, ApprovalRequested, ApprovalResolved, Decision, SetApprovals, ToolRegistry,
+    ApprovalId, ApprovalRequested, ApprovalResolved, CancelCalls, Decision, SetApprovals,
+    ToolRegistry,
 };
 
 use crate::hub::{DeckHub, MAX_SNAPSHOT_BYTES};
@@ -47,12 +49,13 @@ use crate::mesh::{
 };
 use crate::model::{
     DeckChanged, DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary,
-    DeclaredAction, InteractErrorCode, InteractResponse, LiveFrame, MAX_INTERVAL_SECS,
-    MetricSample, PendingApproval, RuntimeControlOp, RuntimeState, ScriptMode, ScriptRevision,
-    ScriptStatus, TriggerSpec, canonical_json_string, clamp_interval_secs,
+    DeckTrustState, DeclaredAction, InteractErrorCode, InteractResponse, LiveFrame,
+    MAX_INTERVAL_SECS, MetricSample, PendingApproval, RuntimeControlOp, RuntimeState, ScriptMode,
+    ScriptRevision, ScriptStatus, TriggerSpec, canonical_json_string, clamp_interval_secs,
 };
 use crate::runtime::{
-    DECK_POOL_MAX, DeckCheckout, EmittedPayload, TurnContext, TurnEffects, deck_tool_specs,
+    DECK_POOL_MAX, DECK_TURN_CANCELLED, DeckCheckout, EmittedPayload, TurnContext, TurnEffects,
+    deck_tool_specs,
 };
 use crate::store::{
     DeckRecord, DeckStore, IdempotencyLookup, sha256_hex, validate_script_proposal,
@@ -105,6 +108,8 @@ pub struct SharedDeckState {
     pub live_cache: Arc<Mutex<HashMap<String, LiveDeckCache>>>,
     /// Tombstone set preventing late SQLite/hub writes from an in-flight turn after Deck deletion (229 H2).
     pub deleted_decks: Arc<Mutex<HashSet<String>>>,
+    /// Per-Deck cancellation tokens used to immediately abort active execution on trust revoke or delete.
+    pub cancel_tokens: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 impl SharedDeckState {
@@ -150,8 +155,34 @@ impl SharedDeckState {
         self.session_index.lock().get(&session_id).cloned()
     }
 
+    pub fn current_cancel_token(&self, deck_id: &str) -> CancellationToken {
+        self.cancel_tokens
+            .lock()
+            .entry(deck_id.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    /// Cancel any in-flight turn for `deck_id` without rotating yet (prevents queued commands
+    /// ahead of `TrustRevoked` from executing before revocation completes).
+    pub fn cancel_token(&self, deck_id: &str) {
+        let mut map = self.cancel_tokens.lock();
+        map.entry(deck_id.to_owned()).or_default().cancel();
+    }
+
+    /// Replace `deck_id`'s cancellation token with a fresh uncancelled token for future manual runs.
+    pub fn rotate_cancel_token(&self, deck_id: &str) {
+        let mut map = self.cancel_tokens.lock();
+        if let Some(prev) = map.insert(deck_id.to_owned(), CancellationToken::new()) {
+            prev.cancel();
+        }
+    }
+
     pub fn mark_deleted(&self, deck_id: &str) {
         self.deleted_decks.lock().insert(deck_id.to_owned());
+        if let Some(tok) = self.cancel_tokens.lock().remove(deck_id) {
+            tok.cancel();
+        }
         self.live_cache.lock().remove(deck_id);
         self.home_online_override.lock().remove(deck_id);
         self.home_seq.lock().remove(deck_id);
@@ -432,6 +463,13 @@ enum OwnerCmd {
     },
     RevisionApproved {
         script: ScriptRevision,
+        auto_start: bool,
+    },
+    TrustChanged {
+        trusted: bool,
+    },
+    TrustRevoked {
+        reply: oneshot::Sender<()>,
     },
     Delete,
     Shutdown,
@@ -490,6 +528,7 @@ impl DeckSupervisor {
             session_index: Arc::new(Mutex::new(HashMap::new())),
             live_cache: Arc::new(Mutex::new(HashMap::new())),
             deleted_decks: Arc::new(Mutex::new(HashSet::new())),
+            cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
         };
         let sup = Self {
             shared: shared.clone(),
@@ -531,7 +570,10 @@ impl DeckSupervisor {
         Ok((rec, home))
     }
 
-    /// Seat isolated per-Deck working dir, write root, and forced approvals for a Deck session (229 H1).
+    /// Seat isolated per-Deck working dir, write root, and session approval policy (229 H1).
+    /// Default reviewed Decks (and any non-home engine) pin `approvals=true`; trusted Decks on
+    /// their authoritative home engine pin `approvals=false` (preserving non-bypassable
+    /// `human_only`/`always_ask`/risk-cap/OS safeguards in `ToolRegistry`).
     async fn configure_deck_session(
         &self,
         deck_id: &str,
@@ -544,12 +586,19 @@ impl DeckSupervisor {
             .map_err(|e| format!("{e:#}"))?;
         tools::seat::set_cwd(session_id, Some(work_dir.clone()));
         tools::seat::set_write_root(session_id, Some(work_dir.clone()));
+        let is_home = self
+            .shared
+            .resolve_deck_home(deck_id)
+            .await
+            .map(|(_, _, h)| h)
+            .unwrap_or(false);
+        let trusted = is_home && self.shared.store.is_trusted(deck_id).await.unwrap_or(false);
         let _ = self
             .shared
             .registry
             .ask(SetApprovals {
                 session: Some(session_id),
-                enabled: true,
+                enabled: !trusted,
                 clear: false,
             })
             .await;
@@ -608,6 +657,7 @@ impl DeckSupervisor {
             .await
             .map_err(|e| format!("{e:#}"))?;
         self.shared.register_session(deck_id, rec.session_id);
+        let trusted = self.shared.store.is_trusted(deck_id).await.unwrap_or(false);
         let log = self
             .shared
             .store
@@ -642,6 +692,7 @@ impl DeckSupervisor {
             checkout_alive: false,
             pending_approval,
             mesh: mesh_status,
+            trusted,
         };
         Ok((status, snap, None))
     }
@@ -776,6 +827,7 @@ struct DeckOwner {
     active_script: Option<ScriptRevision>,
     pending_rev: Option<u64>,
     state: RuntimeState,
+    trusted: bool,
     run_epoch: u64,
     seq: u64,
     step_count: u64,
@@ -819,6 +871,7 @@ impl DeckOwner {
             .get_run_log(&deck_id)
             .await
             .map_err(|e| format!("{e:#}"))?;
+        let trusted = shared.store.is_trusted(&deck_id).await.unwrap_or(false);
 
         let owner = Self {
             deck_id,
@@ -830,6 +883,7 @@ impl DeckOwner {
             active_script,
             pending_rev: rec.pending_rev,
             state: RuntimeState::Stopped,
+            trusted,
             run_epoch: rec.run_epoch,
             seq: last_snapshot.as_ref().map(|s| s.seq).unwrap_or(0),
             step_count: 0,
@@ -878,6 +932,7 @@ impl DeckOwner {
             checkout_alive: self.checkout.as_ref().is_some_and(DeckCheckout::is_alive),
             pending_approval,
             mesh: cached_mesh,
+            trusted: self.trusted,
         }
     }
 
@@ -1043,10 +1098,23 @@ impl DeckOwner {
                     .await;
                 let _ = reply.send(resp);
             }
-            OwnerCmd::RevisionApproved { script } => {
+            OwnerCmd::RevisionApproved { script, auto_start } => {
                 if !self.shared.is_deleted(&self.deck_id) {
-                    self.handle_revision_approved(script).await;
+                    self.handle_revision_approved(script, auto_start).await;
                 }
+            }
+            OwnerCmd::TrustChanged { trusted } => {
+                if !self.shared.is_deleted(&self.deck_id) {
+                    // Enabling trust must preserve current script activity (never auto-start a paused Deck).
+                    self.trusted = trusted;
+                    self.broadcast_status();
+                }
+            }
+            OwnerCmd::TrustRevoked { reply } => {
+                if !self.shared.is_deleted(&self.deck_id) {
+                    self.handle_trust_revoked().await;
+                }
+                let _ = reply.send(());
             }
         }
         CmdFlow::Continue
@@ -1079,9 +1147,12 @@ impl DeckOwner {
     }
 
     /// 229 B3 & H7: Approving a new revision stops any previous checkout, clears stale transient
-    /// `live_frame`, bumps `run_epoch` (even if paused/stopped), and leaves the Deck in `Stopped`
-    /// so "Approve only" NEVER enables recurring streaming or scheduling until explicit owner `Start`.
-    async fn handle_revision_approved(&mut self, script: ScriptRevision) {
+    /// `live_frame`, and bumps `run_epoch` (even if paused/stopped).
+    /// - In reviewed mode ("Approve only"), `auto_start == false` so the Deck stays `Stopped`
+    ///   until explicit owner `Start`.
+    /// - Under permanent Deck trust, `auto_start` mirrors the prior enabled schedule/stream state:
+    ///   if previously streaming/scheduled, activates immediately; if paused/stopped, stays stopped.
+    async fn handle_revision_approved(&mut self, script: ScriptRevision, auto_start: bool) {
         self.next_wake = None;
         self.active_script = Some(script);
         let _ = self.refresh_scripts_from_store().await;
@@ -1096,7 +1167,29 @@ impl DeckOwner {
             .await;
         self.live_frame = None;
         self.bump_epoch().await;
+        if auto_start {
+            let _ = self.handle_control(RuntimeControlOp::Start).await;
+        } else {
+            self.state = RuntimeState::Stopped;
+            self.broadcast_status();
+        }
+    }
+
+    /// Immediately terminate active execution after owner trust revocation while keeping
+    /// `last_snapshot` visible and intact.
+    async fn handle_trust_revoked(&mut self) {
+        self.trusted = false;
+        self.next_wake = None;
+        if let Some(checkout) = self.checkout.take() {
+            drop(checkout);
+        }
+        self.live_frame = None;
+        self.shared.pending_approvals.lock().remove(&self.deck_id);
+        self.shared.pre_approval_state.lock().remove(&self.deck_id);
+        self.bump_epoch().await;
         self.state = RuntimeState::Stopped;
+        // Rotate to a fresh token now that all pre-revoke commands have been drained/aborted.
+        self.shared.rotate_cancel_token(&self.deck_id);
         self.broadcast_status();
     }
 
@@ -1142,7 +1235,7 @@ impl DeckOwner {
                 self.broadcast_status();
 
                 if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
-                    if !self.is_fenced(turn_epoch, script.rev).await {
+                    if err != DECK_TURN_CANCELLED && !self.is_fenced(turn_epoch, script.rev).await {
                         self.record_failure(&err).await;
                         self.state = RuntimeState::Error;
                         self.broadcast_status();
@@ -1172,6 +1265,9 @@ impl DeckOwner {
                 // Execute first step right away so callers see fresh data immediately.
                 self.next_wake = None;
                 let step_err = self.execute_one_step(&script, turn_epoch).await;
+                if step_err.as_deref() == Some(DECK_TURN_CANCELLED) {
+                    return Err(DECK_TURN_CANCELLED.into());
+                }
                 if !self.is_fenced(turn_epoch, script.rev).await
                     && matches!(
                         self.state,
@@ -1241,13 +1337,16 @@ impl DeckOwner {
                 }
                 let turn_epoch = self.run_epoch;
                 if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
-                    if !self.is_fenced(turn_epoch, script.rev).await {
+                    if err != DECK_TURN_CANCELLED && !self.is_fenced(turn_epoch, script.rev).await {
                         self.record_failure(&err).await;
                         self.broadcast_status();
                     }
                     return Err(err);
                 }
                 let step_err = self.execute_one_step(&script, turn_epoch).await;
+                if step_err.as_deref() == Some(DECK_TURN_CANCELLED) {
+                    return Err(DECK_TURN_CANCELLED.into());
+                }
                 if step_err.is_none() && self.state == RuntimeState::Error {
                     self.state = RuntimeState::Stopped;
                 }
@@ -1286,7 +1385,7 @@ impl DeckOwner {
         }) {
             let turn_epoch = self.bump_epoch().await;
             if let Err(err) = self.ensure_checkout(script, turn_epoch).await {
-                if !self.is_fenced(turn_epoch, script.rev).await {
+                if err != DECK_TURN_CANCELLED && !self.is_fenced(turn_epoch, script.rev).await {
                     self.record_failure(&err).await;
                     self.state = RuntimeState::Error;
                     self.broadcast_status();
@@ -1324,7 +1423,7 @@ impl DeckOwner {
         };
         let turn_epoch = self.run_epoch;
         if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
-            if !self.is_fenced(turn_epoch, script.rev).await {
+            if err != DECK_TURN_CANCELLED && !self.is_fenced(turn_epoch, script.rev).await {
                 self.record_failure(&err).await;
                 self.schedule_backoff();
                 self.broadcast_status();
@@ -1332,7 +1431,9 @@ impl DeckOwner {
             return;
         }
         let step_err = self.execute_one_step(&script, turn_epoch).await;
-        if self.is_fenced(turn_epoch, script.rev).await {
+        if step_err.as_deref() == Some(DECK_TURN_CANCELLED)
+            || self.is_fenced(turn_epoch, script.rev).await
+        {
             return;
         }
         if matches!(
@@ -1387,6 +1488,10 @@ impl DeckOwner {
         script: &ScriptRevision,
         turn_epoch: u64,
     ) -> Result<(), String> {
+        let cancel = self.shared.current_cancel_token(&self.deck_id);
+        if cancel.is_cancelled() {
+            return Err(DECK_TURN_CANCELLED.into());
+        }
         let mut allow_warm_restore = true;
         let compatible = self.checkout.as_ref().is_some_and(|c| {
             c.is_alive()
@@ -1436,10 +1541,15 @@ impl DeckOwner {
             cp.as_ref(),
             allow_warm_restore,
             &turn_cx,
+            &cancel,
             &mut |p| collected_emits.push(p.clone()),
         )
         .await?;
 
+        if cancel.is_cancelled() {
+            drop(checkout);
+            return Err(DECK_TURN_CANCELLED.into());
+        }
         if self.is_fenced(turn_epoch, script.rev).await {
             drop(checkout);
             return Err("deck deleted or revision superseded during startup".into());
@@ -1503,6 +1613,13 @@ impl DeckOwner {
         script: &ScriptRevision,
         turn_epoch: u64,
     ) -> Option<String> {
+        let cancel = self.shared.current_cancel_token(&self.deck_id);
+        if cancel.is_cancelled() {
+            if let Some(checkout) = self.checkout.take() {
+                drop(checkout);
+            }
+            return Some(DECK_TURN_CANCELLED.into());
+        }
         let turn_cx = self.turn_context();
         let Some(checkout) = self.checkout.as_mut() else {
             let err = "no active checkout".to_owned();
@@ -1511,7 +1628,15 @@ impl DeckOwner {
             }
             return Some(err);
         };
-        let res = checkout.run_step(&turn_cx, &mut |_| {}).await;
+        let res = checkout.run_step(&turn_cx, &cancel, &mut |_| {}).await;
+        if cancel.is_cancelled() {
+            // Interrupted mid-turn (e.g., owner revoked trust): drop dirty checkout and avoid
+            // marking last-good snapshot stale or committing late effects.
+            if let Some(checkout) = self.checkout.take() {
+                drop(checkout);
+            }
+            return Some(DECK_TURN_CANCELLED.into());
+        }
         let dump_sha = self
             .checkout
             .as_ref()
@@ -2095,6 +2220,18 @@ impl DeckOwner {
         }
 
         // 9. Execute `on_action(action, args, ctx)` on the SAME checkout.
+        let cancel = self.shared.current_cancel_token(&self.deck_id);
+        if cancel.is_cancelled() {
+            if let Some(checkout) = self.checkout.take() {
+                drop(checkout);
+            }
+            return Ok(err_resp(
+                InteractErrorCode::ExecutionError,
+                DECK_TURN_CANCELLED.into(),
+                script.rev,
+                self.run_epoch,
+            ));
+        }
         let turn_cx = self.turn_context();
         let ctx_val = json!({
             "deck_id": self.deck_id,
@@ -2106,11 +2243,23 @@ impl DeckOwner {
         });
         let outcome = match self.checkout.as_mut() {
             Some(c) => {
-                c.run_action(&action, &args, &ctx_val, &turn_cx, &mut |_| {})
+                c.run_action(&action, &args, &ctx_val, &turn_cx, &cancel, &mut |_| {})
                     .await
             }
             None => Err("checkout missing".into()),
         };
+
+        if cancel.is_cancelled() {
+            if let Some(checkout) = self.checkout.take() {
+                drop(checkout);
+            }
+            return Ok(err_resp(
+                InteractErrorCode::ExecutionError,
+                DECK_TURN_CANCELLED.into(),
+                script.rev,
+                self.run_epoch,
+            ));
+        }
 
         // 10. Fence out late writes if Deck was deleted or script revision changed mid-action (229 H2).
         if self.is_fenced(turn_epoch, script.rev).await {
@@ -2242,6 +2391,7 @@ impl Message<ListDecks> for DeckSupervisor {
                 active_rev: status.active_rev,
                 pending_rev: status.pending_rev,
                 home_engine_id: status.mesh.as_ref().map(|m| m.home_engine_id.clone()),
+                trusted: status.trusted,
                 updated_ms: d.updated_ms,
             });
         }
@@ -2317,7 +2467,7 @@ impl DeckSupervisor {
         by: Principal,
     ) -> Result<DeckDetail, String> {
         let mut doc = self.read_doc(deck_id, by).await?;
-        let (runtime, last_snapshot, live_frame) = self.get_runtime_snapshot(deck_id).await?;
+        let (mut runtime, last_snapshot, live_frame) = self.get_runtime_snapshot(deck_id).await?;
         let active_script = self
             .shared
             .store
@@ -2330,6 +2480,19 @@ impl DeckSupervisor {
             .get_pending_script(deck_id)
             .await
             .map_err(|e| format!("{e:#}"))?;
+        let trust = self
+            .shared
+            .store
+            .get_trust(deck_id)
+            .await
+            .unwrap_or_default();
+        let trust_audit = self
+            .shared
+            .store
+            .list_trust_audit(deck_id, 50)
+            .await
+            .unwrap_or_default();
+        runtime.trusted = trust.trusted;
         // Reconcile Yjs mirror `doc.script_ref` with authoritative SQLite state so callers never
         // observe stale active/pending revision metadata if a previous mirror write lagged or failed.
         let schedule = active_script.as_ref().and_then(|s| {
@@ -2351,6 +2514,8 @@ impl DeckSupervisor {
             pending_script,
             last_snapshot,
             live_frame,
+            trust,
+            trust_audit,
         })
     }
 
@@ -2760,10 +2925,10 @@ impl Message<ProposeScriptMsg> for DeckSupervisor {
                 .map_err(|e| format!("invalid JSON schema for action {:?}: {e}", a.name))?;
         }
         verify_routines_exist(&m.triggers).await?;
-        let rev = self
+        let outcome = self
             .shared
             .store
-            .propose_script(
+            .propose_script_with_trust(
                 &m.deck_id,
                 m.code,
                 m.declared_actions,
@@ -2776,15 +2941,74 @@ impl Message<ProposeScriptMsg> for DeckSupervisor {
             )
             .await
             .map_err(|e| format!("{e:#}"))?;
-        // Update live_cache pending_rev immediately without blocking on DeckOwner.
-        if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id) {
-            entry.status.pending_rev = Some(rev.rev);
-        }
-        self.mirror_script_ref(&m.deck_id).await;
-        if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
-            self.shared
-                .hub
-                .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
+        let rev = outcome.revision;
+
+        if outcome.auto_approved {
+            let _ = self
+                .shared
+                .store
+                .reset_trigger_states_for_deck(&m.deck_id)
+                .await;
+            if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id) {
+                entry.status.active_rev = Some(rev.rev);
+                entry.status.pending_rev = None;
+                entry.live_frame = None;
+            }
+            self.mirror_script_ref(&m.deck_id).await;
+            let is_home = self
+                .shared
+                .resolve_deck_home(&m.deck_id)
+                .await
+                .map(|(_, _, h)| h)
+                .unwrap_or(false);
+            if outcome.should_activate && is_home {
+                match self.ensure_owner(&m.deck_id).await {
+                    Ok(tx) => {
+                        let cmd = OwnerCmd::RevisionApproved {
+                            script: rev.clone(),
+                            auto_start: true,
+                        };
+                        if let Err(mpsc::error::TrySendError::Full(cmd)) = tx.try_send(cmd) {
+                            tokio::spawn(async move {
+                                let _ = tx.send(cmd).await;
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            deck = %m.deck_id,
+                            "trusted auto-approved revision could not spawn owner: {e}"
+                        );
+                    }
+                }
+            } else if let Some(tx) = self.owners.get(&m.deck_id).cloned()
+                && !tx.is_closed()
+            {
+                let cmd = OwnerCmd::RevisionApproved {
+                    script: rev.clone(),
+                    auto_start: false,
+                };
+                if let Err(mpsc::error::TrySendError::Full(cmd)) = tx.try_send(cmd) {
+                    tokio::spawn(async move {
+                        let _ = tx.send(cmd).await;
+                    });
+                }
+            } else if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
+                self.shared
+                    .hub
+                    .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
+            }
+        } else {
+            // Update live_cache pending_rev immediately without blocking on DeckOwner.
+            if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id) {
+                entry.status.pending_rev = Some(rev.rev);
+            }
+            self.mirror_script_ref(&m.deck_id).await;
+            if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
+                self.shared
+                    .hub
+                    .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
+            }
         }
         self.publish_changed(&m.deck_id, doc.title, false).await;
         Ok(rev)
@@ -2845,6 +3069,7 @@ impl Message<ApproveScriptMsg> for DeckSupervisor {
         {
             let cmd = OwnerCmd::RevisionApproved {
                 script: script.clone(),
+                auto_start: false,
             };
             if let Err(mpsc::error::TrySendError::Full(cmd)) = tx.try_send(cmd) {
                 tokio::spawn(async move {
@@ -2858,6 +3083,136 @@ impl Message<ApproveScriptMsg> for DeckSupervisor {
         }
         self.publish_changed(&m.deck_id, doc.title, false).await;
         Ok(script)
+    }
+}
+
+/// Owner-only machine-local permanent trust toggle (`deck_trust_set` RPC).
+/// Never exposed as an agent tool or CRDT operation.
+#[derive(Clone, Debug)]
+pub struct SetDeckTrustMsg {
+    pub deck_id: String,
+    pub trusted: bool,
+    pub actor: String,
+    pub reason: Option<String>,
+}
+
+impl Message<SetDeckTrustMsg> for DeckSupervisor {
+    type Reply = Result<DeckTrustState, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetDeckTrustMsg,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let doc = self.verify_deck_exists(&m.deck_id).await?;
+        // Non-home viewers/engines cannot enable permanent trust on a Deck homed elsewhere.
+        // Revoking any stale local grant remains permitted so a former home can always clear trust.
+        if m.trusted {
+            let _ = self.require_home(&m.deck_id).await?;
+        }
+        let rec = self
+            .shared
+            .store
+            .ensure_deck(&m.deck_id)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        self.shared.register_session(&m.deck_id, rec.session_id);
+
+        let trust = self
+            .shared
+            .store
+            .set_trust(&m.deck_id, m.trusted, &m.actor, m.reason)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+
+        // Apply ToolRegistry session approval policy immediately (`approvals=false` when trusted,
+        // `approvals=true` when revoked). Non-bypassable `human_only`/`always_ask`/OS safeguards
+        // remain enforced inside ToolRegistry regardless of this flag.
+        let _ = self.configure_deck_session(&m.deck_id, rec.session_id).await?;
+
+        if trust.trusted {
+            // Preserve current script activity (never silently start a paused or stopped Deck).
+            if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id) {
+                entry.status.trusted = true;
+            }
+            if let Some(tx) = self.owners.get(&m.deck_id).cloned()
+                && !tx.is_closed()
+            {
+                let cmd = OwnerCmd::TrustChanged { trusted: true };
+                if let Err(mpsc::error::TrySendError::Full(cmd)) = tx.try_send(cmd) {
+                    tokio::spawn(async move {
+                        let _ = tx.send(cmd).await;
+                    });
+                }
+            } else if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
+                self.shared
+                    .hub
+                    .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
+            }
+        } else {
+            // Revoke immediately cancels any in-flight tool calls and active Monty execution,
+            // returns the Deck to Stopped/reviewed mode, and leaves `last_snapshot` visible.
+            let _ = self
+                .shared
+                .registry
+                .ask(CancelCalls {
+                    session: rec.session_id,
+                })
+                .await;
+            if let Ok(Some(approval)) =
+                ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR)
+            {
+                let _ = approval
+                    .ask(tools::approval::ForgetSession(rec.session_id))
+                    .await;
+            }
+            self.shared.cancel_token(&m.deck_id);
+            self.shared.pending_approvals.lock().remove(&m.deck_id);
+            self.shared.pre_approval_state.lock().remove(&m.deck_id);
+
+            if let Some(tx) = self.owners.get(&m.deck_id).cloned()
+                && !tx.is_closed()
+            {
+                let (rtx, rrx) = oneshot::channel();
+                let revoked = tokio::time::timeout(Duration::from_secs(5), async {
+                    if tx.send(OwnerCmd::TrustRevoked { reply: rtx }).await.is_ok() {
+                        let _ = rrx.await;
+                    }
+                })
+                .await;
+                if revoked.is_err() {
+                    tracing::warn!(
+                        deck = %m.deck_id,
+                        "timed out waiting for DeckOwner to acknowledge trust revocation"
+                    );
+                    self.shared.rotate_cancel_token(&m.deck_id);
+                }
+            } else {
+                let next_epoch = rec.run_epoch.saturating_add(1);
+                let _ = self
+                    .shared
+                    .store
+                    .set_run_epoch(&m.deck_id, next_epoch)
+                    .await;
+                self.shared.rotate_cancel_token(&m.deck_id);
+                if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id) {
+                    entry.status.trusted = false;
+                    entry.status.state = RuntimeState::Stopped;
+                    entry.status.checkout_alive = false;
+                    entry.status.pending_approval = None;
+                    entry.status.run_epoch = next_epoch;
+                    entry.live_frame = None;
+                }
+                if let Ok((st, _, _)) = self.get_runtime_snapshot(&m.deck_id).await {
+                    self.shared
+                        .hub
+                        .broadcast(&m.deck_id, DeckRuntimeEvent::Status { status: st });
+                }
+            }
+        }
+
+        self.publish_changed(&m.deck_id, doc.title, false).await;
+        Ok(trust)
     }
 }
 
@@ -3790,6 +4145,8 @@ impl Message<MoveHomeMsg> for DeckSupervisor {
         if let Some(tx) = self.owners.remove(&m.deck_id) {
             let _ = tx.send(OwnerCmd::Shutdown).await;
         }
+        self.shared.cancel_token(&m.deck_id);
+        self.shared.rotate_cancel_token(&m.deck_id);
 
         let (prev_home_opt, updated_rec) = self
             .shared
@@ -3799,6 +4156,41 @@ impl Message<MoveHomeMsg> for DeckSupervisor {
             .map_err(|e| format!("{e:#}"))?;
         let previous_home_engine_id =
             prev_home_opt.unwrap_or_else(|| self.shared.local_engine_id());
+
+        // Trust grants are strictly machine-local and never replicate or transfer on `deck_move_home`.
+        // Whenever home ownership changes (or moves away from this engine), revoke any local grant
+        // and cancel in-flight tool calls so neither old nor new home inherits autonomous trust.
+        if (previous_home_engine_id != target || target != self.shared.local_engine_id())
+            && self
+                .shared
+                .store
+                .is_trusted(&m.deck_id)
+                .await
+                .unwrap_or(false)
+        {
+            let _ = self
+                .shared
+                .store
+                .set_trust(
+                    &m.deck_id,
+                    false,
+                    "system:move_home",
+                    Some(format!("home moved to {target}")),
+                )
+                .await;
+        }
+        let _ = self
+            .shared
+            .registry
+            .ask(CancelCalls {
+                session: updated_rec.session_id,
+            })
+            .await;
+        if let Ok(Some(approval)) = ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR) {
+            let _ = approval
+                .ask(tools::approval::ForgetSession(updated_rec.session_id))
+                .await;
+        }
 
         // Remove any local `.monty` dump so cold start is guaranteed.
         let _ = std::fs::remove_file(self.shared.store.monty_dump_path(updated_rec.session_id));
@@ -3825,11 +4217,18 @@ impl Message<MoveHomeMsg> for DeckSupervisor {
             .await;
 
         let mesh_status = self.shared.build_mesh_status(&m.deck_id).await.ok();
+        let trusted_after = self
+            .shared
+            .store
+            .is_trusted(&m.deck_id)
+            .await
+            .unwrap_or(false);
         if let Some(entry) = self.shared.live_cache.lock().get_mut(&m.deck_id) {
             entry.live_frame = None;
             entry.status.state = RuntimeState::Stopped;
             entry.status.checkout_alive = false;
             entry.status.run_epoch = updated_rec.run_epoch;
+            entry.status.trusted = trusted_after;
             if let Some(ref ms) = mesh_status {
                 entry.status.mesh = Some(ms.clone());
             }

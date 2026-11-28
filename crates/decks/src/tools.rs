@@ -1,8 +1,9 @@
 //! Agent tools for Decks (design doc 229).
 //!
 //! Security boundary:
-//! - Agents may propose scripts (`deck_script_propose`), which ALWAYS enter `pending_review`.
-//! - Agents CANNOT self-approve scripts (`deck_script_approve` is owner RPC only).
+//! - In default reviewed mode, proposed scripts (`deck_script_propose`) enter `pending_review`.
+//! - Agents CANNOT self-approve scripts (`deck_script_approve`) or enable/revoke Deck trust
+//!   (`deck_trust_set`); both are human-owner-press RPCs only.
 //! - Normal session tool risk classes (`Risk::ReadOnly` / `Risk::Mutating`) are preserved.
 
 use std::sync::Arc;
@@ -28,9 +29,9 @@ use crate::owner::{
 pub const DECKS_SKILL: &str = include_str!("../decks.md");
 
 const PROMPT_REMINDER: &str = "\
-Decks are native collaborative live documents (sections: `json_render`, `note`, `html`, `openui` [64 KiB cap]; review-gated Monty scripts; full session/MCP tools). \
+Decks are native collaborative live documents (sections: `json_render`, `note`, `html`, `openui` [64 KiB cap]; review-gated Monty scripts + host triggers; full session/MCP tools; load skill `decks` / `skills/decks.md` for full guide). \
 Use `deck_list`, `deck_create`, `deck_read`, `deck_section_*`, `deck_script_propose/read/run`, `deck_runtime`, `deck_interact`, and `show_deck`. \
-Scripts proposed via `deck_script_propose` require explicit owner approval before streaming or running; never fabricate connected data (label example data clearly). \
+In default reviewed mode, `deck_script_propose` enters `pending_review` until the owner approves in the Deck UI (or auto-approves if the owner granted machine-local Deck trust); agents cannot grant trust or start/resume recurring schedules; never fabricate connected data (label example data clearly). \
 Session-only artifact adapters (`mermaid`, `cells`, whiteboard-in-Deck) are unsupported in Decks.";
 
 #[derive(Clone)]
@@ -633,7 +634,7 @@ impl Tool for DeckScriptProposeTool {
     type Args = DeckScriptProposeArgs;
 
     fn description(&self) -> String {
-        "Propose a new Monty script revision (with optional declared actions and host triggers targeting existing routines) for a Deck. Always enters `pending_review` and cannot run recurring/streaming until the owner approves it in the Deck UI.".into()
+        "Propose a new Monty script revision (with optional declared actions and host triggers targeting existing routines) for a Deck. Enters `pending_review` in default reviewed mode until the owner approves it in the Deck UI (or auto-approves if the owner granted machine-local Deck trust).".into()
     }
 
     async fn call(&self, a: DeckScriptProposeArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -656,15 +657,23 @@ impl Tool for DeckScriptProposeTool {
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(structured(
+        let text = if rev.auto_approved {
+            format!(
+                "Proposed script rev {} for deck {} (status: approved, auto_approved under owner trust, {} trigger(s); digest {}).",
+                rev.rev,
+                rev.deck_id,
+                rev.triggers.len(),
+                rev.revision_sha256
+            )
+        } else {
             format!(
                 "Proposed script rev {} for deck {} (status: pending_review, {} trigger(s)). Ask the owner to review and approve it in the Deck UI.",
                 rev.rev,
                 rev.deck_id,
                 rev.triggers.len()
-            ),
-            &rev,
-        ))
+            )
+        };
+        Ok(structured(text, &rev))
     }
 }
 

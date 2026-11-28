@@ -203,6 +203,7 @@
   "deck_source_register",
   "deck_source_unregister",
   "deck_subscribe",
+  "deck_trust_set",
   "deck_unsubscribe",
   "delete_decision_training",
   "delete_external_secret",

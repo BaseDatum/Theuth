@@ -94312,11 +94312,32 @@
           },
           "runtime": {
             "$ref": "#/components/schemas/method.decks.output.DeckRuntimeStatus"
+          },
+          "trust": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.DeckTrustState"
+              }
+            ],
+            "default": {
+              "trusted": false
+            },
+            "description": "Machine-local trust grant state for this Deck (never replicated via CRDT)."
+          },
+          "trust_audit": {
+            "default": [],
+            "description": "Recent machine-local trust audit events (grants, revocations, trusted auto-approvals).",
+            "items": {
+              "$ref": "#/components/schemas/method.decks.output.DeckTrustAuditEvent"
+            },
+            "type": "array"
           }
         },
         "required": [
           "doc",
-          "runtime"
+          "runtime",
+          "trust",
+          "trust_audit"
         ],
         "type": "object"
       },
@@ -94769,6 +94790,11 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "trusted": {
+            "default": false,
+            "description": "True when this machine's owner has granted permanent autonomous trust to this Deck.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -94779,7 +94805,8 @@
           "stale",
           "consecutive_failures",
           "step_count",
-          "checkout_alive"
+          "checkout_alive",
+          "trusted"
         ],
         "type": "object"
       },
@@ -95110,6 +95137,10 @@
           "title": {
             "type": "string"
           },
+          "trusted": {
+            "default": false,
+            "type": "boolean"
+          },
           "updated_ms": {
             "format": "int64",
             "type": "integer"
@@ -95123,7 +95154,100 @@
           "session_id",
           "state",
           "stale",
+          "trusted",
           "updated_ms"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckTrustAuditEvent": {
+        "description": "Audit trail entry recording trust grants, revocations, and trusted auto-approvals.",
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "event": {
+            "description": "One of `\"granted\"`, `\"revoked\"`, or `\"auto_approved\"`.",
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "revision_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "deck_id",
+          "event",
+          "actor",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "method.decks.output.DeckTrustState": {
+        "description": "Machine-local owner trust grant for autonomous Deck execution.\nStored exclusively in protected local SQLite (`deck_trust_grants`), NEVER in CRDT,\nand never replicated or transferred across mesh home moves.",
+        "properties": {
+          "granted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "granted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trusted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "trusted"
         ],
         "type": "object"
       },
@@ -95493,6 +95617,11 @@
               "null"
             ]
           },
+          "auto_approved": {
+            "default": false,
+            "description": "True when this revision was automatically approved under an active machine-local Deck trust grant.",
+            "type": "boolean"
+          },
           "change_summary": {
             "type": "string"
           },
@@ -95572,6 +95701,7 @@
           "mode",
           "status",
           "proposed_by",
+          "auto_approved",
           "change_summary",
           "created_at"
         ],
@@ -95858,6 +95988,25 @@
           },
           "runtime": {
             "$ref": "#/components/schemas/method.decks.receiver.DeckRuntimeStatus"
+          },
+          "trust": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.DeckTrustState"
+              }
+            ],
+            "default": {
+              "trusted": false
+            },
+            "description": "Machine-local trust grant state for this Deck (never replicated via CRDT)."
+          },
+          "trust_audit": {
+            "default": [],
+            "description": "Recent machine-local trust audit events (grants, revocations, trusted auto-approvals).",
+            "items": {
+              "$ref": "#/components/schemas/method.decks.receiver.DeckTrustAuditEvent"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -96313,6 +96462,11 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "trusted": {
+            "default": false,
+            "description": "True when this machine's owner has granted permanent autonomous trust to this Deck.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -96649,6 +96803,10 @@
           "title": {
             "type": "string"
           },
+          "trusted": {
+            "default": false,
+            "type": "boolean"
+          },
           "updated_ms": {
             "format": "int64",
             "type": "integer"
@@ -96663,6 +96821,98 @@
           "state",
           "stale",
           "updated_ms"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeckTrustAuditEvent": {
+        "description": "Audit trail entry recording trust grants, revocations, and trusted auto-approvals.",
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "deck_id": {
+            "type": "string"
+          },
+          "event": {
+            "description": "One of `\"granted\"`, `\"revoked\"`, or `\"auto_approved\"`.",
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rev": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "revision_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "deck_id",
+          "event",
+          "actor",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "method.decks.receiver.DeckTrustState": {
+        "description": "Machine-local owner trust grant for autonomous Deck execution.\nStored exclusively in protected local SQLite (`deck_trust_grants`), NEVER in CRDT,\nand never replicated or transferred across mesh home moves.",
+        "properties": {
+          "granted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "granted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trusted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "trusted"
         ],
         "type": "object"
       },
@@ -97027,6 +97277,11 @@
               "string",
               "null"
             ]
+          },
+          "auto_approved": {
+            "default": false,
+            "description": "True when this revision was automatically approved under an active machine-local Deck trust grant.",
+            "type": "boolean"
           },
           "change_summary": {
             "type": "string"
@@ -156265,6 +156520,53 @@
             "integer",
             "string"
           ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "decks"
+    },
+    {
+      "name": "deck_trust_set",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "deck_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "deckId"
+          ]
+        },
+        {
+          "name": "trusted",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.decks.output.DeckTrustState"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.decks.receiver.DeckTrustState"
         }
       },
       "x-theuth-audience": "owner",

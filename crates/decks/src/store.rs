@@ -19,12 +19,22 @@ use crate::mesh::{
     validate_source_id,
 };
 use crate::model::{
-    DeckSnapshot, DeclaredAction, InteractErrorCode, InteractResponse, MAX_ACTION_NAME_BYTES,
-    MAX_CHANGE_SUMMARY_BYTES, MAX_DECLARED_ACTIONS, MAX_INTERVAL_SECS, MAX_SCRIPT_CODE_BYTES,
-    MIN_INTERVAL_SECS, ScriptMode, ScriptRevision, ScriptStatus, TriggerSpec,
-    canonical_json_string, clamp_interval_secs,
+    DeckSnapshot, DeckTrustAuditEvent, DeckTrustState, DeclaredAction, InteractErrorCode,
+    InteractResponse, MAX_ACTION_NAME_BYTES, MAX_CHANGE_SUMMARY_BYTES, MAX_DECLARED_ACTIONS,
+    MAX_INTERVAL_SECS, MAX_SCRIPT_CODE_BYTES, MIN_INTERVAL_SECS, ScriptMode, ScriptRevision,
+    ScriptStatus, TriggerSpec, canonical_json_string, clamp_interval_secs,
 };
 use crate::triggers::{SourceTriggerState, TriggerState, normalize_triggers, validate_triggers};
+
+/// Result of proposing a Deck script revision, including trusted auto-approval outcome.
+#[derive(Clone, Debug)]
+pub struct ProposeOutcome {
+    pub revision: ScriptRevision,
+    pub auto_approved: bool,
+    /// True when the Deck was previously streaming/scheduled and the auto-approved revision
+    /// should activate immediately rather than remaining stopped/paused.
+    pub should_activate: bool,
+}
 
 /// Durable Deck record tying a `DocKind::Deck` doc ID to its dedicated persisted `SessionId`
 /// and authoritative home engine lease.
@@ -271,11 +281,34 @@ impl DeckStore {
                 proposed_by TEXT NOT NULL,
                 approved_by TEXT,
                 approved_at TEXT,
+                auto_approved INTEGER NOT NULL DEFAULT 0,
                 rejected_reason TEXT,
                 change_summary TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (deck_id, rev)
             )",
+            "CREATE TABLE IF NOT EXISTS deck_trust_grants (
+                deck_id TEXT PRIMARY KEY,
+                trusted INTEGER NOT NULL DEFAULT 0,
+                granted_by TEXT,
+                granted_at TEXT,
+                revoked_by TEXT,
+                revoked_at TEXT,
+                reason TEXT,
+                updated_at TEXT NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS deck_trust_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deck_id TEXT NOT NULL,
+                event TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                rev INTEGER,
+                revision_sha256 TEXT,
+                note TEXT,
+                created_at TEXT NOT NULL
+            )",
+            "CREATE INDEX IF NOT EXISTS idx_deck_trust_audit_deck_id
+                ON deck_trust_audit (deck_id, id DESC)",
             "CREATE TABLE IF NOT EXISTS deck_snapshots (
                 snapshot_id TEXT PRIMARY KEY,
                 deck_id TEXT NOT NULL,
@@ -475,6 +508,11 @@ impl DeckStore {
         .await;
         let _ = sqlx::query(
             "ALTER TABLE deck_script_revisions ADD COLUMN triggers_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&self.pool)
+        .await;
+        let _ = sqlx::query(
+            "ALTER TABLE deck_script_revisions ADD COLUMN auto_approved INTEGER NOT NULL DEFAULT 0",
         )
         .execute(&self.pool)
         .await;
@@ -697,6 +735,8 @@ impl DeckStore {
                 "DELETE FROM deck_state_checkpoints WHERE deck_id = ?1",
                 "DELETE FROM deck_snapshots WHERE deck_id = ?1",
                 "DELETE FROM deck_script_revisions WHERE deck_id = ?1",
+                "DELETE FROM deck_trust_audit WHERE deck_id = ?1",
+                "DELETE FROM deck_trust_grants WHERE deck_id = ?1",
                 "DELETE FROM deck_meta WHERE deck_id = ?1",
             ] {
                 sqlx::query(sql).bind(deck_id).execute(&mut *conn).await?;
@@ -716,10 +756,187 @@ impl DeckStore {
         }
     }
 
+    /// Read machine-local trust grant state for a Deck (defaults to `trusted = false`).
+    pub async fn get_trust(&self, deck_id: &str) -> Result<DeckTrustState> {
+        let mut conn = self.pool.acquire().await?;
+        get_trust_tx(&mut conn, deck_id).await
+    }
+
+    /// Convenience check for whether a Deck currently holds a machine-local owner trust grant.
+    pub async fn is_trusted(&self, deck_id: &str) -> Result<bool> {
+        Ok(self.get_trust(deck_id).await?.trusted)
+    }
+
+    /// List recent machine-local trust audit events (newest first).
+    pub async fn list_trust_audit(
+        &self,
+        deck_id: &str,
+        limit: u32,
+    ) -> Result<Vec<DeckTrustAuditEvent>> {
+        let rows = sqlx::query(
+            "SELECT id, deck_id, event, actor, rev, revision_sha256, note, created_at
+             FROM deck_trust_audit
+             WHERE deck_id = ?1
+             ORDER BY id DESC
+             LIMIT ?2",
+        )
+        .bind(deck_id)
+        .bind(i64::from(limit.clamp(1, 200)))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| DeckTrustAuditEvent {
+                id: r.get(0),
+                deck_id: r.get(1),
+                event: r.get(2),
+                actor: r.get(3),
+                rev: r.get::<Option<i64>, _>(4).map(|v| v.max(0) as u64),
+                revision_sha256: r.get(5),
+                note: r.get(6),
+                created_at: r.get(7),
+            })
+            .collect())
+    }
+
+    /// Grant or revoke permanent machine-local autonomous trust for a Deck inside a
+    /// `BEGIN IMMEDIATE` transaction, recording an immutable audit event.
+    ///
+    /// - Granting trust preserves existing `stream_enabled` / `schedule_enabled` (never silently
+    ///   starts a paused/stopped Deck).
+    /// - Revoking trust immediately clears `stream_enabled = 0, schedule_enabled = 0` so active
+    ///   execution does not survive or auto-resume after restart.
+    pub async fn set_trust(
+        &self,
+        deck_id: &str,
+        trusted: bool,
+        actor: &str,
+        reason: Option<String>,
+    ) -> Result<DeckTrustState> {
+        let now = Utc::now().to_rfc3339();
+        let reason = reason.and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.chars().take(512).collect::<String>())
+            }
+        });
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let res: Result<DeckTrustState> = async {
+            let meta = ensure_deck_tx(&mut conn, deck_id, &now).await?;
+            let active_rev = meta.active_rev;
+            let active_sha = match active_rev {
+                Some(rev) => get_script_revision_tx(&mut conn, deck_id, rev)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|s| s.revision_sha256),
+                None => None,
+            };
+
+            if trusted {
+                sqlx::query(
+                    "INSERT INTO deck_trust_grants
+                     (deck_id, trusted, granted_by, granted_at, revoked_by, revoked_at, reason, updated_at)
+                     VALUES (?1, 1, ?2, ?3, NULL, NULL, ?4, ?3)
+                     ON CONFLICT(deck_id) DO UPDATE SET
+                       trusted = 1,
+                       granted_by = excluded.granted_by,
+                       granted_at = excluded.granted_at,
+                       revoked_by = NULL,
+                       revoked_at = NULL,
+                       reason = excluded.reason,
+                       updated_at = excluded.updated_at",
+                )
+                .bind(deck_id)
+                .bind(actor)
+                .bind(&now)
+                .bind(&reason)
+                .execute(&mut *conn)
+                .await?;
+
+                sqlx::query(
+                    "INSERT INTO deck_trust_audit
+                     (deck_id, event, actor, rev, revision_sha256, note, created_at)
+                     VALUES (?1, 'granted', ?2, ?3, ?4, ?5, ?6)",
+                )
+                .bind(deck_id)
+                .bind(actor)
+                .bind(active_rev.map(|r| r as i64))
+                .bind(&active_sha)
+                .bind(&reason)
+                .bind(&now)
+                .execute(&mut *conn)
+                .await?;
+            } else {
+                sqlx::query(
+                    "INSERT INTO deck_trust_grants
+                     (deck_id, trusted, granted_by, granted_at, revoked_by, revoked_at, reason, updated_at)
+                     VALUES (?1, 0, NULL, NULL, ?2, ?3, ?4, ?3)
+                     ON CONFLICT(deck_id) DO UPDATE SET
+                       trusted = 0,
+                       revoked_by = excluded.revoked_by,
+                       revoked_at = excluded.revoked_at,
+                       reason = excluded.reason,
+                       updated_at = excluded.updated_at",
+                )
+                .bind(deck_id)
+                .bind(actor)
+                .bind(&now)
+                .bind(&reason)
+                .execute(&mut *conn)
+                .await?;
+
+                // Revoking trust disables recurring stream/schedule immediately in durable state.
+                sqlx::query(
+                    "UPDATE deck_meta
+                     SET stream_enabled = 0, schedule_enabled = 0, updated_at = ?2
+                     WHERE deck_id = ?1",
+                )
+                .bind(deck_id)
+                .bind(&now)
+                .execute(&mut *conn)
+                .await?;
+
+                sqlx::query(
+                    "INSERT INTO deck_trust_audit
+                     (deck_id, event, actor, rev, revision_sha256, note, created_at)
+                     VALUES (?1, 'revoked', ?2, ?3, ?4, ?5, ?6)",
+                )
+                .bind(deck_id)
+                .bind(actor)
+                .bind(active_rev.map(|r| r as i64))
+                .bind(&active_sha)
+                .bind(&reason)
+                .bind(&now)
+                .execute(&mut *conn)
+                .await?;
+            }
+
+            get_trust_tx(&mut conn, deck_id).await
+        }
+        .await;
+        match res {
+            Ok(state) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(state)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
+    }
+
     /// Propose a new script revision inside a `BEGIN IMMEDIATE` transaction.
-    /// ALWAYS enters as `pending_review`!
+    /// In default reviewed mode, always enters as `pending_review`.
+    /// When the Deck holds a machine-local owner trust grant, auto-approves immediately,
+    /// retains canonical `revision_sha256` + audit log entry, and preserves the prior
+    /// enabled schedule/stream state (`should_activate`).
     #[allow(clippy::too_many_arguments)]
-    pub async fn propose_script(
+    pub async fn propose_script_with_trust(
         &self,
         deck_id: &str,
         code: String,
@@ -730,7 +947,7 @@ impl DeckStore {
         schedule_cron: Option<String>,
         proposed_by: String,
         change_summary: String,
-    ) -> Result<ScriptRevision> {
+    ) -> Result<ProposeOutcome> {
         validate_script_proposal(&code, &declared_actions, &triggers, &change_summary)?;
         let triggers = normalize_triggers(&triggers);
         let interval_secs = interval_secs.map(clamp_interval_secs);
@@ -749,8 +966,9 @@ impl DeckStore {
 
         let mut conn = self.pool.acquire().await?;
         sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
-        let res: Result<ScriptRevision> = async {
-            ensure_deck_tx(&mut conn, deck_id, &now).await?;
+        let res: Result<ProposeOutcome> = async {
+            let meta = ensure_deck_tx(&mut conn, deck_id, &now).await?;
+            let trust = get_trust_tx(&mut conn, deck_id).await?;
             let next_rev: i64 = sqlx::query_scalar(
                 "SELECT COALESCE(MAX(rev), 0) + 1 FROM deck_script_revisions WHERE deck_id = ?1",
             )
@@ -759,76 +977,224 @@ impl DeckStore {
             .await?;
             let rev = next_rev as u64;
 
-            // 229 B3: supersede any prior unreviewed pending_review revision atomically.
-            sqlx::query(
-                "UPDATE deck_script_revisions SET status = 'superseded'
-                 WHERE deck_id = ?1 AND status = 'pending_review'",
-            )
-            .bind(deck_id)
-            .execute(&mut *conn)
-            .await?;
+            if trust.trusted {
+                // Supersede any prior pending_review or approved revisions atomically.
+                sqlx::query(
+                    "UPDATE deck_script_revisions SET status = 'superseded'
+                     WHERE deck_id = ?1 AND status IN ('pending_review', 'approved')",
+                )
+                .bind(deck_id)
+                .execute(&mut *conn)
+                .await?;
 
-            sqlx::query(
-                "INSERT INTO deck_script_revisions
-                 (deck_id, rev, code, code_sha256, revision_sha256, declared_actions_json, triggers_json, mode,
-                  interval_secs, schedule_cron, status, proposed_by, approved_by, approved_at,
-                  rejected_reason, change_summary, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending_review', ?11, NULL, NULL, NULL, ?12, ?13)",
-            )
-            .bind(deck_id)
-            .bind(next_rev)
-            .bind(&code)
-            .bind(&code_sha256)
-            .bind(&revision_sha256)
-            .bind(&actions_json)
-            .bind(&triggers_json)
-            .bind(mode.as_str())
-            .bind(interval_secs.map(|v| v as i64))
-            .bind(&schedule_cron)
-            .bind(&proposed_by)
-            .bind(&change_summary)
-            .bind(&now)
-            .execute(&mut *conn)
-            .await?;
+                let granter = trust.granted_by.as_deref().unwrap_or("owner");
+                let approved_by = format!("auto_trusted:{granter}");
 
-            sqlx::query("UPDATE deck_meta SET pending_rev = ?2, updated_at = ?3 WHERE deck_id = ?1")
+                sqlx::query(
+                    "INSERT INTO deck_script_revisions
+                     (deck_id, rev, code, code_sha256, revision_sha256, declared_actions_json, triggers_json, mode,
+                      interval_secs, schedule_cron, status, proposed_by, approved_by, approved_at,
+                      auto_approved, rejected_reason, change_summary, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'approved', ?11, ?12, ?13, 1, NULL, ?14, ?15)",
+                )
+                .bind(deck_id)
+                .bind(next_rev)
+                .bind(&code)
+                .bind(&code_sha256)
+                .bind(&revision_sha256)
+                .bind(&actions_json)
+                .bind(&triggers_json)
+                .bind(mode.as_str())
+                .bind(interval_secs.map(|v| v as i64))
+                .bind(&schedule_cron)
+                .bind(&proposed_by)
+                .bind(&approved_by)
+                .bind(&now)
+                .bind(&change_summary)
+                .bind(&now)
+                .execute(&mut *conn)
+                .await?;
+
+                // Future revision activation follows previous enabled schedule/stream state;
+                // a paused/stopped Deck stays paused/stopped.
+                let should_activate = meta.stream_enabled || meta.schedule_enabled;
+                let (new_stream_en, new_sched_en) = if should_activate {
+                    match mode {
+                        ScriptMode::Oneshot => (false, true),
+                        ScriptMode::Streaming | ScriptMode::Hybrid => (
+                            true,
+                            interval_secs.is_some() || schedule_cron.is_some(),
+                        ),
+                    }
+                } else {
+                    (false, false)
+                };
+
+                sqlx::query(
+                    "UPDATE deck_meta
+                     SET active_rev = ?2, pending_rev = NULL, schedule_cron = ?3,
+                         stream_enabled = ?4, schedule_enabled = ?5, updated_at = ?6
+                     WHERE deck_id = ?1",
+                )
+                .bind(deck_id)
+                .bind(next_rev)
+                .bind(&schedule_cron)
+                .bind(i64::from(new_stream_en))
+                .bind(i64::from(new_sched_en))
+                .bind(&now)
+                .execute(&mut *conn)
+                .await?;
+
+                let audit_note = format!(
+                    "auto-approved under trust grant by {granter}: {change_summary}"
+                );
+                sqlx::query(
+                    "INSERT INTO deck_trust_audit
+                     (deck_id, event, actor, rev, revision_sha256, note, created_at)
+                     VALUES (?1, 'auto_approved', ?2, ?3, ?4, ?5, ?6)",
+                )
+                .bind(deck_id)
+                .bind(&proposed_by)
+                .bind(next_rev)
+                .bind(&revision_sha256)
+                .bind(&audit_note)
+                .bind(&now)
+                .execute(&mut *conn)
+                .await?;
+
+                Ok(ProposeOutcome {
+                    revision: ScriptRevision {
+                        deck_id: deck_id.to_owned(),
+                        rev,
+                        code,
+                        code_sha256,
+                        revision_sha256,
+                        declared_actions,
+                        triggers,
+                        mode,
+                        interval_secs,
+                        schedule_cron,
+                        status: ScriptStatus::Approved,
+                        proposed_by,
+                        approved_by: Some(approved_by),
+                        approved_at: Some(now.clone()),
+                        auto_approved: true,
+                        rejected_reason: None,
+                        change_summary,
+                        created_at: now,
+                    },
+                    auto_approved: true,
+                    should_activate,
+                })
+            } else {
+                // 229 B3: supersede any prior unreviewed pending_review revision atomically.
+                sqlx::query(
+                    "UPDATE deck_script_revisions SET status = 'superseded'
+                     WHERE deck_id = ?1 AND status = 'pending_review'",
+                )
+                .bind(deck_id)
+                .execute(&mut *conn)
+                .await?;
+
+                sqlx::query(
+                    "INSERT INTO deck_script_revisions
+                     (deck_id, rev, code, code_sha256, revision_sha256, declared_actions_json, triggers_json, mode,
+                      interval_secs, schedule_cron, status, proposed_by, approved_by, approved_at,
+                      auto_approved, rejected_reason, change_summary, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending_review', ?11, NULL, NULL, 0, NULL, ?12, ?13)",
+                )
+                .bind(deck_id)
+                .bind(next_rev)
+                .bind(&code)
+                .bind(&code_sha256)
+                .bind(&revision_sha256)
+                .bind(&actions_json)
+                .bind(&triggers_json)
+                .bind(mode.as_str())
+                .bind(interval_secs.map(|v| v as i64))
+                .bind(&schedule_cron)
+                .bind(&proposed_by)
+                .bind(&change_summary)
+                .bind(&now)
+                .execute(&mut *conn)
+                .await?;
+
+                sqlx::query(
+                    "UPDATE deck_meta SET pending_rev = ?2, updated_at = ?3 WHERE deck_id = ?1",
+                )
                 .bind(deck_id)
                 .bind(next_rev)
                 .bind(&now)
                 .execute(&mut *conn)
                 .await?;
 
-            Ok(ScriptRevision {
-                deck_id: deck_id.to_owned(),
-                rev,
-                code,
-                code_sha256,
-                revision_sha256,
-                declared_actions,
-                triggers,
-                mode,
-                interval_secs,
-                schedule_cron,
-                status: ScriptStatus::PendingReview,
-                proposed_by,
-                approved_by: None,
-                approved_at: None,
-                rejected_reason: None,
-                change_summary,
-                created_at: now,
-            })
+                Ok(ProposeOutcome {
+                    revision: ScriptRevision {
+                        deck_id: deck_id.to_owned(),
+                        rev,
+                        code,
+                        code_sha256,
+                        revision_sha256,
+                        declared_actions,
+                        triggers,
+                        mode,
+                        interval_secs,
+                        schedule_cron,
+                        status: ScriptStatus::PendingReview,
+                        proposed_by,
+                        approved_by: None,
+                        approved_at: None,
+                        auto_approved: false,
+                        rejected_reason: None,
+                        change_summary,
+                        created_at: now,
+                    },
+                    auto_approved: false,
+                    should_activate: false,
+                })
+            }
         }
         .await;
         match res {
-            Ok(rev) => {
+            Ok(outcome) => {
                 sqlx::query("COMMIT").execute(&mut *conn).await?;
-                Ok(rev)
+                Ok(outcome)
             }
             Err(e) => {
                 let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
                 Err(e)
             }
         }
+    }
+
+    /// Convenience wrapper returning only the proposed [`ScriptRevision`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn propose_script(
+        &self,
+        deck_id: &str,
+        code: String,
+        declared_actions: Vec<DeclaredAction>,
+        triggers: Vec<TriggerSpec>,
+        mode: ScriptMode,
+        interval_secs: Option<u64>,
+        schedule_cron: Option<String>,
+        proposed_by: String,
+        change_summary: String,
+    ) -> Result<ScriptRevision> {
+        Ok(self
+            .propose_script_with_trust(
+                deck_id,
+                code,
+                declared_actions,
+                triggers,
+                mode,
+                interval_secs,
+                schedule_cron,
+                proposed_by,
+                change_summary,
+            )
+            .await?
+            .revision)
     }
 
     /// Owner approval gate (229 B2/B3): runs inside a `BEGIN IMMEDIATE` transaction,
@@ -1025,7 +1391,7 @@ impl DeckStore {
         let row = sqlx::query(
             "SELECT deck_id, rev, code, code_sha256, revision_sha256, declared_actions_json,
                     triggers_json, mode, interval_secs, schedule_cron, status, proposed_by,
-                    approved_by, approved_at, rejected_reason, change_summary, created_at
+                    approved_by, approved_at, auto_approved, rejected_reason, change_summary, created_at
              FROM deck_script_revisions WHERE deck_id = ?1 ORDER BY rev DESC LIMIT 1",
         )
         .bind(deck_id)
@@ -2941,6 +3307,27 @@ fn parse_source_status_row(r: sqlx::sqlite::SqliteRow) -> DeckSourceStatus {
     }
 }
 
+async fn get_trust_tx(conn: &mut SqliteConnection, deck_id: &str) -> Result<DeckTrustState> {
+    let row = sqlx::query(
+        "SELECT trusted, granted_by, granted_at, revoked_by, revoked_at, reason
+         FROM deck_trust_grants WHERE deck_id = ?1",
+    )
+    .bind(deck_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(match row {
+        Some(r) => DeckTrustState {
+            trusted: r.get::<i64, _>(0) != 0,
+            granted_by: r.get(1),
+            granted_at: r.get(2),
+            revoked_by: r.get(3),
+            revoked_at: r.get(4),
+            reason: r.get(5),
+        },
+        None => DeckTrustState::default(),
+    })
+}
+
 async fn get_script_revision_tx(
     conn: &mut SqliteConnection,
     deck_id: &str,
@@ -2949,7 +3336,7 @@ async fn get_script_revision_tx(
     let row = sqlx::query(
         "SELECT deck_id, rev, code, code_sha256, revision_sha256, declared_actions_json,
                 triggers_json, mode, interval_secs, schedule_cron, status, proposed_by,
-                approved_by, approved_at, rejected_reason, change_summary, created_at
+                approved_by, approved_at, auto_approved, rejected_reason, change_summary, created_at
          FROM deck_script_revisions WHERE deck_id = ?1 AND rev = ?2",
     )
     .bind(deck_id)
@@ -3031,9 +3418,10 @@ fn parse_script_row(r: sqlx::sqlite::SqliteRow) -> Result<ScriptRevision> {
         proposed_by: r.get(11),
         approved_by: r.get(12),
         approved_at: r.get(13),
-        rejected_reason: r.get(14),
-        change_summary: r.get(15),
-        created_at: r.get(16),
+        auto_approved: r.get::<i64, _>(14) != 0,
+        rejected_reason: r.get(15),
+        change_summary: r.get(16),
+        created_at: r.get(17),
     })
 }
 

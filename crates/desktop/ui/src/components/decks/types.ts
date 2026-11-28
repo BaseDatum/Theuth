@@ -111,8 +111,29 @@ export type ScriptRevision = {
   proposed_by: string
   approved_by?: string | null
   approved_at?: string | null
+  auto_approved?: boolean
   rejected_reason?: string | null
   change_summary: string
+  created_at: string
+}
+
+export type DeckTrustState = {
+  trusted: boolean
+  granted_by?: string | null
+  granted_at?: string | null
+  revoked_by?: string | null
+  revoked_at?: string | null
+  reason?: string | null
+}
+
+export type DeckTrustAuditEvent = {
+  id: number
+  deck_id: string
+  event: string
+  actor: string
+  rev?: number | null
+  revision_sha256?: string | null
+  note?: string | null
   created_at: string
 }
 
@@ -207,6 +228,7 @@ export type DeckRuntimeStatus = {
   consecutive_failures: number
   step_count: number
   checkout_alive: boolean
+  trusted?: boolean
   pending_approval?: PendingApproval | null
   mesh?: DeckMeshStatus | null
 }
@@ -269,6 +291,7 @@ export type DeckSummary = {
   session_id: string
   state: RuntimeState
   stale: boolean
+  trusted?: boolean
   active_rev?: number | null
   pending_rev?: number | null
   home_engine_id?: string | null
@@ -282,6 +305,8 @@ export type DeckDetail = {
   pending_script?: ScriptRevision | null
   last_snapshot?: DeckSnapshot | null
   live_frame?: LiveFrame | null
+  trust?: DeckTrustState
+  trust_audit?: DeckTrustAuditEvent[]
 }
 
 export type DeckRuntimeEvent =

@@ -38,14 +38,17 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
 agent = { workspace = true, features = ["test-support"] }
+base64 = { workspace = true }
 figment = { workspace = true }
 tempfile = "3"
 tracing-subscriber = { workspace = true }
+yrs = { workspace = true }
 
 [features]
 inproc-monty = ["agent/inproc-monty"]

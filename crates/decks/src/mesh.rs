@@ -918,6 +918,7 @@ impl DeckSourceRuntime {
             last_snapshot: self.last_snapshot.clone(),
         };
         let dump_path = self.store.monty_dump_path(session_id);
+        let cancel = tokio_util::sync::CancellationToken::new();
         let (checkout, _mode, effects) = DeckCheckout::open_or_restore(
             pool,
             registry,
@@ -929,6 +930,7 @@ impl DeckSourceRuntime {
             None,
             false,
             &turn_cx,
+            &cancel,
             &mut |_| {},
         )
         .await?;
@@ -950,7 +952,8 @@ impl DeckSourceRuntime {
         let Some(checkout) = self.checkout.as_mut() else {
             return Err("local Monty checkout is not attached to this source runtime".into());
         };
-        let outcome = checkout.run_step(&turn_cx, &mut |_| {}).await?;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let outcome = checkout.run_step(&turn_cx, &cancel, &mut |_| {}).await?;
         if let Some(st) = outcome.effects.checkpoint_state {
             self.last_state = st;
         }

@@ -17,6 +17,7 @@ import {
   type DeckLiveState,
   deckDetailKey,
   decksKey,
+  mergeDetailRuntime,
   selectLatestDeckData,
   shouldApplyRuntimeStatus,
   shouldApplyStreamItem,
@@ -204,6 +205,7 @@ function makeLiveStateStub(detail: DeckDetail, overrides: Partial<DeckLiveState>
     controlRuntime: vi.fn(async () => {}),
     approveScript: vi.fn(async () => null),
     rejectScript: vi.fn(async () => null),
+    setTrust: vi.fn(async () => null),
     resolveApproval: vi.fn(async () => {}),
     sectionAdd: vi.fn(async () => detail.doc.sections[0]!),
     sectionPatch: vi.fn(async () => detail.doc.sections[0]!),
@@ -1098,5 +1100,191 @@ describe('DeckView Phase 2: H12 chrome/title/popout, Medium #1/#2/#8/#11/#12, an
     expect(reviewTriggers.textContent).toContain('reset 70')
     expect(reviewTriggers.textContent).toContain('cooldown 300s')
     expect(reviewTriggers.textContent).toContain('ops-alert')
+  })
+
+  it('shows explicit owner trust consent, persistent Trusted badge, Revoke control, and audit log ONLY in full-page UI (never embedded) and disables enabling trust on non-home viewers', async () => {
+    const setTrust = vi.fn(async (trusted: boolean) => ({
+      trusted,
+      granted_by: 'owner',
+      granted_at: '2026-11-28T01:00:00Z',
+      revoked_by: trusted ? null : 'owner',
+      revoked_at: trusted ? null : '2026-11-28T02:00:00Z',
+      reason: null,
+    }))
+    const untrustedDetail = makeDetail('deck-trust', {
+      trust: {
+        trusted: false,
+        granted_by: null,
+        granted_at: null,
+        revoked_by: null,
+        revoked_at: null,
+        reason: null,
+      },
+      trust_audit: [],
+    })
+
+    // 1. Full-page untrusted: shows Trust this Deck button, no Trusted badge yet
+    await act(async () => {
+      root.render(
+        h(
+          QueryClientProvider,
+          { client: qc },
+          h(DeckView, { deckId: 'deck-trust', liveState: makeLiveStateStub(untrustedDetail, { setTrust }) }),
+        ),
+      )
+    })
+    expect(el.querySelector('[data-deck-trusted-badge]')).toBeNull()
+    const openBtn = el.querySelector<HTMLButtonElement>('[data-deck-trust-open]')!
+    expect(openBtn).not.toBeNull()
+    expect(openBtn.disabled).toBe(false)
+    expect(el.querySelector('[data-deck-trust-confirm-panel]')).toBeNull()
+
+    // Clicking Trust this Deck opens explicit confirmation panel with required explanation
+    await act(async () => {
+      openBtn.click()
+    })
+    const panel = el.querySelector('[data-deck-trust-confirm-panel]')!
+    expect(panel).not.toBeNull()
+    expect(panel.textContent).toContain('runs current/future Monty code and tool/MCP calls without approval prompts')
+    expect(panel.textContent).toContain('human_only')
+    expect(panel.textContent).toContain('always_ask')
+
+    // Confirming calls setTrust(true)
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-deck-trust-confirm]')!.click()
+    })
+    expect(setTrust).toHaveBeenCalledWith(true)
+
+    // 2. Full-page trusted: shows persistent Trusted badge, Revoke trust button, and inspector audit trail
+    const trustedDetail = makeDetail('deck-trust', {
+      runtime: { ...untrustedDetail.runtime, trusted: true },
+      active_script: makeScript({
+        deck_id: 'deck-trust',
+        rev: 2,
+        status: 'approved',
+        auto_approved: true,
+        approved_by: 'trusted:owner',
+      }),
+      trust: {
+        trusted: true,
+        granted_by: 'owner',
+        granted_at: '2026-11-28T01:00:00Z',
+        revoked_by: null,
+        revoked_at: null,
+        reason: null,
+      },
+      trust_audit: [
+        {
+          id: 2,
+          deck_id: 'deck-trust',
+          event: 'auto_approved',
+          actor: 'agent',
+          rev: 2,
+          revision_sha256: 'revdigest-rev2-canonical',
+          note: 'auto-approved under owner trust',
+          created_at: '2026-11-28T01:05:00Z',
+        },
+        {
+          id: 1,
+          deck_id: 'deck-trust',
+          event: 'granted',
+          actor: 'owner',
+          rev: null,
+          revision_sha256: null,
+          note: null,
+          created_at: '2026-11-28T01:00:00Z',
+        },
+      ],
+    })
+    await act(async () => {
+      root.render(
+        h(
+          QueryClientProvider,
+          { client: qc },
+          h(DeckView, { deckId: 'deck-trust', liveState: makeLiveStateStub(trustedDetail, { setTrust }) }),
+        ),
+      )
+    })
+    expect(el.querySelector('[data-deck-trusted-badge]')?.textContent).toContain('Trusted')
+    const revokeBtn = el.querySelector<HTMLButtonElement>('[data-deck-trust-revoke]')!
+    expect(revokeBtn).not.toBeNull()
+
+    // Open Script inspector and verify audit trail + auto-approved label
+    const scriptBtn = [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      b.textContent?.includes('Script'),
+    )!
+    await act(async () => {
+      scriptBtn.click()
+    })
+    expect(el.querySelector('[data-deck-inspector-trust-mode]')?.textContent).toBe('trusted')
+    const auditEl = el.querySelector('[data-deck-trust-audit]')!
+    expect(auditEl).not.toBeNull()
+    expect(auditEl.textContent).toContain('auto_approved')
+    expect(auditEl.textContent).toContain('granted')
+    expect(auditEl.textContent).toContain('revdigest-re')
+
+    await act(async () => {
+      revokeBtn.click()
+    })
+    expect(setTrust).toHaveBeenCalledWith(false)
+
+    // 3. Embedded whiteboard Deck card: NEVER shows Trusted badge or Trust/Revoke controls
+    await act(async () => {
+      root.render(
+        h(
+          QueryClientProvider,
+          { client: qc },
+          h(DeckView, {
+            deckId: 'deck-trust',
+            embedded: true,
+            liveState: makeLiveStateStub(trustedDetail, { setTrust }),
+          }),
+        ),
+      )
+    })
+    expect(el.querySelector('[data-deck-trusted-badge]')).toBeNull()
+    expect(el.querySelector('[data-deck-trust-open]')).toBeNull()
+    expect(el.querySelector('[data-deck-trust-revoke]')).toBeNull()
+    expect(el.querySelector('[data-deck-trust-confirm-panel]')).toBeNull()
+
+    // 4. Non-home mesh viewer: Trust this Deck button is disabled
+    const nonHomeDetail = makeDetail('deck-trust', {
+      runtime: {
+        ...untrustedDetail.runtime,
+        mesh: {
+          deck_id: 'deck-trust',
+          home_engine_id: 'engine-home',
+          local_engine_id: 'engine-viewer',
+          is_home: false,
+          home_online: true,
+          home_epoch: 1,
+          execution_paused_reason: 'not_home_engine',
+          sources: [],
+        },
+      },
+      trust: untrustedDetail.trust,
+      trust_audit: [],
+    })
+    await act(async () => {
+      root.render(
+        h(
+          QueryClientProvider,
+          { client: qc },
+          h(DeckView, { deckId: 'deck-trust', liveState: makeLiveStateStub(nonHomeDetail, { setTrust }) }),
+        ),
+      )
+    })
+    const nonHomeTrustBtn = el.querySelector<HTMLButtonElement>('[data-deck-trust-open]')!
+    expect(nonHomeTrustBtn).not.toBeNull()
+    expect(nonHomeTrustBtn.disabled).toBe(true)
+  })
+
+  it('mergeDetailRuntime adopts trusted flag changes at equal run_epoch without clobbering newer live step_count', () => {
+    const prev = { ...makeDetail('deck-m').runtime, run_epoch: 2, step_count: 9, state: 'streaming' as const, trusted: false }
+    const next = { ...makeDetail('deck-m').runtime, run_epoch: 2, step_count: 4, state: 'paused' as const, trusted: true }
+    const merged = mergeDetailRuntime(prev, next, true)
+    expect(merged.trusted).toBe(true)
+    expect(merged.step_count).toBe(9)
+    expect(merged.state).toBe('streaming')
   })
 })

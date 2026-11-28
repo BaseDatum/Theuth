@@ -20,15 +20,15 @@ use crate::mesh::{
     DeckMeshStatus, DeckMoveHomeResult, DeckSourceEvent, DeckSourceStatus, IngestSourceAck,
 };
 use crate::model::{
-    DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary, DeclaredAction,
-    InteractResponse, RuntimeControlOp, ScriptMode, ScriptRevision, TriggerSpec,
+    DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary, DeckTrustState,
+    DeclaredAction, InteractResponse, RuntimeControlOp, ScriptMode, ScriptRevision, TriggerSpec,
 };
 use crate::owner::{
     ApproveScriptMsg, CreateDeckMsg, DECKS_ACTOR, DeckSupervisor, FocusSectionMsg, GetDeck,
     GetLocalEngineIdMsg, GetMeshStatusMsg, GetSnapshotMsg, IngestSourceEventMsg, InteractMsg,
     ListDecks, ListSnapshotsMsg, MoveHomeMsg, ProposeScriptMsg, ReadScriptMsg, RegisterSourceMsg,
     RejectScriptMsg, RuntimeControlMsg, SectionAddMsg, SectionArchiveMsg, SectionHistoryMsg,
-    SectionMoveMsg, SectionPatchMsg, SubscribeDeckMsg, UNAUTHORIZED_INTERACT_ERR,
+    SectionMoveMsg, SectionPatchMsg, SetDeckTrustMsg, SubscribeDeckMsg, UNAUTHORIZED_INTERACT_ERR,
     UnregisterSourceMsg,
 };
 
@@ -61,8 +61,8 @@ pub(crate) fn owner_only(ext: &Extensions) -> RpcResult<(String, Principal)> {
 
 /// 229 B1: Human-press gate (equivalent to `plugins::HumanPress`) for security-sensitive
 /// Deck operations (`deck_script_approve`, `deck_script_reject`, `deck_runtime_control`,
-/// mutating `deck_interact` actions, `deck_source_register`, `deck_source_unregister`,
-/// and `deck_move_home`).
+/// mutating `deck_interact` actions, `deck_trust_set`, `deck_source_register`,
+/// `deck_source_unregister`, and `deck_move_home`).
 /// Rejects missing peer, share guests, engine-internal peers, closed peers, and `Forwarded` calls.
 pub(crate) fn human_press(ext: &Extensions) -> RpcResult<(String, Principal)> {
     let p = owner(ext)?;
@@ -265,7 +265,8 @@ pub trait DecksApi {
     #[method(name = "deck_focus", with_extensions)]
     async fn deck_focus(&self, deck_id: String, section_id: Option<String>) -> RpcResult<()>;
 
-    /// Propose a new Monty script revision (always enters as `pending_review`).
+    /// Propose a new Monty script revision (enters `pending_review` by default, or auto-approves
+    /// and logs an audit entry when this Deck holds a machine-local owner trust grant).
     #[method(name = "deck_script_propose", with_extensions)]
     #[allow(clippy::too_many_arguments)]
     async fn deck_script_propose(
@@ -314,6 +315,16 @@ pub trait DecksApi {
         deck_id: String,
         op: RuntimeControlOp,
     ) -> RpcResult<DeckRuntimeStatus>;
+
+    /// Enable or revoke permanent machine-local autonomous execution trust for a Deck
+    /// (strictly human owner press only; never replicates or transfers across mesh homes).
+    #[method(name = "deck_trust_set", with_extensions)]
+    async fn deck_trust_set(
+        &self,
+        deck_id: String,
+        trusted: bool,
+        reason: Option<String>,
+    ) -> RpcResult<DeckTrustState>;
 
     /// Invoke a declared interactive action on the Deck's live Monty checkout (returns private result to caller).
     /// Mutating declared actions (`mutates_state: true`) require a live human owner press on the RPC path.
@@ -676,6 +687,27 @@ impl DecksApiServer for Server {
         let actor = decks_actor()?;
         actor
             .ask(RuntimeControlMsg { deck_id, op })
+            .send()
+            .await
+            .map_err(map_send_err)
+    }
+
+    async fn deck_trust_set(
+        &self,
+        ext: &Extensions,
+        deck_id: String,
+        trusted: bool,
+        reason: Option<String>,
+    ) -> RpcResult<DeckTrustState> {
+        let (caller_id, _) = human_press(ext)?;
+        let actor = decks_actor()?;
+        actor
+            .ask(SetDeckTrustMsg {
+                deck_id,
+                trusted,
+                actor: caller_id,
+                reason,
+            })
             .send()
             .await
             .map_err(map_send_err)

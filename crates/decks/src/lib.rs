@@ -35,11 +35,11 @@ pub use mesh::{
 };
 pub use model::{
     DeckChanged, DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary,
-    DeclaredAction, InteractErrorCode, InteractResponse, LiveFrame, MetricSample, MetricValue,
-    PendingApproval, RuntimeControlOp, RuntimeState, ScriptMode, ScriptRevision, ScriptStatus,
-    TriggerOp, TriggerResetMode, TriggerSpec,
+    DeckTrustAuditEvent, DeckTrustState, DeclaredAction, InteractErrorCode, InteractResponse,
+    LiveFrame, MetricSample, MetricValue, PendingApproval, RuntimeControlOp, RuntimeState,
+    ScriptMode, ScriptRevision, ScriptStatus, TriggerOp, TriggerResetMode, TriggerSpec,
 };
-pub use owner::{DECKS_ACTOR, DeckApprovalWatcher, DeckSupervisor};
+pub use owner::{DECKS_ACTOR, DeckApprovalWatcher, DeckSupervisor, SetDeckTrustMsg};
 pub use rpc::rpc_module;
 pub use tools::DECKS_SKILL;
 
@@ -221,6 +221,7 @@ mod tests {
         _lock: tokio::sync::MutexGuard<'static, ()>,
         _tmp: tempfile::TempDir,
         rt: Runtime,
+        doc_actor: ActorRef<DocumentActor>,
         sup: ActorRef<DeckSupervisor>,
         shared: crate::owner::SharedDeckState,
         registry: ActorRef<ToolRegistry>,
@@ -272,7 +273,7 @@ mod tests {
         let (sup_inst, shared) = DeckSupervisor::new(
             deck_store,
             rt.clone(),
-            doc_actor,
+            doc_actor.clone(),
             registry.clone(),
             Some(pool),
         );
@@ -294,6 +295,7 @@ mod tests {
             _lock,
             _tmp: tmp,
             rt,
+            doc_actor,
             sup,
             shared,
             registry,
@@ -2428,6 +2430,7 @@ async def on_step():
             last_snapshot: json!(null),
         };
         let mut sink = |_: &crate::runtime::EmittedPayload| {};
+        let cancel = tokio_util::sync::CancellationToken::new();
         let (mut checkout, mode, _) = crate::runtime::DeckCheckout::open_or_restore(
             pool.clone(),
             h.registry.clone(),
@@ -2439,13 +2442,14 @@ async def on_step():
             None,
             true,
             &cx,
+            &cancel,
             &mut sink,
         )
         .await
         .unwrap();
         assert_eq!(mode, crate::runtime::StartMode::ColdStarted);
 
-        let step1 = checkout.run_step(&cx, &mut sink).await.unwrap();
+        let step1 = checkout.run_step(&cx, &cancel, &mut sink).await.unwrap();
         let durable_state = step1.effects.checkpoint_state.clone().unwrap();
         assert_eq!(durable_state["val"], 11);
 
@@ -2476,12 +2480,13 @@ async def on_step():
             None,
             false,
             &cx2,
+            &cancel,
             &mut sink,
         )
         .await
         .unwrap();
         assert_eq!(mode2, crate::runtime::StartMode::ColdStarted);
-        let step2 = recovered.run_step(&cx2, &mut sink).await.unwrap();
+        let step2 = recovered.run_step(&cx2, &cancel, &mut sink).await.unwrap();
         assert_eq!(step2.effects.emits[0].data["val"], 12);
     }
 
@@ -3177,6 +3182,7 @@ async def on_action(action, args, ctx):
                     consecutive_failures: 0,
                     step_count: 1,
                     checkout_alive: true,
+                    trusted: false,
                     pending_approval: None,
                     mesh: None,
                 },
@@ -5550,6 +5556,7 @@ async def collect():
             proposed_by: "owner".into(),
             approved_by: Some("owner".into()),
             approved_at: Some(now.to_rfc3339()),
+            auto_approved: false,
             rejected_reason: None,
             change_summary: "local source script".into(),
             created_at: now.to_rfc3339(),
@@ -6078,6 +6085,7 @@ async def on_step():
             proposed_by: "owner".into(),
             approved_by: Some("owner".into()),
             approved_at: Some(chrono::Utc::now().to_rfc3339()),
+            auto_approved: false,
             rejected_reason: None,
             change_summary: "source health".into(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -6170,6 +6178,1251 @@ async def on_step():
 
         evict_actor::<schedule::Schedule>(schedule::SCHEDULE_ACTOR).await;
         let _ = h.rt;
+    }
+
+    #[tokio::test]
+    async fn trust_owner_enable_revoke_audit_and_rpc_refusals() {
+        use crate::rpc::DecksApiServer;
+        use jsonrpsee::Extensions;
+        use rpc_core::RpcPeer;
+
+        let h = setup_harness().await;
+        evict_actor::<DeckSupervisor>(crate::DECKS_ACTOR).await;
+        h.sup.register(crate::DECKS_ACTOR).unwrap();
+        crate::tools::register(&h.registry, h.sup.clone(), h.rt.clone()).await;
+
+        let deck_id = new_deck(&h, "Trust Auth Deck").await;
+        let srv = rpc_core::Server::new(h.rt.clone());
+
+        fn assert_auth_err<T: std::fmt::Debug>(res: Result<T, jsonrpsee::types::ErrorObjectOwned>) {
+            let code = res.unwrap_err().code();
+            assert!(
+                matches!(code, -32001 | -32002),
+                "expected auth rejection (-32001/-32002), got {code}"
+            );
+        }
+
+        // 1. Refusals: missing peer, guest peer, internal peer, closed peer, Forwarded peer.
+        let empty_ext = Extensions::new();
+        assert_auth_err(
+            srv.deck_trust_set(&empty_ext, deck_id.clone(), true, None)
+                .await,
+        );
+
+        let (guest_peer, _guest_guard) = RpcPeer::open_guest([1u8; 32], [2u8; 32]);
+        let mut guest_ext = Extensions::new();
+        guest_ext.insert(guest_peer);
+        assert_auth_err(
+            srv.deck_trust_set(&guest_ext, deck_id.clone(), true, None)
+                .await,
+        );
+
+        let mut internal_ext = Extensions::new();
+        internal_ext.insert(RpcPeer::internal());
+        assert_auth_err(
+            srv.deck_trust_set(&internal_ext, deck_id.clone(), true, None)
+                .await,
+        );
+
+        let (closed_peer, closed_guard) = RpcPeer::open();
+        drop(closed_guard);
+        let mut closed_ext = Extensions::new();
+        closed_ext.insert(closed_peer);
+        assert_auth_err(
+            srv.deck_trust_set(&closed_ext, deck_id.clone(), true, None)
+                .await,
+        );
+
+        let (owner_peer, _owner_guard) = RpcPeer::open();
+        let mut forwarded_ext = Extensions::new();
+        forwarded_ext.insert(owner_peer.clone());
+        let from = serde_json::from_value(json!("remote-source-node")).unwrap();
+        forwarded_ext.insert(agent::rpc_forward::Forwarded(from));
+        assert_auth_err(
+            srv.deck_trust_set(&forwarded_ext, deck_id.clone(), true, None)
+                .await,
+        );
+
+        // Agent tool registry MUST NOT expose any trust or script-approval tool.
+        let tool_specs = h.registry.ask(::tools::ListTools(None)).await.unwrap();
+        let tool_names: Vec<&str> = tool_specs.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !tool_names
+                .iter()
+                .any(|n| n.contains("trust") || *n == "deck_script_approve"),
+            "agent tool registry must never expose trust or approve tools: {tool_names:?}"
+        );
+        // Hardened agent runtime restrictions stay intact.
+        assert!(serde_json::from_str::<crate::tools::AgentRuntimeOp>("\"start\"").is_err());
+        assert!(serde_json::from_str::<crate::tools::AgentRuntimeOp>("\"resume\"").is_err());
+
+        // 2. Live human owner enables trust via deck_trust_set RPC.
+        let mut owner_ext = Extensions::new();
+        owner_ext.insert(owner_peer);
+        let enabled = srv
+            .deck_trust_set(
+                &owner_ext,
+                deck_id.clone(),
+                true,
+                Some("owner enabled".into()),
+            )
+            .await
+            .expect("human owner must be able to enable trust");
+        assert!(enabled.trusted);
+        assert!(
+            enabled
+                .granted_by
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("owner:")
+        );
+        assert!(enabled.granted_at.is_some());
+
+        let det_on = srv
+            .deck_get(&owner_ext, deck_id.clone())
+            .await
+            .expect("deck_get");
+        assert!(det_on.trust.trusted);
+        assert!(det_on.runtime.trusted);
+        assert_eq!(det_on.trust_audit.len(), 1);
+        assert_eq!(det_on.trust_audit[0].event, "granted");
+        assert!(det_on.trust_audit[0].actor.starts_with("owner:"));
+
+        let list = srv.deck_list(&owner_ext, None).await.expect("deck_list");
+        let row = list.iter().find(|d| d.id == deck_id).expect("deck in list");
+        assert!(row.trusted);
+
+        // 3. Live human owner revokes trust via deck_trust_set RPC.
+        let revoked = srv
+            .deck_trust_set(
+                &owner_ext,
+                deck_id.clone(),
+                false,
+                Some("owner revoked".into()),
+            )
+            .await
+            .expect("human owner must be able to revoke trust");
+        assert!(!revoked.trusted);
+        assert!(
+            revoked
+                .revoked_by
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("owner:")
+        );
+        assert!(revoked.revoked_at.is_some());
+
+        let det_off = srv
+            .deck_get(&owner_ext, deck_id.clone())
+            .await
+            .expect("deck_get");
+        assert!(!det_off.trust.trusted);
+        assert!(!det_off.runtime.trusted);
+        assert_eq!(det_off.trust_audit.len(), 2);
+        assert_eq!(det_off.trust_audit[0].event, "revoked");
+        assert_eq!(det_off.trust_audit[1].event, "granted");
+
+        evict_actor::<DeckSupervisor>(crate::DECKS_ACTOR).await;
+    }
+
+    // ---- Test 20: Persistent auto-approval across new revisions, canonical hashes, and store reopen ----
+    #[tokio::test]
+    async fn trust_persistent_auto_approval_across_revisions_and_store_reopen() {
+        let h = setup_harness().await;
+        crate::tools::register(&h.registry, h.sup.clone(), h.rt.clone()).await;
+        let deck_id = new_deck(&h, "Auto Approve Deck").await;
+
+        // Default reviewed mode -> pending_review.
+        let rev1 = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: "async def on_step():\n    deck_emit({'v': 1}, durable=True)\n".into(),
+                declared_actions: vec![],
+                triggers: vec![],
+                mode: ScriptMode::Oneshot,
+                interval_secs: None,
+                schedule_cron: None,
+                proposed_by: "agent".into(),
+                change_summary: "v1".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rev1.status, ScriptStatus::PendingReview);
+        assert!(!rev1.auto_approved);
+
+        // Enable owner trust.
+        let trust = h
+            .sup
+            .ask(crate::owner::SetDeckTrustMsg {
+                deck_id: deck_id.clone(),
+                trusted: true,
+                actor: "owner:test".into(),
+                reason: Some("autonomous mode".into()),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(trust.trusted);
+
+        // Propose rev 2 -> auto-approved without expected_digest, canonical hashes retained, logged in audit.
+        let rev2 = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: "async def on_step():\n    deck_emit({'v': 2}, durable=True)\n".into(),
+                declared_actions: vec![],
+                triggers: vec![],
+                mode: ScriptMode::Oneshot,
+                interval_secs: None,
+                schedule_cron: None,
+                proposed_by: "agent".into(),
+                change_summary: "v2".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rev2.status, ScriptStatus::Approved);
+        assert!(rev2.auto_approved);
+        assert_eq!(rev2.approved_by.as_deref(), Some("auto_trusted:owner:test"));
+        assert_eq!(rev2.revision_sha256.len(), 64);
+        assert_eq!(rev2.code_sha256.len(), 64);
+
+        // Propose rev 3 via the actual agent `deck_script_propose` tool -> auto-approved too!
+        let caller_session = runtime::SessionId::new();
+        h.registry
+            .ask(::tools::SetApprovals {
+                session: Some(caller_session),
+                enabled: false,
+                clear: false,
+            })
+            .await
+            .unwrap();
+        let out = h
+            .registry
+            .ask(::tools::Invoke(::tools::ToolCall {
+                id: "call-propose-3".into(),
+                name: "deck_script_propose".into(),
+                args: json!({
+                    "deck_id": deck_id,
+                    "code": "async def on_step():\n    deck_emit({'v': 3}, durable=True)\n",
+                    "mode": "oneshot",
+                    "change_summary": "v3 via tool"
+                }),
+                session: caller_session,
+                quiet: true,
+            }))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "deck_script_propose failed: {}", out.content);
+        assert!(
+            out.content.contains("auto_approved"),
+            "expected auto_approved confirmation in tool output: {}",
+            out.content
+        );
+        let structured = out.structured.expect("structured tool output");
+        assert_eq!(structured["rev"], 3);
+        assert_eq!(structured["status"], "approved");
+        assert_eq!(structured["auto_approved"], true);
+
+        let detail = h
+            .sup
+            .ask(GetDeck {
+                deck_id: deck_id.clone(),
+                by: Principal::Owner { device: None },
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(detail.runtime.active_rev, Some(3));
+        assert_eq!(detail.runtime.pending_rev, None);
+        let auto_events: Vec<_> = detail
+            .trust_audit
+            .iter()
+            .filter(|e| e.event == "auto_approved")
+            .collect();
+        assert_eq!(auto_events.len(), 2);
+        assert_eq!(auto_events[0].rev, Some(3));
+        assert!(auto_events[0].revision_sha256.is_some());
+        assert_eq!(auto_events[1].rev, Some(2));
+        assert_eq!(
+            auto_events[1].revision_sha256.as_deref(),
+            Some(rev2.revision_sha256.as_str())
+        );
+
+        // Cold store reopen: trust persists and rev 4 still auto-approves with canonical hash integrity!
+        let reopened = DeckStore::open(&h.rt.data_dir).await.unwrap();
+        assert!(reopened.is_trusted(&deck_id).await.unwrap());
+        let out4 = reopened
+            .propose_script_with_trust(
+                &deck_id,
+                "async def on_step():\n    deck_emit({'v': 4}, durable=True)\n".into(),
+                vec![],
+                vec![],
+                ScriptMode::Oneshot,
+                None,
+                None,
+                "agent".into(),
+                "v4 after restart".into(),
+            )
+            .await
+            .unwrap();
+        assert!(out4.auto_approved);
+        assert_eq!(out4.revision.status, ScriptStatus::Approved);
+        assert!(out4.revision.auto_approved);
+        assert_eq!(out4.revision.rev, 4);
+
+        // Tampering with an auto-approved revision in SQLite is STILL caught by canonical revision_sha256!
+        sqlx::query("UPDATE deck_script_revisions SET code = ?1 WHERE deck_id = ?2 AND rev = 4")
+            .bind("async def on_step():\n    deck_emit({'pwned': True}, durable=True)\n")
+            .bind(&deck_id)
+            .execute(reopened.pool_for_test())
+            .await
+            .unwrap();
+        assert!(
+            reopened.get_active_script(&deck_id).await.is_err(),
+            "canonical revision_sha256 integrity must still hold for auto-approved scripts"
+        );
+    }
+
+    // ---- Test 21: approvals=false/true transitions & non-bypassable human_only / always_ask safeguards ----
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    struct MockHumanOnlyArgs {
+        target: String,
+    }
+    struct MockHumanOnlyTool(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Tool for MockHumanOnlyTool {
+        const NAME: &'static str = "mcp_acme_human_only";
+        const RISK: Risk = Risk::Mutating;
+        const HUMAN_ONLY: bool = true;
+        const RETURNS: &'static str = "dict";
+        type Args = MockHumanOnlyArgs;
+        fn description(&self) -> String {
+            "Mock non-bypassable human_only tool".into()
+        }
+        async fn call(&self, a: MockHumanOnlyArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput {
+                structured: Some(json!({ "approved_target": a.target })),
+                ..ToolOutput::ok("ok")
+            })
+        }
+    }
+
+    struct MockAlwaysAskTool(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Tool for MockAlwaysAskTool {
+        const NAME: &'static str = "mcp_acme_always_ask";
+        const RISK: Risk = Risk::Mutating;
+        const RETURNS: &'static str = "dict";
+        type Args = MockHumanOnlyArgs;
+        fn description(&self) -> String {
+            "Mock always_ask policy tool".into()
+        }
+        async fn call(&self, a: MockHumanOnlyArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput {
+                structured: Some(json!({ "always_ask_target": a.target })),
+                ..ToolOutput::ok("ok")
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn trust_approvals_session_transitions_and_non_bypassable_human_only_and_always_ask() {
+        let h = setup_harness().await;
+        let deploy_count = Arc::new(AtomicUsize::new(0));
+        let human_only_count = Arc::new(AtomicUsize::new(0));
+        let always_ask_count = Arc::new(AtomicUsize::new(0));
+
+        h.registry
+            .ask(RegisterTool(Arc::new(MockMcpDeployTool(
+                deploy_count.clone(),
+            ))))
+            .await
+            .unwrap();
+        h.registry
+            .ask(RegisterTool(Arc::new(MockHumanOnlyTool(
+                human_only_count.clone(),
+            ))))
+            .await
+            .unwrap();
+        h.registry
+            .ask(RegisterTool(Arc::new(MockAlwaysAskTool(
+                always_ask_count.clone(),
+            ))))
+            .await
+            .unwrap();
+        h.registry
+            .ask(::tools::SetAlwaysAsk {
+                session: None,
+                tool: "mcp_acme_always_ask".into(),
+                on: true,
+            })
+            .await
+            .unwrap();
+
+        let deck_id = new_deck(&h, "Trust Policy Boundary").await;
+        let rec = h.shared.store.get_deck(&deck_id).await.unwrap().unwrap();
+
+        let script = r#"
+async def on_step():
+    res = await mcp_acme_deploy(env="prod")
+    deck_emit({"deployed": res}, durable=True)
+
+async def on_action(action, args, ctx):
+    if action == "run_human_only":
+        return await mcp_acme_human_only(target="vault")
+    if action == "run_always_ask":
+        return await mcp_acme_always_ask(target="protected")
+    raise ValueError("unknown")
+"#;
+        let actions = vec![
+            DeclaredAction {
+                name: "run_human_only".into(),
+                title: "Human Only".into(),
+                description: "Calls human_only tool".into(),
+                schema: json!({"type": "object"}),
+                mutates_state: true,
+                allow_while_paused: true,
+            },
+            DeclaredAction {
+                name: "run_always_ask".into(),
+                title: "Always Ask".into(),
+                description: "Calls always_ask tool".into(),
+                schema: json!({"type": "object"}),
+                mutates_state: true,
+                allow_while_paused: true,
+            },
+        ];
+        let rev = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: script.into(),
+                declared_actions: actions,
+                triggers: vec![],
+                mode: ScriptMode::Hybrid,
+                interval_secs: None,
+                schedule_cron: None,
+                proposed_by: "owner".into(),
+                change_summary: "policy".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        h.sup
+            .ask(ApproveScriptMsg {
+                deck_id: deck_id.clone(),
+                rev: rev.rev,
+                expected_digest: rev.revision_sha256.clone(),
+                approved_by: "owner".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+
+        let (_hub, _sub_id, mut rx) = h
+            .sup
+            .ask(SubscribeDeckMsg {
+                deck_id: deck_id.clone(),
+            })
+            .send()
+            .await
+            .unwrap();
+        let _ = rx.recv().await; // Sync
+
+        // 1. Reviewed mode: Deck session has approvals=true; mutating deploy raises ApprovalPending.
+        let sup_c = h.sup.clone();
+        let did_c = deck_id.clone();
+        let run1 = tokio::spawn(async move {
+            sup_c
+                .ask(RuntimeControlMsg {
+                    deck_id: did_c,
+                    op: RuntimeControlOp::RunOnce,
+                })
+                .send()
+                .await
+        });
+        let appr1 = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(DeckRuntimeEvent::ApprovalPending { approval }) => {
+                        assert_eq!(approval.tool, "mcp_acme_deploy");
+                        return approval.approval_id;
+                    }
+                    Some(_) => {}
+                    None => panic!("stream closed"),
+                }
+            }
+        })
+        .await
+        .expect("reviewed mode must raise ApprovalPending for mutating tool");
+        let st_before = h
+            .registry
+            .ask(::tools::GetApprovals {
+                session: Some(rec.session_id),
+            })
+            .await
+            .unwrap();
+        assert!(st_before.session && st_before.pin == Some(true));
+        h.approval
+            .ask(Resolve {
+                id: appr1,
+                decision: Decision::Allow,
+            })
+            .send()
+            .await
+            .unwrap();
+        run1.await.unwrap().unwrap();
+        assert_eq!(deploy_count.load(Ordering::SeqCst), 1);
+
+        // 2. Enable trust -> session transitions to approvals=false; mutating deploy runs approval-free!
+        h.sup
+            .ask(crate::owner::SetDeckTrustMsg {
+                deck_id: deck_id.clone(),
+                trusted: true,
+                actor: "owner:test".into(),
+                reason: None,
+            })
+            .send()
+            .await
+            .unwrap();
+        let st_trusted = h
+            .registry
+            .ask(::tools::GetApprovals {
+                session: Some(rec.session_id),
+            })
+            .await
+            .unwrap();
+        assert!(!st_trusted.session && st_trusted.pin == Some(false));
+
+        // Drain any status events before running approval-free step.
+        while rx.try_recv().is_ok() {}
+        let st_auto = tokio::time::timeout(
+            Duration::from_secs(5),
+            h.sup
+                .ask(RuntimeControlMsg {
+                    deck_id: deck_id.clone(),
+                    op: RuntimeControlOp::RunOnce,
+                })
+                .send(),
+        )
+        .await
+        .expect("trusted RunOnce must not stall waiting for approval")
+        .unwrap();
+        assert!(!st_auto.stale);
+        assert_eq!(deploy_count.load(Ordering::SeqCst), 2);
+        while let Ok(ev) = rx.try_recv() {
+            assert!(
+                !matches!(ev, DeckRuntimeEvent::ApprovalPending { .. }),
+                "trusted mutating tool must not emit ApprovalPending: {ev:?}"
+            );
+        }
+
+        // 3. Non-bypassable `human_only` tool STILL raises ApprovalPending under trust!
+        let sup_c = h.sup.clone();
+        let did_c = deck_id.clone();
+        let human_task = tokio::spawn(async move {
+            sup_c
+                .ask(InteractMsg {
+                    deck_id: did_c,
+                    request_id: "ho-1".into(),
+                    caller_id: "owner".into(),
+                    action: "run_human_only".into(),
+                    args: json!({}),
+                    expected_rev: Some(1),
+                    timeout_ms: Some(10_000),
+                    allow_mutating: true,
+                })
+                .send()
+                .await
+                .unwrap()
+        });
+        let appr_ho = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(DeckRuntimeEvent::ApprovalPending { approval }) => {
+                        assert_eq!(approval.tool, "mcp_acme_human_only");
+                        return approval.approval_id;
+                    }
+                    Some(_) => {}
+                    None => panic!("stream closed"),
+                }
+            }
+        })
+        .await
+        .expect("human_only tool MUST still raise ApprovalPending even under trust");
+        assert_eq!(human_only_count.load(Ordering::SeqCst), 0);
+        h.approval
+            .ask(Resolve {
+                id: appr_ho,
+                decision: Decision::Allow,
+            })
+            .send()
+            .await
+            .unwrap();
+        let ho_resp = human_task.await.unwrap();
+        assert!(ho_resp.ok, "human_only action failed: {ho_resp:?}");
+        assert_eq!(human_only_count.load(Ordering::SeqCst), 1);
+
+        // 4. Non-bypassable `always_ask` tool STILL raises ApprovalPending under trust!
+        let sup_c = h.sup.clone();
+        let did_c = deck_id.clone();
+        let aa_task = tokio::spawn(async move {
+            sup_c
+                .ask(InteractMsg {
+                    deck_id: did_c,
+                    request_id: "aa-1".into(),
+                    caller_id: "owner".into(),
+                    action: "run_always_ask".into(),
+                    args: json!({}),
+                    expected_rev: Some(1),
+                    timeout_ms: Some(10_000),
+                    allow_mutating: true,
+                })
+                .send()
+                .await
+                .unwrap()
+        });
+        let appr_aa = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(DeckRuntimeEvent::ApprovalPending { approval }) => {
+                        assert_eq!(approval.tool, "mcp_acme_always_ask");
+                        return approval.approval_id;
+                    }
+                    Some(_) => {}
+                    None => panic!("stream closed"),
+                }
+            }
+        })
+        .await
+        .expect("always_ask tool MUST still raise ApprovalPending even under trust");
+        assert_eq!(always_ask_count.load(Ordering::SeqCst), 0);
+        h.approval
+            .ask(Resolve {
+                id: appr_aa,
+                decision: Decision::Allow,
+            })
+            .send()
+            .await
+            .unwrap();
+        let aa_resp = aa_task.await.unwrap();
+        assert!(aa_resp.ok, "always_ask action failed: {aa_resp:?}");
+        assert_eq!(always_ask_count.load(Ordering::SeqCst), 1);
+
+        // 5. Revoke trust -> session transitions back to approvals=true; mutating deploy prompts again!
+        h.sup
+            .ask(crate::owner::SetDeckTrustMsg {
+                deck_id: deck_id.clone(),
+                trusted: false,
+                actor: "owner:test".into(),
+                reason: Some("back to reviewed".into()),
+            })
+            .send()
+            .await
+            .unwrap();
+        let st_revoked = h
+            .registry
+            .ask(::tools::GetApprovals {
+                session: Some(rec.session_id),
+            })
+            .await
+            .unwrap();
+        assert!(st_revoked.session && st_revoked.pin == Some(true));
+
+        let sup_c = h.sup.clone();
+        let did_c = deck_id.clone();
+        let run3 = tokio::spawn(async move {
+            sup_c
+                .ask(RuntimeControlMsg {
+                    deck_id: did_c,
+                    op: RuntimeControlOp::RunOnce,
+                })
+                .send()
+                .await
+        });
+        let appr3 = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(DeckRuntimeEvent::ApprovalPending { approval }) => {
+                        assert_eq!(approval.tool, "mcp_acme_deploy");
+                        return approval.approval_id;
+                    }
+                    Some(_) => {}
+                    None => panic!("stream closed"),
+                }
+            }
+        })
+        .await
+        .expect("revoked Deck must restore ApprovalPending for mutating tools");
+        h.approval
+            .ask(Resolve {
+                id: appr3,
+                decision: Decision::Deny,
+            })
+            .send()
+            .await
+            .unwrap();
+        let _ = run3.await;
+    }
+
+    // ---- Test 22: Revoke immediately cancels in-flight execution & retains last-good snapshot ----
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    struct MockBlockingArgs {}
+    struct MockBlockingTool {
+        entered: Arc<tokio::sync::Notify>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[async_trait::async_trait]
+    impl Tool for MockBlockingTool {
+        const NAME: &'static str = "mcp_acme_blocking";
+        const RISK: Risk = Risk::ReadOnly;
+        const RETURNS: &'static str = "dict";
+        type Args = MockBlockingArgs;
+        fn description(&self) -> String {
+            "Mock long-running tool that observes cx.cancel".into()
+        }
+        async fn call(&self, _a: MockBlockingArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+            self.entered.notify_one();
+            tokio::select! {
+                _ = cx.cancel.cancelled() => {
+                    self.cancelled.store(true, Ordering::SeqCst);
+                    Ok(ToolOutput::err("cancelled by revoke"))
+                }
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                    Ok(ToolOutput::ok("completed"))
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn trust_revoke_cancels_inflight_execution_and_preserves_last_good() {
+        let h = setup_harness().await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        h.registry
+            .ask(RegisterTool(Arc::new(MockBlockingTool {
+                entered: entered.clone(),
+                cancelled: cancelled.clone(),
+            })))
+            .await
+            .unwrap();
+
+        let deck_id = new_deck(&h, "Revoke Cancel Deck").await;
+        h.sup
+            .ask(crate::owner::SetDeckTrustMsg {
+                deck_id: deck_id.clone(),
+                trusted: true,
+                actor: "owner:test".into(),
+                reason: None,
+            })
+            .send()
+            .await
+            .unwrap();
+
+        // Step 1: Produce a durable last-good snapshot.
+        let rev1 = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: "async def on_step():\n    deck_emit({'phase': 'last-good-v1'}, durable=True)\n".into(),
+                declared_actions: vec![],
+                triggers: vec![],
+                mode: ScriptMode::Oneshot,
+                interval_secs: None,
+                schedule_cron: None,
+                proposed_by: "agent".into(),
+                change_summary: "good".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(rev1.auto_approved);
+        let st1 = h
+            .sup
+            .ask(RuntimeControlMsg {
+                deck_id: deck_id.clone(),
+                op: RuntimeControlOp::RunOnce,
+            })
+            .send()
+            .await
+            .unwrap();
+        let epoch_before = st1.run_epoch;
+
+        // Step 2: Auto-approve a blocking script and launch RunOnce.
+        let rev2 = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: "async def on_step():\n    await mcp_acme_blocking()\n    deck_emit({'phase': 'should-not-emit'}, durable=True)\n".into(),
+                declared_actions: vec![],
+                triggers: vec![],
+                mode: ScriptMode::Oneshot,
+                interval_secs: None,
+                schedule_cron: None,
+                proposed_by: "agent".into(),
+                change_summary: "blocking".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(rev2.auto_approved);
+
+        let sup_c = h.sup.clone();
+        let did_c = deck_id.clone();
+        let inflight = tokio::spawn(async move {
+            sup_c
+                .ask(RuntimeControlMsg {
+                    deck_id: did_c,
+                    op: RuntimeControlOp::RunOnce,
+                })
+                .send()
+                .await
+        });
+
+        // Wait until the tool is genuinely in-flight.
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("blocking tool never started");
+
+        // Revoke trust while in-flight -> MUST cancel immediately, stop runtime, and preserve last-good snapshot!
+        let revoked = tokio::time::timeout(
+            Duration::from_secs(5),
+            h.sup
+                .ask(crate::owner::SetDeckTrustMsg {
+                    deck_id: deck_id.clone(),
+                    trusted: false,
+                    actor: "owner:test".into(),
+                    reason: Some("emergency revoke".into()),
+                })
+                .send(),
+        )
+        .await
+        .expect("revoke timed out waiting for in-flight turn")
+        .unwrap();
+        assert!(!revoked.trusted);
+
+        let inflight_res = tokio::time::timeout(Duration::from_secs(5), inflight)
+            .await
+            .expect("in-flight RunOnce did not unwind after revoke")
+            .unwrap();
+        assert!(
+            inflight_res.is_err(),
+            "revoked turn must be cancelled rather than succeeding"
+        );
+        assert!(
+            cancelled.load(Ordering::SeqCst),
+            "in-flight tool's CancellationToken must fire on revoke"
+        );
+
+        let det = h
+            .sup
+            .ask(GetDeck {
+                deck_id: deck_id.clone(),
+                by: Principal::Owner { device: None },
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!det.trust.trusted);
+        assert!(!det.runtime.trusted);
+        assert_eq!(det.runtime.state, RuntimeState::Stopped);
+        assert!(!det.runtime.checkout_alive);
+        assert!(!det.runtime.stale, "revoke must not mark Deck stale");
+        assert!(det.runtime.run_epoch > epoch_before);
+        assert_eq!(
+            det.last_snapshot.as_ref().unwrap().data["phase"],
+            "last-good-v1",
+            "last-good snapshot must remain visible after revoke"
+        );
+
+        // Future script proposals return to reviewed (`pending_review`) mode.
+        let rev3 = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: "async def on_step():\n    deck_emit({'phase': 'v3'}, durable=True)\n".into(),
+                declared_actions: vec![],
+                triggers: vec![],
+                mode: ScriptMode::Oneshot,
+                interval_secs: None,
+                schedule_cron: None,
+                proposed_by: "agent".into(),
+                change_summary: "post-revoke".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rev3.status, ScriptStatus::PendingReview);
+        assert!(!rev3.auto_approved);
+    }
+
+    // ---- Test 23: Paused stays paused on trust enable & new rev; active stream auto-activates new rev ----
+    #[tokio::test]
+    async fn trust_paused_stays_paused_and_active_stream_follows_prior_state() {
+        let h = setup_harness().await;
+        let deck_id = new_deck(&h, "Paused Preservation Deck").await;
+
+        let rev1 = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: "ticks = 0\nasync def on_step():\n    global ticks\n    ticks += 1\n    deck_emit({'rev': 1, 'ticks': ticks}, durable=True)\n    deck_sleep(0.15)\n".into(),
+                declared_actions: vec![],
+                triggers: vec![],
+                mode: ScriptMode::Streaming,
+                interval_secs: Some(1),
+                schedule_cron: None,
+                proposed_by: "owner".into(),
+                change_summary: "v1".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        h.sup
+            .ask(ApproveScriptMsg {
+                deck_id: deck_id.clone(),
+                rev: rev1.rev,
+                expected_digest: rev1.revision_sha256.clone(),
+                approved_by: "owner".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+
+        h.sup
+            .ask(RuntimeControlMsg {
+                deck_id: deck_id.clone(),
+                op: RuntimeControlOp::Start,
+            })
+            .send()
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let st_paused = h
+            .sup
+            .ask(RuntimeControlMsg {
+                deck_id: deck_id.clone(),
+                op: RuntimeControlOp::Pause,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(st_paused.state, RuntimeState::Paused);
+        let steps_at_pause = st_paused.step_count;
+
+        // 1. Enabling trust MUST NOT silently start a paused Deck!
+        h.sup
+            .ask(crate::owner::SetDeckTrustMsg {
+                deck_id: deck_id.clone(),
+                trusted: true,
+                actor: "owner:test".into(),
+                reason: None,
+            })
+            .send()
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let det_after_enable = h
+            .sup
+            .ask(GetDeck {
+                deck_id: deck_id.clone(),
+                by: Principal::Owner { device: None },
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(det_after_enable.runtime.state, RuntimeState::Paused);
+        assert_eq!(det_after_enable.runtime.step_count, steps_at_pause);
+        assert!(det_after_enable.runtime.trusted);
+
+        // 2. Proposing rev 2 while paused auto-approves rev 2, but DOES NOT start streaming!
+        let rev2 = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: "async def on_step():\n    deck_emit({'rev': 2}, durable=True)\n    deck_sleep(0.15)\n".into(),
+                declared_actions: vec![],
+                triggers: vec![],
+                mode: ScriptMode::Streaming,
+                interval_secs: Some(1),
+                schedule_cron: None,
+                proposed_by: "agent".into(),
+                change_summary: "v2 while paused".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rev2.status, ScriptStatus::Approved);
+        assert!(rev2.auto_approved);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let rec_paused = h.shared.store.get_deck(&deck_id).await.unwrap().unwrap();
+        assert!(!rec_paused.stream_enabled);
+        assert!(!rec_paused.schedule_enabled);
+        let det_after_rev2 = h
+            .sup
+            .ask(GetDeck {
+                deck_id: deck_id.clone(),
+                by: Principal::Owner { device: None },
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(det_after_rev2.runtime.active_rev, Some(2));
+        assert_ne!(det_after_rev2.runtime.state, RuntimeState::Streaming);
+        assert_eq!(det_after_rev2.runtime.step_count, steps_at_pause);
+
+        // 3. Owner explicitly starts rev 2 -> now proposing rev 3 automatically activates rev 3!
+        let st_started = h
+            .sup
+            .ask(RuntimeControlMsg {
+                deck_id: deck_id.clone(),
+                op: RuntimeControlOp::Start,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(st_started.state, RuntimeState::Streaming);
+
+        let rev3 = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: "async def on_step():\n    deck_emit({'rev': 3}, durable=True)\n    deck_sleep(60.0)\n".into(),
+                declared_actions: vec![],
+                triggers: vec![],
+                mode: ScriptMode::Streaming,
+                interval_secs: Some(60),
+                schedule_cron: None,
+                proposed_by: "agent".into(),
+                change_summary: "v3 while streaming".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rev3.status, ScriptStatus::Approved);
+        assert!(rev3.auto_approved);
+
+        // Wait briefly for DeckOwner to activate rev 3 and persist its snapshot.
+        let mut saw_rev3 = false;
+        for _ in 0..30 {
+            let det = h
+                .sup
+                .ask(GetDeck {
+                    deck_id: deck_id.clone(),
+                    by: Principal::Owner { device: None },
+                })
+                .send()
+                .await
+                .unwrap();
+            if det.last_snapshot.as_ref().is_some_and(|s| s.data["rev"] == 3) {
+                saw_rev3 = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            saw_rev3,
+            "auto-approved rev 3 must automatically activate when Deck was already streaming"
+        );
+    }
+
+    // ---- Test 24: CRDT cannot forge trust & no replication / mesh home transfer ----
+    #[tokio::test]
+    async fn trust_crdt_cannot_forge_and_no_replication_or_home_transfer() {
+        use base64::Engine as _;
+        use yrs::{Map as _, ReadTxn as _, Transact as _, WriteTxn as _};
+
+        let h = setup_harness().await;
+        let deck_id = new_deck(&h, "CRDT & Locality Deck").await;
+        let doc_id = document::DocId(deck_id.clone());
+
+        // 1. Forge via DeckOp::UpdateScriptRef and HTML section in CRDT -> trust MUST stay false!
+        let _ = h
+            .doc_actor
+            .ask(document::deck::DeckCall {
+                doc: doc_id.clone(),
+                by: Principal::Owner { device: None },
+                op: document::deck::DeckOp::UpdateScriptRef {
+                    script_ref: document::deck::DeckScriptRef {
+                        active_rev: Some(99),
+                        pending_rev: None,
+                        mode: Some("streaming".into()),
+                        schedule: Some("* * * * *".into()),
+                        updated_at: 999_999,
+                    },
+                },
+            })
+            .send()
+            .await;
+
+        // 2. Forge via raw Yjs v1 update inserting `trusted = true` into both `meta` and `script_refs` maps!
+        let forged_doc = yrs::Doc::new();
+        {
+            let mut txn = forged_doc.transact_mut();
+            let meta = txn.get_or_insert_map("meta");
+            meta.insert(&mut txn, "trusted", true);
+            let sref = txn.get_or_insert_map("script_refs");
+            sref.insert(&mut txn, "trusted", true);
+        }
+        let update_bytes = forged_doc
+            .transact()
+            .encode_state_as_update_v1(&yrs::StateVector::default());
+        let update_b64 = base64::engine::general_purpose::STANDARD.encode(update_bytes);
+        let _ = h
+            .doc_actor
+            .ask(document::ApplyUpdate {
+                doc: doc_id,
+                update: update_b64,
+                by: Principal::Owner { device: None },
+            })
+            .send()
+            .await;
+
+        assert!(
+            !h.shared.store.is_trusted(&deck_id).await.unwrap(),
+            "CRDT edits must NEVER forge trust"
+        );
+        let det = h
+            .sup
+            .ask(GetDeck {
+                deck_id: deck_id.clone(),
+                by: Principal::Owner { device: None },
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!det.trust.trusted);
+        assert!(!det.runtime.trusted);
+
+        // Proposing a script after CRDT forgery STILL enters PendingReview.
+        let rev = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: "async def on_step():\n    pass\n".into(),
+                declared_actions: vec![],
+                triggers: vec![],
+                mode: ScriptMode::Oneshot,
+                interval_secs: None,
+                schedule_cron: None,
+                proposed_by: "agent".into(),
+                change_summary: "after crdt attempt".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rev.status, ScriptStatus::PendingReview);
+        assert!(!rev.auto_approved);
+
+        // 3. Machine-local grant: enabling trust on Engine A does NOT replicate or transfer to Engine B
+        //    (e.g., another mesh node / home / source node with its own data_dir).
+        h.sup
+            .ask(crate::owner::SetDeckTrustMsg {
+                deck_id: deck_id.clone(),
+                trusted: true,
+                actor: "owner:node-a".into(),
+                reason: Some("node-a only".into()),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(h.shared.store.is_trusted(&deck_id).await.unwrap());
+        assert!(
+            h.rt.data_dir.join("decks").join("decks.sqlite").exists(),
+            "trust grants must live in local protected decks/decks.sqlite outside Yjs docs"
+        );
+
+        let tmp_b = tempfile::tempdir().unwrap();
+        let store_b = DeckStore::open(tmp_b.path()).await.unwrap();
+        store_b.ensure_deck(&deck_id).await.unwrap();
+        assert!(
+            !store_b.is_trusted(&deck_id).await.unwrap(),
+            "second engine / source node must NOT inherit trust from Engine A"
+        );
+        let out_b = store_b
+            .propose_script_with_trust(
+                &deck_id,
+                "async def on_step():\n    pass\n".into(),
+                vec![],
+                vec![],
+                ScriptMode::Oneshot,
+                None,
+                None,
+                "agent".into(),
+                "on node B".into(),
+            )
+            .await
+            .unwrap();
+        assert!(!out_b.auto_approved);
+        assert_eq!(out_b.revision.status, ScriptStatus::PendingReview);
+
+        // Node B requires its own explicit local owner grant.
+        let trust_b = store_b
+            .set_trust(&deck_id, true, "owner:node-b", Some("node-b local grant".into()))
+            .await
+            .unwrap();
+        assert!(trust_b.trusted);
+        assert!(store_b.is_trusted(&deck_id).await.unwrap());
+
+        // 4. Moving home away from Engine A via `MoveHomeMsg` revokes Engine A's local trust
+        //    (never transferring or leaving stale trust on a non-home viewer), AND non-home
+        //    viewers CANNOT enable trust (`not_home:`).
+        let moved = h
+            .sup
+            .ask(crate::owner::MoveHomeMsg {
+                deck_id: deck_id.clone(),
+                target_engine_id: "engine-remote-b".into(),
+                confirm_cold_start: true,
+                verify_local_mcp_and_approvals: true,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(moved.home_engine_id, "engine-remote-b");
+        assert!(
+            !h.shared.store.is_trusted(&deck_id).await.unwrap(),
+            "moving home away must revoke local trust rather than keeping or transferring it"
+        );
+        let det_after_move = h
+            .sup
+            .ask(GetDeck {
+                deck_id: deck_id.clone(),
+                by: Principal::Owner { device: None },
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!det_after_move.trust.trusted);
+        assert!(!det_after_move.runtime.trusted);
+        assert_eq!(
+            det_after_move.runtime.mesh.as_ref().map(|m| m.is_home),
+            Some(false)
+        );
+
+        let non_home_enable_err = h
+            .sup
+            .ask(crate::owner::SetDeckTrustMsg {
+                deck_id: deck_id.clone(),
+                trusted: true,
+                actor: "owner:viewer".into(),
+                reason: Some("should be rejected on non-home".into()),
+            })
+            .send()
+            .await
+            .expect_err("non-home viewer must NOT be able to enable trust");
+        assert!(
+            non_home_enable_err.to_string().contains("not_home:"),
+            "expected not_home error, got: {non_home_enable_err}"
+        );
+        assert!(!h.shared.store.is_trusted(&deck_id).await.unwrap());
     }
 }
 
@@ -6375,6 +7628,7 @@ mod unit_tests {
             consecutive_failures: 0,
             step_count: 1,
             checkout_alive: true,
+            trusted: false,
             pending_approval: None,
             mesh: None,
         };
@@ -6451,6 +7705,7 @@ mod unit_tests {
             checkout_alive: true,
             pending_approval: None,
             mesh: None,
+            trusted: false,
         };
         let (sub_id, mut rx) = hub.subscribe(
             "d_sec",

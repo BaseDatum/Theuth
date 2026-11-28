@@ -14,6 +14,7 @@ import type {
   DeckSnapshot,
   DeckSourceStatus,
   DeckSummary,
+  DeckTrustState,
   InteractResponse,
   LiveFrame,
   PendingApproval,
@@ -61,7 +62,8 @@ export function shouldApplyRuntimeStatus(
 /**
  * Merge a `deck_get` detail refetch runtime against live stream state monotonically (H2):
  * once the live stream has synced (`hasSynced`), an equal-epoch refetch must not overwrite
- * newer live stream state unless the fetched `step_count` is strictly newer.
+ * newer live stream state unless the fetched `step_count` is strictly newer (while still
+ * adopting a changed machine-local `trusted` flag).
  */
 export function mergeDetailRuntime(
   prev: DeckRuntimeStatus | null,
@@ -75,7 +77,16 @@ export function mergeDetailRuntime(
   if (next.step_count > prev.step_count) {
     return next.mesh ? next : { ...next, mesh: prev.mesh ?? null }
   }
-  return !prev.mesh && next.mesh ? { ...prev, mesh: next.mesh } : prev
+  const meshChanged = !prev.mesh && Boolean(next.mesh)
+  const trustChanged = Boolean(next.trusted) !== Boolean(prev.trusted)
+  if (meshChanged || trustChanged) {
+    return {
+      ...prev,
+      ...(meshChanged ? { mesh: next.mesh } : {}),
+      ...(trustChanged ? { trusted: next.trusted } : {}),
+    }
+  }
+  return prev
 }
 
 /**
@@ -326,6 +337,7 @@ export type DeckLiveState = {
   controlRuntime(op: RuntimeControlOp): Promise<void>
   approveScript(rev: number, expectedDigest: string, andStart?: boolean): Promise<ScriptRevision | null>
   rejectScript(rev: number, reason?: string): Promise<ScriptRevision | null>
+  setTrust(trusted: boolean, reason?: string): Promise<DeckTrustState | null>
   resolveApproval(approved: boolean): Promise<void>
   sectionAdd(input: {
     kind: SectionKind
@@ -403,7 +415,12 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
   const inFlightActionKeysRef = useRef(new Set<string>())
   const controlInFlightRef = useRef(false)
   const retryRequestRef = useRef<{ key: string; requestId: string } | null>(null)
-  const lastSeenRevsRef = useRef<{ deckId: string; activeRev: number | null; pendingRev: number | null } | null>(null)
+  const lastSeenRevsRef = useRef<{
+    deckId: string
+    activeRev: number | null
+    pendingRev: number | null
+    trusted: boolean
+  } | null>(null)
 
   // Reset all per-Deck state immediately whenever `deckId` or `pinnedSnapshotId` changes (H2).
   useEffect(() => {
@@ -436,6 +453,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       deckId,
       activeRev: d.runtime.active_rev ?? d.active_script?.rev ?? null,
       pendingRev: d.runtime.pending_rev ?? d.pending_script?.rev ?? null,
+      trusted: Boolean(d.runtime.trusted ?? d.trust?.trusted ?? false),
     }
     const synced = hasSyncedRef.current
     const prevRt = effectiveRuntimeRef.current
@@ -544,24 +562,36 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
       }, delay)
     }
 
-    // H1: invalidate detail/list queries whenever stream `sync`/`status` reports a pending_rev or active_rev change.
+    // H1: invalidate detail/list queries whenever stream `sync`/`status` reports a pending_rev, active_rev, or trusted change.
     const checkScriptRevisionChange = (status: DeckRuntimeStatus) => {
       const nextActive = status.active_rev ?? null
       const nextPending = status.pending_rev ?? null
+      const nextTrusted = Boolean(status.trusted ?? false)
       const prev = lastSeenRevsRef.current
       if (prev && prev.deckId === deckId) {
-        if (prev.activeRev !== nextActive || prev.pendingRev !== nextPending) {
-          lastSeenRevsRef.current = { deckId, activeRev: nextActive, pendingRev: nextPending }
+        if (prev.activeRev !== nextActive || prev.pendingRev !== nextPending || prev.trusted !== nextTrusted) {
+          lastSeenRevsRef.current = {
+            deckId,
+            activeRev: nextActive,
+            pendingRev: nextPending,
+            trusted: nextTrusted,
+          }
           void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
           void qc.invalidateQueries({ queryKey: decksKey })
         }
       } else {
-        lastSeenRevsRef.current = { deckId, activeRev: nextActive, pendingRev: nextPending }
+        lastSeenRevsRef.current = {
+          deckId,
+          activeRev: nextActive,
+          pendingRev: nextPending,
+          trusted: nextTrusted,
+        }
         const cached = qc.getQueryData<DeckDetail>(deckDetailKey(deckId))
         if (cached && cached.doc.doc_id === deckId) {
           const cachedActive = cached.runtime.active_rev ?? cached.active_script?.rev ?? null
           const cachedPending = cached.runtime.pending_rev ?? cached.pending_script?.rev ?? null
-          if (cachedActive !== nextActive || cachedPending !== nextPending) {
+          const cachedTrusted = Boolean(cached.runtime.trusted ?? cached.trust?.trusted ?? false)
+          if (cachedActive !== nextActive || cachedPending !== nextPending || cachedTrusted !== nextTrusted) {
             void qc.invalidateQueries({ queryKey: deckDetailKey(deckId) })
             void qc.invalidateQueries({ queryKey: decksKey })
           }
@@ -901,6 +931,36 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
     [api, client, deckId, qc],
   )
 
+  const setTrust = useCallback(
+    async (trusted: boolean, reason?: string): Promise<DeckTrustState | null> => {
+      if ((!api?.deck_trust_set && !client) || !deckId) return null
+      const targetDeckId = deckId
+      try {
+        const next = api?.deck_trust_set
+          ? await api.deck_trust_set(targetDeckId, trusted, reason ?? null)
+          : await callDeck<DeckTrustState>(client!, 'deck_trust_set', [targetDeckId, trusted, reason ?? null])
+        if (deckIdRef.current === targetDeckId) {
+          setRuntime((prev) => (prev ? { ...prev, trusted: next.trusted } : prev))
+          if (!next.trusted) {
+            setPendingApproval(null)
+          }
+        }
+        void qc.invalidateQueries({ queryKey: deckDetailKey(targetDeckId) })
+        void qc.invalidateQueries({ queryKey: decksKey })
+        notify(
+          next.trusted
+            ? 'Deck trusted — future scripts & eligible tool calls run without approval prompts'
+            : 'Deck trust revoked — execution stopped and reviewed mode restored',
+        )
+        return next
+      } catch (e) {
+        notify.error(e instanceof Error ? e.message : String(e))
+        return null
+      }
+    },
+    [api, client, deckId, qc],
+  )
+
   const resolveApproval = useCallback(
     async (approved: boolean) => {
       if ((!api?.resolve_approval && !client) || !pendingApproval) return
@@ -1133,6 +1193,7 @@ export function useDeckLive(deckId: string, pinnedSnapshotId?: string): DeckLive
     controlRuntime,
     approveScript,
     rejectScript,
+    setTrust,
     resolveApproval,
     sectionAdd,
     sectionPatch,

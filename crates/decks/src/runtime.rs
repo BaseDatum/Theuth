@@ -18,6 +18,7 @@ use monty_types::{CallArgs, ExcType, MontyException, MontyObject, NameLookupResu
 use platform::files::write_atomic;
 use runtime::SessionId;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use tools::{Invoke, ToolCall, ToolOutput, ToolRegistry, ToolSpec};
 
 use crate::hub::{MAX_LIVE_FRAME_BYTES, MAX_SNAPSHOT_BYTES};
@@ -27,6 +28,9 @@ use crate::model::{
 };
 use crate::store::{StateCheckpoint, sha256_bytes};
 use crate::triggers::is_safe_metric_name;
+
+/// Error message returned when an in-flight Deck turn is cancelled (e.g., trust revocation or deletion).
+pub const DECK_TURN_CANCELLED: &str = "deck execution cancelled";
 
 /// Maximum concurrent Deck Monty workers in the dedicated Deck pool.
 pub const DECK_POOL_MAX: usize = 16;
@@ -203,8 +207,12 @@ impl DeckCheckout {
         checkpoint: Option<&StateCheckpoint>,
         allow_warm_restore: bool,
         turn_cx: &TurnContext,
+        cancel: &CancellationToken,
         on_emit: &mut (dyn FnMut(&EmittedPayload) + Send),
     ) -> Result<(Self, StartMode, TurnEffects), String> {
+        if cancel.is_cancelled() {
+            return Err(DECK_TURN_CANCELLED.into());
+        }
         let specs = deck_tool_specs(&registry, session).await;
         let cfg = session_repl_config(&specs, DECK_BUILTIN_STUBS, MAX_MEMORY);
         let spill = spill_root.join(session.to_string());
@@ -293,6 +301,10 @@ impl DeckCheckout {
             }
         }
 
+        if cancel.is_cancelled() {
+            return Err(DECK_TURN_CANCELLED.into());
+        }
+
         // Cold start: fresh checkout -> load module code (type-checked!) -> call on_start(last_state).
         let c = rt
             .pool
@@ -304,7 +316,7 @@ impl DeckCheckout {
         let mut effects = TurnEffects::default();
         // 1. Load & type-check user script module.
         let load_out = rt
-            .drive_snippet(&script.code, Vec::new(), false, turn_cx, on_emit)
+            .drive_snippet(&script.code, Vec::new(), false, turn_cx, cancel, on_emit)
             .await?;
         merge_effects(&mut effects, load_out.effects);
 
@@ -323,11 +335,15 @@ if _deck_start_fn is not None:
                 vec![("_deck_last_state".into(), to_monty(&turn_cx.last_state))],
                 true,
                 turn_cx,
+                cancel,
                 on_emit,
             )
             .await?;
         merge_effects(&mut effects, start_out.effects);
 
+        if cancel.is_cancelled() {
+            return Err(DECK_TURN_CANCELLED.into());
+        }
         // Immediately snapshot initial heap so warm restore works on next restart.
         let _ = rt.checkpoint_heap().await;
 
@@ -416,6 +432,7 @@ if _deck_start_fn is not None:
     pub async fn run_step(
         &mut self,
         turn_cx: &TurnContext,
+        cancel: &CancellationToken,
         on_emit: &mut (dyn FnMut(&EmittedPayload) + Send),
     ) -> Result<TurnOutcome, String> {
         let snippet = "\
@@ -432,8 +449,11 @@ if _deck_step_fn is None:
 await _deck_step_fn()
 ";
         let out = self
-            .drive_snippet(snippet, Vec::new(), true, turn_cx, on_emit)
+            .drive_snippet(snippet, Vec::new(), true, turn_cx, cancel, on_emit)
             .await?;
+        if cancel.is_cancelled() {
+            return Err(DECK_TURN_CANCELLED.into());
+        }
         self.steps_since_checkpoint += 1;
         self.steps_since_rollover += 1;
         if out.effects.checkpoint_state.is_some()
@@ -446,12 +466,14 @@ await _deck_step_fn()
     }
 
     /// Execute one declared interactive action on the SAME checkout (`on_action(action, args, ctx)`).
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_action(
         &mut self,
         action: &str,
         args: &Value,
         ctx: &Value,
         turn_cx: &TurnContext,
+        cancel: &CancellationToken,
         on_emit: &mut (dyn FnMut(&EmittedPayload) + Send),
     ) -> Result<TurnOutcome, String> {
         let snippet = "\
@@ -471,9 +493,13 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                 ],
                 true,
                 turn_cx,
+                cancel,
                 on_emit,
             )
             .await?;
+        if cancel.is_cancelled() {
+            return Err(DECK_TURN_CANCELLED.into());
+        }
         let ret_bytes = serde_json::to_vec(&out.return_value)
             .map(|b| b.len())
             .unwrap_or(usize::MAX);
@@ -542,8 +568,12 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
         inputs: Vec<(String, MontyObject)>,
         skip_type_check: bool,
         turn_cx: &TurnContext,
+        cancel: &CancellationToken,
         on_emit: &mut (dyn FnMut(&EmittedPayload) + Send),
     ) -> Result<TurnOutcome, String> {
+        if cancel.is_cancelled() {
+            return Err(DECK_TURN_CANCELLED.into());
+        }
         let checkout = self
             .checkout
             .as_mut()
@@ -576,18 +606,22 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
         self.call_seq += 1;
         let turn_tag = format!("deck.{}.{}", self.session, self.call_seq);
 
-        let mut ev = checkout
-            .feed(
+        let mut ev = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(DECK_TURN_CANCELLED.into()),
+            res = checkout.feed(
                 code,
                 inputs,
                 self.mounts.clone(),
                 skip_type_check,
                 &mut print_cb,
-            )
-            .await
-            .map_err(format_pool_err)?;
+            ) => res.map_err(format_pool_err)?,
+        };
 
         let result_obj = loop {
+            if cancel.is_cancelled() {
+                return Err(DECK_TURN_CANCELLED.into());
+            }
             ev = match ev {
                 TurnEvent::Complete(v) => break v,
                 TurnEvent::NameLookup { name, .. } => {
@@ -612,10 +646,11 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                             }
                         }
                     };
-                    checkout
-                        .resume_name_lookup(answer, &mut print_cb)
-                        .await
-                        .map_err(format_pool_err)?
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(DECK_TURN_CANCELLED.into()),
+                        res = checkout.resume_name_lookup(answer, &mut print_cb) => res.map_err(format_pool_err)?,
+                    }
                 }
                 TurnEvent::FunctionCall {
                     function_name,
@@ -707,10 +742,11 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                             }
                         }
                     };
-                    checkout
-                        .resume(answer, &mut print_cb)
-                        .await
-                        .map_err(format_pool_err)?
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(DECK_TURN_CANCELLED.into()),
+                        res = checkout.resume(answer, &mut print_cb) => res.map_err(format_pool_err)?,
+                    }
                 }
                 TurnEvent::ResolveFutures {
                     pending_call_ids, ..
@@ -723,7 +759,7 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
 
                     let registry = self.registry.clone();
                     let session = self.session;
-                    let outs = join_all(calls.iter().map(|(_, c)| {
+                    let invoke_fut = join_all(calls.iter().map(|(_, c)| {
                         let reg = registry.clone();
                         async move {
                             reg.ask(Invoke(ToolCall {
@@ -737,8 +773,12 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                             .await
                             .unwrap_or_else(|e| ToolOutput::err(format!("tool registry: {e}")))
                         }
-                    }))
-                    .await;
+                    }));
+                    let outs = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(DECK_TURN_CANCELLED.into()),
+                        outs = invoke_fut => outs,
+                    };
 
                     let mut results = Vec::with_capacity(calls.len());
                     for ((fid, call), out) in calls.into_iter().zip(outs) {
@@ -755,10 +795,11 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                             ));
                         }
                     }
-                    checkout
-                        .resume_futures(results, &mut print_cb)
-                        .await
-                        .map_err(format_pool_err)?
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(DECK_TURN_CANCELLED.into()),
+                        res = checkout.resume_futures(results, &mut print_cb) => res.map_err(format_pool_err)?,
+                    }
                 }
                 TurnEvent::OsCall {
                     system_sleep: Some(delay),
@@ -766,27 +807,40 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                 } => {
                     // Clamp any direct time.sleep/asyncio.sleep inside one turn to 5s; scripts
                     // should use cooperative `deck_sleep(seconds)` for cadence between steps.
-                    tokio::time::sleep(delay.min(std::time::Duration::from_secs(5))).await;
-                    checkout
-                        .resume(ResumeValue::Return(MontyObject::none()), &mut print_cb)
-                        .await
-                        .map_err(format_pool_err)?
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(DECK_TURN_CANCELLED.into()),
+                        _ = tokio::time::sleep(delay.min(std::time::Duration::from_secs(5))) => {}
+                    }
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(DECK_TURN_CANCELLED.into()),
+                        res = checkout.resume(ResumeValue::Return(MontyObject::none()), &mut print_cb) => {
+                            res.map_err(format_pool_err)?
+                        }
+                    }
                 }
                 TurnEvent::OsCall {
                     function_name,
                     args,
                     ..
-                } => match checkout
-                    .resume_from_mounts(&mut print_cb)
-                    .await
-                    .map_err(format_pool_err)?
-                {
-                    Some(next) => next,
-                    None => checkout
-                        .resume(os_answer(&function_name, &args), &mut print_cb)
-                        .await
-                        .map_err(format_pool_err)?,
-                },
+                } => {
+                    let mounted = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(DECK_TURN_CANCELLED.into()),
+                        res = checkout.resume_from_mounts(&mut print_cb) => res.map_err(format_pool_err)?,
+                    };
+                    match mounted {
+                        Some(next) => next,
+                        None => tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => return Err(DECK_TURN_CANCELLED.into()),
+                            res = checkout.resume(os_answer(&function_name, &args), &mut print_cb) => {
+                                res.map_err(format_pool_err)?
+                            }
+                        },
+                    }
+                }
             };
         };
 

@@ -1455,7 +1455,8 @@ const HARNESS_SKILL: &str = include_str!("../harness.md");
 /// Creates the data-dir skeleton on first run. Existing files are never
 /// overwritten, except `skills/harness.md`, `skills/visualize.md`,
 /// `skills/pdf.md`, `skills/loops.md`, `skills/routines.md`, `skills/apps.md`,
-/// `skills/board.md`, `skills/whiteboard.md`, `skills/decide.md`, `skills/double.md`, `skills/native-apps.md` and `skills/cells.md`, which the binary owns and rewrites so
+/// `skills/board.md`, `skills/whiteboard.md`, `skills/decks.md`, `skills/decide.md`,
+/// `skills/double.md`, `skills/native-apps.md` and `skills/cells.md`, which the binary owns and rewrites so
 /// they always describe the running version. 136: `skills/dreaming.md`,
 /// `sensors/dreaming.py` (binary-owned) and `schedules/dreaming.md` (once)
 /// are written by `dreaming::DreamingPlugin::start`, which reads
@@ -2756,5 +2757,66 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn first_run_installs_and_registers_decks_builtin_skill() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "theuth-decks-skill-smoke-{}-{unique}",
+            std::process::id(),
+        ));
+        let cfg = dir.join("config.yaml");
+        first_run(&dir, &cfg).expect("first_run installs built-in skills");
+
+        let skills_dir = agent::skills::dir(&dir);
+        let decks_path = skills_dir.join("decks.md");
+        assert!(decks_path.is_file(), "skills/decks.md must be installed");
+        assert_eq!(
+            std::fs::read_to_string(&decks_path).unwrap(),
+            decks::DECKS_SKILL
+        );
+
+        let indexed = agent::skills::index(&skills_dir);
+        let meta = indexed
+            .iter()
+            .find(|s| s.name == "decks")
+            .expect("decks skill must be discoverable in agent::skills::index");
+        assert!(
+            meta.path.ends_with("skills/decks.md") || meta.path.ends_with("skills\\decks.md"),
+            "unexpected decks skill path: {}",
+            meta.path
+        );
+        assert!(
+            !meta.description.trim().is_empty(),
+            "decks skill description must be populated from front matter"
+        );
+
+        let loaded = agent::skills::body(&skills_dir, meta).expect("load decks skill body");
+        assert_eq!(loaded.name, "decks");
+        assert!(loaded.body.contains("deck_script_propose"));
+        assert!(loaded.body.contains("Trust this Deck"));
+        assert!(loaded.body.contains("human_only"));
+        assert!(loaded.body.contains("openui"));
+        assert!(loaded.body.contains("deck_metric"));
+        assert!(loaded.body.contains("deck_move_home"));
+        assert!(loaded.body.contains("any`, `all`, `quorum`, `aggregate`"));
+        assert!(
+            !loaded.body.contains("not yet available on this branch"),
+            "temporary branch availability markers must be removed from decks.md"
+        );
+
+        // Binary-owned overwrite semantics: stale skills/decks.md is refreshed on startup.
+        std::fs::write(&decks_path, "---\nname: decks\n---\nstale copy\n").unwrap();
+        first_run(&dir, &cfg).expect("second first_run refreshes stale decks.md");
+        assert_eq!(
+            std::fs::read_to_string(&decks_path).unwrap(),
+            decks::DECKS_SKILL
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

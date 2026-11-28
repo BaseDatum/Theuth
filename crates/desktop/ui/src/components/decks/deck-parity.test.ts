@@ -245,6 +245,7 @@ describe('Per-section live frame & durable snapshot routing', () => {
       controlRuntime: vi.fn(async () => {}),
       approveScript: vi.fn(async () => null),
       rejectScript: vi.fn(async () => null),
+      setTrust: vi.fn(async () => null),
       resolveApproval: vi.fn(async () => {}),
       sectionAdd: vi.fn(async () => detail.doc.sections[0]!),
       sectionPatch: vi.fn(async () => detail.doc.sections[0]!),

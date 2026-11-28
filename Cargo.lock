@@ -5565,6 +5565,7 @@ dependencies = [
  "anyhow",
  "artifact",
  "async-trait",
+ "base64 0.23.1",
  "chrono",
  "croner",
  "document",
@@ -5591,11 +5592,13 @@ dependencies = [
  "surface",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tools",
  "tracing",
  "tracing-subscriber",
  "uuid",
  "wire",
+ "yrs",
 ]
 
 [[package]]

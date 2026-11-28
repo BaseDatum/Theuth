@@ -19,6 +19,8 @@ import {
   RefreshCw,
   Server,
   ShieldAlert,
+  ShieldCheck,
+  ShieldOff,
   Square,
   X,
 } from 'lucide-react'
@@ -665,6 +667,8 @@ function DeckViewInner({
   const [scriptActionBusy, setScriptActionBusy] = useState(false)
   const [approvalBusy, setApprovalBusy] = useState(false)
   const [restoringId, setRestoringId] = useState<string | null>(null)
+  const [trustConfirmOpen, setTrustConfirmOpen] = useState(false)
+  const [trustBusy, setTrustBusy] = useState(false)
 
   const detail = state.detail
   const rt = state.runtime
@@ -676,6 +680,7 @@ function DeckViewInner({
 
   useEffect(() => {
     setReviewedPending(null)
+    setTrustConfirmOpen(false)
   }, [deckId])
 
   useEffect(() => {
@@ -751,6 +756,8 @@ function DeckViewInner({
   const canRun = Boolean(rt?.active_rev)
   const controls = deckControlAvailability(rtState, canRun)
   const slimChrome = hideHeader || (insideTile && !embedded)
+  const isTrusted = Boolean(rt?.trusted ?? detail.trust?.trusted ?? false)
+  const trustAudit = detail.trust_audit ?? []
 
   const activePendingReview = reviewedPending && reviewedPending.deck_id === deckId ? reviewedPending : latestPending
   const pendingSwapped = Boolean(
@@ -788,6 +795,19 @@ function DeckViewInner({
       await state.rejectScript(activePendingReview.rev, 'rejected by owner')
     } finally {
       setScriptActionBusy(false)
+    }
+  }
+
+  const handleSetTrust = async (trusted: boolean) => {
+    if (embedded || trustBusy) return
+    setTrustBusy(true)
+    try {
+      const res = await state.setTrust(trusted)
+      if (res) {
+        setTrustConfirmOpen(false)
+      }
+    } finally {
+      setTrustBusy(false)
     }
   }
 
@@ -912,6 +932,28 @@ function DeckViewInner({
           View live
         </Link>
       )}
+      {isTrusted ? (
+        <Button
+          size="sm"
+          variant="outline"
+          data-deck-trust-revoke
+          disabled={trustBusy}
+          onClick={() => void handleSetTrust(false)}
+        >
+          <ShieldOff className="size-3.5" /> Revoke trust
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          data-deck-trust-open
+          title={nonHomeTitle}
+          disabled={trustBusy || isNonHome}
+          onClick={() => setTrustConfirmOpen((v) => !v)}
+        >
+          <ShieldCheck className="size-3.5" /> Trust this Deck
+        </Button>
+      )}
       <Button size="sm" variant="outline" onClick={() => setShowAdd((v) => !v)}>
         <Plus className="size-3.5" /> Section
       </Button>
@@ -961,6 +1003,14 @@ function DeckViewInner({
             >
               {rtState}
             </span>
+            {!embedded && isTrusted && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-fg-accent/15 px-2 py-0.5 text-[10px] font-medium text-fg-accent"
+                data-deck-trusted-badge
+              >
+                <ShieldCheck className="size-3" /> Trusted
+              </span>
+            )}
             {rt?.stale && (
               <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-medium text-warning">
                 <AlertTriangle className="size-3" /> stale
@@ -996,6 +1046,14 @@ function DeckViewInner({
               >
                 {rtState}
               </span>
+              {!embedded && isTrusted && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full bg-fg-accent/15 px-2 py-0.5 text-[10px] font-medium text-fg-accent"
+                  data-deck-trusted-badge
+                >
+                  <ShieldCheck className="size-3" /> Trusted
+                </span>
+              )}
               {rt?.stale && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-medium text-warning">
                   <AlertTriangle className="size-3" /> stale
@@ -1051,6 +1109,59 @@ function DeckViewInner({
         {/* Mesh home engine & source node status */}
         {rt?.mesh && (
           <DeckMeshBar mesh={rt.mesh} hasLastSnapshot={Boolean(state.lastSnapshot)} embedded={embedded} />
+        )}
+
+        {/* Explicit owner trust confirmation panel (full-page home owner UI only; never embedded or non-home) */}
+        {!embedded && !isNonHome && trustConfirmOpen && !isTrusted && (
+          <div
+            className="space-y-2 rounded-xl border border-fg-accent/40 bg-fg-accent/10 p-3 text-xs"
+            data-deck-trust-confirm-panel
+          >
+            <div className="flex items-center justify-between gap-2 font-medium text-fg-primary">
+              <span className="inline-flex items-center gap-1.5">
+                <ShieldCheck className="size-4 text-fg-accent" />
+                Trust this Deck (Autonomous Execution Mode)
+              </span>
+              <button type="button" onClick={() => setTrustConfirmOpen(false)} aria-label="Close trust confirmation">
+                <X className="size-3.5" />
+              </button>
+            </div>
+            <p className="text-fg-secondary">
+              Enabling trust <strong>runs current/future Monty code and tool/MCP calls without approval prompts</strong>{' '}
+              until you revoke it.
+            </p>
+            <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-fg-secondary">
+              <li>
+                Future script revisions auto-approve and are recorded in the audit log with their canonical SHA-256
+                hashes.
+              </li>
+              <li>
+                Current runtime activity is preserved — enabling trust never silently starts a paused or stopped Deck.
+              </li>
+              <li>
+                Machine-local to this engine only; trust does not replicate or transfer on mesh home moves, and source
+                nodes require separate local grants.
+              </li>
+              <li>
+                Non-bypassable safeguards remain active: <code>human_only</code>, <code>always_ask</code>, risk caps,
+                isolated workdir, blocked re-entrant <code>deck_*</code> tools, and OS controls still apply. Routine
+                approvals remain governed by routines.
+              </li>
+            </ul>
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <Button size="sm" variant="ghost" disabled={trustBusy} onClick={() => setTrustConfirmOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                data-deck-trust-confirm
+                disabled={trustBusy}
+                onClick={() => void handleSetTrust(true)}
+              >
+                <ShieldCheck className="size-3.5" /> Enable Trust
+              </Button>
+            </div>
+          </div>
         )}
 
         {/* Pending script approval gate banner */}
@@ -1333,16 +1444,59 @@ function DeckViewInner({
                 <X className="size-3.5" />
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-[11px] text-fg-secondary sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2 text-[11px] text-fg-secondary sm:grid-cols-5">
               <div>Session: <code className="font-mono">{rt?.session_id?.slice(0, 8) ?? '—'}</code></div>
               <div>Active rev: <code className="font-mono">{rt?.active_rev ?? 'none'}</code></div>
               <div>Run epoch: <code className="font-mono">{rt?.run_epoch ?? 0}</code></div>
               <div>Steps: <code className="font-mono">{rt?.step_count ?? 0}</code></div>
+              <div>
+                Mode:{' '}
+                <code className="font-mono" data-deck-inspector-trust-mode>
+                  {isTrusted ? 'trusted' : 'reviewed'}
+                </code>
+              </div>
+            </div>
+            <div className="rounded-lg border border-border-subtle bg-background/60 p-2 text-[11px] text-fg-secondary">
+              <div className="font-medium text-fg-primary">
+                Machine-local Trust:{' '}
+                {isTrusted ? 'Trusted (auto-approves future revisions & eligible tool calls)' : 'Reviewed (default)'}
+              </div>
+              {detail.trust?.granted_at && (
+                <div className="mt-0.5 text-fg-tertiary">
+                  Granted by <code className="font-mono">{detail.trust.granted_by ?? 'owner'}</code> at{' '}
+                  {detail.trust.granted_at}
+                </div>
+              )}
+              {!isTrusted && detail.trust?.revoked_at && (
+                <div className="mt-0.5 text-fg-tertiary">
+                  Last revoked by <code className="font-mono">{detail.trust.revoked_by ?? 'owner'}</code> at{' '}
+                  {detail.trust.revoked_at}
+                </div>
+              )}
+              {trustAudit.length > 0 && (
+                <div className="mt-2" data-deck-trust-audit>
+                  <div className="mb-1 font-medium text-fg-secondary">Trust Audit Trail ({trustAudit.length})</div>
+                  <ul className="max-h-32 space-y-0.5 overflow-y-auto font-mono text-[10px] text-fg-tertiary">
+                    {trustAudit.map((ev) => (
+                      <li key={ev.id} className="flex flex-wrap items-baseline justify-between gap-2">
+                        <span>
+                          <strong className="text-fg-primary">{ev.event}</strong> · {ev.actor}
+                          {ev.rev != null ? ` · rev ${ev.rev}` : ''}
+                          {ev.revision_sha256 ? ` · ${ev.revision_sha256.slice(0, 12)}` : ''}
+                          {ev.note ? ` · ${ev.note}` : ''}
+                        </span>
+                        <span>{ev.created_at}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
             {detail.active_script ? (
               <div>
                 <div className="mb-1 text-[11px] font-medium text-fg-secondary">
-                  Approved Script rev {detail.active_script.rev} ({detail.active_script.mode}) ·{' '}
+                  Approved Script rev {detail.active_script.rev} ({detail.active_script.mode})
+                  {detail.active_script.auto_approved ? ' · auto-approved (trusted)' : ''} ·{' '}
                   {detail.active_script.declared_actions.length} declared actions ·{' '}
                   {detail.active_script.triggers?.length ?? 0} triggers ·{' '}
                   {formatScriptSchedule(detail.active_script)}
