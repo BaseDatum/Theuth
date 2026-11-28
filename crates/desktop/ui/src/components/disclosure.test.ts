@@ -53,6 +53,8 @@ const CHROME: Record<string, true> = {
   'chat/ModelMenu.tsx': true,
   'chat/OrphansBanner.tsx': true,
   'chat/SessionMenu.tsx': true,
+  'chat/floating/ReplyBubble.tsx': true,
+  'chat/floating/SessionChip.tsx': true,
 }
 
 function sources(dir: string): string[] {

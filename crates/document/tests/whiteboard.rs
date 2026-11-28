@@ -885,4 +885,3 @@ async fn deck_card_validation_outline_and_zero_geometry_version_churn() {
 
     stop(actor).await;
 }
-
