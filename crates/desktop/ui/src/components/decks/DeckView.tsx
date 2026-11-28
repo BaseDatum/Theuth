@@ -33,6 +33,8 @@ import { cornerPad } from '@/lib/sidebar-corner'
 import { cn } from '@/lib/utils'
 import { RpcError } from '@/rpc/client'
 import { DeckHtmlSection } from './DeckHtmlSection'
+import { DeckNoteSection } from './deck-markdown'
+import { DeckOpenUISection } from './DeckOpenUISection'
 import { DeckSurfaceSection, lookupPath } from './DeckSurfaceSection'
 import {
   deckControlAvailability,
@@ -44,7 +46,7 @@ import {
   type SectionKind,
   type SectionRevision,
 } from './types'
-import { type DeckLiveState, useDeckLive } from './useDeckLive'
+import { type DeckLiveState, selectSectionDeckData, useDeckLive } from './useDeckLive'
 
 const STATE_STYLE: Record<RuntimeState, string> = {
   stopped: 'bg-layer-2 text-fg-tertiary',
@@ -99,23 +101,29 @@ function formatHistoryTime(at: number): string {
 }
 
 function SectionItem({
+  deckId,
   section,
   index,
   total,
   focused,
   embedded,
   pinned,
-  activeData,
+  interactive,
+  sectionData,
+  activeScript,
   interactCtx,
   state,
 }: {
+  deckId: string
   section: DeckSection
   index: number
   total: number
   focused: boolean
   embedded: boolean
   pinned: boolean
-  activeData: unknown
+  interactive: boolean
+  sectionData: unknown
+  activeScript: ScriptRevision | null
   interactCtx: DeckInteractContextValue
   state: DeckLiveState
 }) {
@@ -129,7 +137,10 @@ function SectionItem({
   const [historyOpen, setHistoryOpen] = useState(false)
   const [history, setHistory] = useState<SectionRevision[] | null>(null)
 
-  const data = useMemo(() => sectionPayload(activeData, section.data_key), [activeData, section.data_key])
+  const data = useMemo(
+    () => sectionPayload(sectionData, section.data_key),
+    [sectionData, section.data_key],
+  )
 
   const span = Math.max(1, Math.min(12, section.col_span || 12))
 
@@ -381,8 +392,28 @@ function SectionItem({
             </Button>
           </div>
         </div>
+      ) : section.kind === 'openui' ? (
+        <DeckOpenUISection
+          deckId={deckId}
+          sectionId={section.id}
+          source={section.content}
+          dataKey={section.data_key}
+          data={data}
+          dataVersion={state.dataVersion}
+          runtime={state.runtime}
+          activeScript={activeScript}
+          pinned={pinned}
+          interactive={interactive}
+          invokeAction={state.invokeAction}
+        />
       ) : section.kind === 'json_render' ? (
-        <DeckSurfaceSection template={section.content} data={data} context={interactCtx} bare={embedded} />
+        <DeckSurfaceSection
+          sectionId={section.id}
+          template={section.content}
+          data={data}
+          context={interactCtx}
+          bare={embedded}
+        />
       ) : section.kind === 'html' ? (
         <DeckHtmlSection
           sectionId={section.id}
@@ -391,10 +422,15 @@ function SectionItem({
           data={data}
           compact={embedded}
           pinned={pinned}
-          onAction={pinned ? undefined : (a, args) => void state.invokeAction(a, args)}
+          interactive={interactive}
+          onAction={
+            pinned || !interactive
+              ? undefined
+              : (a, args, opts) => state.invokeAction(a, args, opts)
+          }
         />
       ) : (
-        <div className="whitespace-pre-wrap text-xs leading-relaxed text-fg-secondary">{section.content}</div>
+        <DeckNoteSection content={section.content} data={data} />
       )}
 
       {historyOpen && history && (
@@ -432,6 +468,8 @@ export type DeckViewProps = {
   snapshotId?: string
   /** Compact embedded mode (e.g., whiteboard card). */
   embedded?: boolean
+  /** Whether mutating section controls are active (defaults to `!embedded`, always disabled when pinned). */
+  interactive?: boolean
   /** Omit the full-page title bar (used inside `CardSheet`, which supplies its own header). */
   hideHeader?: boolean
   /** Optional pre-supplied live state (used in unit tests). */
@@ -442,16 +480,27 @@ export type DeckViewProps = {
  * Shared collaborative Deck renderer used by both the full-page `/decks/$id` route
  * and embedded whiteboard Deck cards.
  */
-export function DeckView({
+export function DeckView(props: DeckViewProps) {
+  if (props.liveState) {
+    return <DeckViewInner {...props} state={props.liveState} />
+  }
+  return <DeckViewLive {...props} />
+}
+
+function DeckViewLive(props: DeckViewProps) {
+  const state = useDeckLive(props.deckId, props.snapshotId)
+  return <DeckViewInner {...props} state={state} />
+}
+
+function DeckViewInner({
   deckId,
   section,
   snapshotId,
   embedded = false,
+  interactive,
   hideHeader = false,
-  liveState,
-}: DeckViewProps) {
-  const hookState = useDeckLive(liveState ? '' : deckId, snapshotId)
-  const state = liveState ?? hookState
+  state,
+}: DeckViewProps & { state: DeckLiveState }) {
   const sidebar = useOptionalSidebar()
   const insideTile = useInsideTile()
   const mac = isMacDesktop()
@@ -1029,8 +1078,9 @@ export function DeckView({
                 onChange={(e) => setNewKind(e.target.value as SectionKind)}
                 className="rounded-md border border-border-subtle bg-background px-2 py-1"
               >
-                <option value="note">Note (text)</option>
+                <option value="note">Note (Markdown)</option>
                 <option value="json_render">Native json-render</option>
+                <option value="openui">OpenUI (restricted)</option>
                 <option value="html">Sandboxed HTML</option>
               </select>
               <input
@@ -1056,11 +1106,13 @@ export function DeckView({
             <textarea
               rows={5}
               placeholder={
-                newKind === 'json_render'
-                  ? '{"root":"r","elements":{"r":{"type":"Text","props":{"text":"{{last_event|Ready}}"}}}}'
-                  : newKind === 'html'
-                    ? '<div id="out">Waiting…</div><script>window.theuthDeck.onData(d => out.textContent = JSON.stringify(d))</script>'
-                    : 'Collaborative notes…'
+                newKind === 'openui'
+                  ? 'data = Query("deck_data", {}, {})\nroot = Card([TextContent(data.status)])'
+                  : newKind === 'json_render'
+                    ? '{"root":"r","elements":{"r":{"type":"Text","props":{"text":"{{last_event|Ready}}"}}}}'
+                    : newKind === 'html'
+                      ? '<div id="out">Waiting…</div><script>window.theuthDeck.onData(d => out.textContent = JSON.stringify(d))</script>'
+                      : 'Collaborative Markdown notes (supports {{path|default}})…'
               }
               value={newContent}
               onChange={(e) => setNewContent(e.target.value)}
@@ -1130,25 +1182,40 @@ export function DeckView({
                 )}
               </div>
             ) : (
-              'No sections yet. Add a native json-render, note, or sandboxed HTML section.'
+              'No sections yet. Add an OpenUI, native json-render, Markdown note, or sandboxed HTML section.'
             )}
           </div>
         ) : (
           <div className={cn(embedded ? 'space-y-2.5' : 'grid grid-cols-12 gap-3')}>
-            {visibleSections.map((sec, i) => (
-              <SectionItem
-                key={sec.id}
-                section={sec}
-                index={i}
-                total={visibleSections.length}
-                focused={detail.doc.focus?.section === sec.id}
-                embedded={embedded}
-                pinned={pinned}
-                activeData={state.activeData}
-                interactCtx={interactCtx}
-                state={state}
-              />
-            ))}
+            {visibleSections.map((sec, i) => {
+              const sectionData = selectSectionDeckData(sec, {
+                isPinned: pinned,
+                pinnedSnapshot: pinned ? state.lastSnapshot : null,
+                globalFrame: state.globalFrame,
+                globalSnapshot: state.globalSnapshot,
+                sectionFrames: state.sectionFrames,
+                sectionSnapshots: state.sectionSnapshots,
+                fallbackData: state.activeData,
+              })
+              const effectiveInteractive = (interactive ?? !embedded) && !pinned
+              return (
+                <SectionItem
+                  key={sec.id}
+                  deckId={deckId}
+                  section={sec}
+                  index={i}
+                  total={visibleSections.length}
+                  focused={detail.doc.focus?.section === sec.id}
+                  embedded={embedded}
+                  pinned={pinned}
+                  interactive={effectiveInteractive}
+                  sectionData={sectionData}
+                  activeScript={detail.active_script ?? null}
+                  interactCtx={interactCtx}
+                  state={state}
+                />
+              )
+            })}
           </div>
         )}
 

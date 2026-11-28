@@ -31,13 +31,17 @@ const liveStore = vi.hoisted(() => {
   return store
 })
 
-vi.mock('@/components/decks/useDeckLive', () => ({
-  useDeckLive: () =>
-    useSyncExternalStore(
-      liveStore.subscribe,
-      () => liveStore.state!,
-    ),
-}))
+vi.mock('@/components/decks/useDeckLive', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/decks/useDeckLive')>()
+  return {
+    ...actual,
+    useDeckLive: () =>
+      useSyncExternalStore(
+        liveStore.subscribe,
+        () => liveStore.state!,
+      ),
+  }
+})
 
 import type { CanvasHost } from '@/components/whiteboard/canvas/api'
 import Canvas from '@/components/whiteboard/canvas/Canvas'

@@ -54,6 +54,7 @@ export default function DeckCardBody({
         section={section}
         snapshotId={snapshotId}
         embedded
+        interactive={interactive}
         liveState={liveState}
       />
     </div>
