@@ -95,7 +95,7 @@ vi.mock('@/components/nav/SectionBand', () => ({
 }))
 
 import { DeckView, sectionPayload } from './DeckView'
-import { InsideTileCtx } from '@/components/tiles/tile-context'
+import { InsideTileProvider } from '@/components/tiles/tile-context'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { RpcError } from '@/rpc/client'
 
@@ -974,7 +974,7 @@ describe('DeckView Phase 2: H12 chrome/title/popout, Medium #1/#2/#8/#11/#12, an
     // Subscription closed banner rendered (Medium #12)
     expect(el.querySelector('[data-deck-stream-closed="deck_deleted"]')?.textContent).toContain('deleted')
 
-    // Popout button preserves ?section and ?snapshot and catches rejection with notify.error
+    // Popout button preserves ?section and ?snapshot with deck popout target + title and catches rejection with notify.error
     rpcMock.openPopout.mockRejectedValueOnce(new Error('popout blocked'))
     const popoutBtn = el.querySelector<HTMLButtonElement>('button[aria-label="Open in window"]')!
     await act(async () => {
@@ -982,8 +982,11 @@ describe('DeckView Phase 2: H12 chrome/title/popout, Medium #1/#2/#8/#11/#12, an
       await Promise.resolve()
     })
     expect(rpcMock.openPopout).toHaveBeenCalledWith({
-      kind: 'page',
-      path: '/decks/deck-full?section=s1&snapshot=snap-99',
+      kind: 'deck',
+      deck: 'deck-full',
+      section: 's1',
+      snapshot: 'snap-99',
+      title: 'Incident Ops',
     })
     expect(rpcMock.notify.error).toHaveBeenCalledWith('popout blocked')
 
@@ -1004,28 +1007,31 @@ describe('DeckView Phase 2: H12 chrome/title/popout, Medium #1/#2/#8/#11/#12, an
     })
     expect(sectionArchive).toHaveBeenCalledWith('sec-arch', false, 5)
 
-    // Inside a tile: suppresses drag region, SidebarLead, popout button, and document.title mutation
+    // Inside a tile: renders slim toolbar (no duplicate DeckView header/h1), syncs live title to tile, and suppresses document.title mutation
+    const onTitle = vi.fn()
     document.title = 'Shell Title'
     await act(async () => {
       root.render(
         h(
           QueryClientProvider,
           { client: qc },
-          h(
-            InsideTileCtx.Provider,
-            { value: true },
-            h(
+          h(InsideTileProvider, {
+            onTitle,
+            children: h(
               SidebarProvider,
               { defaultOpen: false },
               h(DeckView, { deckId: 'deck-full', liveState: state }),
             ),
-          ),
+          }),
         ),
       )
     })
-    expect(el.querySelector('header')!.hasAttribute('data-tauri-drag-region')).toBe(false)
+    expect(el.querySelector('[data-deck-slim-toolbar]')).not.toBeNull()
+    expect(el.querySelector('[data-deck-view="deck-full"] > header')).toBeNull()
+    expect(el.querySelector('h1')).toBeNull()
     expect(el.querySelector('[data-mock-sidebar-lead]')).toBeNull()
     expect(el.querySelector('button[aria-label="Open in window"]')).toBeNull()
+    expect(onTitle).toHaveBeenCalledWith('Incident Ops')
     expect(document.title).toBe('Shell Title')
 
     // canPopout() === false (iOS) hides popout button
@@ -1054,5 +1060,43 @@ describe('DeckView Phase 2: H12 chrome/title/popout, Medium #1/#2/#8/#11/#12, an
     const openLink = [...el.querySelectorAll<HTMLAnchorElement>('a')].find((a) => a.textContent?.includes('Open →'))!
     expect(openLink.getAttribute('href')).toBe('/decks/deck-full?section=missing-sec&snapshot=snap-7')
     expect(el.querySelector('[data-deck-empty-sections]')?.textContent).toContain('Section “missing-sec” not found.')
+  })
+
+  it('displays trigger conditions and target routine in pending script review UI and approved script inspector', async () => {
+    const triggerScript = makeScript({
+      rev: 2,
+      triggers: [
+        {
+          id: 'cpu-high',
+          metric: 'cpu_pct',
+          op: 'gte',
+          threshold: 85,
+          reset_threshold: 70,
+          min_samples: 3,
+          sustain_secs: 60,
+          cooldown_secs: 300,
+          reset_mode: 're_arm_on_clear',
+          routine: 'ops-alert',
+        },
+      ],
+    })
+    const detail = makeDetail('deck-trig', {
+      pending_script: triggerScript,
+      active_script: { ...triggerScript, rev: 1, status: 'approved' },
+    })
+    const state = makeLiveStateStub(detail)
+
+    await act(async () => {
+      root.render(h(QueryClientProvider, { client: qc }, h(DeckView, { deckId: 'deck-trig', liveState: state })))
+    })
+
+    const reviewTriggers = el.querySelector('[data-deck-review-triggers]')!
+    expect(reviewTriggers.textContent).toContain('cpu-high')
+    expect(reviewTriggers.textContent).toContain('cpu_pct >= 85')
+    expect(reviewTriggers.textContent).toContain('min 3 samples')
+    expect(reviewTriggers.textContent).toContain('sustain 60s')
+    expect(reviewTriggers.textContent).toContain('reset 70')
+    expect(reviewTriggers.textContent).toContain('cooldown 300s')
+    expect(reviewTriggers.textContent).toContain('ops-alert')
   })
 })

@@ -171,12 +171,18 @@ function DecksPopover({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (next && usePanes.getState().drag !== null) return
+        setOpen(next)
+      }}
+    >
       {wrap(
         <PopoverTrigger
           asChild
           onKeyDown={(e) => {
-            if (e.key === 'ArrowRight' && !open) {
+            if (e.key === 'ArrowRight' && !open && usePanes.getState().drag === null) {
               e.preventDefault()
               setOpen(true)
             }
@@ -207,16 +213,23 @@ function DecksPopover({
   )
 }
 
-/** Expanded sidebar Decks row (beside Whiteboards); its popover lists recent decks + New deck + All decks. */
+/** Expanded sidebar Decks row (beside Whiteboards); click opens popover, drag creates `/decks` pane. */
 export function DecksRow({ className }: { className?: string }) {
   const active = useDeckHere()
+  const drag = useViewDrag('/decks', 'Decks')
   return (
     <SidebarMenuItem>
       <DecksPopover
         side="right"
         active={active}
         trigger={
-          <SidebarMenuButton isActive={active !== undefined} className={className} aria-label="Decks">
+          <SidebarMenuButton
+            {...drag}
+            isActive={active !== undefined}
+            className={className}
+            aria-label="Decks"
+            data-decks-row-button
+          >
             <Layers /> <span>Decks</span>
           </SidebarMenuButton>
         }
@@ -227,10 +240,11 @@ export function DecksRow({ className }: { className?: string }) {
 
 /**
  * Collapsed left rail Decks button: ALWAYS exactly ONE Decks button in the rail regardless of how
- * many Decks exist. Clicking opens the Decks popover (recent decks + New deck + All decks).
+ * many Decks exist. Clicking opens the Decks popover; dragging creates a `/decks` pane.
  */
 export function DecksRail({ itemClass, wrap }: { itemClass: string; wrap(trigger: ReactNode): ReactNode }) {
   const active = useDeckHere()
+  const drag = useViewDrag('/decks', 'Decks')
   return (
     <DecksPopover
       side="right"
@@ -239,6 +253,7 @@ export function DecksRail({ itemClass, wrap }: { itemClass: string; wrap(trigger
       trigger={
         <button
           type="button"
+          {...drag}
           aria-label="Decks"
           data-decks-rail-button
           className={itemClass}

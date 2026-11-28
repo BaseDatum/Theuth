@@ -59,6 +59,7 @@ export function TileFrame({
   popOut,
   onBack,
   onClose,
+  onTitle,
   first = false,
   children,
   className,
@@ -73,6 +74,8 @@ export function TileFrame({
   /** Back within the tile's own history; omitted when there is nothing to go back to. */
   onBack?: () => void
   onClose: () => void
+  /** Optional callback for nested views to update the tile's displayed title. */
+  onTitle?: (title: string) => void
   first?: boolean
   children: ReactNode
   /** Merged onto the body (a flex column filling the rest of the tile). */
@@ -125,7 +128,9 @@ export function TileFrame({
         )}
       </header>
       <div className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t', className)}>
-        <InsideTileProvider onClose={onClose}>{children}</InsideTileProvider>
+        <InsideTileProvider onClose={onClose} onTitle={onTitle}>
+          {children}
+        </InsideTileProvider>
       </div>
     </div>
   )

@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest'
 import type { Entry } from '@/store/sessions'
+import { isDeliverable } from './ToolRunCard'
 import { openLabel, viewCall } from './ViewOpenedCard'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
@@ -30,4 +31,42 @@ test('the open button reads Focus while the pane is open, Reopen once closed, Op
   expect(openLabel(true, false)).toBe('Reopen')
   expect(openLabel(false, false)).toBe('Open')
   expect(openLabel(false, true)).toBe('Open')
+})
+
+test('show_deck receipt, args fallback, and DELIVERABLE_TOOLS parity with show_view', () => {
+  const deckTool = (over: Partial<Tool>): Tool => ({ ...tool(over), name: 'show_deck' })
+
+  expect(isDeliverable(tool({}))).toBe(true)
+  expect(isDeliverable(deckTool({}))).toBe(true)
+
+  const opened = `view opened · Ops Deck · /decks/deck-1?section=s1&snapshot=snap-9 · tile tile:view::%2Fdecks%2Fdeck-1%3Fsection%3Ds1%26snapshot%3Dsnap-9\nOpened Ops Deck (/decks/deck-1?section=s1&snapshot=snap-9) in pane tile:view::%2Fdecks%2Fdeck-1%3Fsection%3Ds1%26snapshot%3Dsnap-9`
+  expect(viewCall(deckTool({ result: result(opened) }))).toEqual({
+    title: 'Ops Deck',
+    path: '/decks/deck-1?section=s1&snapshot=snap-9',
+    leaf: 'tile:view::%2Fdecks%2Fdeck-1%3Fsection%3Ds1%26snapshot%3Dsnap-9',
+    reused: false,
+  })
+
+  const reused = `view reused · Ops Deck · /decks/deck-1 · tile tile:view::%2Fdecks%2Fdeck-1\nReused Ops Deck (/decks/deck-1) in pane tile:view::%2Fdecks%2Fdeck-1`
+  expect(viewCall(deckTool({ result: result(reused) }))).toEqual({
+    title: 'Ops Deck',
+    path: '/decks/deck-1',
+    leaf: 'tile:view::%2Fdecks%2Fdeck-1',
+    reused: true,
+  })
+
+  // Pending/failed show_deck derives its route from deck_id + section/snapshot_id args.
+  expect(
+    viewCall(
+      deckTool({
+        pending: true,
+        args: { deck_id: 'deck-1', section: 's1', snapshot_id: 'snap-9', title: 'Ops Deck' },
+      }),
+    ),
+  ).toEqual({
+    title: 'Ops Deck',
+    path: '/decks/deck-1?section=s1&snapshot=snap-9',
+    leaf: null,
+    reused: false,
+  })
 })

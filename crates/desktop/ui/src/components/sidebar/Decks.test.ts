@@ -184,4 +184,100 @@ describe('Decks sidebar rail & popover', () => {
     })
     expect(document.activeElement).toBe(items[0])
   })
+
+  it('attaches /decks drag payloads to DecksRail and DecksRow, guards popover while dragging, and preserves DecksMenu/DecksList drag payloads', async () => {
+    const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query')
+    const { DecksRow } = await import('./Decks')
+    const { DecksList } = await import('@/components/decks/DecksList')
+    const { SidebarProvider } = await import('@/components/ui/sidebar')
+    const { usePanes } = await import('@/lib/panes')
+    decksMock.rows = [deck(0)]
+
+    const pointerEv = (type: string, clientX: number, clientY: number) =>
+      Object.assign(
+        new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX, clientY }),
+        { pointerId: 1, pointerType: 'mouse' },
+      )
+
+    const startDragFrom = async (target: HTMLElement) => {
+      usePanes.setState({ drag: null })
+      target.setPointerCapture = () => {}
+      target.releasePointerCapture = () => {}
+      target.hasPointerCapture = () => false
+      await act(async () => {
+        target.dispatchEvent(pointerEv('pointerdown', 10, 10))
+      })
+      await act(async () => {
+        target.dispatchEvent(pointerEv('pointermove', 30, 10))
+      })
+      const payload = usePanes.getState().drag?.payload
+      await act(async () => {
+        target.dispatchEvent(pointerEv('pointerup', 30, 10))
+      })
+      usePanes.setState({ drag: null })
+      return payload
+    }
+
+    // 1) Collapsed DecksRail: click opens popover; drag carries /decks payload and suppresses popover
+    await act(async () => {
+      root.render(h(DecksRail, { itemClass: 'rail-item', wrap: (t) => t }))
+    })
+    const railBtn = el.querySelector<HTMLButtonElement>('[data-decks-rail-button]')!
+    expect(railBtn.getAttribute('data-drag-row')).toBe('true')
+    await act(async () => {
+      railBtn.click()
+    })
+    expect(document.body.querySelector('[data-decks-menu]')).not.toBeNull()
+    // Close popover before testing drag.
+    await act(async () => {
+      railBtn.click()
+    })
+    expect(document.body.querySelector('[data-decks-menu]')).toBeNull()
+    expect(await startDragFrom(railBtn)).toEqual({ kind: 'view', path: '/decks', title: 'Decks' })
+    // Trailing click immediately after drag is swallowed by usePressDrag so popover stays closed.
+    await act(async () => {
+      railBtn.click()
+    })
+    expect(document.body.querySelector('[data-decks-menu]')).toBeNull()
+
+    // 2) Expanded DecksRow: click opens popover; drag carries /decks payload and suppresses popover
+    await act(async () => {
+      root.render(h(SidebarProvider, { defaultOpen: true }, h(DecksRow)))
+    })
+    const rowBtn = el.querySelector<HTMLButtonElement>('[data-decks-row-button]')!
+    expect(rowBtn.getAttribute('data-drag-row')).toBe('true')
+    await act(async () => {
+      rowBtn.click()
+    })
+    expect(document.body.querySelector('[data-decks-menu]')).not.toBeNull()
+    await act(async () => {
+      rowBtn.click()
+    })
+    expect(document.body.querySelector('[data-decks-menu]')).toBeNull()
+    expect(await startDragFrom(rowBtn)).toEqual({ kind: 'view', path: '/decks', title: 'Decks' })
+    await act(async () => {
+      rowBtn.click()
+    })
+    expect(document.body.querySelector('[data-decks-menu]')).toBeNull()
+
+    // 3) DecksMenu item and DecksList row carry per-deck /decks/<id> drag payload
+    await act(async () => {
+      root.render(h(DecksMenu, { rows: [deck(0)], onNew: () => {}, onPick: () => {} }))
+    })
+    const menuDeck = el.querySelector<HTMLElement>('[data-deck="deck-0"]')!
+    expect(await startDragFrom(menuDeck)).toEqual({ kind: 'view', path: '/decks/deck-0', title: 'Deck 0' })
+
+    const qc = new QueryClient()
+    await act(async () => {
+      root.render(
+        h(
+          QueryClientProvider,
+          { client: qc },
+          h(SidebarProvider, { defaultOpen: true }, h(DecksList)),
+        ),
+      )
+    })
+    const listRow = el.querySelector<HTMLElement>('[data-deck-row="deck-0"]')!
+    expect(await startDragFrom(listRow)).toEqual({ kind: 'view', path: '/decks/deck-0', title: 'Deck 0' })
+  })
 })

@@ -77,14 +77,32 @@ export type DeclaredAction = {
   allow_while_paused: boolean
 }
 
+export type TriggerOp = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'ne' | 'is_true' | 'is_false'
+
+export type TriggerResetMode = 're_arm_on_clear' | 'cooldown_only'
+
+export type TriggerSpec = {
+  id: string
+  metric: string
+  op: TriggerOp
+  threshold?: number | boolean | null
+  reset_threshold?: number | boolean | null
+  min_samples: number
+  sustain_secs: number
+  cooldown_secs: number
+  reset_mode: TriggerResetMode
+  routine: string
+}
+
 export type ScriptRevision = {
   deck_id: string
   rev: number
   code: string
   code_sha256: string
-  /** Canonical SHA-256 revision digest over (code, declared_actions, mode, interval_secs, schedule_cron). */
+  /** Canonical SHA-256 revision digest over (code, declared_actions, mode, interval_secs, schedule_cron, and triggers when non-empty). */
   revision_sha256: string
   declared_actions: DeclaredAction[]
+  triggers?: TriggerSpec[]
   mode: ScriptMode
   interval_secs?: number | null
   schedule_cron?: string | null

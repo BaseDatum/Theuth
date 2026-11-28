@@ -23,7 +23,7 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import type { DeckInteractContextValue } from '@/components/chat/surface/deck-context'
 import { SidebarLead } from '@/components/nav/SectionBand'
-import { useInsideTile } from '@/components/tiles/tile-context'
+import { useInsideTile, useSetTileTitle } from '@/components/tiles/tile-context'
 import { Button } from '@/components/ui/button'
 import { useOptionalSidebar } from '@/components/ui/sidebar'
 import { isMacDesktop } from '@/lib/hotkeys'
@@ -38,13 +38,13 @@ import { DeckOpenUISection } from './DeckOpenUISection'
 import { DeckSurfaceSection, lookupPath } from './DeckSurfaceSection'
 import {
   deckControlAvailability,
-  deckRoutePath,
   safeIsoTimestamp,
   type DeckSection,
   type RuntimeState,
   type ScriptRevision,
   type SectionKind,
   type SectionRevision,
+  type TriggerSpec,
 } from './types'
 import { type DeckLiveState, selectSectionDeckData, useDeckLive } from './useDeckLive'
 
@@ -93,6 +93,34 @@ function formatScriptSchedule(script: ScriptRevision): string {
   if (script.interval_secs != null) parts.push(`every ${script.interval_secs}s`)
   if (script.schedule_cron) parts.push(`cron: ${script.schedule_cron}`)
   return parts.length > 0 ? parts.join(' · ') : 'manual / on-demand'
+}
+
+const TRIGGER_OP_LABEL: Record<TriggerSpec['op'], string> = {
+  gt: '>',
+  gte: '>=',
+  lt: '<',
+  lte: '<=',
+  eq: '==',
+  ne: '!=',
+  is_true: 'is true',
+  is_false: 'is false',
+}
+
+function formatTriggerCondition(t: TriggerSpec): string {
+  const op = TRIGGER_OP_LABEL[t.op] ?? t.op
+  const cond =
+    t.op === 'is_true' || t.op === 'is_false'
+      ? `${t.metric} ${op}`
+      : `${t.metric} ${op} ${String(t.threshold ?? '')}`
+  const clauses: string[] = []
+  if (t.min_samples > 1) clauses.push(`min ${t.min_samples} samples`)
+  if (t.sustain_secs > 0) clauses.push(`sustain ${t.sustain_secs}s`)
+  if (t.reset_threshold !== undefined && t.reset_threshold !== null) {
+    clauses.push(`reset ${String(t.reset_threshold)}`)
+  }
+  if (t.cooldown_secs > 0) clauses.push(`cooldown ${t.cooldown_secs}s`)
+  if (t.reset_mode === 'cooldown_only') clauses.push('cooldown-only')
+  return clauses.length > 0 ? `${cond} (${clauses.join(', ')})` : cond
 }
 
 function formatHistoryTime(at: number): string {
@@ -503,6 +531,7 @@ function DeckViewInner({
 }: DeckViewProps & { state: DeckLiveState }) {
   const sidebar = useOptionalSidebar()
   const insideTile = useInsideTile()
+  const setTileTitle = useSetTileTitle()
   const mac = isMacDesktop()
 
   const [showScript, setShowScript] = useState(false)
@@ -544,6 +573,12 @@ function DeckViewInner({
     if (embedded || insideTile || hideHeader || !detail) return
     document.title = detail.doc.title || 'Decks'
   }, [embedded, insideTile, hideHeader, detail])
+
+  // Sync live Deck title to enclosing ViewTile header/props instead of generic "Decks".
+  useEffect(() => {
+    if (!insideTile || embedded || !detail?.doc.title) return
+    setTileTitle?.(detail.doc.title)
+  }, [insideTile, embedded, detail?.doc.title, setTileTitle])
 
   const pinned = Boolean(snapshotId)
 
@@ -594,6 +629,7 @@ function DeckViewInner({
   const rtState: RuntimeState = rt?.state ?? 'stopped'
   const canRun = Boolean(rt?.active_rev)
   const controls = deckControlAvailability(rtState, canRun)
+  const slimChrome = hideHeader || (insideTile && !embedded)
 
   const activePendingReview = reviewedPending && reviewedPending.deck_id === deckId ? reviewedPending : latestPending
   const pendingSwapped = Boolean(
@@ -754,15 +790,19 @@ function DeckViewInner({
           <span className="ml-1 size-2 rounded-full bg-warning" aria-label="pending script review" />
         )}
       </Button>
-      {!hideHeader && canPopout() && !isPopout() && !insideTile && (
+      {!slimChrome && canPopout() && !isPopout() && !insideTile && (
         <Button
           size="sm"
           variant="ghost"
           aria-label="Open in window"
           onClick={() => {
-            void openPopout({ kind: 'page', path: deckRoutePath(deckId, section, snapshotId) }).catch((e) =>
-              notify.error(e instanceof Error ? e.message : String(e)),
-            )
+            void openPopout({
+              kind: 'deck',
+              deck: deckId,
+              ...(section ? { section } : {}),
+              ...(snapshotId ? { snapshot: snapshotId } : {}),
+              ...(detail.doc.title ? { title: detail.doc.title } : {}),
+            }).catch((e) => notify.error(e instanceof Error ? e.message : String(e)))
           }}
         >
           <ExternalLink className="size-3.5" />
@@ -778,7 +818,7 @@ function DeckViewInner({
       data-deck-embedded={embedded || undefined}
     >
       {/* Top chrome */}
-      {hideHeader ? (
+      {slimChrome ? (
         <div
           className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-4 py-2"
           data-deck-slim-toolbar
@@ -961,7 +1001,7 @@ function DeckViewInner({
                 <p className="mt-1 text-fg-secondary">
                   Proposed by {activePendingReview.proposed_by} —{' '}
                   {activePendingReview.change_summary || 'no summary'}. Visual edits never authorize code; review the
-                  script, digest, schedule, and declared actions before running.
+                  script, digest, schedule, declared actions, and routine triggers before running.
                 </p>
 
                 <dl className="mt-2 grid grid-cols-1 gap-1.5 rounded-lg bg-background/60 p-2 text-[11px] sm:grid-cols-2">
@@ -998,6 +1038,25 @@ function DeckViewInner({
                               {a.title ? ` (${a.title})` : ''}
                               {a.mutates_state ? ' · mutates' : ' · read-only'}
                               {a.allow_while_paused ? ' · paused-ok' : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <dt className="text-fg-tertiary">
+                      Routine triggers ({activePendingReview.triggers?.length ?? 0})
+                    </dt>
+                    <dd className="text-fg-primary" data-deck-review-triggers>
+                      {!activePendingReview.triggers || activePendingReview.triggers.length === 0 ? (
+                        <span className="text-fg-tertiary">None</span>
+                      ) : (
+                        <ul className="space-y-0.5">
+                          {activePendingReview.triggers.map((t) => (
+                            <li key={t.id} className="font-mono" data-deck-review-trigger={t.id}>
+                              <strong>{t.id}</strong>: {formatTriggerCondition(t)} → routine:{' '}
+                              <span className="text-fg-accent">{t.routine}</span>
                             </li>
                           ))}
                         </ul>
@@ -1149,8 +1208,18 @@ function DeckViewInner({
                 <div className="mb-1 text-[11px] font-medium text-fg-secondary">
                   Approved Script rev {detail.active_script.rev} ({detail.active_script.mode}) ·{' '}
                   {detail.active_script.declared_actions.length} declared actions ·{' '}
+                  {detail.active_script.triggers?.length ?? 0} triggers ·{' '}
                   {formatScriptSchedule(detail.active_script)}
                 </div>
+                {detail.active_script.triggers && detail.active_script.triggers.length > 0 && (
+                  <ul className="mb-2 space-y-0.5 rounded-lg bg-background/70 p-2 font-mono text-[11px]" data-deck-active-triggers>
+                    {detail.active_script.triggers.map((t) => (
+                      <li key={t.id}>
+                        <strong>{t.id}</strong>: {formatTriggerCondition(t)} → routine: {t.routine}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <pre className="max-h-56 overflow-auto rounded-lg bg-background p-2 font-mono text-[11px]">
                   {detail.active_script.code}
                 </pre>
