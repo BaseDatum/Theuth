@@ -29,6 +29,7 @@ pub struct DeckRecord {
     pub schedule_cron: Option<String>,
     pub schedule_enabled: bool,
     pub stream_enabled: bool,
+    pub run_epoch: u64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -188,12 +189,17 @@ impl DeckStore {
         self.root.join("spill")
     }
 
+    /// Read-only path to a Deck's isolated working directory without creating it (used on teardown).
+    pub fn deck_work_dir_path(&self, deck_id: &str) -> Result<PathBuf> {
+        let safe_id = sanitize_deck_dir_name(deck_id)?;
+        Ok(self.work_root.join(safe_id))
+    }
+
     /// Isolated per-Deck working directory under `<data_dir>/deck-work/<deck_id>`,
     /// strictly outside `<data_dir>/decks` (which holds protected engine state) and
     /// never `<data_dir>` or an ancestor of `<data_dir>` (229 H1).
     pub fn deck_work_dir(&self, deck_id: &str) -> Result<PathBuf> {
-        let safe_id = sanitize_deck_dir_name(deck_id)?;
-        let dir = self.work_root.join(safe_id);
+        let dir = self.deck_work_dir_path(deck_id)?;
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("create deck work dir {}", dir.display()))?;
         let canon = std::fs::canonicalize(&dir).unwrap_or(dir);
@@ -214,6 +220,7 @@ impl DeckStore {
                 schedule_cron TEXT,
                 schedule_enabled INTEGER NOT NULL DEFAULT 0,
                 stream_enabled INTEGER NOT NULL DEFAULT 0,
+                run_epoch INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -286,6 +293,24 @@ impl DeckStore {
         }
 
         // Additive migrations for pre-hardening SQLite databases.
+        let _ =
+            sqlx::query("ALTER TABLE deck_meta ADD COLUMN run_epoch INTEGER NOT NULL DEFAULT 0")
+                .execute(&self.pool)
+                .await;
+        // Backfill run_epoch floor from existing snapshots so post-restart epochs stay monotonic.
+        let _ = sqlx::query(
+            "UPDATE deck_meta
+             SET run_epoch = COALESCE(
+                 (SELECT MAX(run_epoch) FROM deck_snapshots WHERE deck_snapshots.deck_id = deck_meta.deck_id),
+                 run_epoch
+             )
+             WHERE run_epoch < COALESCE(
+                 (SELECT MAX(run_epoch) FROM deck_snapshots WHERE deck_snapshots.deck_id = deck_meta.deck_id),
+                 0
+             )",
+        )
+        .execute(&self.pool)
+        .await;
         let _ = sqlx::query(
             "ALTER TABLE deck_script_revisions ADD COLUMN revision_sha256 TEXT NOT NULL DEFAULT ''",
         )
@@ -374,8 +399,8 @@ impl DeckStore {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT OR IGNORE INTO deck_meta
-             (deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, created_at, updated_at)
-             VALUES (?1, ?2, NULL, NULL, NULL, 0, 0, ?3, ?3)",
+             (deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at)
+             VALUES (?1, ?2, NULL, NULL, NULL, 0, 0, 0, ?3, ?3)",
         )
         .bind(deck_id)
         .bind(session_id.0.to_string())
@@ -389,7 +414,7 @@ impl DeckStore {
 
     pub async fn get_deck(&self, deck_id: &str) -> Result<Option<DeckRecord>> {
         let row = sqlx::query(
-            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, created_at, updated_at
+            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at
              FROM deck_meta WHERE deck_id = ?1",
         )
         .bind(deck_id)
@@ -408,7 +433,7 @@ impl DeckStore {
 
     pub async fn list_decks(&self) -> Result<Vec<DeckRecord>> {
         let rows = sqlx::query(
-            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, created_at, updated_at
+            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at
              FROM deck_meta ORDER BY updated_at DESC",
         )
         .fetch_all(&self.pool)
@@ -419,7 +444,7 @@ impl DeckStore {
     /// List Decks that should auto-resume on engine startup (229 H3).
     pub async fn list_auto_resume_decks(&self) -> Result<Vec<DeckRecord>> {
         let rows = sqlx::query(
-            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, created_at, updated_at
+            "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at
              FROM deck_meta
              WHERE (stream_enabled = 1 OR schedule_enabled = 1) AND active_rev IS NOT NULL
              ORDER BY updated_at DESC",
@@ -427,6 +452,23 @@ impl DeckStore {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(parse_deck_row).collect()
+    }
+
+    /// Monotonically persist `run_epoch` so snapshot ordering/pruning stays monotonic across restarts.
+    pub async fn set_run_epoch(&self, deck_id: &str, run_epoch: u64) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let epoch_i64 = i64::try_from(run_epoch).unwrap_or(i64::MAX);
+        sqlx::query(
+            "UPDATE deck_meta
+             SET run_epoch = MAX(run_epoch, ?2), updated_at = ?3
+             WHERE deck_id = ?1",
+        )
+        .bind(deck_id)
+        .bind(epoch_i64)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn set_stream_enabled(&self, deck_id: &str, enabled: bool) -> Result<()> {
@@ -821,53 +863,68 @@ impl DeckStore {
             .is_some_and(|r| r >= 0 && r as u64 == expected_rev))
     }
 
-    /// Persist a durable last-good snapshot and clear the stale flag.
+    /// Persist a durable last-good snapshot and clear the stale flag atomically.
     pub async fn save_snapshot(&self, snap: &DeckSnapshot) -> Result<()> {
         let data_json = serde_json::to_string(&snap.data)?;
-        sqlx::query(
-            "INSERT INTO deck_snapshots
-             (snapshot_id, deck_id, script_rev, run_epoch, seq, data_json, section, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        )
-        .bind(&snap.snapshot_id)
-        .bind(&snap.deck_id)
-        .bind(snap.script_rev as i64)
-        .bind(snap.run_epoch as i64)
-        .bind(snap.seq as i64)
-        .bind(&data_json)
-        .bind(&snap.section)
-        .bind(&snap.created_at)
-        .execute(&self.pool)
-        .await?;
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let res: Result<()> = async {
+            sqlx::query(
+                "INSERT INTO deck_snapshots
+                 (snapshot_id, deck_id, script_rev, run_epoch, seq, data_json, section, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .bind(&snap.snapshot_id)
+            .bind(&snap.deck_id)
+            .bind(snap.script_rev as i64)
+            .bind(snap.run_epoch as i64)
+            .bind(snap.seq as i64)
+            .bind(&data_json)
+            .bind(&snap.section)
+            .bind(&snap.created_at)
+            .execute(&mut *conn)
+            .await?;
 
-        sqlx::query(
-            "INSERT INTO deck_run_log
-             (deck_id, last_ok_snapshot_id, last_ok_at, last_error, last_error_at, stale, consecutive_failures)
-             VALUES (?1, ?2, ?3, NULL, NULL, 0, 0)
-             ON CONFLICT(deck_id) DO UPDATE SET
-               last_ok_snapshot_id = excluded.last_ok_snapshot_id,
-               last_ok_at = excluded.last_ok_at,
-               last_error = NULL,
-               stale = 0,
-               consecutive_failures = 0",
-        )
-        .bind(&snap.deck_id)
-        .bind(&snap.snapshot_id)
-        .bind(&snap.created_at)
-        .execute(&self.pool)
-        .await?;
+            sqlx::query(
+                "INSERT INTO deck_run_log
+                 (deck_id, last_ok_snapshot_id, last_ok_at, last_error, last_error_at, stale, consecutive_failures)
+                 VALUES (?1, ?2, ?3, NULL, NULL, 0, 0)
+                 ON CONFLICT(deck_id) DO UPDATE SET
+                   last_ok_snapshot_id = excluded.last_ok_snapshot_id,
+                   last_ok_at = excluded.last_ok_at,
+                   last_error = NULL,
+                   stale = 0,
+                   consecutive_failures = 0",
+            )
+            .bind(&snap.deck_id)
+            .bind(&snap.snapshot_id)
+            .bind(&snap.created_at)
+            .execute(&mut *conn)
+            .await?;
 
-        // Prune old snapshots beyond 100 per Deck (ordered by epoch/seq/rowid, 229 L1).
-        sqlx::query(
-            "DELETE FROM deck_snapshots WHERE deck_id = ?1 AND snapshot_id NOT IN (
-                SELECT snapshot_id FROM deck_snapshots WHERE deck_id = ?1
-                ORDER BY run_epoch DESC, seq DESC, rowid DESC LIMIT 100
-             )",
-        )
-        .bind(&snap.deck_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+            // Prune old snapshots beyond 100 per Deck (ordered by epoch/seq/rowid, 229 L1).
+            sqlx::query(
+                "DELETE FROM deck_snapshots WHERE deck_id = ?1 AND snapshot_id NOT IN (
+                    SELECT snapshot_id FROM deck_snapshots WHERE deck_id = ?1
+                    ORDER BY run_epoch DESC, seq DESC, rowid DESC LIMIT 100
+                 )",
+            )
+            .bind(&snap.deck_id)
+            .execute(&mut *conn)
+            .await?;
+            Ok(())
+        }
+        .await;
+        match res {
+            Ok(()) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
     }
 
     /// Record a run/snapshot failure: preserves `last_ok_snapshot_id` intact and marks `stale = true`.
@@ -1153,7 +1210,7 @@ impl DeckStore {
     }
 
     /// Expose raw pool in unit tests for direct SQLite forgery regression tests.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "inproc-monty"))]
     pub(crate) fn pool_for_test(&self) -> &SqlitePool {
         &self.pool
     }
@@ -1181,8 +1238,8 @@ async fn ensure_deck_tx(
     let session_id = SessionId::new();
     sqlx::query(
         "INSERT OR IGNORE INTO deck_meta
-         (deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, created_at, updated_at)
-         VALUES (?1, ?2, NULL, NULL, NULL, 0, 0, ?3, ?3)",
+         (deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at)
+         VALUES (?1, ?2, NULL, NULL, NULL, 0, 0, 0, ?3, ?3)",
     )
     .bind(deck_id)
     .bind(session_id.0.to_string())
@@ -1190,7 +1247,7 @@ async fn ensure_deck_tx(
     .execute(&mut *conn)
     .await?;
     let row = sqlx::query(
-        "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, created_at, updated_at
+        "SELECT deck_id, session_id, active_rev, pending_rev, schedule_cron, schedule_enabled, stream_enabled, run_epoch, created_at, updated_at
          FROM deck_meta WHERE deck_id = ?1",
     )
     .bind(deck_id)
@@ -1228,8 +1285,9 @@ fn parse_deck_row(r: sqlx::sqlite::SqliteRow) -> Result<DeckRecord> {
         schedule_cron: r.get(4),
         schedule_enabled: r.get::<i64, _>(5) != 0,
         stream_enabled: r.get::<i64, _>(6) != 0,
-        created_at: r.get(7),
-        updated_at: r.get(8),
+        run_epoch: r.get::<i64, _>(7).max(0) as u64,
+        created_at: r.get(8),
+        updated_at: r.get(9),
     })
 }
 

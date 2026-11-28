@@ -816,7 +816,9 @@ pub(crate) fn validate_raw_update(doc: &Doc, update: &[u8], by: &Principal) -> R
 
     for (k, v) in maps.order.iter(&txn) {
         if any_f64(Some(v)).is_none() && !before_bad_ranks.contains(k) {
-            return Err(format!("invalid_deck_rank: non-finite rank for section {k}"));
+            return Err(format!(
+                "invalid_deck_rank: non-finite rank for section {k}"
+            ));
         }
     }
 
@@ -831,7 +833,10 @@ pub(crate) fn validate_raw_update(doc: &Doc, update: &[u8], by: &Principal) -> R
         if let Out::YMap(sm) = out {
             if let Some(rev_out) = sm.get(&txn, "rev") {
                 let valid = matches!(any_i64(Some(rev_out.clone())), Some(r) if (1..=MAX_RAW_CLIENT_REV).contains(&r));
-                if !valid && before_bad_revs.get(sid).map(String::as_str) != Some(format!("{rev_out:?}").as_str()) {
+                if !valid
+                    && before_bad_revs.get(sid).map(String::as_str)
+                        != Some(format!("{rev_out:?}").as_str())
+                {
                     return Err(format!(
                         "invalid_deck_rev: section {sid} has invalid or out-of-range rev"
                     ));
@@ -987,10 +992,7 @@ fn assign_rank_in_txn(
     target_id: &str,
     index: Option<usize>,
 ) -> (f64, Vec<String>) {
-    let others: Vec<&DeckSection> = active
-        .iter()
-        .filter(|s| s.id != target_id)
-        .collect();
+    let others: Vec<&DeckSection> = active.iter().filter(|s| s.id != target_id).collect();
     let idx = index.unwrap_or(others.len()).min(others.len());
 
     // Also re-space if any active section in `maps.order` currently has a missing/non-finite rank.
@@ -1062,6 +1064,15 @@ pub struct DeckCreated {
 }
 
 /// Operations executed on a `DocKind::Deck` document via [`DeckCall`].
+fn deserialize_optional_nullable<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DeckOp {
     Read,
@@ -1079,6 +1090,7 @@ pub enum DeckOp {
         title: Option<String>,
         content: Option<String>,
         col_span: Option<u32>,
+        #[serde(default, deserialize_with = "deserialize_optional_nullable")]
         data_key: Option<Option<String>>,
         summary: Option<String>,
     },
@@ -1149,7 +1161,8 @@ impl DocumentActor {
         by: Principal,
         f: impl FnOnce(&Maps, &mut TransactionMut<'_>, &str, i64) -> Result<(R, bool), DeckDocError>,
     ) -> Result<R, DeckDocError> {
-        self.deck_write_with_client(doc, by, *ENGINE_CLIENT, f).await
+        self.deck_write_with_client(doc, by, *ENGINE_CLIENT, f)
+            .await
     }
 
     async fn deck_write_with_client<R>(
@@ -1309,8 +1322,7 @@ impl DocumentActor {
         self.deck_write(&id, by, |maps, txn, who, now| {
             maps.meta.insert(txn, "v", any_int(i64::from(SCHEMA)));
             maps.meta.insert(txn, "created", any_int(now));
-            maps.meta
-                .insert(txn, "created_by", Any::String(who.into()));
+            maps.meta.insert(txn, "created_by", Any::String(who.into()));
             maps.meta
                 .insert(txn, "description", Any::String(description.into()));
             maps.meta.insert(txn, "layout", Any::String("grid".into()));
@@ -1716,8 +1728,11 @@ impl DocumentActor {
                 self.deck_write(&m.doc, Principal::Helper, |maps, txn, _who, now| {
                     match script_ref.active_rev {
                         Some(r) => {
-                            maps.script_refs
-                                .insert(txn, "active_rev", any_int(r.min(MAX_SECTION_REV) as i64));
+                            maps.script_refs.insert(
+                                txn,
+                                "active_rev",
+                                any_int(r.min(MAX_SECTION_REV) as i64),
+                            );
                         }
                         None => {
                             maps.script_refs.remove(txn, "active_rev");
@@ -1872,10 +1887,7 @@ mod tests {
         helper_calls: Arc<AtomicUsize>,
     }
 
-    async fn test_env_with_cfg(
-        dir: tempfile::TempDir,
-        cfg: crate::DocumentsConfig,
-    ) -> TestEnv {
+    async fn test_env_with_cfg(dir: tempfile::TempDir, cfg: crate::DocumentsConfig) -> TestEnv {
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let store = crate::store::Store::open(dir.path()).await.unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1885,12 +1897,8 @@ mod tests {
             seen.fetch_add(1, Ordering::SeqCst);
             Vec::new()
         });
-        let actor = DocumentActor::spawn(DocumentActor::new(
-            store.clone(),
-            helper,
-            cfg,
-            rt.clone(),
-        ));
+        let actor =
+            DocumentActor::spawn(DocumentActor::new(store.clone(), helper, cfg, rt.clone()));
         TestEnv {
             dir,
             rt,
@@ -1901,7 +1909,11 @@ mod tests {
     }
 
     async fn test_env() -> TestEnv {
-        test_env_with_cfg(tempfile::tempdir().unwrap(), crate::DocumentsConfig::default()).await
+        test_env_with_cfg(
+            tempfile::tempdir().unwrap(),
+            crate::DocumentsConfig::default(),
+        )
+        .await
     }
 
     async fn test_actor() -> (tempfile::TempDir, kameo::actor::ActorRef<DocumentActor>) {
@@ -1922,7 +1934,8 @@ mod tests {
         let maps = Maps::of(&doc);
         let mut txn = doc.transact_mut();
         maps.meta.insert(&mut txn, "v", any_int(i64::from(SCHEMA)));
-        maps.meta.insert(&mut txn, "created", any_int(1_700_000_000_000));
+        maps.meta
+            .insert(&mut txn, "created", any_int(1_700_000_000_000));
         maps.meta
             .insert(&mut txn, "created_by", Any::String("owner".into()));
         maps.meta
@@ -1956,7 +1969,9 @@ mod tests {
         }
         active.sort_by(|a, b| a.rank.total_cmp(&b.rank).then_with(|| a.id.cmp(&b.id)));
         let _ = assign_rank_in_txn(&maps, &mut txn, &active, id, index);
-        let sec_map = maps.sections.insert(&mut txn, id.to_owned(), MapPrelim::default());
+        let sec_map = maps
+            .sections
+            .insert(&mut txn, id.to_owned(), MapPrelim::default());
         sec_map.insert(&mut txn, "id", Any::String(id.into()));
         sec_map.insert(&mut txn, "kind", Any::String(kind.as_str().into()));
         sec_map.insert(&mut txn, "title", Any::String(title.into()));
@@ -2223,7 +2238,15 @@ mod tests {
 
         // Create initial shared state on peer A (client c1), replicate to peer B (client c2).
         let peer_a = init_peer_deck(c1, "Shared Deck");
-        peer_add_section(&peer_a, "sec_00_base", SectionKind::Note, "Base", "v1", "owner", None);
+        peer_add_section(
+            &peer_a,
+            "sec_00_base",
+            SectionKind::Note,
+            "Base",
+            "v1",
+            "owner",
+            None,
+        );
         let initial_state = peer_a
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
@@ -2244,7 +2267,13 @@ mod tests {
             "owner",
             None,
         );
-        peer_patch_section(&peer_a, "sec_00_base", "Base (A)", "edited on peer A", "owner");
+        peer_patch_section(
+            &peer_a,
+            "sec_00_base",
+            "Base (A)",
+            "edited on peer A",
+            "owner",
+        );
 
         peer_add_section(
             &peer_b,
@@ -2545,7 +2574,9 @@ mod tests {
                 .await;
             assert!(matches!(
                 err,
-                Err(kameo::error::SendError::HandlerError(DeckDocError::Forbidden(_)))
+                Err(kameo::error::SendError::HandlerError(
+                    DeckDocError::Forbidden(_)
+                ))
             ));
         }
         // Helper succeeds on UpdateScriptRef.
@@ -2750,8 +2781,11 @@ mod tests {
                 .insert(&mut txn, expected_order[1].clone(), any_float(1000.0));
             maps.order
                 .insert(&mut txn, expected_order[2].clone(), any_float(f64::NAN));
-            maps.order
-                .insert(&mut txn, expected_order[3].clone(), any_float(f64::INFINITY));
+            maps.order.insert(
+                &mut txn,
+                expected_order[3].clone(),
+                any_float(f64::INFINITY),
+            );
         }
         // Snapshot read never yields NaN/Inf.
         let corrupted_snap = read_snapshot(created.doc.as_str(), "Rank Stress", &disk_doc);
@@ -3041,8 +3075,14 @@ mod tests {
             let mut txn = peer_a.transact_mut();
             let reassigned = ensure_aliases(&maps, &mut txn);
             assert_eq!(reassigned, 1);
-            assert_eq!(any_str(maps.aliases.get(&txn, "sec_a")).as_deref(), Some("s1"));
-            assert_eq!(any_str(maps.aliases.get(&txn, "sec_b")).as_deref(), Some("s2"));
+            assert_eq!(
+                any_str(maps.aliases.get(&txn, "sec_a")).as_deref(),
+                Some("s1")
+            );
+            assert_eq!(
+                any_str(maps.aliases.get(&txn, "sec_b")).as_deref(),
+                Some("s2")
+            );
             assert_eq!(
                 resolve_section_id(&maps, &txn, "s1").as_deref(),
                 Some("sec_a")
@@ -3085,7 +3125,9 @@ mod tests {
             .await;
         assert!(matches!(
             err,
-            Err(kameo::error::SendError::HandlerError(DeckDocError::Invalid(_)))
+            Err(kameo::error::SendError::HandlerError(
+                DeckDocError::Invalid(_)
+            ))
         ));
 
         // Whitespace-only data_key normalizes to None; padded data_key trims cleanly.
@@ -3217,7 +3259,10 @@ mod tests {
         else {
             panic!("expected snapshot");
         };
-        assert_eq!(snap.focus, None, "archiving focused section must clear focus");
+        assert_eq!(
+            snap.focus, None,
+            "archiving focused section must clear focus"
+        );
         assert_eq!(snap.archived_sections.len(), 1);
 
         // Archived sections reject Patch, Move, and Focus.
@@ -3250,7 +3295,9 @@ mod tests {
             assert!(
                 matches!(
                     err,
-                    Err(kameo::error::SendError::HandlerError(DeckDocError::Invalid(_)))
+                    Err(kameo::error::SendError::HandlerError(
+                        DeckDocError::Invalid(_)
+                    ))
                 ),
                 "expected Invalid for archived section op, got {err:?}"
             );
@@ -3335,26 +3382,27 @@ mod tests {
             panic!("expected section");
         };
 
-        let make_client_update_bytes = |mutate: &dyn Fn(&Maps, &mut TransactionMut<'_>)| -> Vec<u8> {
-            let base = env
-                .store
-                .load(&created.doc)
-                .unwrap()
-                .doc
-                .transact()
-                .encode_state_as_update_v1(&StateVector::default());
-            let d = Doc::with_client_id(random_client_id());
-            d.transact_mut()
-                .apply_update(Update::decode_v1(&base).unwrap())
-                .unwrap();
-            let sv = d.transact().state_vector();
-            let maps = Maps::of(&d);
-            {
-                let mut txn = d.transact_mut();
-                mutate(&maps, &mut txn);
-            }
-            d.transact().encode_diff_v1(&sv)
-        };
+        let make_client_update_bytes =
+            |mutate: &dyn Fn(&Maps, &mut TransactionMut<'_>)| -> Vec<u8> {
+                let base = env
+                    .store
+                    .load(&created.doc)
+                    .unwrap()
+                    .doc
+                    .transact()
+                    .encode_state_as_update_v1(&StateVector::default());
+                let d = Doc::with_client_id(random_client_id());
+                d.transact_mut()
+                    .apply_update(Update::decode_v1(&base).unwrap())
+                    .unwrap();
+                let sv = d.transact().state_vector();
+                let maps = Maps::of(&d);
+                {
+                    let mut txn = d.transact_mut();
+                    mutate(&maps, &mut txn);
+                }
+                d.transact().encode_diff_v1(&sv)
+            };
         let make_client_update = |mutate: &dyn Fn(&Maps, &mut TransactionMut<'_>)| -> String {
             b64_update(&make_client_update_bytes(mutate))
         };
@@ -3379,8 +3427,7 @@ mod tests {
 
         // 2. Raw doc_update cannot inject NaN or Infinity rank.
         let bad_rank = make_client_update(&|maps, txn| {
-            maps.order
-                .insert(txn, sec.id.clone(), any_float(f64::NAN));
+            maps.order.insert(txn, sec.id.clone(), any_float(f64::NAN));
         });
         let err = env
             .actor
@@ -3645,7 +3692,9 @@ mod tests {
             .await;
         assert!(matches!(
             err,
-            Err(kameo::error::SendError::HandlerError(DeckDocError::NotFound(_)))
+            Err(kameo::error::SendError::HandlerError(
+                DeckDocError::NotFound(_)
+            ))
         ));
         assert_eq!(env.helper_calls.load(Ordering::SeqCst), 0);
     }

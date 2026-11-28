@@ -344,10 +344,16 @@ pub const WORKSPACE_PULSE_HTML: &str = r#"<!doctype html>
     function render(data) {
       const hist = Array.isArray(data && data.history) ? data.history : [42, 44, 43, 45, 44];
       const max = Math.max(1, ...hist);
-      barsEl.innerHTML = hist.map((v) => {
-        const pct = Math.max(12, Math.round((Number(v) / max) * 100));
-        return `<div class="bar" style="height:${pct}%" title="${v} pts"></div>`;
-      }).join('');
+      const bars = hist.map((v) => {
+        const num = Number(v);
+        const pct = Math.max(12, Math.min(100, Math.round(((Number.isFinite(num) ? num : 0) / max) * 100)));
+        const el = document.createElement('div');
+        el.className = 'bar';
+        el.style.height = `${pct}%`;
+        el.title = `${String(v)} pts`;
+        return el;
+      });
+      barsEl.replaceChildren(...bars);
       const tick = data && data.tick != null ? data.tick : 0;
       const p1 = data && data.open_p1 != null ? data.open_p1 : '3';
       metaEl.textContent = `Tick #${tick} · Open P1: ${p1}`;

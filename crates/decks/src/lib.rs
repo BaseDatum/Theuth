@@ -104,8 +104,10 @@ impl ::runtime::Plugin for DecksPlugin {
             .await;
         tools::register(&registry, actor.clone(), rt.clone()).await;
 
-        // 229 H3: resume previously enabled streaming/scheduled Decks cleanly after boot.
-        let _ = actor.tell(owner::RecoverEnabledDecksMsg).send().await;
+        // 229 H3: index all live Deck sessions/seats and resume previously enabled Decks before start() returns.
+        if let Err(e) = actor.ask(owner::RecoverEnabledDecksMsg).send().await {
+            tracing::warn!("decks: boot recovery failed: {e}");
+        }
         tracing::info!("decks plugin started");
         Ok(())
     }
@@ -975,12 +977,16 @@ async def on_action(action, args, ctx):
 async def on_step():
     avail = tools("mcp_acme")
     fetched = await mcp_acme_fetch(topic="ops")
-    deck_emit({"tools_found": len(avail), "fetched": fetched}, durable=True)
+    constructed = "tok-deck-" + "secret-99999"
+    deck_checkpoint({"note": constructed})
+    deck_emit({"tools_found": len(avail), "fetched": fetched, "constructed": constructed}, durable=True)
 
 async def on_action(action, args, ctx):
     if action == "deploy":
         res = await mcp_acme_deploy(env=args["env"])
-        return {"deploy_result": res}
+        return {"deploy_result": res, "leaked": "tok-deck-" + "secret-99999"}
+    if action == "fail_secret":
+        raise ValueError("boom: " + "tok-deck-" + "secret-99999")
     raise ValueError("unknown")
 "#;
         let rev = h
@@ -988,19 +994,29 @@ async def on_action(action, args, ctx):
             .ask(ProposeScriptMsg {
                 deck_id: deck_id.clone(),
                 code: script.into(),
-                declared_actions: vec![DeclaredAction {
-                    name: "deploy".into(),
-                    title: "Deploy".into(),
-                    description: "Calls gated MCP deploy tool".into(),
-                    schema: json!({
-                        "type": "object",
-                        "properties": { "env": { "type": "string" } },
-                        "required": ["env"],
-                        "additionalProperties": false
-                    }),
-                    mutates_state: true,
-                    allow_while_paused: true,
-                }],
+                declared_actions: vec![
+                    DeclaredAction {
+                        name: "deploy".into(),
+                        title: "Deploy".into(),
+                        description: "Calls gated MCP deploy tool".into(),
+                        schema: json!({
+                            "type": "object",
+                            "properties": { "env": { "type": "string" } },
+                            "required": ["env"],
+                            "additionalProperties": false
+                        }),
+                        mutates_state: true,
+                        allow_while_paused: true,
+                    },
+                    DeclaredAction {
+                        name: "fail_secret".into(),
+                        title: "Fail Secret".into(),
+                        description: "Raises error containing secret".into(),
+                        schema: json!({ "type": "object", "additionalProperties": false }),
+                        mutates_state: false,
+                        allow_while_paused: true,
+                    },
+                ],
                 mode: ScriptMode::Hybrid,
                 interval_secs: None,
                 schedule_cron: None,
@@ -1021,7 +1037,8 @@ async def on_action(action, args, ctx):
             .await
             .unwrap();
 
-        // 1. Read-only MCP tool executes via normal ToolRegistry::Invoke AND secret is redacted!
+        // 1. Read-only MCP tool executes via normal ToolRegistry::Invoke AND secret is redacted
+        //    across both tool outputs and Python-constructed values in emit + checkpoint!
         let st = h
             .sup
             .ask(RuntimeControlMsg {
@@ -1048,6 +1065,40 @@ async def on_action(action, args, ctx):
             !snap_text.contains("tok-deck-secret-99999"),
             "secrets must be redacted from Deck snapshots: {snap_text}"
         );
+        assert!(
+            snap_text.contains("[REDACTED:DECK_TOKEN]"),
+            "expected explicit redaction marker in Deck snapshot: {snap_text}"
+        );
+        let cp = h
+            .shared
+            .store
+            .get_checkpoint(&deck_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let cp_text = cp.state.to_string();
+        assert!(!cp_text.contains("tok-deck-secret-99999"));
+        assert!(cp_text.contains("[REDACTED:DECK_TOKEN]"));
+
+        // Action error containing a Python-constructed secret must also be redacted.
+        let err_resp = h
+            .sup
+            .ask(InteractMsg {
+                deck_id: deck_id.clone(),
+                request_id: "fail-secret-1".into(),
+                caller_id: "owner".into(),
+                action: "fail_secret".into(),
+                args: json!({}),
+                expected_rev: Some(1),
+                timeout_ms: Some(10_000),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!err_resp.ok);
+        let err_msg = err_resp.error.as_deref().unwrap_or("");
+        assert!(!err_msg.contains("tok-deck-secret-99999"));
+        assert!(err_msg.contains("[REDACTED:DECK_TOKEN]"));
 
         // 2. Gated Mutating MCP tool pauses for human approval, surfaces ApprovalPending on deck_subscribe,
         //    and resumes cleanly once resolved with Allow!
@@ -1098,6 +1149,24 @@ async def on_action(action, args, ctx):
         assert_eq!(pending_approval_id(&h.shared, &deck_id), Some(approval_id));
         assert_eq!(deploy_count.load(Ordering::SeqCst), 0);
 
+        // Concurrent action while WaitingApproval must fast-fail with WaitingApproval instead of timing out!
+        let blocked = h
+            .sup
+            .ask(InteractMsg {
+                deck_id: deck_id.clone(),
+                request_id: "blocked-during-approval".into(),
+                caller_id: "owner".into(),
+                action: "fail_secret".into(),
+                args: json!({}),
+                expected_rev: Some(1),
+                timeout_ms: Some(1_000),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert!(!blocked.ok);
+        assert_eq!(blocked.error_code, Some(InteractErrorCode::WaitingApproval));
+
         // Human approves the gated tool call -> Deck resumes and finishes action.
         let resolved = h
             .approval
@@ -1116,7 +1185,11 @@ async def on_action(action, args, ctx):
             .unwrap();
         assert!(resp.ok, "action should succeed after approval: {resp:?}");
         assert_eq!(deploy_count.load(Ordering::SeqCst), 1);
-        assert_eq!(resp.result.unwrap()["deploy_result"]["deployed"], "staging");
+        let result_val = resp.result.unwrap();
+        assert_eq!(result_val["deploy_result"]["deployed"], "staging");
+        let res_text = result_val.to_string();
+        assert!(!res_text.contains("tok-deck-secret-99999"));
+        assert!(res_text.contains("[REDACTED:DECK_TOKEN]"));
         let _ = h.rt;
     }
 
@@ -1132,15 +1205,17 @@ durable_counter = 0
 
 async def on_start(last_state):
     global ephemeral_heap, durable_counter
-    ephemeral_heap = "created_in_v1_heap"
+    ephemeral_heap = "cold_init"
     if isinstance(last_state, dict):
         durable_counter = int(last_state.get("durable_counter", 0))
 
 async def on_step():
-    global durable_counter
+    global ephemeral_heap, durable_counter
+    prev_heap = ephemeral_heap
     durable_counter += 1
+    ephemeral_heap = "warm_step_heap"
     deck_checkpoint({"durable_counter": durable_counter})
-    deck_emit({"ephemeral_heap": ephemeral_heap, "durable_counter": durable_counter}, durable=True)
+    deck_emit({"prev_heap": prev_heap, "ephemeral_heap": ephemeral_heap, "durable_counter": durable_counter}, durable=True)
     deck_sleep(60.0)
 "#;
         let rev1 = h
@@ -1169,7 +1244,8 @@ async def on_step():
             .await
             .unwrap();
 
-        // Start (runs on_start + step 1 -> durable_counter=1) then Stop (saves .monty dump).
+        // Start (runs on_start -> cold_init, then step 1 sees prev_heap=cold_init and sets ephemeral_heap=warm_step_heap, durable_counter=1)
+        // then Stop (saves .monty dump).
         h.sup
             .ask(RuntimeControlMsg {
                 deck_id: deck_id.clone(),
@@ -1178,6 +1254,20 @@ async def on_step():
             .send()
             .await
             .unwrap();
+        let detail_cold = h
+            .sup
+            .ask(GetDeck {
+                deck_id: deck_id.clone(),
+                by: Principal::Owner { device: None },
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            detail_cold.last_snapshot.unwrap().data["prev_heap"],
+            "cold_init"
+        );
+
         h.sup
             .ask(RuntimeControlMsg {
                 deck_id: deck_id.clone(),
@@ -1187,7 +1277,8 @@ async def on_step():
             .await
             .unwrap();
 
-        // Start again on SAME rev1 -> Warm .monty restore preserves `ephemeral_heap` without re-running on_start,
+        // Start again on SAME rev1 -> Warm .monty restore preserves `ephemeral_heap == "warm_step_heap"`
+        // WITHOUT re-running `on_start` (which would have reset it to `"cold_init"`),
         // and step 2 increments durable_counter to 2!
         h.sup
             .ask(RuntimeControlMsg {
@@ -1207,7 +1298,10 @@ async def on_step():
             .await
             .unwrap();
         let snap_warm = detail_warm.last_snapshot.unwrap();
-        assert_eq!(snap_warm.data["ephemeral_heap"], "created_in_v1_heap");
+        assert_eq!(
+            snap_warm.data["prev_heap"], "warm_step_heap",
+            "warm .monty restore must preserve heap mutations without re-running on_start"
+        );
         assert_eq!(snap_warm.data["durable_counter"], 2);
 
         // Upgrade to rev2 (incompatible sha/rev): Approve stops rev1 and leaves rev2 Stopped (B3 manual-only);
@@ -3184,5 +3278,260 @@ async def on_action(action, args, ctx):
                 .is_none(),
             "decks.enabled = false must not register DECKS_ACTOR"
         );
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use serde_json::json;
+
+    use crate::hub::DeckHub;
+    use crate::model::{
+        DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, InteractResponse, LiveFrame,
+        RuntimeState, ScriptMode,
+    };
+    use crate::rpc::resolve_data_key_patch;
+    use crate::store::{DeckStore, IdempotencyLookup};
+    use crate::tools::DeckSectionPatchArgs;
+
+    #[test]
+    fn resolve_data_key_patch_handles_omit_set_clear_and_conflict() {
+        // Omitted -> None (unchanged)
+        assert_eq!(resolve_data_key_patch(None, None).unwrap(), None);
+        assert_eq!(resolve_data_key_patch(None, Some(false)).unwrap(), None);
+        // Set -> Some(Some("metrics"))
+        assert_eq!(
+            resolve_data_key_patch(Some(" metrics ".into()), None).unwrap(),
+            Some(Some("metrics".into()))
+        );
+        // Clear via flag -> Some(None)
+        assert_eq!(
+            resolve_data_key_patch(None, Some(true)).unwrap(),
+            Some(None)
+        );
+        // Clear via empty string -> Some(None)
+        assert_eq!(
+            resolve_data_key_patch(Some("  ".into()), None).unwrap(),
+            Some(None)
+        );
+        // Conflict -> Err
+        assert!(resolve_data_key_patch(Some("metrics".into()), Some(true)).is_err());
+    }
+
+    #[test]
+    fn deck_section_patch_args_preserves_omitted_vs_null_data_key() {
+        let omitted: DeckSectionPatchArgs = serde_json::from_value(json!({
+            "deck_id": "d1",
+            "section_id": "s1",
+            "expected_rev": 1
+        }))
+        .unwrap();
+        assert_eq!(omitted.data_key, None);
+        assert_eq!(omitted.clear_data_key, None);
+
+        let cleared_null: DeckSectionPatchArgs = serde_json::from_value(json!({
+            "deck_id": "d1",
+            "section_id": "s1",
+            "expected_rev": 1,
+            "data_key": null
+        }))
+        .unwrap();
+        assert_eq!(cleared_null.data_key, Some(None));
+
+        let set_val: DeckSectionPatchArgs = serde_json::from_value(json!({
+            "deck_id": "d1",
+            "section_id": "s1",
+            "expected_rev": 1,
+            "data_key": "kpis"
+        }))
+        .unwrap();
+        assert_eq!(set_val.data_key, Some(Some("kpis".into())));
+    }
+
+    #[tokio::test]
+    async fn store_persists_run_epoch_and_orders_snapshots_across_reopen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = DeckStore::open(tmp.path()).await.unwrap();
+        let deck_id = "deck-epoch-1";
+        let rec = store.ensure_deck(deck_id).await.unwrap();
+        assert_eq!(rec.run_epoch, 0);
+
+        store.set_run_epoch(deck_id, 5).await.unwrap();
+        // Monotonicity: smaller value must not regress persisted epoch.
+        store.set_run_epoch(deck_id, 2).await.unwrap();
+        let rec2 = store.get_deck(deck_id).await.unwrap().unwrap();
+        assert_eq!(rec2.run_epoch, 5);
+
+        let snap1 = DeckSnapshot {
+            snapshot_id: "snap_old".into(),
+            deck_id: deck_id.into(),
+            script_rev: 1,
+            run_epoch: 5,
+            seq: 10,
+            data: json!({ "v": 1 }),
+            section: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        store.save_snapshot(&snap1).await.unwrap();
+
+        // Reopen store (cold restart) -> run_epoch persists at 5, bumping to 6 sorts newer snapshot ahead.
+        drop(store);
+        let store = DeckStore::open(tmp.path()).await.unwrap();
+        let rec3 = store.get_deck(deck_id).await.unwrap().unwrap();
+        assert_eq!(rec3.run_epoch, 5);
+
+        store.set_run_epoch(deck_id, 6).await.unwrap();
+        let snap2 = DeckSnapshot {
+            snapshot_id: "snap_new".into(),
+            deck_id: deck_id.into(),
+            script_rev: 1,
+            run_epoch: 6,
+            seq: 1,
+            data: json!({ "v": 2 }),
+            section: None,
+            created_at: "2026-01-01T00:01:00Z".into(),
+        };
+        store.save_snapshot(&snap2).await.unwrap();
+        let latest = store.get_last_snapshot(deck_id).await.unwrap().unwrap();
+        assert_eq!(latest.snapshot_id, "snap_new");
+        assert_eq!(latest.run_epoch, 6);
+
+        // Caller-scoped idempotency isolation & conflict check.
+        let resp = InteractResponse {
+            request_id: "req-1".into(),
+            action: "ping".into(),
+            ok: true,
+            result: Some(json!({ "pong": true })),
+            error: None,
+            error_code: None,
+            private: true,
+            cached: false,
+            run_epoch: 6,
+            script_rev: 1,
+        };
+        store
+            .save_idempotent_action(deck_id, "caller-a", "sha-a", &resp)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .get_idempotent_action(deck_id, "caller-a", "req-1", "ping", "sha-a", 1)
+                .await
+                .unwrap(),
+            IdempotencyLookup::Hit(_)
+        ));
+        assert!(matches!(
+            store
+                .get_idempotent_action(deck_id, "caller-b", "req-1", "ping", "sha-a", 1)
+                .await
+                .unwrap(),
+            IdempotencyLookup::Miss
+        ));
+        assert!(matches!(
+            store
+                .get_idempotent_action(deck_id, "caller-a", "req-1", "ping", "sha-different", 1)
+                .await
+                .unwrap(),
+            IdempotencyLookup::Conflict(_)
+        ));
+
+        // Canonical digest check on approve.
+        let rev = store
+            .propose_script(
+                deck_id,
+                "async def on_step():\n    pass\n".into(),
+                Vec::new(),
+                ScriptMode::Oneshot,
+                Some(60),
+                None,
+                "owner".into(),
+                "init".into(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .approve_script(deck_id, rev.rev, "wrong-digest", "owner")
+                .await
+                .is_err()
+        );
+        let approved = store
+            .approve_script(deck_id, rev.rev, &rev.revision_sha256, "owner")
+            .await
+            .unwrap();
+        assert_eq!(approved.revision_sha256, rev.revision_sha256);
+    }
+
+    #[tokio::test]
+    async fn hub_clears_pending_live_frame_on_snapshot_and_prunes_on_unsubscribe() {
+        let hub = DeckHub::new();
+        let status = DeckRuntimeStatus {
+            deck_id: "d1".into(),
+            session_id: runtime::SessionId::new(),
+            state: RuntimeState::Streaming,
+            run_epoch: 1,
+            active_rev: Some(1),
+            pending_rev: None,
+            stale: false,
+            last_ok_snapshot_id: None,
+            last_ok_at: None,
+            last_error: None,
+            last_error_at: None,
+            consecutive_failures: 0,
+            step_count: 1,
+            checkout_alive: true,
+            pending_approval: None,
+        };
+        let (sub_id, mut rx) = hub.subscribe(
+            "d1",
+            DeckRuntimeEvent::Sync {
+                status,
+                last_snapshot: None,
+                live_frame: None,
+            },
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(DeckRuntimeEvent::Sync { .. })
+        ));
+
+        // Emit a transient LiveFrame (seq 1) then immediately a durable Snapshot (seq 2) before reading.
+        hub.broadcast(
+            "d1",
+            DeckRuntimeEvent::LiveFrame {
+                frame: LiveFrame {
+                    deck_id: "d1".into(),
+                    script_rev: 1,
+                    run_epoch: 1,
+                    seq: 1,
+                    data: json!({ "stale": true }),
+                    section: None,
+                    emitted_at: "2026-01-01T00:00:00Z".into(),
+                },
+            },
+        );
+        hub.broadcast(
+            "d1",
+            DeckRuntimeEvent::Snapshot {
+                snapshot: DeckSnapshot {
+                    snapshot_id: "snap_2".into(),
+                    deck_id: "d1".into(),
+                    script_rev: 1,
+                    run_epoch: 1,
+                    seq: 2,
+                    data: json!({ "fresh": true }),
+                    section: None,
+                    created_at: "2026-01-01T00:00:01Z".into(),
+                },
+            },
+        );
+
+        // Subscriber must receive Snapshot without a stale pre-snapshot LiveFrame overtaking it afterward.
+        let ev1 = rx.recv().await.unwrap();
+        assert!(matches!(ev1, DeckRuntimeEvent::Snapshot { .. }));
+        assert!(rx.try_recv().is_err());
+
+        hub.unsubscribe("d1", sub_id);
+        hub.remove_deck("d1");
     }
 }

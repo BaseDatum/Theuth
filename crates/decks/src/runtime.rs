@@ -476,7 +476,11 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                 "action return payload ({ret_bytes} bytes) exceeds cap ({MAX_ACTION_RESULT_BYTES} bytes)"
             ));
         }
-        if out.effects.checkpoint_state.is_some() {
+        self.steps_since_checkpoint += 1;
+        self.steps_since_rollover += 1;
+        if out.effects.checkpoint_state.is_some()
+            || self.steps_since_checkpoint >= CHECKPOINT_EVERY_STEPS
+        {
             let _ = self.checkpoint_heap().await;
             self.steps_since_checkpoint = 0;
         }
@@ -583,7 +587,7 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                 TurnEvent::NameLookup { name, .. } => {
                     let answer = match name.as_str() {
                         "deck_emit" | "deck_checkpoint" | "deck_sleep" | "deck_state"
-                        | "deck_last_snapshot" | "tools" | "help" => {
+                        | "deck_last_snapshot" | "tools" | "help" | "bindings" => {
                             NameLookupResult::Value(MontyObject::function(name, None))
                         }
                         blocked if is_blocked_deck_tool(blocked) => {
@@ -621,6 +625,20 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                         "deck_last_snapshot" => {
                             ResumeValue::Return(to_monty(&turn_cx.last_snapshot))
                         }
+                        "bindings" => ResumeValue::Return(MontyObject::list(
+                            [
+                                "bindings",
+                                "deck_checkpoint",
+                                "deck_emit",
+                                "deck_last_snapshot",
+                                "deck_sleep",
+                                "deck_state",
+                                "help",
+                                "tools",
+                            ]
+                            .into_iter()
+                            .map(MontyObject::string),
+                        )),
                         "tools" => {
                             let query = first_arg(&args, "query").and_then(|q| q.as_str());
                             let specs = deck_tool_specs(&self.registry, self.session).await;
@@ -881,10 +899,32 @@ fn handle_deck_checkpoint(args: &CallArgs, effects: &mut TurnEffects) -> ResumeV
 }
 
 fn handle_deck_sleep(args: &CallArgs, effects: &mut TurnEffects) -> ResumeValue {
-    let secs = first_arg(args, "seconds")
-        .map(from_monty)
-        .and_then(|v| v.as_f64())
-        .unwrap_or(5.0);
+    let Some(arg) = first_arg(args, "seconds") else {
+        return ResumeValue::Error(MontyException::new(
+            ExcType::TypeError,
+            Some("deck_sleep(seconds) requires one numeric argument".into()),
+        ));
+    };
+    let val = from_monty(arg);
+    let secs = match &val {
+        Value::Number(n) => match n.as_f64() {
+            Some(f) => f,
+            None => {
+                return ResumeValue::Error(MontyException::new(
+                    ExcType::ValueError,
+                    Some("deck_sleep(seconds) requires a finite numeric value".into()),
+                ));
+            }
+        },
+        _ => {
+            return ResumeValue::Error(MontyException::new(
+                ExcType::TypeError,
+                Some(
+                    "deck_sleep(seconds) requires a finite int or float (not bool/str/None)".into(),
+                ),
+            ));
+        }
+    };
     if !secs.is_finite() || secs < 0.0 {
         return ResumeValue::Error(MontyException::new(
             ExcType::ValueError,

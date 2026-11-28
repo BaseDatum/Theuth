@@ -440,7 +440,7 @@ impl DeckSupervisor {
             } else {
                 RuntimeState::Stopped
             },
-            run_epoch: 0,
+            run_epoch: rec.run_epoch,
             active_rev: rec.active_rev,
             pending_rev: rec.pending_rev,
             stale: log.stale,
@@ -535,9 +535,14 @@ impl DeckSupervisor {
         // 1. Mark tombstoned immediately so any in-flight turn in DeckOwner is fenced out.
         self.shared.mark_deleted(deck_id);
 
-        // 2. Stop & reap the DeckOwner if active.
-        if let Some(tx) = self.owners.remove(deck_id) {
-            let _ = tx.try_send(OwnerCmd::Delete);
+        // 2. Stop & reap the DeckOwner if active. Never silently drop Delete if the channel is full.
+        if let Some(tx) = self.owners.remove(deck_id)
+            && let Err(tokio::sync::mpsc::error::TrySendError::Full(cmd)) =
+                tx.try_send(OwnerCmd::Delete)
+        {
+            tokio::spawn(async move {
+                let _ = tx.send(cmd).await;
+            });
         }
 
         // 3. Clean up SQLite rows, `.monty` dump, spill dir, seat, and isolated work dir.
@@ -548,17 +553,20 @@ impl DeckSupervisor {
             let _ =
                 std::fs::remove_dir_all(self.shared.store.spill_dir().join(session_id.to_string()));
         }
-        if let Ok(work_dir) = self.shared.store.deck_work_dir(deck_id) {
+        if let Ok(work_dir) = self.shared.store.deck_work_dir_path(deck_id)
+            && work_dir.exists()
+        {
             let _ = std::fs::remove_dir_all(work_dir);
         }
 
-        // 4. Close any remaining subscribers AFTER state teardown completes.
+        // 4. Close any remaining subscribers AFTER state teardown completes, then prune hub entry.
         self.shared.hub.broadcast(
             deck_id,
             DeckRuntimeEvent::Closed {
                 reason: "deck_deleted".into(),
             },
         );
+        self.shared.hub.remove_deck(deck_id);
 
         self.publish_changed(deck_id, title, true).await;
     }
@@ -632,7 +640,7 @@ impl DeckOwner {
             active_script,
             pending_rev: rec.pending_rev,
             state: RuntimeState::Stopped,
-            run_epoch: 0,
+            run_epoch: rec.run_epoch,
             seq: last_snapshot.as_ref().map(|s| s.seq).unwrap_or(0),
             step_count: 0,
             last_snapshot,
@@ -854,6 +862,16 @@ impl DeckOwner {
         }
     }
 
+    async fn bump_epoch(&mut self) -> u64 {
+        self.run_epoch = self.run_epoch.saturating_add(1);
+        let _ = self
+            .shared
+            .store
+            .set_run_epoch(&self.deck_id, self.run_epoch)
+            .await;
+        self.run_epoch
+    }
+
     /// 229 B3 & H7: Approving a new revision stops any previous checkout, clears stale transient
     /// `live_frame`, bumps `run_epoch` (even if paused/stopped), and leaves the Deck in `Stopped`
     /// so "Approve only" NEVER enables recurring streaming or scheduling until explicit owner `Start`.
@@ -866,7 +884,7 @@ impl DeckOwner {
             let _ = self.stop_checkout().await;
         }
         self.live_frame = None;
-        self.run_epoch += 1;
+        self.bump_epoch().await;
         self.state = RuntimeState::Stopped;
         self.broadcast_status();
     }
@@ -907,8 +925,7 @@ impl DeckOwner {
                     return Ok(self.status());
                 }
 
-                self.run_epoch += 1;
-                let turn_epoch = self.run_epoch;
+                let turn_epoch = self.bump_epoch().await;
                 self.live_frame = None;
                 self.state = RuntimeState::Starting;
                 self.broadcast_status();
@@ -943,15 +960,18 @@ impl DeckOwner {
                 };
                 // Execute first step right away so callers see fresh data immediately.
                 self.next_wake = None;
-                self.execute_one_step(&script, turn_epoch).await;
-                if self.next_wake.is_none()
-                    && !self.is_fenced(turn_epoch, script.rev).await
+                let step_err = self.execute_one_step(&script, turn_epoch).await;
+                if !self.is_fenced(turn_epoch, script.rev).await
                     && matches!(
                         self.state,
                         RuntimeState::Streaming | RuntimeState::ScheduledIdle
                     )
                 {
-                    self.schedule_next_wake(&script, None);
+                    if step_err.is_some() {
+                        self.schedule_backoff();
+                    } else if self.next_wake.is_none() {
+                        self.schedule_next_wake(&script, None);
+                    }
                 }
                 self.broadcast_status();
                 Ok(self.status())
@@ -990,7 +1010,7 @@ impl DeckOwner {
                     .await;
                 self.stop_checkout().await?;
                 self.live_frame = None;
-                self.run_epoch += 1;
+                self.bump_epoch().await;
                 self.state = RuntimeState::Stopped;
                 self.broadcast_status();
                 Ok(self.status())
@@ -1004,9 +1024,9 @@ impl DeckOwner {
                 if script.status != ScriptStatus::Approved {
                     return Err("script revision is not approved".into());
                 }
-                let was_stopped = self.state == RuntimeState::Stopped;
+                let was_stopped = matches!(self.state, RuntimeState::Stopped | RuntimeState::Error);
                 if was_stopped {
-                    self.run_epoch += 1;
+                    self.bump_epoch().await;
                 }
                 let turn_epoch = self.run_epoch;
                 if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
@@ -1017,6 +1037,9 @@ impl DeckOwner {
                     return Err(err);
                 }
                 let step_err = self.execute_one_step(&script, turn_epoch).await;
+                if step_err.is_none() && self.state == RuntimeState::Error {
+                    self.state = RuntimeState::Stopped;
+                }
                 if was_stopped && script.mode == ScriptMode::Oneshot {
                     let _ = self.stop_checkout().await;
                 }
@@ -1050,8 +1073,7 @@ impl DeckOwner {
                 || c.script_rev() != script.rev
                 || c.revision_sha256() != script.revision_sha256
         }) {
-            self.run_epoch += 1;
-            let turn_epoch = self.run_epoch;
+            let turn_epoch = self.bump_epoch().await;
             if let Err(err) = self.ensure_checkout(script, turn_epoch).await {
                 if !self.is_fenced(turn_epoch, script.rev).await {
                     self.record_failure(&err).await;
@@ -1392,8 +1414,10 @@ impl DeckOwner {
         if self.shared.is_deleted(&self.deck_id) {
             return;
         }
-        if !self.shared.hub.admit_emit(&self.deck_id) {
-            tracing::debug!(deck = %self.deck_id, "deck emit rate-limited");
+        // Only transient live frames are subject to the burst rate limiter; durable snapshots
+        // must never be dropped silently.
+        if !emit.durable && !self.shared.hub.admit_emit(&self.deck_id) {
+            tracing::debug!(deck = %self.deck_id, "deck live frame emit rate-limited");
             return;
         }
         self.seq += 1;
@@ -1410,7 +1434,11 @@ impl DeckOwner {
                 created_at: now.clone(),
             };
             if let Err(e) = self.shared.store.save_snapshot(&snap).await {
-                tracing::warn!(deck = %self.deck_id, "save_snapshot failed: {e:#}");
+                let err = format!("save_snapshot failed: {e:#}");
+                tracing::warn!(deck = %self.deck_id, "{err}");
+                self.record_failure(&err).await;
+                self.broadcast_status();
+                return;
             }
             self.stale = false;
             self.consecutive_failures = 0;
@@ -1478,7 +1506,7 @@ impl DeckOwner {
                 action: action.clone(),
                 ok: false,
                 result: None,
-                error: Some(msg),
+                error: Some(tools::secrets::redact(&msg).into_owned()),
                 error_code: Some(code),
                 private: true,
                 cached: false,
@@ -1597,7 +1625,7 @@ impl DeckOwner {
 
         // 8. Ensure checkout is open on the SAME Deck checkout (never a second concurrent checkout!).
         if self.run_epoch == 0 {
-            self.run_epoch = 1;
+            self.bump_epoch().await;
         }
         let turn_epoch = self.run_epoch;
         if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
@@ -1646,6 +1674,7 @@ impl DeckOwner {
                 if decl.mutates_state
                     && let Some(c) = self.checkout.as_mut()
                     && let Ok(dump_sha) = c.checkpoint_heap().await
+                    && !self.is_fenced(turn_epoch, script.rev).await
                 {
                     let _ = self
                         .shared
@@ -1827,7 +1856,7 @@ impl DeckSupervisor {
         deck_id: &str,
         by: Principal,
     ) -> Result<DeckDetail, String> {
-        let doc = self.read_doc(deck_id, by).await?;
+        let mut doc = self.read_doc(deck_id, by).await?;
         let (runtime, last_snapshot, live_frame) = self.get_runtime_snapshot(deck_id).await?;
         let active_script = self
             .shared
@@ -1841,6 +1870,20 @@ impl DeckSupervisor {
             .get_pending_script(deck_id)
             .await
             .map_err(|e| format!("{e:#}"))?;
+        // Reconcile Yjs mirror `doc.script_ref` with authoritative SQLite state so callers never
+        // observe stale active/pending revision metadata if a previous mirror write lagged or failed.
+        let schedule = active_script.as_ref().and_then(|s| {
+            s.schedule_cron
+                .clone()
+                .or_else(|| s.interval_secs.map(|secs| format!("every {secs}s")))
+        });
+        doc.script_ref = DeckScriptRef {
+            active_rev: active_script.as_ref().map(|s| s.rev),
+            pending_rev: pending_script.as_ref().map(|s| s.rev),
+            mode: active_script.as_ref().map(|s| s.mode.as_str().to_owned()),
+            schedule,
+            updated_at: doc.script_ref.updated_at,
+        };
         Ok(DeckDetail {
             doc,
             runtime,
@@ -1896,7 +1939,8 @@ impl Message<DeckDeletedMsg> for DeckSupervisor {
     }
 }
 
-/// Cold restart recovery (229 H3): resume previously `stream_enabled`/`schedule_enabled` Decks.
+/// Cold restart recovery (229 H3): repopulate `session_index` & seats for all live Decks,
+/// clean up orphaned deleted Decks, and resume previously `stream_enabled`/`schedule_enabled` Decks.
 #[derive(Clone, Debug)]
 pub struct RecoverEnabledDecksMsg;
 
@@ -1911,7 +1955,7 @@ impl Message<RecoverEnabledDecksMsg> for DeckSupervisor {
         let records = self
             .shared
             .store
-            .list_auto_resume_decks()
+            .list_decks()
             .await
             .map_err(|e| format!("{e:#}"))?;
         let mut resumed = 0usize;
@@ -1922,6 +1966,22 @@ impl Message<RecoverEnabledDecksMsg> for DeckSupervisor {
                     "skipping recovery of deleted Deck and cleaning up orphaned state"
                 );
                 self.cleanup_deleted_deck(&rec.deck_id, String::new()).await;
+                continue;
+            }
+            // Index every live Deck session on boot so approval routing and Deck-session guards
+            // work even before the first RPC or Start after restart.
+            self.shared.register_session(&rec.deck_id, rec.session_id);
+            if let Err(e) = self
+                .configure_deck_session(&rec.deck_id, rec.session_id)
+                .await
+            {
+                tracing::warn!(
+                    deck = %rec.deck_id,
+                    "failed to seat Deck session during boot recovery: {e}"
+                );
+            }
+
+            if !(rec.stream_enabled || rec.schedule_enabled) || rec.active_rev.is_none() {
                 continue;
             }
             match self.shared.store.get_active_script(&rec.deck_id).await {
@@ -2471,6 +2531,28 @@ impl Message<InteractMsg> for DeckSupervisor {
         } else {
             m.request_id
         };
+        if self.shared.has_pending_approvals(&m.deck_id) {
+            let (run_epoch, script_rev) = self
+                .shared
+                .live_cache
+                .lock()
+                .get(&m.deck_id)
+                .map(|c| (c.status.run_epoch, c.status.active_rev.unwrap_or(0)))
+                .unwrap_or((0, 0));
+            tx_reply.send(Ok(InteractResponse {
+                request_id,
+                action: m.action,
+                ok: false,
+                result: None,
+                error: Some("Deck is waiting for a pending tool approval".into()),
+                error_code: Some(InteractErrorCode::WaitingApproval),
+                private: true,
+                cached: false,
+                run_epoch,
+                script_rev,
+            }));
+            return reply;
+        }
         let timeout = Duration::from_millis(
             m.timeout_ms
                 .unwrap_or(DEFAULT_INTERACT_TIMEOUT_MS)

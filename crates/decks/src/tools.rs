@@ -321,6 +321,15 @@ impl Tool for DeckSectionAddTool {
 // deck_section_patch
 // ---------------------------------------------------------------------------
 
+fn deserialize_optional_nullable<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DeckSectionPatchArgs {
     pub deck_id: String,
@@ -335,8 +344,12 @@ pub struct DeckSectionPatchArgs {
     pub content: Option<String>,
     #[serde(default)]
     pub col_span: Option<u32>,
-    #[serde(default)]
+    /// Omit to keep unchanged; pass `null` or `""` (or `clear_data_key: true`) to clear; pass a key name to set.
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
     pub data_key: Option<Option<String>>,
+    /// Explicitly clear `data_key` (cannot be combined with a non-empty `data_key`).
+    #[serde(default)]
+    pub clear_data_key: Option<bool>,
     #[serde(default)]
     pub summary: Option<String>,
 }
@@ -355,6 +368,18 @@ impl Tool for DeckSectionPatchTool {
     }
 
     async fn call(&self, a: DeckSectionPatchArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let data_key = if a.clear_data_key == Some(true) {
+            if a.data_key
+                .as_ref()
+                .and_then(|inner| inner.as_deref())
+                .is_some_and(|s| !s.trim().is_empty())
+            {
+                anyhow::bail!("cannot set data_key and clear_data_key=true simultaneously");
+            }
+            Some(None)
+        } else {
+            a.data_key
+        };
         let sec = self
             .0
             .actor
@@ -365,7 +390,7 @@ impl Tool for DeckSectionPatchTool {
                 title: a.title,
                 content: a.content,
                 col_span: a.col_span,
-                data_key: a.data_key,
+                data_key,
                 summary: a.summary,
                 by: agent_principal(&cx),
             })

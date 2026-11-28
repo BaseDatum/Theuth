@@ -141,8 +141,9 @@ impl DeckHub {
     }
 
     pub fn unsubscribe(&self, deck_id: &str, sub_id: u64) {
+        let cutoff = Instant::now().checked_sub(Duration::from_secs(1));
         let mut map = self.decks.lock();
-        if let Some(entry) = map.get_mut(deck_id) {
+        let remove = if let Some(entry) = map.get_mut(deck_id) {
             entry.subs.retain(|s| {
                 let mut g = s.lock();
                 if g.id == sub_id {
@@ -153,17 +154,48 @@ impl DeckHub {
                     !g.closed
                 }
             });
+            if let Some(cutoff) = cutoff {
+                while entry.emit_window.front().is_some_and(|t| *t < cutoff) {
+                    entry.emit_window.pop_front();
+                }
+            }
+            entry.subs.is_empty() && entry.emit_window.is_empty()
+        } else {
+            false
+        };
+        if remove {
+            map.remove(deck_id);
+        }
+    }
+
+    /// Remove all hub state (subscribers + rate-limit window) for a deleted Deck.
+    pub fn remove_deck(&self, deck_id: &str) {
+        let mut map = self.decks.lock();
+        if let Some(entry) = map.remove(deck_id) {
+            for slot in entry.subs {
+                let mut g = slot.lock();
+                g.closed = true;
+                g.notify.notify_one();
+            }
         }
     }
 
     /// Fan out an event to all subscribers of `deck_id`.
     /// Transient `LiveFrame`s coalesce (newest wins, zero backpressure crash); genuinely
     /// wedged subscribers receive a terminal `Closed` notice before being removed (229 M2).
+    /// `Snapshot` and `Sync` clear any older unread `pending_frame` so stale frames are never
+    /// delivered after a newer durable snapshot or full sync.
     pub fn broadcast(&self, deck_id: &str, ev: DeckRuntimeEvent) {
         let mut map = self.decks.lock();
         let Some(entry) = map.get_mut(deck_id) else {
             return;
         };
+        let clears_pending_frame = matches!(
+            ev,
+            DeckRuntimeEvent::Snapshot { .. }
+                | DeckRuntimeEvent::Sync { .. }
+                | DeckRuntimeEvent::Closed { .. }
+        );
         entry.subs.retain(|slot| {
             let mut g = slot.lock();
             if g.closed {
@@ -176,6 +208,9 @@ impl DeckHub {
                     true
                 }
                 _ => {
+                    if clears_pending_frame {
+                        g.pending_frame = None;
+                    }
                     if g.control_queue.len() >= SUB_QUEUE_CAP {
                         tracing::warn!(deck = %deck_id, sub_id = g.id, "deck subscriber too slow; closing");
                         g.control_queue.clear();
@@ -193,6 +228,9 @@ impl DeckHub {
                 }
             }
         });
+        if entry.subs.is_empty() && entry.emit_window.is_empty() {
+            map.remove(deck_id);
+        }
     }
 
     pub fn subscriber_count(&self, deck_id: &str) -> usize {

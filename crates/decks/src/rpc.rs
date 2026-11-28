@@ -12,7 +12,7 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::actor::ActorRef;
-use rpc_core::{NOT_RUNNING, Server, failed, lookup, owner};
+use rpc_core::{NOT_RUNNING, Server, UNAUTHORIZED, failed, lookup, owner};
 use serde_json::Value;
 
 use crate::hub::DeckHub;
@@ -26,8 +26,6 @@ use crate::owner::{
     RejectScriptMsg, RuntimeControlMsg, SectionAddMsg, SectionArchiveMsg, SectionHistoryMsg,
     SectionMoveMsg, SectionPatchMsg, SubscribeDeckMsg,
 };
-
-const UNAUTHORIZED: i32 = -32001;
 
 fn decks_actor() -> RpcResult<ActorRef<DeckSupervisor>> {
     lookup::<DeckSupervisor>(DECKS_ACTOR).map_err(|e| match e.code() {
@@ -105,6 +103,26 @@ fn map_doc_send_err<M>(e: kameo::error::SendError<M, DeckDocError>) -> ErrorObje
     }
 }
 
+pub(crate) fn resolve_data_key_patch(
+    data_key: Option<String>,
+    clear_data_key: Option<bool>,
+) -> Result<Option<Option<String>>, String> {
+    if clear_data_key == Some(true) {
+        if data_key.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+            return Err("cannot set data_key and clear_data_key=true simultaneously".into());
+        }
+        return Ok(Some(None));
+    }
+    Ok(data_key.map(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    }))
+}
+
 struct UnsubGuard {
     hub: Arc<DeckHub>,
     deck_id: String,
@@ -153,6 +171,8 @@ pub trait DecksApi {
     ) -> RpcResult<DeckSection>;
 
     /// Patch one section in-place with optional optimistic CAS (`expected_rev`).
+    /// Leave `data_key` omitted/`null` (with `clear_data_key` omitted/`false`) to keep unchanged;
+    /// pass `clear_data_key: true` (or `data_key: ""`) to clear `data_key`, or a non-empty string to set it.
     #[method(name = "deck_section_patch", with_extensions)]
     #[allow(clippy::too_many_arguments)]
     async fn deck_section_patch(
@@ -163,8 +183,9 @@ pub trait DecksApi {
         title: Option<String>,
         content: Option<String>,
         col_span: Option<u32>,
-        data_key: Option<Option<String>>,
+        data_key: Option<String>,
         summary: Option<String>,
+        clear_data_key: Option<bool>,
     ) -> RpcResult<DeckSection>;
 
     /// Move a section to a new display index using fractional rank ordering.
@@ -366,10 +387,12 @@ impl DecksApiServer for Server {
         title: Option<String>,
         content: Option<String>,
         col_span: Option<u32>,
-        data_key: Option<Option<String>>,
+        data_key: Option<String>,
         summary: Option<String>,
+        clear_data_key: Option<bool>,
     ) -> RpcResult<DeckSection> {
         let (_, by) = owner_only(ext)?;
+        let resolved_data_key = resolve_data_key_patch(data_key, clear_data_key).map_err(failed)?;
         let actor = decks_actor()?;
         actor
             .ask(SectionPatchMsg {
@@ -379,7 +402,7 @@ impl DecksApiServer for Server {
                 title,
                 content,
                 col_span,
-                data_key,
+                data_key: resolved_data_key,
                 summary,
                 by,
             })
@@ -656,12 +679,12 @@ impl DecksApiServer for Server {
                 return Ok(());
             }
         };
-        let sink = pending.accept().await?;
         let guard = UnsubGuard {
             hub,
             deck_id,
             sub_id,
         };
+        let sink = pending.accept().await?;
         tokio::spawn(async move {
             let _guard = guard;
             loop {

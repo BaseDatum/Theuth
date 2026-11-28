@@ -19,7 +19,7 @@ Before writing a Deck script, interview the user briefly and inspect real capabi
    - If the user wants a prototype/demo first, clearly label every synthetic number as **Example Data** (or scaffold with `deck_create(example=true)`).
 3. **Cadence & Interactivity**:
    - Scheduled one-shot (`mode="oneshot"` with `schedule_cron` or `interval_secs`) vs. persistent streaming (`mode="streaming"` or `mode="hybrid"` with cooperative `deck_sleep(seconds)`).
-   - Which interactive buttons/actions should be declared (`declared_actions` with strict JSON Schema `args`)?
+    - Which interactive buttons/actions should be declared (`declared_actions` with strict JSON Schema `schema`)?
 4. **Owner Approval Gate**:
    - Propose the script with `deck_script_propose(...)`. It always enters `pending_review`.
    - Open the Deck with `show_deck(deck_id)` and ask the owner to review and click **Approve & Start**.
@@ -59,10 +59,10 @@ async def on_action(action, args, ctx):
 - `deck_emit(data, durable=False, section=None)` — push transient live frame (`durable=False`) or persist durable last-good snapshot (`durable=True`). Secrets are automatically redacted.
 - `deck_checkpoint(state)` — persist compact JSON state for cold `on_start(last_state)` recovery across upgrades/restarts.
 - `deck_sleep(seconds)` — request cooperative pause before the next `on_step()` (clamped `0.1..=3600`s).
-- `deck_state()` / `deck_last_snapshot()` — read last persisted state / last-good snapshot.
+- `deck_state()` / `deck_last_snapshot()` — read the pre-turn persisted state / last-good snapshot (values are captured at the start of each turn).
 - `tools(query=None)` / `help(name)` — inspect live session & MCP tools exposed to this Deck's `SessionId`.
 
 ### Collaborative Editing Discipline
 - Always edit individual sections with `deck_section_patch(deck_id, section_id, expected_rev=...)` — never rewrite unrelated sections.
 - On `section_conflict`, re-read the section (`deck_read`), merge changes cleanly, and retry with the latest `rev`.
-- To place a live Deck on a whiteboard, add a `deck` card referencing the `deck_id` (and optional `section` or `snapshot_id`).
+- To place a live Deck on a whiteboard, add a `deck` card referencing `deck` (the deck ID, plus optional `section` or `snapshot_id`).
