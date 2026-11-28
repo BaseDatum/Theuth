@@ -37,11 +37,11 @@ it under the domain while every reader keys by the edge's **endpoint id** — so
 - **`share_terms_get`** (read-only, additive): `Option<EdgeTerms { edge, domain, url, rev, accepted }>`; `null` while
   sharing is off or no edge is configured (nothing dials then), else attaches like `share_names_check`.
   `share_terms_accept` takes `EdgeTerms.edge` (endpoint id) or the attached edge's domain.
-- **Settings › Sharing › Public shares › Terms** always shows the edge's terms once sharing is on: link + revision +
+- **Settings › Sharing › Domains › Terms** (moved here 2026-11-27, directly above name reservation; it is not on Public shares) always shows the edge's terms once sharing is on: link + revision +
   Accept while not accepted, `Accepted revision X` after. A refusal parsed from any Sharing action (reserve, primary,
   rotate, release, transfer, the publish form, the switch) — the engine's text or a raw `terms_required` — opens the
   Accept step (`askTerms` when the text carries url/revision, and a refetch of `share_terms_get`) and toasts
-  `Accept the terms of <edge> first: Settings › Sharing › Public shares › Terms`; the raw code is never shown.
+  `Accept the terms of <edge> first: Settings › Sharing › Domains › Terms`; the raw code is never shown. A reserve refusal also renders that sentence inline under the Reserve control.
 
 ## Decision: the owner's press is the consent
 

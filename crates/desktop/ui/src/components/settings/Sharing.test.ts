@@ -146,20 +146,28 @@ test('M2 machines: every machine of the mesh with what it serves; the hub marked
   expect(rows).toContain('PiNothing public')
 })
 
-test('213: Public shares keeps the switch, live shares and history; Domains holds the edge, names, machines and certificates', async () => {
-  client({ share_settings_get: () => ({ enabled: true, edge: 'default', configured: true, mesh_id: null }), share_names_list: () => [] })
+test('213: Public shares keeps the switch, live shares and history; Domains holds the edge, terms, names, machines and certificates', async () => {
+  client({
+    share_settings_get: () => ({ enabled: true, edge: 'default', configured: true, mesh_id: null }),
+    share_names_list: () => [],
+    share_terms_get: () => ({ ...TERMS, accepted: false }),
+  })
   const methods = ['share_settings_get', 'share_list', 'share_settings_set'].map((name) => ({ name, params: [], result: { schema: {} } }))
   useConnection.setState({ discovery: { phase: 'ready', capabilities: null, unavailable: new Set(), document: { methods, 'x-theuth': { events: [], subscriptions: [] } } as never } })
   usePublicShares.getState().setStatus({ domain: 'tun.zip', state: { state: 'attached' }, clock_off_ms: null } as never)
   await mount(SharingTab)
   await vi.waitFor(() => expect(text()).toContain('Allow public sharing on this machine'))
-  for (const s of ['Live shares', 'History (30 days)', 'Terms', 'What the edge sees']) expect(text()).toContain(s)
-  for (const s of ['Your name', 'Machines', 'Certificates', 'tun.zip · Connected']) expect(text()).not.toContain(s)
+  for (const s of ['Live shares', 'History (30 days)', 'What the edge sees']) expect(text()).toContain(s)
+  for (const s of ['Terms', 'Read revision', 'Your name', 'Machines', 'Certificates', 'tun.zip · Connected']) expect(text()).not.toContain(s)
+  expect(button('Accept')).toBeUndefined()
   await act(async () => root?.unmount())
   document.body.innerHTML = ''
   await mount(DomainsTab)
-  await vi.waitFor(() => expect(text()).toContain('tun.zip · Connected'))
-  for (const s of ['Your name', 'Certificates']) expect(text()).toContain(s)
+  await vi.waitFor(() => expect(text()).toContain('Read revision 2026-11-23'))
+  expect(text()).toContain('tun.zip · Connected')
+  const headings = [...document.querySelectorAll('h3')].map((el) => el.textContent)
+  expect(headings).toEqual(['Edge', 'Terms', 'Your name', 'Certificates'])
+  expect(button('Accept')).toBeDefined()
   expect(text()).not.toContain('Allow public sharing on this machine')
 })
 
@@ -305,15 +313,56 @@ async function reserveRefused(message: string) {
   await act(async () => button('Reserve')!.click())
 }
 
-test('TERMS-FIRST: a reserve refused for terms opens the Accept step and says so', async () => {
+test('TERMS-FIRST: a reserve refused for terms opens the Accept step and shows inline feedback', async () => {
   await reserveRefused('accept the terms of tun.zip first (https://tun.zip/terms, revision 2026-11-23): Settings › Sharing or the first-run card')
-  await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith('Accept the terms of tun.zip first: Settings › Sharing › Public shares › Terms'))
+  await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith('Accept the terms of tun.zip first: Settings › Sharing › Domains › Terms'))
   expect(usePublicShares.getState().terms).toEqual({ edge: 'tun.zip', url: 'https://tun.zip/terms', rev: '2026-11-23' })
+  await vi.waitFor(() => expect(document.querySelector('[data-reserve-error]')?.textContent).toBe('Accept the terms of tun.zip above before reserving a name.'))
 })
 
-test('TERMS-FIRST: a raw edge terms_required maps to the same plain toast, never the raw code', async () => {
+test('TERMS-FIRST: a raw edge terms_required maps to the same plain toast and inline feedback, never the raw code', async () => {
   usePublicShares.getState().setStatus({ domain: 'tun.zip', state: { state: 'attached' } } as never)
   await reserveRefused('edge answered 403: terms_required')
-  await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith('Accept the terms of tun.zip first: Settings › Sharing › Public shares › Terms'))
+  await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith('Accept the terms of tun.zip first: Settings › Sharing › Domains › Terms'))
   expect(vi.mocked(toast.error).mock.calls.flat().join(' ')).not.toContain('terms_required')
+  await vi.waitFor(() => expect(document.querySelector('[data-reserve-error]')?.textContent).toBe('Accept the terms of tun.zip above before reserving a name.'))
+  expect(text()).not.toContain('terms_required')
+})
+
+test('Domains: unaccepted terms are visible before reserving, a reserve attempt shows an inline alert, and Accept in place clears it', async () => {
+  let accepted = false
+  const calls = client({
+    share_settings_get: () => ({ enabled: true, edge: 'default', configured: true, mesh_id: null }),
+    share_terms_get: () => ({ ...TERMS, accepted }),
+    share_terms_accept: () => {
+      accepted = true
+      return null
+    },
+    share_names_list: () => [],
+    share_names_check: () => ({ available: true, reason: null, reclaim_after_ms: null }),
+    share_names_reserve: () => {
+      if (!accepted) throw new RpcError(-32000, 'accept the terms of tun.zip first (https://tun.zip/terms, revision 2026-11-23): Settings › Sharing or the first-run card')
+      return heldName({ name: 'sky', state: 'valid' })
+    },
+  })
+  const methods = ['share_settings_get', 'share_list', 'share_settings_set'].map((name) => ({ name, params: [], result: { schema: {} } }))
+  useConnection.setState({ discovery: { phase: 'ready', capabilities: null, unavailable: new Set(), document: { methods, 'x-theuth': { events: [], subscriptions: [] } } as never } })
+  usePublicShares.getState().setStatus({ domain: 'tun.zip', state: { state: 'attached' }, clock_off_ms: null } as never)
+
+  await mount(DomainsTab)
+  await vi.waitFor(() => expect(document.querySelector('[data-terms-needed]')?.textContent).toBe('Accept the terms of tun.zip above before reserving a name.'))
+  expect(button('Accept')!.disabled).toBe(true)
+
+  await typeName('sky')
+  await vi.waitFor(() => expect(button('Reserve')!.disabled).toBe(false))
+  await act(async () => button('Reserve')!.click())
+  await vi.waitFor(() => expect(document.querySelector('[data-reserve-error]')?.textContent).toBe('Accept the terms of tun.zip above before reserving a name.'))
+  expect(document.querySelector('[data-reserve-error]')?.getAttribute('role')).toBe('alert')
+
+  await act(async () => document.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+  await act(async () => button('Accept')!.click())
+  await vi.waitFor(() => expect(document.querySelector('[data-terms-accepted]')?.textContent).toBe('Accepted revision 2026-11-23'))
+  expect(calls.filter(([m]) => m === 'share_terms_accept')).toEqual([['share_terms_accept', ['z6mkedge', '2026-11-23']]])
+  expect(document.querySelector('[data-reserve-error]')).toBeNull()
+  expect(document.querySelector('[data-terms-needed]')).toBeNull()
 })

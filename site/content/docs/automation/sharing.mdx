@@ -10,7 +10,7 @@ Public means public: anyone with the URL can open it. It is a tunnel to your com
 ## Prerequisites
 
 - **Allow public sharing on this machine** switched on in Settings › Sharing › Public shares. It is off by default, per machine. While it is off, `share_publish` is refused with `Public sharing is off in Settings › Sharing`, and nothing dials the edge.
-- The edge's terms accepted once (Settings › Sharing › Public shares › Terms, or the card the first publish shows).
+- The edge's terms accepted once (Settings › Sharing › Domains › Terms, next to name reservation, or the card the first publish shows).
 - A sharing edge. Every install ships with the default edge, `tun.zip`, run by theuth's author. You can run your own ([Self-hosting the edge](#self-hosting-the-edge)).
 - For a `port` source: something listening on `localhost:<port>` on the machine that publishes.
 
@@ -272,7 +272,7 @@ A ticket pins the edge's key, so a spoofed edge cannot pose as it. An engine sto
 | `Public sharing is off in Settings › Sharing` | Switch on **Allow public sharing on this machine** on the machine that should host it. |
 | `No sharing edge configured` | The edge choice is `none`; set it back to `default` or a ticket. |
 | `Can't reach the sharing edge; see Settings › Sharing` | The engine could not connect within 30 s. Domains › Edge shows the connection state (`Connecting…`, `Refused by the edge: …`, `The edge is restarting; reconnecting soon`). |
-| `accept the terms of <domain> first (<url>, revision <rev>): …` | Accept the terms in Settings › Sharing › Public shares › Terms, then publish again. |
+| `accept the terms of <domain> first (<url>, revision <rev>): …` | Accept the terms in Settings › Sharing › Domains › Terms, then publish again. |
 | `<n> shares are live on this machine (share.max_live): stop one first` | Stop a share or raise `share.max_live`. |
 | `that port is theuth itself` / `nothing is listening on localhost:<port>` | Start your dev server, or pick its real port. |
 | `a path with a hidden or dot component cannot be shared` / `<path> cannot be shared` | Pick a folder outside dot directories, your home root and theuth's data directory. |

@@ -146,7 +146,7 @@ See [Mesh](/docs/automation/mesh) and [Sandboxes](/docs/automation/sandboxes).
 | `Public sharing is off in Settings › Sharing` | the master switch **Allow public sharing on this machine** is off by default, per machine; switch it on on the machine that should host the share. `share.enabled` in `config.yaml` is ignored |
 | `No sharing edge configured` | this machine's edge choice is `none`; set it back to the default or paste an edge ticket |
 | `Can't reach the sharing edge; see Settings › Sharing` | the engine could not attach to the edge; Settings › Sharing › Domains › Edge shows the connection state |
-| `accept the terms of <domain> first (<url>, revision <rev>): …` | accept the edge's terms once per revision in Settings › Sharing › Public shares › Terms, then publish again |
+| `accept the terms of <domain> first (<url>, revision <rev>): …` | accept the edge's terms once per revision in Settings › Sharing › Domains › Terms, then publish again |
 | `that port is theuth itself` / `nothing is listening on localhost:<port>` | only a loopback dev server can be shared, never theuth's own listeners; start the server or pick its real port |
 | `a path with a hidden or dot component cannot be shared` / `<path> cannot be shared` | a `dir` share cannot be a dot directory, your home root or theuth's data directory |
 | a share stays `pending` | its name is waiting for a certificate (about 2.5 min the first time) or a slot; it goes live by itself |
