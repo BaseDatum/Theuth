@@ -85,15 +85,12 @@ function openFileInWindow(ref: AttachRef): void {
     return
   }
   void downloadFileRef(api, ref).catch(fail)
-=======
-  terminal: Terminal,
 }
 
 function parseTerminalId(id: string): { engine: string; shell: string } | null {
   const sep = id.indexOf(':')
   if (sep <= 0 || sep === id.length - 1) return null
   return { engine: id.slice(0, sep), shell: id.slice(sep + 1) }
->>>>>>> 89dd80982 (feat(ui): create a terminal on any node, and let an agent use it)
 }
 
 /** Props that make a row a drag source for the composer's drop (§7.8); desktop only — no HTML5 drag on iOS Safari. */
