@@ -229,6 +229,10 @@ pub struct Agents {
     /// Provider sign-ins waiting on the browser, one per provider (a second [`Login`] or
     /// [`CancelLogin`] ends the first and closes its loopback listener).
     logins: oauth::Logins,
+    /// Each signed-in Cursor account's (`cursor`, `cursor-<suffix>`) last live model
+    /// listing: Cursor is not in models.dev, so Settings counts and lists these, and
+    /// the picker falls back to them when a listing fails. Dropped on logout / removal.
+    cursor_models: HashMap<String, Vec<cursor::Model>>,
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
@@ -10714,27 +10718,23 @@ impl Message<ListModels> for Agents {
             })
             .collect();
         // Cursor is not in models.dev: ask the backend what each account may use
-        // (the `cursor` login, then its account instances).
-        let cursors = std::iter::once("cursor".to_owned()).chain(self.auth.instances_of("cursor"));
-        for name in cursors.filter(|n| self.auth.login(n)) {
-            let p = match self.auth.login_provider(&name) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!("{e}");
-                    continue;
-                }
-            };
-            match self.auth.oauth.access(&p).await {
-                Ok(t) => match crate::backend::cursor_models(&t.access_token).await {
-                    Ok(models) => out.extend(
-                        models
-                            .into_iter()
-                            .map(|m| cursor_model_info(&self.catalog, m, &name)),
-                    ),
-                    Err(e) => tracing::warn!("{name} models: {e}"),
-                },
-                Err(e) => tracing::warn!("{e}"),
+        // (the `cursor` login, then its account instances); a failed listing keeps
+        // the account's last one.
+        let cursors: Vec<String> = std::iter::once("cursor".to_owned())
+            .chain(self.auth.instances_of("cursor"))
+            .filter(|n| self.auth.login(n))
+            .collect();
+        for name in cursors {
+            if let Err(e) = self.list_cursor(&name).await {
+                tracing::warn!("{e}");
             }
+            out.extend(
+                self.cursor_models
+                    .get(&name)
+                    .into_iter()
+                    .flatten()
+                    .map(|m| cursor_model_info(&self.catalog, m.clone(), &name)),
+            );
         }
         out.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
         out
@@ -10765,7 +10765,7 @@ fn google_shadowed(gateways: &HashMap<String, crate::providers::Gateway>) -> boo
 /// (`cursor::takes_reasoning`) offers the sibling's efforts — the rest carry
 /// their thinking in the id, so the picker shows no chips it cannot honour.
 fn cursor_model_info(catalog: &Catalog, m: cursor::Model, provider: &str) -> ModelInfo {
-    let near = catalog.closest(&format!("cursor/{}", m.id));
+    let near = cursor_sibling(catalog, &m.id);
     let id = format!("{provider}/{}", m.id);
     let tunable = near.filter(|_| cursor::takes_reasoning(&m.id));
     ModelInfo {
@@ -10781,6 +10781,63 @@ fn cursor_model_info(catalog: &Catalog, m: cursor::Model, provider: &str) -> Mod
         name: m.name,
         provider: provider.into(),
         local: false,
+    }
+}
+
+/// The closest catalog sibling of Cursor model `id`, whose limits a Cursor row borrows.
+fn cursor_sibling<'a>(catalog: &'a Catalog, id: &str) -> Option<&'a models::Model> {
+    catalog.closest(&format!("cursor/{id}"))
+}
+
+/// A Cursor listing row of Settings' model list, its limits borrowed like
+/// [`cursor_model_info`]'s.
+fn cursor_provider_model(catalog: &Catalog, m: &cursor::Model) -> ProviderModel {
+    match cursor_sibling(catalog, &m.id) {
+        Some(near) => ProviderModel {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            ..provider_model(near, false, false)
+        },
+        None => ProviderModel {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            context: 0,
+            output: 0,
+            source: models::LimitSource::Unknown,
+            assumed_context: None,
+        },
+    }
+}
+
+/// Keep `models` as Cursor account `name`'s last listing; the ids it added and
+/// removed against the previous one, sorted.
+fn keep_cursor_listing(
+    cache: &mut HashMap<String, Vec<cursor::Model>>,
+    name: &str,
+    models: Vec<cursor::Model>,
+) -> (Vec<String>, Vec<String>) {
+    let ids = |ms: &[cursor::Model]| ms.iter().map(|m| m.id.clone()).collect::<BTreeSet<_>>();
+    let after = ids(&models);
+    let before = cache
+        .insert(name.to_owned(), models)
+        .map_or_else(BTreeSet::new, |b| ids(&b));
+    (
+        after.difference(&before).cloned().collect(),
+        before.difference(&after).cloned().collect(),
+    )
+}
+
+/// `tell` (internal): Cursor account `.0` signed in; list its models so Settings
+/// counts them before the picker asks.
+struct ListCursor(String);
+
+impl Message<ListCursor> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, ListCursor(name): ListCursor, _: &mut Context<Self, ()>) {
+        if let Err(e) = self.list_cursor(&name).await {
+            tracing::warn!("{e}");
+        }
     }
 }
 
@@ -11422,7 +11479,7 @@ impl Message<ListLogins> for Agents {
 impl Message<Login> for Agents {
     type Reply = Result<String, String>;
 
-    async fn handle(&mut self, m: Login, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: Login, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let p = self.auth.login_provider(&m.provider)?;
         // Connect pressed again (the browser opened the wrong profile, say): the waiting
         // sign-in ends and its listener closes before the new one binds the same port.
@@ -11438,6 +11495,8 @@ impl Message<Login> for Agents {
         if self.auth.instances_of(kind).is_empty() {
             oauth::open_browser(&url);
         }
+        let cursor = kind == "cursor";
+        let me = ctx.actor_ref().clone();
         let rt = self.rt.clone();
         let provider = m.provider.clone();
         self.logins
@@ -11446,6 +11505,10 @@ impl Message<Login> for Agents {
                 match &error {
                     Some(e) => tracing::warn!("login {provider}: {e}"),
                     None => tracing::info!("login {provider}: ok"),
+                }
+                // Queued before the event, so a Settings refetch on it sees the count.
+                if cursor && error.is_none() {
+                    let _ = me.tell(ListCursor(provider.clone())).await;
                 }
                 rt.publish(LoginFinished { provider, error }).await;
             });
@@ -11468,7 +11531,9 @@ impl Message<Logout> for Agents {
 
     async fn handle(&mut self, m: Logout, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let p = self.auth.login_provider(&m.provider)?;
-        self.auth.oauth.remove(&p.ns).await
+        self.auth.oauth.remove(&p.ns).await?;
+        self.cursor_models.remove(&*p.ns);
+        Ok(())
     }
 }
 
@@ -11530,13 +11595,17 @@ impl Agents {
     /// The Connections row of built-in or custom provider `name` (85 §0.9, 162 D6),
     /// a login kind, or an account instance; `None` for a name that is none of them.
     fn provider_info(&self, name: &str) -> Option<ProviderInfo> {
-        let models = self
-            .catalog
-            .providers()
-            .find(|p| p.id == name)
-            .map_or(0, |p| {
-                p.models.keys().filter(|id| !go_free(name, id)).count() as u32
-            });
+        // Cursor is not in models.dev: its count is the account's last live listing.
+        let models = match self.cursor_models.get(name) {
+            Some(listed) => listed.len() as u32,
+            None => self
+                .catalog
+                .providers()
+                .find(|p| p.id == name)
+                .map_or(0, |p| {
+                    p.models.keys().filter(|id| !go_free(name, id)).count() as u32
+                }),
+        };
         let login_kind = self.login_kind(name);
         let (base_url, builtin, configured, has_key, gw) = match name {
             "opencode" => {
@@ -11690,15 +11759,20 @@ impl Agents {
     /// 162 D3: ask `name`'s model-list endpoint again, merge the ids into
     /// `models.json` (D4), and reload the catalog and costs' price table. A login
     /// kind or account with an API key lists with it; without one (a subscription
-    /// login) its listed extras are dropped back to the bundled list; Cursor lists
-    /// live on every `list_models`, so only the catalog reloads.
+    /// login) its listed extras are dropped back to the bundled list; a signed-in
+    /// Cursor account lists live (`list_cursor`).
     async fn refresh_provider_models(&mut self, name: &str) -> Result<RefreshedModels, String> {
         if let Some(kind) = self.login_kind(name) {
             let key = self.login_kind_key(name);
             let (adapter, endpoint) = match (&*kind.ns, &key) {
                 ("cursor", _) => {
+                    let (added, removed) = if self.auth.login(name) {
+                        self.list_cursor(name).await?
+                    } else {
+                        (vec![], vec![])
+                    };
                     self.reload_catalog().await;
-                    return self.refreshed(name, vec![], vec![]);
+                    return self.refreshed(name, added, removed);
                 }
                 (_, None) => {
                     let mut reset = self.reset_provider_models(Some(name)).await?;
@@ -11814,6 +11888,17 @@ impl Agents {
             added,
             removed,
         })
+    }
+
+    /// List Cursor account `name` (`cursor` or an instance of it) live and keep the
+    /// listing as its last; the ids it added and removed.
+    async fn list_cursor(&mut self, name: &str) -> Result<(Vec<String>, Vec<String>), String> {
+        let p = self.auth.login_provider(name)?;
+        let t = self.auth.oauth.access(&p).await?;
+        let models = crate::backend::cursor_models(&t.access_token)
+            .await
+            .map_err(|e| format!("{name} models: {e}"))?;
+        Ok(keep_cursor_listing(&mut self.cursor_models, name, models))
     }
 
     /// Drop the user `models.json` block of `name` — `None`: of every built-in and
@@ -12213,6 +12298,7 @@ impl Message<RemoveProvider> for Agents {
         {
             tracing::warn!(provider = %m.name, "removing its login: {e}");
         }
+        self.cursor_models.remove(&m.name);
         self.reload_catalog().await;
         Ok(())
     }
@@ -12279,6 +12365,13 @@ impl Agents {
     /// from the user `models.json` (what its listing and the user wrote), a
     /// catalog provider's from the catalog.
     fn provider_models(&self, provider: &str) -> Result<Vec<ProviderModel>, String> {
+        // Cursor is not in models.dev: its rows are the account's last live listing.
+        if let Some(listed) = self.cursor_models.get(provider) {
+            return Ok(listed
+                .iter()
+                .map(|m| cursor_provider_model(&self.catalog, m))
+                .collect());
+        }
         let local = self.provider_on_host(provider);
         let custom = self.auth.gateway(provider).is_some();
         let models: Vec<models::Model> = if custom {
@@ -13627,6 +13720,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         Agents {
             rt: rt.clone(),
             logins: oauth::Logins::default(),
+            cursor_models: HashMap::new(),
             cfg: cfg.clone(),
             default_model: cfg.model.clone(),
             default_effort: cfg.effort.clone(),
@@ -14817,6 +14911,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
     Agents {
         rt,
         logins: oauth::Logins::default(),
+        cursor_models: HashMap::new(),
         default_model: cfg.model.clone(),
         default_effort: None,
         favorite_models: Vec::new(),
@@ -25525,6 +25620,47 @@ done
         // Cursor lists live: a refresh only reloads.
         let r = a.refresh_provider_models("cursor").await.unwrap();
         assert!(r.added.is_empty() && r.removed.is_empty());
+    }
+
+    /// Cursor is not in models.dev: a signed-in account's Settings row counts and
+    /// lists its last live listing, and a relisting reports the new count and what changed.
+    #[tokio::test]
+    async fn cursor_rows_count_their_last_listing() {
+        let (_scratch, mut a) = agents().await;
+        let model = |id: &str| cursor::Model {
+            id: id.into(),
+            name: id.into(),
+            max_mode: false,
+        };
+        assert_eq!(a.provider_info("cursor").unwrap().models, 0);
+        let (gpt, claude) = ("gpt-5.4-mini-low", "claude-4.6-sonnet-medium-thinking");
+        let (added, removed) = keep_cursor_listing(
+            &mut a.cursor_models,
+            "cursor",
+            vec![model(gpt), model(claude)],
+        );
+        assert_eq!(
+            (added, removed),
+            (vec![claude.to_owned(), gpt.to_owned()], vec![])
+        );
+        let row = a.list_providers().into_iter().find(|p| p.name == "cursor");
+        assert_eq!(row.map(|r| r.models), Some(2));
+        let rows = a.provider_models("cursor").unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            [gpt, claude]
+        );
+        assert!(rows.iter().all(|r| r.context > 0), "{rows:?}");
+
+        let (added, removed) = keep_cursor_listing(
+            &mut a.cursor_models,
+            "cursor",
+            vec![model(gpt), model("composer-2"), model("auto")],
+        );
+        let r = a.refreshed("cursor", added, removed).unwrap();
+        assert_eq!(r.provider.models, 3);
+        assert_eq!(r.added, ["auto", "composer-2"]);
+        assert_eq!(r.removed, [claude]);
     }
 
     /// OpenCode Go is a built-in Providers row: Go's base, the bundled models,
