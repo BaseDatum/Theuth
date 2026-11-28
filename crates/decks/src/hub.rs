@@ -24,12 +24,15 @@ pub const MAX_EMITS_PER_SEC: usize = 20;
 /// Bounded per-subscriber queue depth for control/snapshot events.
 const SUB_QUEUE_CAP: usize = 32;
 
+/// Maximum distinct section scopes buffered in coalesced pending frames (global + up to 128 sections).
+const MAX_PENDING_FRAME_SCOPES: usize = 129;
+
 struct SubSlot {
     id: u64,
     /// Bounded queue of non-coalesced events (Sync, Snapshot, Status, Approval, Closed).
     control_queue: VecDeque<DeckRuntimeEvent>,
-    /// Latest coalesced transient live frame (replaces any unread older live frame!).
-    pending_frame: Option<LiveFrame>,
+    /// Latest coalesced transient live frame per section scope (`None` = global, `Some(id)` = section).
+    pending_frames: HashMap<Option<String>, LiveFrame>,
     closed: bool,
     notify: std::sync::Arc<Notify>,
 }
@@ -86,7 +89,7 @@ impl DeckHub {
         let slot = std::sync::Arc::new(Mutex::new(SubSlot {
             id: sub_id,
             control_queue: initial_queue,
-            pending_frame: None,
+            pending_frames: HashMap::new(),
             closed: false,
             notify: notify.clone(),
         }));
@@ -108,8 +111,16 @@ impl DeckHub {
                     let mut guard = slot_pump.lock();
                     if let Some(ev) = guard.control_queue.pop_front() {
                         Some(ev)
-                    } else if let Some(frame) = guard.pending_frame.take() {
-                        Some(DeckRuntimeEvent::LiveFrame { frame })
+                    } else if let Some(next_key) = guard
+                        .pending_frames
+                        .iter()
+                        .min_by_key(|(_, f)| (f.run_epoch, f.seq))
+                        .map(|(k, _)| k.clone())
+                    {
+                        guard
+                            .pending_frames
+                            .remove(&next_key)
+                            .map(|frame| DeckRuntimeEvent::LiveFrame { frame })
                     } else if guard.closed {
                         return;
                     } else {
@@ -181,21 +192,15 @@ impl DeckHub {
     }
 
     /// Fan out an event to all subscribers of `deck_id`.
-    /// Transient `LiveFrame`s coalesce (newest wins, zero backpressure crash); genuinely
-    /// wedged subscribers receive a terminal `Closed` notice before being removed (229 M2).
-    /// `Snapshot` and `Sync` clear any older unread `pending_frame` so stale frames are never
-    /// delivered after a newer durable snapshot or full sync.
+    /// Transient `LiveFrame`s coalesce per section scope (newest wins, zero backpressure crash);
+    /// genuinely wedged subscribers receive a terminal `Closed` notice before being removed (229 M2).
+    /// Global `Snapshot` and `Sync` clear all older unread `pending_frames`; section-scoped
+    /// `Snapshot` clears only the matching section's older unread frame.
     pub fn broadcast(&self, deck_id: &str, ev: DeckRuntimeEvent) {
         let mut map = self.decks.lock();
         let Some(entry) = map.get_mut(deck_id) else {
             return;
         };
-        let clears_pending_frame = matches!(
-            ev,
-            DeckRuntimeEvent::Snapshot { .. }
-                | DeckRuntimeEvent::Sync { .. }
-                | DeckRuntimeEvent::Closed { .. }
-        );
         entry.subs.retain(|slot| {
             let mut g = slot.lock();
             if g.closed {
@@ -203,18 +208,39 @@ impl DeckHub {
             }
             match &ev {
                 DeckRuntimeEvent::LiveFrame { frame } => {
-                    g.pending_frame = Some(frame.clone());
+                    let key = frame.section.clone();
+                    if !g.pending_frames.contains_key(&key)
+                        && g.pending_frames.len() >= MAX_PENDING_FRAME_SCOPES
+                        && let Some(oldest_key) = g
+                            .pending_frames
+                            .iter()
+                            .min_by_key(|(_, f)| (f.run_epoch, f.seq))
+                            .map(|(k, _)| k.clone())
+                    {
+                        g.pending_frames.remove(&oldest_key);
+                    }
+                    g.pending_frames.insert(key, frame.clone());
                     g.notify.notify_one();
                     true
                 }
                 _ => {
-                    if clears_pending_frame {
-                        g.pending_frame = None;
+                    match &ev {
+                        DeckRuntimeEvent::Sync { .. } | DeckRuntimeEvent::Closed { .. } => {
+                            g.pending_frames.clear();
+                        }
+                        DeckRuntimeEvent::Snapshot { snapshot } => {
+                            if snapshot.section.is_none() {
+                                g.pending_frames.clear();
+                            } else {
+                                g.pending_frames.remove(&snapshot.section);
+                            }
+                        }
+                        _ => {}
                     }
                     if g.control_queue.len() >= SUB_QUEUE_CAP {
                         tracing::warn!(deck = %deck_id, sub_id = g.id, "deck subscriber too slow; closing");
                         g.control_queue.clear();
-                        g.pending_frame = None;
+                        g.pending_frames.clear();
                         g.control_queue.push_back(DeckRuntimeEvent::Closed {
                             reason: "subscriber_lagged".into(),
                         });

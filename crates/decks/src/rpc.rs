@@ -24,7 +24,7 @@ use crate::owner::{
     ApproveScriptMsg, CreateDeckMsg, DECKS_ACTOR, DeckSupervisor, FocusSectionMsg, GetDeck,
     GetSnapshotMsg, InteractMsg, ListDecks, ListSnapshotsMsg, ProposeScriptMsg, ReadScriptMsg,
     RejectScriptMsg, RuntimeControlMsg, SectionAddMsg, SectionArchiveMsg, SectionHistoryMsg,
-    SectionMoveMsg, SectionPatchMsg, SubscribeDeckMsg,
+    SectionMoveMsg, SectionPatchMsg, SubscribeDeckMsg, UNAUTHORIZED_INTERACT_ERR,
 };
 
 fn decks_actor() -> RpcResult<ActorRef<DeckSupervisor>> {
@@ -55,7 +55,8 @@ pub(crate) fn owner_only(ext: &Extensions) -> RpcResult<(String, Principal)> {
 }
 
 /// 229 B1: Human-press gate (equivalent to `plugins::HumanPress`) for security-sensitive
-/// Deck operations (`deck_script_approve`, `deck_script_reject`, `deck_runtime_control`).
+/// Deck operations (`deck_script_approve`, `deck_script_reject`, `deck_runtime_control`,
+/// and mutating `deck_interact` actions).
 /// Rejects missing peer, share guests, engine-internal peers, closed peers, and `Forwarded` calls.
 pub(crate) fn human_press(ext: &Extensions) -> RpcResult<(String, Principal)> {
     let p = owner(ext)?;
@@ -91,7 +92,13 @@ fn map_doc_err(e: DeckDocError) -> ErrorObjectOwned {
 
 fn map_send_err<M>(e: kameo::error::SendError<M, String>) -> ErrorObjectOwned {
     match e {
-        kameo::error::SendError::HandlerError(msg) => failed(msg),
+        kameo::error::SendError::HandlerError(msg) => {
+            if msg == UNAUTHORIZED_INTERACT_ERR || msg.starts_with("unauthorized:") {
+                ErrorObjectOwned::owned(UNAUTHORIZED, msg, None::<()>)
+            } else {
+                failed(msg)
+            }
+        }
         other => failed(other.to_string()),
     }
 }
@@ -156,7 +163,7 @@ pub trait DecksApi {
     #[method(name = "deck_get", with_extensions)]
     async fn deck_get(&self, deck_id: String) -> RpcResult<DeckDetail>;
 
-    /// Add a new stable-ID section (`json_render`, `note`, or `html`) to a Deck.
+    /// Add a new stable-ID section (`json_render`, `note`, `html`, or `openui` [64 KiB cap]) to a Deck.
     #[method(name = "deck_section_add", with_extensions)]
     #[allow(clippy::too_many_arguments)]
     async fn deck_section_add(
@@ -269,6 +276,7 @@ pub trait DecksApi {
     ) -> RpcResult<DeckRuntimeStatus>;
 
     /// Invoke a declared interactive action on the Deck's live Monty checkout (returns private result to caller).
+    /// Mutating declared actions (`mutates_state: true`) require a live human owner press on the RPC path.
     #[method(name = "deck_interact", with_extensions)]
     async fn deck_interact(
         &self,
@@ -604,6 +612,7 @@ impl DecksApiServer for Server {
         timeout_ms: Option<u64>,
     ) -> RpcResult<InteractResponse> {
         let (caller_id, _) = owner_only(ext)?;
+        let allow_mutating = human_press(ext).is_ok();
         let actor = decks_actor()?;
         actor
             .ask(InteractMsg {
@@ -614,6 +623,7 @@ impl DecksApiServer for Server {
                 args,
                 expected_rev,
                 timeout_ms,
+                allow_mutating,
             })
             .send()
             .await

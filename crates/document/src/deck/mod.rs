@@ -69,6 +69,9 @@ pub const MAX_SECTION_HISTORY: usize = 50;
 /// Maximum section content bytes (256 KiB).
 pub const MAX_SECTION_CONTENT_BYTES: usize = 256 * 1024;
 
+/// Maximum OpenUI section source bytes (64 KiB).
+pub const MAX_OPENUI_CONTENT_BYTES: usize = 64 * 1024;
+
 /// Maximum content bytes stored inside a single history entry (16 KiB excerpt for large sections).
 pub const MAX_HISTORY_CONTENT_BYTES: usize = 16 * 1024;
 
@@ -130,6 +133,8 @@ pub enum SectionKind {
     Note,
     /// Strictly sandboxed HTML section (zero network/forms/same-origin, Deck intent bridge only).
     Html,
+    /// Restricted interactive OpenUI Lang section (capped at 64 KiB, Deck synthetic catalog only).
+    Openui,
 }
 
 impl SectionKind {
@@ -138,6 +143,7 @@ impl SectionKind {
             Self::JsonRender => "json_render",
             Self::Note => "note",
             Self::Html => "html",
+            Self::Openui => "openui",
         }
     }
 
@@ -146,7 +152,22 @@ impl SectionKind {
             "json_render" => Some(Self::JsonRender),
             "note" => Some(Self::Note),
             "html" => Some(Self::Html),
+            "openui" => Some(Self::Openui),
             _ => None,
+        }
+    }
+
+    pub fn max_content_bytes(self) -> usize {
+        match self {
+            Self::Openui => MAX_OPENUI_CONTENT_BYTES,
+            Self::JsonRender | Self::Note | Self::Html => MAX_SECTION_CONTENT_BYTES,
+        }
+    }
+
+    pub fn default_col_span(self) -> u32 {
+        match self {
+            Self::JsonRender | Self::Html | Self::Openui => 6,
+            Self::Note => 12,
         }
     }
 }
@@ -763,6 +784,7 @@ pub(crate) fn validate_raw_update(doc: &Doc, update: &[u8], by: &Principal) -> R
         before_section_count,
         before_oversized_content,
         before_bad_revs,
+        before_bad_kinds,
     ) = {
         let txn = scratch.transact();
         let sr: BTreeMap<String, String> = maps
@@ -778,11 +800,25 @@ pub(crate) fn validate_raw_update(doc: &Doc, update: &[u8], by: &Principal) -> R
         let sec_count = maps.sections.len(&txn) as usize;
         let mut oversized: BTreeSet<String> = BTreeSet::new();
         let mut bad_revs: BTreeMap<String, String> = BTreeMap::new();
+        let mut bad_kinds: BTreeMap<String, String> = BTreeMap::new();
         for (sid, out) in maps.sections.iter(&txn) {
             if let Out::YMap(sm) = out {
-                if any_str(sm.get(&txn, "content"))
-                    .is_some_and(|c| c.len() > MAX_SECTION_CONTENT_BYTES)
-                {
+                let kind_out = sm.get(&txn, "kind");
+                let parsed_kind = match kind_out.clone() {
+                    Some(ko) => match any_str(Some(ko.clone())).and_then(|k| SectionKind::parse(&k))
+                    {
+                        Some(k) => Some(k),
+                        None => {
+                            bad_kinds.insert(sid.to_owned(), format!("{ko:?}"));
+                            None
+                        }
+                    },
+                    None => Some(SectionKind::Note),
+                };
+                let max_bytes = parsed_kind
+                    .map(SectionKind::max_content_bytes)
+                    .unwrap_or(MAX_SECTION_CONTENT_BYTES);
+                if any_str(sm.get(&txn, "content")).is_some_and(|c| c.len() > max_bytes) {
                     oversized.insert(sid.to_owned());
                 }
                 if let Some(rev_out) = sm.get(&txn, "rev") {
@@ -793,7 +829,7 @@ pub(crate) fn validate_raw_update(doc: &Doc, update: &[u8], by: &Principal) -> R
                 }
             }
         }
-        (sr, bad_ranks, sec_count, oversized, bad_revs)
+        (sr, bad_ranks, sec_count, oversized, bad_revs, bad_kinds)
     };
 
     scratch
@@ -831,6 +867,26 @@ pub(crate) fn validate_raw_update(doc: &Doc, update: &[u8], by: &Principal) -> R
 
     for (sid, out) in maps.sections.iter(&txn) {
         if let Out::YMap(sm) = out {
+            let parsed_kind = if let Some(kind_out) = sm.get(&txn, "kind") {
+                match any_str(Some(kind_out.clone())).and_then(|k| SectionKind::parse(&k)) {
+                    Some(k) => Some(k),
+                    None => {
+                        if before_bad_kinds.get(sid).map(String::as_str)
+                            != Some(format!("{kind_out:?}").as_str())
+                        {
+                            return Err(format!(
+                                "invalid_deck_kind: section {sid} has unsupported section kind"
+                            ));
+                        }
+                        None
+                    }
+                }
+            } else {
+                Some(SectionKind::Note)
+            };
+            let max_bytes = parsed_kind
+                .map(SectionKind::max_content_bytes)
+                .unwrap_or(MAX_SECTION_CONTENT_BYTES);
             if let Some(rev_out) = sm.get(&txn, "rev") {
                 let valid = matches!(any_i64(Some(rev_out.clone())), Some(r) if (1..=MAX_RAW_CLIENT_REV).contains(&r));
                 if !valid
@@ -843,11 +899,11 @@ pub(crate) fn validate_raw_update(doc: &Doc, update: &[u8], by: &Principal) -> R
                 }
             }
             if let Some(content) = any_str(sm.get(&txn, "content"))
-                && content.len() > MAX_SECTION_CONTENT_BYTES
+                && content.len() > max_bytes
                 && !before_oversized_content.contains(sid)
             {
                 return Err(format!(
-                    "invalid_deck_content: section {sid} content exceeds {MAX_SECTION_CONTENT_BYTES} bytes"
+                    "invalid_deck_content: section {sid} content exceeds {max_bytes} bytes"
                 ));
             }
         }
@@ -1372,9 +1428,10 @@ impl DocumentActor {
                 data_key,
                 index,
             } => {
-                if content.len() > MAX_SECTION_CONTENT_BYTES {
+                let max_bytes = kind.max_content_bytes();
+                if content.len() > max_bytes {
                     return Err(DeckDocError::Invalid(format!(
-                        "section content exceeds {MAX_SECTION_CONTENT_BYTES} bytes"
+                        "section content exceeds {max_bytes} bytes"
                     )));
                 }
                 let title = title.trim().to_owned();
@@ -1389,13 +1446,7 @@ impl DocumentActor {
                     )));
                 }
                 let normalized_dk = normalize_data_key(data_key)?;
-                let span = col_span
-                    .unwrap_or(match kind {
-                        SectionKind::JsonRender => 6,
-                        SectionKind::Html => 6,
-                        SectionKind::Note => 12,
-                    })
-                    .clamp(1, 12);
+                let span = col_span.unwrap_or(kind.default_col_span()).clamp(1, 12);
 
                 let sec = self
                     .deck_write(&m.doc, m.by, |maps, txn, who, now| {
@@ -1509,6 +1560,14 @@ impl DocumentActor {
                             return Err(DeckDocError::Invalid(format!(
                                 "section {id} is archived; unarchive it before patching"
                             )));
+                        }
+                        if let Some(c) = content.as_ref() {
+                            let max_bytes = cur.kind.max_content_bytes();
+                            if c.len() > max_bytes {
+                                return Err(DeckDocError::Invalid(format!(
+                                    "section content exceeds {max_bytes} bytes"
+                                )));
+                            }
                         }
                         let mut changed = Vec::new();
                         if let Some(t) = title {
@@ -3697,5 +3756,213 @@ mod tests {
             ))
         ));
         assert_eq!(env.helper_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn openui_section_kind_default_span_cap_and_raw_validation() {
+        assert_eq!(SectionKind::parse("openui"), Some(SectionKind::Openui));
+        assert_eq!(SectionKind::Openui.as_str(), "openui");
+        assert_eq!(SectionKind::Openui.default_col_span(), 6);
+        assert_eq!(
+            SectionKind::Openui.max_content_bytes(),
+            MAX_OPENUI_CONTENT_BYTES
+        );
+        assert_eq!(
+            serde_json::to_value(SectionKind::Openui).unwrap(),
+            json!("openui")
+        );
+        assert_eq!(
+            serde_json::from_value::<SectionKind>(json!("openui")).unwrap(),
+            SectionKind::Openui
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let env = test_env_with_cfg(dir, crate::DocumentsConfig::default()).await;
+        let created = env
+            .actor
+            .ask(CreateDeck {
+                title: Some("OpenUI Deck".into()),
+                description: None,
+                by: owner(),
+            })
+            .await
+            .unwrap();
+
+        // 1. Adding an openui section defaults col_span to 6 and accepts <= 64 KiB.
+        let DeckCallReply::Section(sec) = env
+            .actor
+            .ask(DeckCall {
+                doc: created.doc.clone(),
+                by: owner(),
+                op: DeckOp::SectionAdd {
+                    kind: SectionKind::Openui,
+                    title: "Controls".into(),
+                    content: "root = Card([TextContent(\"hi\")])".into(),
+                    col_span: None,
+                    data_key: Some("metrics".into()),
+                    index: None,
+                },
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("expected section");
+        };
+        assert_eq!(sec.kind, SectionKind::Openui);
+        assert_eq!(sec.col_span, 6);
+        assert_eq!(sec.data_key.as_deref(), Some("metrics"));
+
+        // 2. Adding an openui section > 64 KiB is rejected, while a Note > 64 KiB (<= 256 KiB) succeeds.
+        let over_64k = "x".repeat(MAX_OPENUI_CONTENT_BYTES + 1);
+        let add_err = env
+            .actor
+            .ask(DeckCall {
+                doc: created.doc.clone(),
+                by: owner(),
+                op: DeckOp::SectionAdd {
+                    kind: SectionKind::Openui,
+                    title: "Too Big".into(),
+                    content: over_64k.clone(),
+                    col_span: None,
+                    data_key: None,
+                    index: None,
+                },
+            })
+            .await;
+        assert!(matches!(
+            add_err,
+            Err(kameo::error::SendError::HandlerError(DeckDocError::Invalid(ref m)))
+            if m.contains(&MAX_OPENUI_CONTENT_BYTES.to_string())
+        ));
+
+        let DeckCallReply::Section(note_sec) = env
+            .actor
+            .ask(DeckCall {
+                doc: created.doc.clone(),
+                by: owner(),
+                op: DeckOp::SectionAdd {
+                    kind: SectionKind::Note,
+                    title: "Large Note".into(),
+                    content: over_64k.clone(),
+                    col_span: None,
+                    data_key: None,
+                    index: None,
+                },
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("expected note section");
+        };
+        assert_eq!(note_sec.col_span, 12);
+
+        // 3. Patching the openui section over 64 KiB is rejected.
+        let patch_err = env
+            .actor
+            .ask(DeckCall {
+                doc: created.doc.clone(),
+                by: owner(),
+                op: DeckOp::SectionPatch {
+                    section_id: sec.id.clone(),
+                    expected_rev: Some(sec.rev),
+                    title: None,
+                    content: Some(over_64k.clone()),
+                    col_span: None,
+                    data_key: None,
+                    summary: None,
+                },
+            })
+            .await;
+        assert!(matches!(
+            patch_err,
+            Err(kameo::error::SendError::HandlerError(DeckDocError::Invalid(ref m)))
+            if m.contains(&MAX_OPENUI_CONTENT_BYTES.to_string())
+        ));
+
+        // 4. Raw Yjs update validation:
+        // Build a local doc mirroring the current Deck state to craft raw updates.
+        let state_doc = Doc::new();
+        {
+            let maps = Maps::of(&state_doc);
+            let mut txn = state_doc.transact_mut();
+            let sm = maps.sections.insert(&mut txn, "s_note", MapPrelim::default());
+            sm.insert(&mut txn, "kind", Any::String("note".into()));
+            sm.insert(&mut txn, "content", Any::String(over_64k.clone().into()));
+            sm.insert(&mut txn, "rev", any_int(1));
+        }
+
+        // 4a. Valid openui raw update (<= 64 KiB) passes.
+        let peer_ok = Doc::with_client_id(9001);
+        {
+            let base = state_doc.transact().encode_state_as_update_v1(&StateVector::default());
+            peer_ok.transact_mut().apply_update(Update::decode_v1(&base).unwrap()).unwrap();
+            let sv = peer_ok.transact().state_vector();
+            {
+                let maps = Maps::of(&peer_ok);
+                let mut txn = peer_ok.transact_mut();
+                let sm = maps.sections.insert(&mut txn, "s_openui_ok", MapPrelim::default());
+                sm.insert(&mut txn, "kind", Any::String("openui".into()));
+                sm.insert(&mut txn, "content", Any::String("x".repeat(MAX_OPENUI_CONTENT_BYTES).into()));
+                sm.insert(&mut txn, "rev", any_int(1));
+            }
+            let diff = peer_ok.transact().encode_diff_v1(&sv);
+            assert!(validate_raw_update(&state_doc, &diff, &owner()).is_ok());
+        }
+
+        // 4b. Oversized openui raw update (> 64 KiB) is rejected.
+        let peer_big = Doc::with_client_id(9002);
+        {
+            let base = state_doc.transact().encode_state_as_update_v1(&StateVector::default());
+            peer_big.transact_mut().apply_update(Update::decode_v1(&base).unwrap()).unwrap();
+            let sv = peer_big.transact().state_vector();
+            {
+                let maps = Maps::of(&peer_big);
+                let mut txn = peer_big.transact_mut();
+                let sm = maps.sections.insert(&mut txn, "s_openui_big", MapPrelim::default());
+                sm.insert(&mut txn, "kind", Any::String("openui".into()));
+                sm.insert(&mut txn, "content", Any::String(over_64k.clone().into()));
+                sm.insert(&mut txn, "rev", any_int(1));
+            }
+            let diff = peer_big.transact().encode_diff_v1(&sv);
+            let err = validate_raw_update(&state_doc, &diff, &owner()).unwrap_err();
+            assert!(err.contains("invalid_deck_content"), "got {err}");
+        }
+
+        // 4c. Switching existing >64 KiB note section to kind="openui" is rejected.
+        let peer_switch = Doc::with_client_id(9003);
+        {
+            let base = state_doc.transact().encode_state_as_update_v1(&StateVector::default());
+            peer_switch.transact_mut().apply_update(Update::decode_v1(&base).unwrap()).unwrap();
+            let sv = peer_switch.transact().state_vector();
+            {
+                let maps = Maps::of(&peer_switch);
+                let mut txn = peer_switch.transact_mut();
+                if let Some(Out::YMap(sm)) = maps.sections.get(&txn, "s_note") {
+                    sm.insert(&mut txn, "kind", Any::String("openui".into()));
+                }
+            }
+            let diff = peer_switch.transact().encode_diff_v1(&sv);
+            let err = validate_raw_update(&state_doc, &diff, &owner()).unwrap_err();
+            assert!(err.contains("invalid_deck_content"), "got {err}");
+        }
+
+        // 4d. Unsupported section kind (e.g. "mermaid") is rejected.
+        let peer_bad_kind = Doc::with_client_id(9004);
+        {
+            let base = state_doc.transact().encode_state_as_update_v1(&StateVector::default());
+            peer_bad_kind.transact_mut().apply_update(Update::decode_v1(&base).unwrap()).unwrap();
+            let sv = peer_bad_kind.transact().state_vector();
+            {
+                let maps = Maps::of(&peer_bad_kind);
+                let mut txn = peer_bad_kind.transact_mut();
+                let sm = maps.sections.insert(&mut txn, "s_bad", MapPrelim::default());
+                sm.insert(&mut txn, "kind", Any::String("mermaid".into()));
+                sm.insert(&mut txn, "content", Any::String("graph TD; A-->B".into()));
+                sm.insert(&mut txn, "rev", any_int(1));
+            }
+            let diff = peer_bad_kind.transact().encode_diff_v1(&sv);
+            let err = validate_raw_update(&state_doc, &diff, &owner()).unwrap_err();
+            assert!(err.contains("invalid_deck_kind"), "got {err}");
+        }
     }
 }

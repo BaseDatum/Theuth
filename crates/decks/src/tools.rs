@@ -28,9 +28,10 @@ use crate::owner::{
 pub const DECKS_SKILL: &str = include_str!("../decks.md");
 
 const PROMPT_REMINDER: &str = "\
-Decks are native collaborative live documents (sections + review-gated Monty scripts + full session/MCP tools). \
+Decks are native collaborative live documents (sections: `json_render`, `note`, `html`, `openui` [64 KiB cap]; review-gated Monty scripts; full session/MCP tools). \
 Use `deck_list`, `deck_create`, `deck_read`, `deck_section_*`, `deck_script_propose/read/run`, `deck_runtime`, `deck_interact`, and `show_deck`. \
-Scripts proposed via `deck_script_propose` require explicit owner approval before streaming or running; never fabricate connected data (label example data clearly).";
+Scripts proposed via `deck_script_propose` require explicit owner approval before streaming or running; never fabricate connected data (label example data clearly). \
+Session-only artifact adapters (`mermaid`, `cells`, whiteboard-in-Deck) are unsupported in Decks.";
 
 #[derive(Clone)]
 pub struct DecksTools {
@@ -264,10 +265,10 @@ impl Tool for DeckReadTool {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DeckSectionAddArgs {
     pub deck_id: String,
-    /// Section kind: `json_render`, `note`, or `html`.
+    /// Section kind: `json_render`, `note`, `html`, or `openui` (restricted OpenUI Lang, 64 KiB cap).
     pub kind: SectionKind,
     pub title: String,
-    /// Section body (`json-render` JSON, markdown note, or strict-CSP HTML).
+    /// Section body (`json-render` JSON, markdown note, strict-CSP HTML, or restricted OpenUI Lang source).
     pub content: String,
     /// Grid column span (1..=12).
     #[serde(default)]
@@ -290,7 +291,7 @@ impl Tool for DeckSectionAddTool {
     type Args = DeckSectionAddArgs;
 
     fn description(&self) -> String {
-        "Add one collaborative section (json_render, note, or strict-CSP html) to a Deck without rewriting other sections.".into()
+        "Add one collaborative section (json_render, note, strict-CSP html, or restricted openui [64 KiB cap]) to a Deck without rewriting other sections.".into()
     }
 
     async fn call(&self, a: DeckSectionAddArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -871,6 +872,7 @@ impl Tool for DeckInteractTool {
                 args: a.args,
                 expected_rev: a.expected_rev,
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await

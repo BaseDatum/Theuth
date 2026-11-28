@@ -1,18 +1,20 @@
 ---
 name: decks
-description: Design, build, and onboard collaborative live Decks (native json-render + strict HTML + note sections powered by Monty Python scripts with full session/MCP tools).
+description: Design, build, and onboard collaborative live Decks (native json-render + restricted OpenUI + strict HTML + live Markdown note sections powered by Monty Python scripts with full session/MCP tools).
 ---
 
 # Decks — Onboarding & Authoring Guide
 
 A **Deck** is a native collaborative live document combining:
-- **Visual sections** (`json_render`, `note`, strict-CSP `html`) stored as stable-ID `Y.Map` entries in a `DocKind::Deck` CRDT document.
+- **Visual sections** (`json_render`, `openui` [restricted OpenUI Lang, 64 KiB cap], `note` [safe Markdown with `{{path|default}}` live interpolation], and strict-CSP `html`) stored as stable-ID `Y.Map` entries in a `DocKind::Deck` CRDT document.
 - **Executable data & actions** powered by a portable Monty Python script running inside an isolated Deck `SessionId` with the exact same live `ToolRegistry` & configured MCP namespace as a normal agent session.
+
+> **Unsupported session artifacts**: Decks intentionally do **not** embed session-only `mermaid`, `cells`, or whiteboard-in-Deck adapters. Use `json_render`, `openui`, `note`, or strict-CSP `html` sections instead.
 
 ## Onboarding Interview (When Building a New Deck)
 
 Before writing a Deck script, interview the user briefly and inspect real capabilities:
-1. **Goal & Audience**: What decisions, metrics, or workflows should this Deck track? Which sections should be native `json_render` (KPIs, tables, charts, buttons) vs. collaborative `note` vs. custom strict-CSP `html` visualization?
+1. **Goal & Audience**: What decisions, metrics, or workflows should this Deck track? Which sections should be native `json_render` (KPIs, tables, charts, buttons), restricted `openui` (stateful OpenUI Lang controls bound to `deck_data`/`deck_status` and declared actions), collaborative `note` (safe live Markdown), or custom strict-CSP `html` visualization?
 2. **Real Data Sources (Never Fake Connected Access)**:
    - Call `tools()` or inspect configured MCP servers / existing session tools to see what is actually connected.
    - If a desired source (Linear, Jira, GitHub, Slack, Google, database, etc.) is NOT configured yet, guide the user through the existing MCP/OAuth/secret setup flows rather than fabricating fake live numbers.

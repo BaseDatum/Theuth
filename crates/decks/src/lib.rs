@@ -490,6 +490,7 @@ async def on_action(action, args, ctx):
                 args: json!({"delta": 5}),
                 expected_rev: Some(1),
                 timeout_ms: Some(10_000),
+                allow_mutating: true,
             })
             .send();
         let f2 = h
@@ -502,6 +503,7 @@ async def on_action(action, args, ctx):
                 args: json!({"delta": 7}),
                 expected_rev: Some(1),
                 timeout_ms: Some(10_000),
+                allow_mutating: true,
             })
             .send();
         let f3 = h
@@ -529,6 +531,7 @@ async def on_action(action, args, ctx):
                 args: json!({"delta": 1}),
                 expected_rev: Some(1),
                 timeout_ms: Some(10_000),
+                allow_mutating: true,
             })
             .send()
             .await
@@ -775,6 +778,7 @@ async def on_action(action, args, ctx):
                 args: json!({}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -793,6 +797,7 @@ async def on_action(action, args, ctx):
                 args: json!({"q": ""}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -811,6 +816,7 @@ async def on_action(action, args, ctx):
                 args: json!({"q": "hi"}),
                 expected_rev: Some(99),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -831,6 +837,7 @@ async def on_action(action, args, ctx):
                 args: json!({"q": "salary"}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -864,6 +871,7 @@ async def on_action(action, args, ctx):
                 args: json!({"q": "salary"}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -882,6 +890,7 @@ async def on_action(action, args, ctx):
                 args: json!({"msg": "hello team"}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -1091,6 +1100,7 @@ async def on_action(action, args, ctx):
                 args: json!({}),
                 expected_rev: Some(1),
                 timeout_ms: Some(10_000),
+                allow_mutating: true,
             })
             .send()
             .await
@@ -1124,6 +1134,7 @@ async def on_action(action, args, ctx):
                     args: json!({"env": "staging"}),
                     expected_rev: Some(1),
                     timeout_ms: Some(10_000),
+                allow_mutating: true,
                 })
                 .send()
                 .await
@@ -1160,6 +1171,7 @@ async def on_action(action, args, ctx):
                 args: json!({}),
                 expected_rev: Some(1),
                 timeout_ms: Some(1_000),
+                allow_mutating: true,
             })
             .send()
             .await
@@ -1450,6 +1462,7 @@ async def on_step():
                 args: json!({"severity": "P1", "note": "mitigated"}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -1467,6 +1480,7 @@ async def on_step():
                 args: json!({}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -2206,6 +2220,7 @@ async def on_action(action, args, ctx):
                 args: json!({"q": "secret-alice"}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -2225,6 +2240,7 @@ async def on_action(action, args, ctx):
                 args: json!({"q": "secret-alice"}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -2244,6 +2260,7 @@ async def on_action(action, args, ctx):
                 args: json!({"q": "other"}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -2265,6 +2282,7 @@ async def on_action(action, args, ctx):
                 args: json!({"q": "secret-alice"}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -2286,6 +2304,7 @@ async def on_action(action, args, ctx):
                 args: json!({"q": "secret-alice"}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -2601,6 +2620,7 @@ async def on_step():
                     args: json!({}),
                     expected_rev: None,
                     timeout_ms: None,
+                allow_mutating: true,
                 })
                 .send()
                 .await
@@ -3025,6 +3045,7 @@ async def on_action(action, args, ctx):
                 args: json!({}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -3045,6 +3066,7 @@ async def on_action(action, args, ctx):
                 args: json!({}),
                 expected_rev: Some(1),
                 timeout_ms: None,
+                allow_mutating: true,
             })
             .send()
             .await
@@ -3279,10 +3301,312 @@ async def on_action(action, args, ctx):
             "decks.enabled = false must not register DECKS_ACTOR"
         );
     }
+
+    #[tokio::test]
+    async fn openui_section_and_mutating_interact_human_press_vs_agent_tool() {
+        use crate::rpc::DecksApiServer;
+        use ::tools::{Invoke, ListTools, ToolCall};
+        use document::deck::{MAX_OPENUI_CONTENT_BYTES, SectionKind};
+        use jsonrpsee::Extensions;
+        use rpc_core::{RpcPeer, UNAUTHORIZED};
+
+        let h = setup_harness().await;
+        evict_actor::<DeckSupervisor>(crate::owner::DECKS_ACTOR).await;
+        h.sup.register(crate::owner::DECKS_ACTOR).unwrap();
+        crate::tools::register(&h.registry, h.sup.clone(), h.rt.clone()).await;
+
+        let deck_id = new_deck(&h, "OpenUI & Interact Auth").await;
+
+        let srv = rpc_core::Server::new(h.rt.clone());
+        let (owner_peer, _owner_guard) = RpcPeer::open();
+        let mut owner_ext = Extensions::new();
+        owner_ext.insert(owner_peer.clone());
+
+        let mut internal_ext = Extensions::new();
+        internal_ext.insert(RpcPeer::internal());
+
+        let mut forwarded_ext = Extensions::new();
+        forwarded_ext.insert(owner_peer);
+        let from = serde_json::from_value(json!("remote-engine")).unwrap();
+        forwarded_ext.insert(agent::rpc_forward::Forwarded(from));
+
+        // 1. Add openui section via RPC -> default col_span 6, 64 KiB cap enforced.
+        let added = srv
+            .deck_section_add(
+                &owner_ext,
+                deck_id.clone(),
+                SectionKind::Openui,
+                "Live Controls".into(),
+                "root = Card([TextContent(\"hello\")])".into(),
+                None,
+                Some("metrics".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(added.kind, SectionKind::Openui);
+        assert_eq!(added.col_span, 6);
+
+        let oversized_rpc = srv
+            .deck_section_add(
+                &owner_ext,
+                deck_id.clone(),
+                SectionKind::Openui,
+                "Too Big".into(),
+                "a".repeat(MAX_OPENUI_CONTENT_BYTES + 1),
+                None,
+                None,
+                None,
+            )
+            .await;
+        assert!(oversized_rpc.is_err(), "RPC must reject >64 KiB openui section");
+
+        // 2. Verify tool docs & add openui section via agent tool deck_section_add.
+        let specs = h.registry.ask(ListTools(None)).send().await.unwrap();
+        let add_spec = specs
+            .iter()
+            .find(|s| s.name == "deck_section_add")
+            .expect("deck_section_add registered");
+        assert!(add_spec.description.contains("openui"));
+
+        let session = ::runtime::SessionId::new();
+        struct AutoApprover {
+            session: ::runtime::SessionId,
+            approval: ActorRef<Approval>,
+        }
+        impl kameo::Actor for AutoApprover {
+            type Args = Self;
+            type Error = std::convert::Infallible;
+            async fn on_start(
+                state: Self::Args,
+                _actor_ref: ActorRef<Self>,
+            ) -> Result<Self, Self::Error> {
+                Ok(state)
+            }
+        }
+        impl kameo::message::Message<ApprovalRequested> for AutoApprover {
+            type Reply = ();
+            async fn handle(
+                &mut self,
+                msg: ApprovalRequested,
+                _ctx: &mut kameo::message::Context<Self, Self::Reply>,
+            ) {
+                if msg.session == self.session {
+                    let approval = self.approval.clone();
+                    tokio::spawn(async move {
+                        let _ = approval
+                            .ask(Resolve {
+                                id: msg.id,
+                                decision: Decision::Allow,
+                            })
+                            .send()
+                            .await;
+                    });
+                }
+            }
+        }
+        let auto_approver = AutoApprover::spawn(AutoApprover {
+            session,
+            approval: h.approval.clone(),
+        });
+        h.rt.subscribe::<AutoApprover, ApprovalRequested>(&auto_approver)
+            .await;
+
+        let tool_out = h
+            .registry
+            .ask(Invoke(ToolCall {
+                id: "call-add-openui".into(),
+                name: "deck_section_add".into(),
+                args: json!({
+                    "deck_id": deck_id,
+                    "kind": "openui",
+                    "title": "Agent OpenUI",
+                    "content": "root = Card([TextContent(\"agent\")])"
+                }),
+                session,
+                quiet: false,
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(!tool_out.is_error, "tool_out error: {:?}", tool_out.content);
+        assert_eq!(tool_out.structured.unwrap()["kind"], "openui");
+
+        // 3. Propose & approve a script with one read-only action and one mutating action.
+        let script = r#"
+count = 0
+
+async def on_start(last_state):
+    global count
+    count = 1
+
+async def on_step():
+    deck_emit({"count": count}, durable=True)
+
+async def on_action(action, args, ctx):
+    global count
+    if action == "peek":
+        return {"count": count, "kind": "readonly"}
+    if action == "bump":
+        count += int(args.get("delta", 1))
+        return {"count": count, "kind": "mutated"}
+    raise ValueError("unknown")
+"#;
+        let rev = h
+            .sup
+            .ask(ProposeScriptMsg {
+                deck_id: deck_id.clone(),
+                code: script.into(),
+                declared_actions: vec![
+                    DeclaredAction {
+                        name: "peek".into(),
+                        title: "Peek".into(),
+                        description: "Read-only query".into(),
+                        schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+                        mutates_state: false,
+                        allow_while_paused: true,
+                    },
+                    DeclaredAction {
+                        name: "bump".into(),
+                        title: "Bump".into(),
+                        description: "Mutate count".into(),
+                        schema: json!({
+                            "type": "object",
+                            "properties": { "delta": { "type": "integer" } },
+                            "additionalProperties": false
+                        }),
+                        mutates_state: true,
+                        allow_while_paused: true,
+                    },
+                ],
+                mode: ScriptMode::Oneshot,
+                interval_secs: None,
+                schedule_cron: None,
+                proposed_by: "owner".into(),
+                change_summary: "v1".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        h.sup
+            .ask(ApproveScriptMsg {
+                deck_id: deck_id.clone(),
+                rev: rev.rev,
+                expected_digest: rev.revision_sha256.clone(),
+                approved_by: "owner".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+
+        // 3a. Internal and forwarded RPC peers MAY call read-only `peek`.
+        let ro_internal = srv
+            .deck_interact(
+                &internal_ext,
+                deck_id.clone(),
+                "peek".into(),
+                json!({}),
+                "ro-internal-1".into(),
+                Some(1),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(ro_internal.ok);
+        assert_eq!(ro_internal.result.unwrap()["count"], 1);
+
+        let ro_forwarded = srv
+            .deck_interact(
+                &forwarded_ext,
+                deck_id.clone(),
+                "peek".into(),
+                json!({}),
+                "ro-forwarded-1".into(),
+                Some(1),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(ro_forwarded.ok);
+
+        // 3b. Internal and forwarded RPC peers are REJECTED (UNAUTHORIZED) on mutating `bump`.
+        let mut_internal = srv
+            .deck_interact(
+                &internal_ext,
+                deck_id.clone(),
+                "bump".into(),
+                json!({"delta": 10}),
+                "mut-internal-1".into(),
+                Some(1),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(mut_internal.code(), UNAUTHORIZED);
+
+        let mut_forwarded = srv
+            .deck_interact(
+                &forwarded_ext,
+                deck_id.clone(),
+                "bump".into(),
+                json!({"delta": 10}),
+                "mut-forwarded-1".into(),
+                Some(1),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(mut_forwarded.code(), UNAUTHORIZED);
+
+        // 3c. Live human owner press RPC succeeds on mutating `bump`.
+        let mut_human = srv
+            .deck_interact(
+                &owner_ext,
+                deck_id.clone(),
+                "bump".into(),
+                json!({"delta": 4}),
+                "mut-human-1".into(),
+                Some(1),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(mut_human.ok);
+        assert_eq!(mut_human.result.unwrap()["count"], 5);
+
+        // 3d. Explicit agent tool `deck_interact` path remains intact for mutating `bump`.
+        let agent_out = h
+            .registry
+            .ask(Invoke(ToolCall {
+                id: "call-agent-bump".into(),
+                name: "deck_interact".into(),
+                args: json!({
+                    "deck_id": deck_id,
+                    "action": "bump",
+                    "args": { "delta": 2 },
+                    "request_id": "agent-bump-1",
+                    "expected_rev": 1
+                }),
+                session,
+                quiet: false,
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(!agent_out.is_error, "agent_out error: {:?}", agent_out.content);
+        let structured = agent_out.structured.unwrap();
+        assert_eq!(structured["ok"], true);
+        assert_eq!(structured["result"]["count"], 7);
+
+        // Clean up global DECKS_ACTOR registration so other tests aren't affected.
+        evict_actor::<DeckSupervisor>(crate::owner::DECKS_ACTOR).await;
+    }
 }
 
 #[cfg(test)]
 mod unit_tests {
+    use std::time::Duration;
+
     use serde_json::json;
 
     use crate::hub::DeckHub;
@@ -3533,5 +3857,91 @@ mod unit_tests {
 
         hub.unsubscribe("d1", sub_id);
         hub.remove_deck("d1");
+    }
+
+    #[tokio::test]
+    async fn hub_coalesces_live_frames_per_section_scope() {
+        let hub = DeckHub::new();
+        let status = DeckRuntimeStatus {
+            deck_id: "d_sec".into(),
+            session_id: runtime::SessionId::new(),
+            state: RuntimeState::Streaming,
+            run_epoch: 1,
+            active_rev: Some(1),
+            pending_rev: None,
+            stale: false,
+            last_ok_snapshot_id: None,
+            last_ok_at: None,
+            last_error: None,
+            last_error_at: None,
+            consecutive_failures: 0,
+            step_count: 1,
+            checkout_alive: true,
+            pending_approval: None,
+        };
+        let (sub_id, mut rx) = hub.subscribe(
+            "d_sec",
+            DeckRuntimeEvent::Sync {
+                status,
+                last_snapshot: None,
+                live_frame: None,
+            },
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(DeckRuntimeEvent::Sync { .. })
+        ));
+
+        // Emit frames for s1 (seq 1, superseded by seq 3) and s2 (seq 2) before subscriber drains.
+        for (sec, seq, val) in [("s1", 1, "old_s1"), ("s2", 2, "latest_s2"), ("s1", 3, "latest_s1")]
+        {
+            hub.broadcast(
+                "d_sec",
+                DeckRuntimeEvent::LiveFrame {
+                    frame: LiveFrame {
+                        deck_id: "d_sec".into(),
+                        script_rev: 1,
+                        run_epoch: 1,
+                        seq,
+                        data: json!({ "v": val }),
+                        section: Some(sec.into()),
+                        emitted_at: "2026-01-01T00:00:00Z".into(),
+                    },
+                },
+            );
+        }
+
+        // Wait briefly for pump task to deliver, then drain both distinct section scopes in seq order.
+        let ev1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let ev2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let frames: Vec<(Option<String>, u64, String)> = [ev1, ev2]
+            .into_iter()
+            .map(|e| match e {
+                DeckRuntimeEvent::LiveFrame { frame } => (
+                    frame.section,
+                    frame.seq,
+                    frame.data["v"].as_str().unwrap().to_owned(),
+                ),
+                other => panic!("expected LiveFrame, got {other:?}"),
+            })
+            .collect();
+        // Both s1 and s2 must be delivered (not clobbered by each other); s1 must hold its latest value.
+        assert!(
+            frames.iter().any(|(s, _, v)| s.as_deref() == Some("s2") && v == "latest_s2"),
+            "missing s2 frame in {frames:?}"
+        );
+        assert!(
+            frames.iter().any(|(s, _, v)| s.as_deref() == Some("s1") && v == "latest_s1"),
+            "missing latest s1 frame in {frames:?}"
+        );
+
+        hub.unsubscribe("d_sec", sub_id);
+        hub.remove_deck("d_sec");
     }
 }

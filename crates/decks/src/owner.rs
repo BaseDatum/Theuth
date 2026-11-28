@@ -251,6 +251,10 @@ impl SharedDeckState {
     }
 }
 
+/// Error returned when a mutating `deck_interact` RPC call lacks a live human owner press.
+pub(crate) const UNAUTHORIZED_INTERACT_ERR: &str =
+    "unauthorized: human owner press required for mutating deck_interact";
+
 /// Commands processed strictly sequentially by a single Deck's `DeckOwner` task.
 enum OwnerCmd {
     Control {
@@ -263,7 +267,8 @@ enum OwnerCmd {
         action: String,
         args: Value,
         expected_rev: Option<u64>,
-        reply: oneshot::Sender<InteractResponse>,
+        allow_mutating: bool,
+        reply: oneshot::Sender<Result<InteractResponse, String>>,
     },
     RevisionApproved {
         script: ScriptRevision,
@@ -826,6 +831,7 @@ impl DeckOwner {
                 action,
                 args,
                 expected_rev,
+                allow_mutating,
                 reply,
             } => {
                 if reply.is_closed() {
@@ -833,7 +839,14 @@ impl DeckOwner {
                     return CmdFlow::Continue;
                 }
                 let resp = self
-                    .handle_interact(request_id, caller_id, action, args, expected_rev)
+                    .handle_interact(
+                        request_id,
+                        caller_id,
+                        action,
+                        args,
+                        expected_rev,
+                        allow_mutating,
+                    )
                     .await;
                 let _ = reply.send(resp);
             }
@@ -1499,7 +1512,8 @@ impl DeckOwner {
         action: String,
         args: Value,
         expected_rev: Option<u64>,
-    ) -> InteractResponse {
+        allow_mutating: bool,
+    ) -> Result<InteractResponse, String> {
         let err_resp =
             |code: InteractErrorCode, msg: String, rev: u64, epoch: u64| InteractResponse {
                 request_id: request_id.clone(),
@@ -1515,49 +1529,70 @@ impl DeckOwner {
             };
 
         if self.shared.is_deleted(&self.deck_id) {
-            return err_resp(
+            return Ok(err_resp(
                 InteractErrorCode::ExecutionError,
                 format!("deck `{}` has been deleted", self.deck_id),
                 0,
                 self.run_epoch,
-            );
+            ));
         }
 
         if let Err(err) = self.refresh_scripts_from_store().await {
-            return err_resp(InteractErrorCode::ExecutionError, err, 0, self.run_epoch);
+            return Ok(err_resp(
+                InteractErrorCode::ExecutionError,
+                err,
+                0,
+                self.run_epoch,
+            ));
         }
 
         // 1. Approved script required.
         let Some(script) = self.active_script.clone() else {
-            return err_resp(
+            return Ok(err_resp(
                 InteractErrorCode::NoApprovedScript,
                 "no approved script revision for this Deck".into(),
                 0,
                 self.run_epoch,
-            );
+            ));
         };
         if script.status != ScriptStatus::Approved {
-            return err_resp(
+            return Ok(err_resp(
                 InteractErrorCode::NoApprovedScript,
                 "active script is not approved".into(),
                 script.rev,
                 self.run_epoch,
-            );
+            ));
         }
 
         // 2. Revision fencing.
         if let Some(exp) = expected_rev
             && exp != script.rev
         {
-            return err_resp(
+            return Ok(err_resp(
                 InteractErrorCode::RevisionMismatch,
                 format!("expected script rev {exp}, active rev is {}", script.rev),
                 script.rev,
                 self.run_epoch,
-            );
+            ));
         }
 
-        // 3. Caller-scoped idempotency lookup (229 B7): strictly keyed on
+        // 3. Declared action lookup & mutating human-press gate (checked BEFORE idempotency replay).
+        let Some(decl) = script.declared_actions.iter().find(|a| a.name == action) else {
+            return Ok(err_resp(
+                InteractErrorCode::UndeclaredAction,
+                format!(
+                    "action {action:?} is not declared by script rev {}",
+                    script.rev
+                ),
+                script.rev,
+                self.run_epoch,
+            ));
+        };
+        if decl.mutates_state && !allow_mutating {
+            return Err(UNAUTHORIZED_INTERACT_ERR.to_owned());
+        }
+
+        // 4. Caller-scoped idempotency lookup (229 B7): strictly keyed on
         // (deck_id, caller_id, request_id) and verified against (action, args_sha256, script.rev).
         let args_sha256 = sha256_hex(&canonical_json_string(&args));
         match self
@@ -1573,54 +1608,46 @@ impl DeckOwner {
             )
             .await
         {
-            Ok(IdempotencyLookup::Hit(cached)) => return cached,
+            Ok(IdempotencyLookup::Hit(cached)) => return Ok(cached),
             Ok(IdempotencyLookup::Conflict(msg)) => {
-                return err_resp(InteractErrorCode::Conflict, msg, script.rev, self.run_epoch);
+                return Ok(err_resp(
+                    InteractErrorCode::Conflict,
+                    msg,
+                    script.rev,
+                    self.run_epoch,
+                ));
             }
             Ok(IdempotencyLookup::Miss) | Err(_) => {}
         }
 
-        // 4. Approval pause check.
+        // 5. Approval pause check.
         if self.shared.has_pending_approvals(&self.deck_id) {
-            return err_resp(
+            return Ok(err_resp(
                 InteractErrorCode::WaitingApproval,
                 "Deck is waiting for a pending tool approval".into(),
                 script.rev,
                 self.run_epoch,
-            );
+            ));
         }
-
-        // 5. Declared action lookup.
-        let Some(decl) = script.declared_actions.iter().find(|a| a.name == action) else {
-            return err_resp(
-                InteractErrorCode::UndeclaredAction,
-                format!(
-                    "action {action:?} is not declared by script rev {}",
-                    script.rev
-                ),
-                script.rev,
-                self.run_epoch,
-            );
-        };
 
         // 6. Paused guard if action opts out.
         if self.state == RuntimeState::Paused && !decl.allow_while_paused {
-            return err_resp(
+            return Ok(err_resp(
                 InteractErrorCode::Paused,
                 format!("action {action:?} cannot run while stream is paused"),
                 script.rev,
                 self.run_epoch,
-            );
+            ));
         }
 
         // 7. JSON Schema validation of `args`.
         if let Err(reason) = validate_action_args(decl, &args) {
-            return err_resp(
+            return Ok(err_resp(
                 InteractErrorCode::InvalidArgs,
                 reason,
                 script.rev,
                 self.run_epoch,
-            );
+            ));
         }
 
         // 8. Ensure checkout is open on the SAME Deck checkout (never a second concurrent checkout!).
@@ -1629,12 +1656,12 @@ impl DeckOwner {
         }
         let turn_epoch = self.run_epoch;
         if let Err(err) = self.ensure_checkout(&script, turn_epoch).await {
-            return err_resp(
+            return Ok(err_resp(
                 InteractErrorCode::ExecutionError,
                 err,
                 script.rev,
                 self.run_epoch,
-            );
+            ));
         }
 
         // 9. Execute `on_action(action, args, ctx)` on the SAME checkout.
@@ -1657,12 +1684,12 @@ impl DeckOwner {
 
         // 10. Fence out late writes if Deck was deleted or script revision changed mid-action (229 H2).
         if self.is_fenced(turn_epoch, script.rev).await {
-            return err_resp(
+            return Ok(err_resp(
                 InteractErrorCode::RevisionMismatch,
                 "Deck was deleted or script revision changed while action was running".into(),
                 script.rev,
                 self.run_epoch,
-            );
+            ));
         }
 
         let resp = match outcome {
@@ -1715,7 +1742,7 @@ impl DeckOwner {
             .save_idempotent_action(&self.deck_id, &caller_id, &args_sha256, &resp)
             .await;
         self.broadcast_status();
-        resp
+        Ok(resp)
     }
 }
 
@@ -2512,6 +2539,11 @@ pub struct InteractMsg {
     pub args: Value,
     pub expected_rev: Option<u64>,
     pub timeout_ms: Option<u64>,
+    /// Whether mutating declared actions (`mutates_state: true`) are authorized for this caller.
+    /// Live human-press RPC callers and the explicit `DeckInteractTool` agent path set `true`;
+    /// non-human-press RPC callers (e.g. internal/forwarded) set `false` and may only invoke
+    /// read-only declared actions.
+    pub allow_mutating: bool,
 }
 
 impl Message<InteractMsg> for DeckSupervisor {
@@ -2572,6 +2604,7 @@ impl Message<InteractMsg> for DeckSupervisor {
             action: m.action.clone(),
             args: m.args,
             expected_rev: m.expected_rev,
+            allow_mutating: m.allow_mutating,
             reply: rtx,
         };
         if tx.try_send(cmd).is_err() {
@@ -2592,7 +2625,7 @@ impl Message<InteractMsg> for DeckSupervisor {
         let action = m.action;
         tokio::spawn(async move {
             let res = match tokio::time::timeout(timeout, rrx).await {
-                Ok(Ok(resp)) => Ok(resp),
+                Ok(Ok(resp)) => resp,
                 Ok(Err(_)) => Err("deck owner dropped interact reply".into()),
                 Err(_) => Ok(InteractResponse {
                     request_id,

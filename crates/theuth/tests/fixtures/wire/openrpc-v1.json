@@ -94005,6 +94005,11 @@
             "const": "html",
             "description": "Strictly sandboxed HTML section (zero network/forms/same-origin, Deck intent bridge only).",
             "type": "string"
+          },
+          {
+            "const": "openui",
+            "description": "Restricted interactive OpenUI Lang section (capped at 64 KiB, Deck synthetic catalog only).",
+            "type": "string"
           }
         ]
       },
@@ -94988,6 +94993,11 @@
           {
             "const": "html",
             "description": "Strictly sandboxed HTML section (zero network/forms/same-origin, Deck intent bridge only).",
+            "type": "string"
+          },
+          {
+            "const": "openui",
+            "description": "Restricted interactive OpenUI Lang section (capped at 64 KiB, Deck synthetic catalog only).",
             "type": "string"
           }
         ]
@@ -96016,6 +96026,11 @@
           {
             "const": "html",
             "description": "Strictly sandboxed HTML section (zero network/forms/same-origin, Deck intent bridge only).",
+            "type": "string"
+          },
+          {
+            "const": "openui",
+            "description": "Restricted interactive OpenUI Lang section (capped at 64 KiB, Deck synthetic catalog only).",
             "type": "string"
           }
         ]
