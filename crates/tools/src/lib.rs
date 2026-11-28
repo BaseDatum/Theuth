@@ -258,6 +258,11 @@ impl ToolSource {
             version: platform::version::get().to_owned(),
         }
     }
+
+    /// Whether this tool comes from an MCP server.
+    pub fn is_mcp(&self) -> bool {
+        matches!(self, Self::Mcp { .. })
+    }
 }
 
 /// An MCP server entry as an app may inspect it: what runs / where it is,

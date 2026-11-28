@@ -39,7 +39,10 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::registry::{HiddenTools, ListTools, RegisterTool, ToolRegistry, UnregisterTool};
+use crate::registry::{
+    AttachMcp, HiddenTools, NonMcpToolNames, PruneMcpTools, RegisterTool, ToolRegistry,
+    UnregisterMcpServer,
+};
 use crate::{
     DynTool, ErasedTool, Gate, MCP_ACTOR, McpEntry, Policy, PolicyAction, Risk, ToolCx, ToolOutput,
     ToolSource, ToolSpec, git, images, secrets,
@@ -841,8 +844,12 @@ struct State {
     gates: Gates,
     /// `homes.yaml` as of the last reconcile (plus this engine's claims).
     homes: Homes,
-    /// Native tool names; always win a clash.
+    /// Non-MCP (`Native` and `Plugin`) tool names, refreshed live from
+    /// [`ToolRegistry`] on every [`register`] pass; always win a clash.
     natives: HashSet<String>,
+    /// Whether this actor has attached its weak reference to `registry` via
+    /// [`AttachMcp`] so reverse-race collisions trigger [`ReRegister`].
+    attached: bool,
     /// Last connect / list_tools failure per desired server; cleared on success
     /// or when the server leaves the files.
     errors: HashMap<String, String>,
@@ -930,6 +937,11 @@ struct SetMachine(Machine);
 
 /// `tell` from the watcher: re-read `<data_dir>/mcp` and apply.
 struct Reconcile;
+
+/// `tell` from [`ToolRegistry`]: a non-MCP tool collided with or displaced an
+/// MCP tool; recompute registrations against the live non-MCP tool set so
+/// `r.tools` and [`McpToolInfo::registered`] match `<server>__<remote>`.
+pub(crate) struct ReRegister;
 
 /// `ask` → `Vec<McpServer>`: every server the files want, sorted by name.
 /// With a session, [`McpToolInfo::hidden`] reflects its [`crate::SetHidden`] state.
@@ -1201,6 +1213,14 @@ impl Message<Reconcile> for Mcp {
 
     async fn handle(&mut self, _: Reconcile, ctx: &mut Context<Self, Self::Reply>) {
         self.reconcile(ctx.actor_ref()).await;
+    }
+}
+
+impl Message<ReRegister> for Mcp {
+    type Reply = ();
+
+    async fn handle(&mut self, _: ReRegister, ctx: &mut Context<Self, Self::Reply>) {
+        register(&mut self.state, &self.dir, &self.registry, ctx.actor_ref()).await;
     }
 }
 
@@ -1647,17 +1667,12 @@ impl Message<AddServer> for Mcp {
             }
             write_json(&path, &m.entry)?;
         }
-        // Keep a healthy connection until its replacement is ready, then remove
-        // every old registration, including tools the new server no longer offers.
-        let orphans = self
-            .state
-            .running
-            .remove(&m.name)
-            .map(|r| r.tools.into_values().collect())
-            .unwrap_or_default();
+        // Keep a healthy connection until its replacement is ready, then drop
+        // the old entry so `register` prunes any tools the new server no longer offers.
+        self.state.running.remove(&m.name);
         self.state.pending.remove(&m.name);
         self.settle(m.name.clone(), spec, attempt_res, ctx.actor_ref());
-        register(&mut self.state, &self.dir, &self.registry, orphans).await;
+        register(&mut self.state, &self.dir, &self.registry, ctx.actor_ref()).await;
         self.rt.publish(progress(&self.state)).await;
         // The watcher's reconcile then finds it running with the same spec.
         Ok(self.server(m.name, None, &HashSet::new()))
@@ -1899,14 +1914,11 @@ impl Mcp {
             .filter(|(name, r)| here.get(*name) != Some(&r.spec) || state.gates.server_off(name))
             .map(|(name, _)| name.clone())
             .collect();
-        let mut orphans: Vec<String> = Vec::new();
         for name in stale {
             changed = true;
             tracing::info!(server = %name, "mcp server dropped");
             // Removing drops `service`, which ends the child / session.
-            if let Some(r) = state.running.remove(&name) {
-                orphans.extend(r.tools.into_values());
-            }
+            state.running.remove(&name);
         }
         state.errors.retain(|name, _| here.contains_key(name));
         state.login.retain(|name, _| here.contains_key(name));
@@ -1941,7 +1953,7 @@ impl Mcp {
             });
         }
         if changed {
-            register(&mut self.state, &self.dir, &self.registry, orphans).await;
+            register(&mut self.state, &self.dir, &self.registry, me).await;
             self.rt.publish(progress(&self.state)).await;
         }
         self.wake();
@@ -2154,10 +2166,8 @@ impl Mcp {
         for name in names {
             tracing::info!(server = %name, "mcp server restarting");
             self.state.retry.remove(name);
-            if let Some(r) = self.state.running.remove(name) {
-                for tool in r.tools.into_values() {
-                    let _ = self.registry.ask(UnregisterTool(tool)).await;
-                }
+            if self.state.running.remove(name).is_some() {
+                let _ = self.registry.ask(UnregisterMcpServer(name.clone())).await;
             }
         }
         self.reconcile(me).await;
@@ -2245,7 +2255,7 @@ impl Message<Settled> for Mcp {
         let connected = m.result.is_ok();
         self.settle(m.name, m.spec, m.result, ctx.actor_ref());
         if connected {
-            register(&mut self.state, &self.dir, &self.registry, Vec::new()).await;
+            register(&mut self.state, &self.dir, &self.registry, ctx.actor_ref()).await;
         }
         self.rt.publish(progress(&self.state)).await;
         self.wake();
@@ -2667,17 +2677,24 @@ fn risk_of(gates: &Gates, server: &str, t: &rmcp::model::Tool) -> Risk {
         .unwrap_or_else(|| annotated(t))
 }
 
-/// Recompute every registration, then diff against what is registered so
-/// nothing flickers. A tool name offered by more than one running server, or
-/// by a native, registers as `<server>__<name>` for every server offering
-/// it, so each server keeps its own slot (01 §1.4). `orphans` are names
-/// registered by servers that have since been dropped.
+/// Recompute every registration against the registry's live non-MCP tool set,
+/// then diff against what is registered so nothing flickers. A tool name
+/// offered by more than one running server, or by any non-MCP (native/plugin)
+/// tool, registers as `<server>__<name>` for every server offering it, so each
+/// server keeps its own slot and never shadows a native tool (01 §1.4).
 async fn register(
     state: &mut State,
     dir: &Path,
     registry: &ActorRef<ToolRegistry>,
-    mut orphans: Vec<String>,
+    me: &ActorRef<Mcp>,
 ) {
+    if !state.attached {
+        let _ = registry.ask(AttachMcp(me.downgrade())).await;
+        state.attached = true;
+    }
+    if let Ok(live) = registry.ask(NonMcpToolNames).await {
+        state.natives = live;
+    }
     let offered = |server: &str, t: &rmcp::model::Tool| {
         state.gates.for_tool(server, &t.name) != Some(Gate::Off)
     };
@@ -2703,6 +2720,10 @@ async fn register(
             } else {
                 remote.clone()
             };
+            if state.natives.contains(&name) {
+                tracing::warn!("mcp tool {name} from {server} hidden: clashes with native tool");
+                continue;
+            }
             if let Some(owner) = taken.get(&name) {
                 tracing::warn!("mcp tool {name} from {server} hidden: clashes with {owner}");
                 continue;
@@ -2731,17 +2752,11 @@ async fn register(
             ));
         }
     }
-    orphans.extend(
-        state
-            .running
-            .values_mut()
-            .flat_map(|r| std::mem::take(&mut r.tools).into_values()),
-    );
-    for name in orphans {
-        if !taken.contains_key(&name) {
-            let _ = registry.ask(UnregisterTool(name)).await;
-        }
+    for r in state.running.values_mut() {
+        r.tools.clear();
     }
+    let keep: HashSet<String> = taken.keys().cloned().collect();
+    let _ = registry.ask(PruneMcpTools(keep)).await;
     for (server, tool) in regs {
         let (remote, name) = (tool.remote_name.clone(), tool.spec.name.clone());
         let _ = registry.ask(RegisterTool(Arc::new(tool))).await;
@@ -2786,21 +2801,17 @@ pub async fn start(
     for tool in sources {
         registry.ask(RegisterTool(tool)).await?;
     }
-    let natives = registry
-        .ask(ListTools(None))
-        .await?
-        .into_iter()
-        .map(|s| s.name)
-        .collect();
+    let natives = registry.ask(NonMcpToolNames).await?;
     let mcp = Mcp::spawn_with_mailbox(
         Mcp {
             state: State {
                 natives,
+                attached: true,
                 ..State::default()
             },
             dir: dir.clone(),
             auth_dir: ::oauth::Store::new(&rt.data_dir).mcp_dir(),
-            registry,
+            registry: registry.clone(),
             policy,
             rt: rt.clone(),
             machine: machine(),
@@ -2809,6 +2820,7 @@ pub async fn start(
         },
         runtime::subscriber_mailbox(),
     );
+    registry.ask(AttachMcp(mcp.downgrade())).await?;
     mcp.register(MCP_ACTOR)?;
     mcp.tell(Reconcile).await?;
 
@@ -2847,6 +2859,7 @@ pub async fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::{Invoke, ListTools, ToolSourceOf};
 
     const DIR: &str = "/data/mcp";
 
@@ -3497,13 +3510,15 @@ mod tests {
         );
     }
 
-    /// One `echo` tool. `legacy` = a pre-2026-07-28 server: no 2026 version,
+    /// One tool (`echo` by default). `legacy` = a pre-2026-07-28 server: no 2026 version,
     /// and `server/discover` is an unknown method (-32601). `asked` = the
     /// version of the first `initialize` it saw.
     #[derive(Clone, Default)]
     struct TestServer {
         legacy: bool,
         asked: Arc<std::sync::OnceLock<ProtocolVersion>>,
+        tool_name: Option<&'static str>,
+        read_only: bool,
     }
 
     impl rmcp::ServerHandler for TestServer {
@@ -3554,9 +3569,15 @@ mod tests {
             _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
         ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
             let schema = serde_json::json!({"type": "object"});
-            Ok(rmcp::model::ListToolsResult::with_all_items(vec![
-                rmcp::model::Tool::new("echo", "echo", schema.as_object().unwrap().clone()),
-            ]))
+            let mut tool = rmcp::model::Tool::new(
+                self.tool_name.unwrap_or("echo"),
+                "echo",
+                schema.as_object().unwrap().clone(),
+            );
+            if self.read_only {
+                tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+            }
+            Ok(rmcp::model::ListToolsResult::with_all_items(vec![tool]))
         }
 
         async fn call_tool(
@@ -4572,6 +4593,320 @@ mod tests {
         assert!(
             h.servers["paused"].everywhere,
             "a disabled entry keeps its flags"
+        );
+    }
+
+    struct NativeApp;
+
+    #[async_trait::async_trait]
+    impl crate::Tool for NativeApp {
+        const NAME: &'static str = "app";
+        const RISK: Risk = Risk::ReadOnly;
+        const DIRECT: bool = true;
+        type Args = Value;
+
+        fn description(&self) -> String {
+            "native app".into()
+        }
+
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("native:app"))
+        }
+    }
+
+    struct NativeFoo;
+
+    #[async_trait::async_trait]
+    impl crate::Tool for NativeFoo {
+        const NAME: &'static str = "foo";
+        const RISK: Risk = Risk::ReadOnly;
+        const DIRECT: bool = true;
+        type Args = Value;
+
+        fn description(&self) -> String {
+            "native foo".into()
+        }
+
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("native:foo"))
+        }
+    }
+
+    fn actor_with_registry(root: &Path) -> (ActorRef<ToolRegistry>, ActorRef<Mcp>) {
+        std::fs::create_dir_all(root.join("mcp")).unwrap();
+        let registry = crate::registry::tests::registry(Vec::new(), None);
+        let mcp = Mcp::spawn(Mcp {
+            state: State::default(),
+            dir: root.join("mcp"),
+            auth_dir: root.join("oauth"),
+            registry: registry.clone(),
+            policy: Policy::default(),
+            rt: Runtime::new(figment::Figment::new(), root.to_owned()),
+            machine: None,
+            origin: None,
+            paired: || None,
+        });
+        (registry, mcp)
+    }
+
+    fn invoke_call(name: &str, session: runtime::SessionId) -> crate::ToolCall {
+        crate::ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            args: serde_json::json!({}),
+            session,
+            quiet: false,
+        }
+    }
+
+    /// Forward race: `Mcp` starts before a later plugin (e.g. `AppPlugin`) registers
+    /// native `app`, then an MCP server connects offering `app`. Native `app` must
+    /// keep the bare name and the MCP tool must register as `<server>__app`.
+    #[tokio::test]
+    async fn native_registered_after_mcp_start_keeps_bare_name_and_prefixes_mcp_tool() {
+        let root = crate::test_dir("mcp-shadow-forward");
+        let (registry, mcp) = actor_with_registry(root.path());
+
+        // Registered AFTER `Mcp` was spawned with an empty startup `natives` set.
+        registry
+            .ask(RegisterTool(Arc::new(NativeApp)))
+            .await
+            .unwrap();
+
+        let spec = serve_mcp(TestServer {
+            tool_name: Some("app"),
+            read_only: true,
+            ..TestServer::default()
+        })
+        .await;
+        let Transport::Http { url, .. } = spec.transport else {
+            unreachable!()
+        };
+        let added = mcp
+            .ask(AddServer {
+                name: "windows-build-b".into(),
+                entry: serde_json::json!({"url": url}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(added.tools.len(), 1);
+        assert_eq!(added.tools[0].name, "app");
+        assert_eq!(
+            added.tools[0].registered.as_deref(),
+            Some("windows-build-b__app")
+        );
+
+        assert_eq!(
+            registry.ask(ToolSourceOf("app".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert!(matches!(
+            registry
+                .ask(ToolSourceOf("windows-build-b__app".into()))
+                .await
+                .unwrap(),
+            Some(ToolSource::Mcp { ref server, .. }) if server == "windows-build-b"
+        ));
+
+        let specs = registry.ask(ListTools(None)).await.unwrap();
+        assert!(specs.iter().find(|s| s.name == "app").unwrap().direct);
+        assert!(
+            !specs
+                .iter()
+                .find(|s| s.name == "windows-build-b__app")
+                .unwrap()
+                .direct
+        );
+
+        let session = runtime::SessionId::new();
+        assert_eq!(
+            registry
+                .ask(Invoke(invoke_call("app", session)))
+                .await
+                .unwrap()
+                .content,
+            "native:app"
+        );
+        assert_eq!(
+            registry
+                .ask(Invoke(invoke_call("windows-build-b__app", session)))
+                .await
+                .unwrap()
+                .content,
+            "echo:app"
+        );
+    }
+
+    /// Reverse race: an MCP server connects first and takes bare `foo`, then a later
+    /// plugin registers native `foo`. Native `foo` must take the bare slot and the
+    /// displaced MCP tool must move to `<server>__foo` in both `ToolRegistry` and `Mcp`.
+    #[tokio::test]
+    async fn reverse_race_native_displaces_mcp_tool_and_updates_mcp_state() {
+        let root = crate::test_dir("mcp-shadow-reverse");
+        let (registry, mcp) = actor_with_registry(root.path());
+
+        let spec = serve_mcp(TestServer {
+            tool_name: Some("foo"),
+            read_only: true,
+            ..TestServer::default()
+        })
+        .await;
+        let Transport::Http { url, .. } = spec.transport else {
+            unreachable!()
+        };
+        let added = mcp
+            .ask(AddServer {
+                name: "srv".into(),
+                entry: serde_json::json!({"url": url}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(added.tools[0].registered.as_deref(), Some("foo"));
+        assert!(matches!(
+            registry.ask(ToolSourceOf("foo".into())).await.unwrap(),
+            Some(ToolSource::Mcp { ref server, .. }) if server == "srv"
+        ));
+
+        registry
+            .ask(RegisterTool(Arc::new(NativeFoo)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.ask(ToolSourceOf("foo".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert!(matches!(
+            registry.ask(ToolSourceOf("srv__foo".into())).await.unwrap(),
+            Some(ToolSource::Mcp { ref server, .. }) if server == "srv"
+        ));
+
+        let specs = registry.ask(ListTools(None)).await.unwrap();
+        assert!(specs.iter().find(|s| s.name == "foo").unwrap().direct);
+        assert!(!specs.iter().find(|s| s.name == "srv__foo").unwrap().direct);
+
+        let info = listed(&mcp, "srv").await;
+        assert_eq!(info.tools.len(), 1);
+        assert_eq!(info.tools[0].name, "foo");
+        assert_eq!(info.tools[0].registered.as_deref(), Some("srv__foo"));
+
+        let session = runtime::SessionId::new();
+        assert_eq!(
+            registry
+                .ask(Invoke(invoke_call("foo", session)))
+                .await
+                .unwrap()
+                .content,
+            "native:foo"
+        );
+        assert_eq!(
+            registry
+                .ask(Invoke(invoke_call("srv__foo", session)))
+                .await
+                .unwrap()
+                .content,
+            "echo:foo"
+        );
+    }
+
+    /// Orphan cleanup, gating a server off, restarting it, or removing it after a
+    /// collision must unregister only the MCP tool and never delete the native tool.
+    #[tokio::test]
+    async fn mcp_gate_off_and_remove_after_collision_never_unregisters_native() {
+        let root = crate::test_dir("mcp-shadow-cleanup");
+        let (registry, mcp) = actor_with_registry(root.path());
+
+        let spec = serve_mcp(TestServer {
+            tool_name: Some("app"),
+            read_only: true,
+            ..TestServer::default()
+        })
+        .await;
+        let Transport::Http { url, .. } = spec.transport else {
+            unreachable!()
+        };
+        mcp.ask(AddServer {
+            name: "srv".into(),
+            entry: serde_json::json!({"url": url}),
+        })
+        .await
+        .unwrap();
+        registry
+            .ask(RegisterTool(Arc::new(NativeApp)))
+            .await
+            .unwrap();
+        assert_eq!(
+            listed(&mcp, "srv").await.tools[0].registered.as_deref(),
+            Some("srv__app")
+        );
+
+        let session = runtime::SessionId::new();
+        // Gate server off: MCP tool leaves, native `app` stays intact.
+        mcp.ask(SetGate {
+            server: "srv".into(),
+            tool: None,
+            gate: Some(Gate::Off),
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            registry.ask(ToolSourceOf("srv__app".into())).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            registry.ask(ToolSourceOf("app".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert_eq!(
+            registry
+                .ask(Invoke(invoke_call("app", session)))
+                .await
+                .unwrap()
+                .content,
+            "native:app"
+        );
+
+        // Re-enable and restart: MCP comes back prefixed, native `app` stays intact.
+        mcp.ask(SetGate {
+            server: "srv".into(),
+            tool: None,
+            gate: None,
+        })
+        .await
+        .unwrap();
+        mcp.ask(StartServer { name: "srv".into() }).await.unwrap();
+        assert_eq!(
+            listed(&mcp, "srv").await.tools[0].registered.as_deref(),
+            Some("srv__app")
+        );
+        mcp.ask(Restart { name: "srv".into() }).await.unwrap();
+        mcp.ask(StartServer { name: "srv".into() }).await.unwrap();
+        assert_eq!(
+            registry.ask(ToolSourceOf("app".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert!(matches!(
+            registry.ask(ToolSourceOf("srv__app".into())).await.unwrap(),
+            Some(ToolSource::Mcp { ref server, .. }) if server == "srv"
+        ));
+
+        // Remove server: MCP tool leaves, native `app` stays intact.
+        mcp.ask(RemoveServer { name: "srv".into() }).await.unwrap();
+        assert_eq!(
+            registry.ask(ToolSourceOf("srv__app".into())).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            registry.ask(ToolSourceOf("app".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert_eq!(
+            registry
+                .ask(Invoke(invoke_call("app", session)))
+                .await
+                .unwrap()
+                .content,
+            "native:app"
         );
     }
 }
