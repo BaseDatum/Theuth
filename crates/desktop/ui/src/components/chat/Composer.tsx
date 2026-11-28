@@ -1164,6 +1164,7 @@ export function Composer({
     let body = ''
     /** 183 §5.6: a new chat's first message went to another machine (`sendFirstElsewhere` took the user back on failure). */
     let elsewhere = false
+    let spendDraft: () => void = () => {}
     try {
       // D15: a harness command picked from the menu with its arguments typed after it — the harness's, sent as typed.
       if (!pick && session && rawCmd && (line === rawCmd || line.startsWith(`${rawCmd} `))) {
@@ -1253,10 +1254,12 @@ export function Composer({
           api,
           options: draftCreate && (draftCreate.private || draftCreate.project || draftCreate.endless || draftCreate.meshId !== undefined) ? createOptions(draftCreate, useDrafts.getState().pick) : null,
           input: clientId,
+          deferSpend: true,
           machine: (engine) => (engine !== mesh?.self_id ? engineLabel(engine, mesh?.peers) : null),
-          created: async (id, open, pick) => {
-            if (open?.retention === 'private') usePrivate.getState().open(open)
+          created: async (id, open, pick, spend) => {
             target = id
+            spendDraft = spend
+            if (open?.retention === 'private') usePrivate.getState().open(open)
             if (sessionTitle) await api.rename_session(id, sessionTitle)
             // Seed before sending: a fast failure can finish before the RPC reply.
             loadHistory(id, { ...FRESH, model: pick.model ?? defaultModel ?? '', effort: pick.effort ?? defaultEffort ?? null }, 'replace')
@@ -1297,8 +1300,12 @@ export function Composer({
       if (!pick && unsent && target && !steered) useSessions.getState().unmarkSent(target, body)
       if (deliver) onSent?.(target ?? '')
       else if (target && !session && !elsewhere) {
-        if (onCreated) onCreated(target)
-        else await navigate({ to: '/c/$session', params: { session: target } })
+        try {
+          if (onCreated) onCreated(target)
+          else await navigate({ to: '/c/$session', params: { session: target } })
+        } finally {
+          spendDraft()
+        }
       } else if (session) onSent?.(session)
     } catch (e) {
       // The row shown at once comes back off; the text is still in the box, flagged `unsent` for the banner.
@@ -1311,8 +1318,12 @@ export function Composer({
         drafts.set(`${onCreated ? 'panel:' : ''}${target}`, drafts.by[draftKey] ?? EMPTY)
         drafts.set(draftKey, EMPTY)
         useSuffixes.getState().carry(suffixChat, target)
-        if (onCreated) onCreated(target)
-        else await navigate({ to: '/c/$session', params: { session: target } })
+        try {
+          if (onCreated) onCreated(target)
+          else await navigate({ to: '/c/$session', params: { session: target } })
+        } finally {
+          spendDraft()
+        }
       }
       if ((elsewhere && e instanceof Error ? e.cause : e) instanceof SendTimeout) useConnection.getState().client?.probe('send-timeout')
       const unreachable = ownerUnreachable(e)
