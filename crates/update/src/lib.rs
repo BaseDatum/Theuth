@@ -153,6 +153,37 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<UpdateReady>().await
 }
 
+/// Outcome status for `update_apply`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateApplyStatus {
+    /// Already running the latest same-major release.
+    UpToDate,
+    /// A newer release is in place on disk and the managed daemon is restarting into it.
+    Applied,
+}
+
+/// Result of the `update_apply` RPC.
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct UpdateApplyResult {
+    /// Whether an update was applied or the engine is already up to date.
+    pub status: UpdateApplyStatus,
+    /// Running version before applying.
+    pub from: String,
+    /// Version installed on disk (`None` when `up_to_date`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub to: Option<String>,
+    /// `true` when the managed daemon is draining and exiting (`75`) to restart.
+    pub restarting: bool,
+}
+
 /// `ask` → `Option<UpdateReady>`: the latest event, if any (39 §4.3).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Status;
@@ -192,13 +223,35 @@ struct Landed(Option<UpdateReady>);
 /// re-checks restart readiness without touching the network.
 struct ShouldRestart;
 
+/// `ask` (internal, from `update_apply`) → `Result<ApplyContext, String>`: validates that
+/// remote apply is enabled and snapshots the config and current applied version.
+struct PreflightApply;
+
+#[derive(Clone, kameo::Reply)]
+struct ApplyContext {
+    rt: Runtime,
+    cfg: UpdateConfig,
+    already_applied: Option<String>,
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
+    restarting: bool,
+}
+
+/// `ask` (internal, from `update_apply`) → `bool`: records any newly observed [`UpdateReady`]
+/// and claims the single restart trigger (`true` iff the caller should spawn drain + exit 75).
+struct CommitApply(Option<UpdateReady>);
+
 /// The [`UPDATE_ACTOR`] actor.
 #[derive(kameo::Actor)]
 pub struct UpdateActor {
     rt: Runtime,
+    cfg: UpdateConfig,
     ready: Option<UpdateReady>,
     attached: Option<Arc<dyn Fn() -> usize + Send + Sync>>,
     managed: Arc<dyn Fn() -> bool + Send + Sync>,
+    debug_build: bool,
+    bundled_sidecar: Arc<dyn Fn() -> bool + Send + Sync>,
+    restarting: bool,
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
     /// When the last turn started or ended; `now` at spawn so a fresh daemon
     /// never exits inside its first [`IDLE_BEFORE_EXIT`].
     last_turn: Instant,
@@ -209,9 +262,32 @@ pub struct UpdateActor {
 }
 
 impl UpdateActor {
+    fn apply_disabled_reason(&self) -> Option<&'static str> {
+        if !self.cfg.enabled {
+            return Some("update_apply is disabled by config");
+        }
+        if self.debug_build {
+            return Some("update_apply is disabled in debug builds");
+        }
+        if (self.bundled_sidecar)() {
+            return Some(
+                "update_apply is disabled in the desktop app bundle (Tauri owns updates)",
+            );
+        }
+        if !(self.managed)() {
+            return Some(
+                "update_apply is disabled because this daemon is not running under a service manager (launchd/systemd)",
+            );
+        }
+        None
+    }
+
     fn evaluate_restart(&mut self) -> RestartDecision {
         // 39 §3.4: (a) under a service manager, (b) nobody attached,
         // (c) no turn in flight and idle for IDLE_BEFORE_EXIT.
+        if self.restarting {
+            return RestartDecision::None;
+        }
         let Some(ready) = self.ready.as_ref().filter(|r| r.applied) else {
             self.waiting_logged = None;
             return RestartDecision::None;
@@ -225,6 +301,7 @@ impl UpdateActor {
         let idle_remaining = IDLE_BEFORE_EXIT.saturating_sub(self.last_turn.elapsed());
         if attached == Some(0) && active_turns == 0 && idle_remaining.is_zero() {
             self.waiting_logged = None;
+            self.restarting = true;
             tracing::info!("update: {} in place, exiting for restart", ready.version);
             return RestartDecision::Restart;
         }
@@ -260,6 +337,51 @@ impl Message<Status> for UpdateActor {
     type Reply = Option<UpdateReady>;
     async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ready.clone()
+    }
+}
+
+impl Message<PreflightApply> for UpdateActor {
+    type Reply = Result<ApplyContext, String>;
+    async fn handle(
+        &mut self,
+        _: PreflightApply,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if let Some(reason) = self.apply_disabled_reason() {
+            return Err(reason.to_owned());
+        }
+        Ok(ApplyContext {
+            rt: self.rt.clone(),
+            cfg: self.cfg.clone(),
+            already_applied: self
+                .ready
+                .as_ref()
+                .filter(|r| r.applied)
+                .map(|r| r.version.clone()),
+            apply_lock: Arc::clone(&self.apply_lock),
+            restarting: self.restarting,
+        })
+    }
+}
+
+impl Message<CommitApply> for UpdateActor {
+    type Reply = bool;
+    async fn handle(
+        &mut self,
+        m: CommitApply,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if let Some(ready) = m.0
+            && self.ready.as_ref() != Some(&ready)
+        {
+            self.rt.publish(ready.clone()).await;
+            self.ready = Some(ready);
+        }
+        if self.ready.as_ref().is_some_and(|r| r.applied) && !self.restarting {
+            self.restarting = true;
+            return true;
+        }
+        false
     }
 }
 
@@ -1104,9 +1226,14 @@ impl runtime::Plugin for UpdatePlugin {
         let actor = UpdateActor::spawn_with_mailbox(
             UpdateActor {
                 rt: rt.clone(),
+                cfg: cfg.clone(),
                 ready: None,
                 attached: Some(Arc::new(move || feed_rt.wire_external_stream_count())),
                 managed: Arc::new(platform::service::managed),
+                debug_build: cfg!(debug_assertions),
+                bundled_sidecar: Arc::new(running_as_bundled_sidecar),
+                restarting: false,
+                apply_lock: Arc::new(tokio::sync::Mutex::new(())),
                 last_turn: Instant::now(),
                 active_turns: HashSet::new(),
                 waiting_logged: None,
@@ -1201,6 +1328,17 @@ where
     }
 }
 
+/// Drain the engine and exit with [`EXIT_RESTART`] (`75`) so launchd/systemd
+/// restarts it into the newly installed binary (39 §3.4, 109 §9.3).
+async fn drain_and_exit(rt: &Runtime) -> ! {
+    // 109 §9.3: a drain precedes the swap; the token then
+    // lets the jobs actor kill its groups as on any exit.
+    agent::supervisor::drain_engine(rt, "update").await;
+    rt.shutdown.cancel();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    std::process::exit(EXIT_RESTART)
+}
+
 /// The tick loop (39 §3.2): network in the task, state in the actor.
 fn spawn_ticks(rt: Runtime, me: ActorRef<UpdateActor>, cfg: UpdateConfig, current: Version) {
     let interval = cfg.check_interval();
@@ -1215,14 +1353,164 @@ fn spawn_ticks(rt: Runtime, me: ActorRef<UpdateActor>, cfg: UpdateConfig, curren
         })
         .await;
         if should_restart {
-            // 109 §9.3: a drain precedes the swap; the token then
-            // lets the jobs actor kill its groups as on any exit.
-            agent::supervisor::drain_engine(&rt_for_restart, "update").await;
-            rt_for_restart.shutdown.cancel();
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            std::process::exit(EXIT_RESTART)
+            drain_and_exit(&rt_for_restart).await;
         }
     });
+}
+
+/// On-demand check-and-apply for the `update_apply` RPC: validates that updates
+/// and managed-daemon restart are enabled, runs the check-and-apply path
+/// immediately (without waiting for the 30-minute interval), and if a release
+/// was applied (or was already applied on disk and not yet running), spawns the
+/// same drain + exit `75` restart as the tick loop.
+pub async fn apply_now(actor: &ActorRef<UpdateActor>) -> Result<UpdateApplyResult, String> {
+    let current = current_version().map_err(|e| format!("update unavailable: {e:#}"))?;
+    apply_with(
+        actor,
+        current,
+        |cfg, data_dir, current, applied| async move {
+            check_and_apply(&cfg, &data_dir, &current, applied.as_deref()).await
+        },
+        |rt| {
+            tokio::spawn(async move {
+                // Give the JSON-RPC response a brief window to flush before draining.
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                drain_and_exit(&rt).await;
+            });
+        },
+    )
+    .await
+}
+
+async fn apply_with<F, Fut, R>(
+    actor: &ActorRef<UpdateActor>,
+    current: Version,
+    check: F,
+    mut on_restart: R,
+) -> Result<UpdateApplyResult, String>
+where
+    F: FnOnce(UpdateConfig, PathBuf, Version, Option<String>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Outcome>>,
+    R: FnMut(Runtime),
+{
+    let preflight = actor
+        .ask(PreflightApply)
+        .await
+        .map_err(|e| match e {
+            kameo::error::SendError::HandlerError(msg) => msg,
+            other => format!("update actor unavailable: {other}"),
+        })?;
+    let _guard = preflight.apply_lock.lock().await;
+
+    // Re-read state under the lock in case a concurrent call or tick already applied/restarted.
+    let ctx = actor
+        .ask(PreflightApply)
+        .await
+        .map_err(|e| match e {
+            kameo::error::SendError::HandlerError(msg) => msg,
+            other => format!("update actor unavailable: {other}"),
+        })?;
+    let from = current.to_string();
+    if ctx.restarting
+        && let Some(to) = ctx.already_applied
+    {
+        return Ok(UpdateApplyResult {
+            status: UpdateApplyStatus::Applied,
+            from,
+            to: Some(to),
+            restarting: true,
+        });
+    }
+
+    let already_applied = ctx.already_applied;
+    let outcome = check(
+        ctx.cfg,
+        ctx.rt.data_dir.clone(),
+        current,
+        already_applied.clone(),
+    )
+    .await;
+
+    match outcome {
+        Ok(Outcome::Applied { from, to }) => {
+            let spawn = actor
+                .ask(CommitApply(Some(UpdateReady {
+                    version: to.clone(),
+                    applied: true,
+                })))
+                .await
+                .map_err(|e| format!("update actor unavailable: {e}"))?;
+            if spawn {
+                tracing::info!("update_apply: {to} in place, restarting managed daemon");
+                on_restart(ctx.rt);
+            }
+            Ok(UpdateApplyResult {
+                status: UpdateApplyStatus::Applied,
+                from,
+                to: Some(to),
+                restarting: true,
+            })
+        }
+        Ok(Outcome::UpToDate) => {
+            if let Some(to) = already_applied {
+                let spawn = actor
+                    .ask(CommitApply(None))
+                    .await
+                    .map_err(|e| format!("update actor unavailable: {e}"))?;
+                if spawn {
+                    tracing::info!(
+                        "update_apply: already-applied {to} on disk, restarting managed daemon"
+                    );
+                    on_restart(ctx.rt);
+                }
+                return Ok(UpdateApplyResult {
+                    status: UpdateApplyStatus::Applied,
+                    from,
+                    to: Some(to),
+                    restarting: true,
+                });
+            }
+            Ok(UpdateApplyResult {
+                status: UpdateApplyStatus::UpToDate,
+                from,
+                to: None,
+                restarting: false,
+            })
+        }
+        Ok(Outcome::Available { version, path }) => {
+            let _ = actor
+                .ask(CommitApply(Some(UpdateReady {
+                    version: version.clone(),
+                    applied: false,
+                })))
+                .await;
+            Err(format!(
+                "update {version} is available but {} is not writable; run `sudo t --update` on the host",
+                path.display()
+            ))
+        }
+        Err(e) => {
+            if let Some(to) = already_applied {
+                tracing::warn!(
+                    "update_apply: manifest check failed ({e:#}); restarting into already-applied {to}"
+                );
+                let spawn = actor
+                    .ask(CommitApply(None))
+                    .await
+                    .map_err(|err| format!("update actor unavailable: {err}"))?;
+                if spawn {
+                    on_restart(ctx.rt);
+                }
+                return Ok(UpdateApplyResult {
+                    status: UpdateApplyStatus::Applied,
+                    from,
+                    to: Some(to),
+                    restarting: true,
+                });
+            }
+            Err(format!("{e:#}"))
+        }
+    }
 }
 
 pub mod rpc_support;
@@ -2178,8 +2466,11 @@ mod tests {
         assert_eq!(from_clamped.check_interval(), Duration::from_secs(60));
     }
 
-    async fn spawn_test_actor(
+    async fn spawn_test_actor_with(
+        cfg: UpdateConfig,
         managed: bool,
+        debug_build: bool,
+        bundled_sidecar: bool,
         attached: Arc<std::sync::atomic::AtomicUsize>,
     ) -> (Runtime, ActorRef<UpdateActor>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -2187,11 +2478,16 @@ mod tests {
         let actor = UpdateActor::spawn_with_mailbox(
             UpdateActor {
                 rt: rt.clone(),
+                cfg,
                 ready: None,
                 attached: Some(Arc::new(move || {
                     attached.load(std::sync::atomic::Ordering::SeqCst)
                 })),
                 managed: Arc::new(move || managed),
+                debug_build,
+                bundled_sidecar: Arc::new(move || bundled_sidecar),
+                restarting: false,
+                apply_lock: Arc::new(tokio::sync::Mutex::new(())),
                 last_turn: Instant::now(),
                 active_turns: HashSet::new(),
                 waiting_logged: None,
@@ -2200,6 +2496,13 @@ mod tests {
         );
         rt.subscribe::<UpdateActor, agent::AgentEvent>(&actor).await;
         (rt, actor, dir)
+    }
+
+    async fn spawn_test_actor(
+        managed: bool,
+        attached: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> (Runtime, ActorRef<UpdateActor>, tempfile::TempDir) {
+        spawn_test_actor_with(UpdateConfig::default(), managed, false, false, attached).await
     }
 
     async fn settle() {
@@ -2909,5 +3212,265 @@ mod tests {
             "unexpected error: {err:#}"
         );
         assert_eq!(std::fs::read(&exe).unwrap(), b"old-win");
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_disabled_debug_bundled_and_unmanaged() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cases = [
+            (
+                "config disabled",
+                UpdateConfig {
+                    enabled: false,
+                    ..UpdateConfig::default()
+                },
+                true,
+                false,
+                false,
+                "config",
+            ),
+            ("debug build", UpdateConfig::default(), true, true, false, "debug"),
+            ("desktop bundle", UpdateConfig::default(), true, false, true, "Tauri"),
+            ("unmanaged", UpdateConfig::default(), false, false, false, "service manager"),
+        ];
+
+        for (label, cfg, managed, debug_build, bundled_sidecar, needle) in cases {
+            let attached = Arc::new(AtomicUsize::new(0));
+            let (_rt, actor, _dir) =
+                spawn_test_actor_with(cfg, managed, debug_build, bundled_sidecar, attached).await;
+            let checks = Arc::new(AtomicUsize::new(0));
+            let restarts = Arc::new(AtomicUsize::new(0));
+            let checks_bg = Arc::clone(&checks);
+            let restarts_bg = Arc::clone(&restarts);
+
+            let err = apply_with(
+                &actor,
+                v("2.1.0"),
+                move |_, _, _, _| {
+                    checks_bg.fetch_add(1, Ordering::SeqCst);
+                    async { Ok(Outcome::UpToDate) }
+                },
+                move |_| {
+                    restarts_bg.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .await
+            .unwrap_err();
+
+            assert!(
+                err.contains(needle),
+                "{label}: expected error mentioning {needle:?}, got: {err:?}"
+            );
+            assert_eq!(checks.load(Ordering::SeqCst), 0, "{label}: must not check");
+            assert_eq!(restarts.load(Ordering::SeqCst), 0, "{label}: must not restart");
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_downloads_verifies_replaces_and_triggers_restart_immediately() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let key = host_platform_key();
+        let tgz = test_tgz();
+        let holder = Arc::new(std::sync::OnceLock::<String>::new());
+        let holder_ref = Arc::clone(&holder);
+        let server = spawn_mock_server(move |path| match path {
+            "/latest.json" => (
+                200,
+                manifest_json("2.2.0", &key, holder_ref.get().unwrap(), TEST_SIG),
+            ),
+            "/payload.tar.gz" => (200, tgz.clone()),
+            _ => (404, Vec::new()),
+        })
+        .await;
+        holder.set(server.url("/payload.tar.gz")).unwrap();
+
+        let (exe_dir, exe) = installed();
+        let cfg = UpdateConfig {
+            enabled: true,
+            url: Some(server.url("/latest.json")),
+            interval_secs: None,
+        };
+        let attached = Arc::new(AtomicUsize::new(1));
+        let (_rt, actor, _dir) = spawn_test_actor_with(cfg, true, false, false, attached).await;
+        let restarts = Arc::new(AtomicUsize::new(0));
+        let restarts_bg = Arc::clone(&restarts);
+        let exe_for_check = exe.clone();
+
+        let res = apply_with(
+            &actor,
+            v("2.1.0"),
+            move |cfg, data_dir, current, applied| async move {
+                let endpoints = cfg.endpoints();
+                check_and_apply_with(
+                    &endpoints,
+                    &data_dir,
+                    &exe_for_check,
+                    &current,
+                    applied.as_deref(),
+                    TEST_PUBKEY,
+                )
+                .await
+            },
+            move |_| {
+                restarts_bg.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            res,
+            UpdateApplyResult {
+                status: UpdateApplyStatus::Applied,
+                from: "2.1.0".into(),
+                to: Some("2.2.0".into()),
+                restarting: true,
+            }
+        );
+        assert_eq!(std::fs::read(&exe).unwrap(), TEST_BINARY);
+        assert_eq!(restarts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            actor.ask(Status).await.unwrap(),
+            Some(UpdateReady {
+                version: "2.2.0".into(),
+                applied: true,
+            })
+        );
+        drop(exe_dir);
+    }
+
+    #[tokio::test]
+    async fn apply_restarts_when_already_applied_and_deduplicates_second_call() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attached = Arc::new(AtomicUsize::new(1));
+        let (_rt, actor, _dir) = spawn_test_actor(true, attached).await;
+        // Simulate an update already applied by an earlier tick, not yet running.
+        let _ = actor
+            .ask(Landed(Some(UpdateReady {
+                version: "2.2.0".into(),
+                applied: true,
+            })))
+            .await
+            .unwrap();
+
+        let restarts = Arc::new(AtomicUsize::new(0));
+        let restarts_bg = Arc::clone(&restarts);
+        let res = apply_with(
+            &actor,
+            v("2.1.0"),
+            |_, _, _, applied| async move {
+                assert_eq!(applied.as_deref(), Some("2.2.0"));
+                Ok(Outcome::UpToDate)
+            },
+            move |_| {
+                restarts_bg.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            res,
+            UpdateApplyResult {
+                status: UpdateApplyStatus::Applied,
+                from: "2.1.0".into(),
+                to: Some("2.2.0".into()),
+                restarting: true,
+            }
+        );
+        assert_eq!(restarts.load(Ordering::SeqCst), 1);
+
+        // A second call while restart is already in flight must not double-trigger exit.
+        let restarts_bg = Arc::clone(&restarts);
+        let second = apply_with(
+            &actor,
+            v("2.1.0"),
+            |_, _, _, _| async { unreachable!("must short-circuit when already restarting") },
+            move |_| {
+                restarts_bg.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(second, res);
+        assert_eq!(restarts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_up_to_date_and_unwritable_outcomes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attached = Arc::new(AtomicUsize::new(0));
+        let (_rt, actor, _dir) = spawn_test_actor(true, attached).await;
+        let restarts = Arc::new(AtomicUsize::new(0));
+        let restarts_bg = Arc::clone(&restarts);
+
+        let res = apply_with(
+            &actor,
+            v("2.1.0"),
+            |_, _, _, _| async { Ok(Outcome::UpToDate) },
+            move |_| {
+                restarts_bg.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            res,
+            UpdateApplyResult {
+                status: UpdateApplyStatus::UpToDate,
+                from: "2.1.0".into(),
+                to: None,
+                restarting: false,
+            }
+        );
+        assert_eq!(restarts.load(Ordering::SeqCst), 0);
+
+        let restarts_bg = Arc::clone(&restarts);
+        let err = apply_with(
+            &actor,
+            v("2.1.0"),
+            |_, _, _, _| async {
+                Ok(Outcome::Available {
+                    version: "2.2.0".into(),
+                    path: PathBuf::from("/usr/local/bin/t"),
+                })
+            },
+            move |_| {
+                restarts_bg.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("not writable"), "{err}");
+        assert!(err.contains("/usr/local/bin/t"), "{err}");
+        assert_eq!(restarts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            actor.ask(Status).await.unwrap(),
+            Some(UpdateReady {
+                version: "2.2.0".into(),
+                applied: false,
+            })
+        );
+    }
+
+    #[test]
+    fn rpc_descriptors_include_update_apply_with_owner_audience() {
+        let descs = rpc_settings::rpc_descriptors();
+        let status = descs
+            .methods
+            .iter()
+            .find(|m| m.name == "update_status")
+            .expect("update_status descriptor");
+        let apply = descs
+            .methods
+            .iter()
+            .find(|m| m.name == "update_apply")
+            .expect("update_apply descriptor");
+        assert_eq!(apply.owner, "update");
+        assert_eq!(apply.audience, status.audience);
     }
 }

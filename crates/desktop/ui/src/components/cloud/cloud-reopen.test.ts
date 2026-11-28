@@ -284,3 +284,120 @@ test('status-bar chip links back to a single creating node or the Machines list 
   expect(onOpen).toHaveBeenCalledOnce()
   expect(navigate).toHaveBeenCalledWith({ to: '/cloud/new', search: { entry: 'add-to-mesh', node: 'beta-cloud' } })
 })
+
+test('CloudNodeWizard keeps cloud_create rejection visible in the wizard, not only a toast', async () => {
+  const { CloudNodeWizard } = await import('./CloudNodeWizard')
+  const sshProvider: ProviderInfo = {
+    provider: 'ssh',
+    label: 'Install via SSH',
+    available: true,
+    beta: false,
+    desktop_only: true,
+    connected: true,
+    source: null,
+    discovered: [],
+    oauth: false,
+    sizes: [],
+    regions: [],
+    volume_usd_per_gb: null,
+  }
+  const cloudCreate = vi.fn(async () => {
+    throw new Error('ssh: Permission denied (publickey)')
+  })
+  useConnection.setState({
+    api: {
+      ...fakeApi,
+      cloud_providers: vi.fn(async () => [sshProvider]),
+      cloud_ssh_hosts: vi.fn(async () => ({ ssh_available: true, hosts: [] })),
+      cloud_create: cloudCreate,
+    } as never,
+  })
+  qc.setQueryData(cloudKeys.providers, [sshProvider])
+  qc.setQueryData<CloudList>(cloudKeys.list, { nodes: [], errors: [] })
+  qc.setQueryData(['cloud', 'ssh', 'hosts'], { ssh_available: true, hosts: [] })
+
+  await mount(
+    h(CloudNodeWizard, {
+      entry: 'desktop-dialog',
+      initial: {
+        step: 'configure',
+        spec: { provider: 'ssh', name: 'my-box', ssh: { host: '10.0.0.5', user: 'ubuntu', port: 22, identity: null, name: 'my-box' } },
+      },
+      onClose: () => {},
+    }),
+  )
+
+  const installBtn = buttons('Install and join')[0]!
+  await click(installBtn)
+  await vi.waitFor(() => expect(cloudCreate).toHaveBeenCalledOnce())
+  await vi.waitFor(() => {
+    const alert = document.querySelector('[data-cloud-create-error]')
+    expect(alert?.getAttribute('role')).toBe('alert')
+    expect(alert?.textContent).toContain('ssh: Permission denied (publickey)')
+  })
+})
+
+test('CloudNodesSection queries update_status only for online ready peers, shows visible Update button, calls update_apply, and renders RPC error in row', async () => {
+  const { disconnected } = await import('@/rpc/discovery')
+  const engineCall = vi.fn(async (peerId: string, method: string, params: unknown) => {
+    if (method === 'update_status') {
+      if (peerId === 'peer-ready-1') return { version: '2.35.0', applied: false }
+      if (peerId === 'peer-uptodate') return null
+      throw new Error(`unexpected peer ${peerId}`)
+    }
+    if (method === 'update_apply') {
+      expect(params).toEqual({})
+      throw new Error('binary directory is read-only')
+    }
+    return null
+  })
+  useConnection.setState({
+    discovery: { ...disconnected(), phase: 'legacy' },
+    api: { ...fakeApi, engine_call: engineCall } as never,
+  })
+
+  const readyWithUpdate = node({ name: 'box-update', state: 'ready', stage: null, peer_id: 'peer-ready-1', reachable: true, path: 'direct', version: '2.31.2' })
+  const readyUpToDate = node({ name: 'box-current', state: 'ready', stage: null, peer_id: 'peer-uptodate', reachable: true, path: 'direct', version: '2.35.0' })
+  const offlineCloud = node({ name: 'box-offline', state: 'ready', stage: null, peer_id: 'peer-offline', reachable: false, path: 'offline', version: '2.31.2' })
+  const mesh = {
+    self_id: 'self-1',
+    self_name: 'laptop',
+    mesh_name: 'home',
+    peers: [
+      { id: 'peer-ready-1', name: 'box-update', addrs: [], reachable: true, last_seen_ms: Date.now(), hub_pref: 'eligible' as const, path: 'lan' as const, rtt_ms: 8 },
+      { id: 'peer-uptodate', name: 'box-current', addrs: [], reachable: true, last_seen_ms: Date.now(), hub_pref: 'eligible' as const, path: 'relay' as const, rtt_ms: 35 },
+      { id: 'peer-offline', name: 'box-offline', addrs: [], reachable: false, last_seen_ms: Date.now() - 60_000, hub_pref: 'eligible' as const, path: 'offline' as const, rtt_ms: null },
+    ],
+    lease: { holder: 'self-1', since_ms: Date.now(), reason: 'prefer' },
+    traffic: [],
+    replica: null,
+    stats: [],
+    relay: null,
+    messaging_off: [],
+    nearby: false,
+    quarantined: [],
+    docs_homes_on: false,
+  }
+  qc.setQueryData(cloudKeys.providers, [DO])
+  qc.setQueryData<CloudList>(cloudKeys.list, { nodes: [readyWithUpdate, readyUpToDate, offlineCloud], errors: [] })
+
+  await mount(h(CloudNodesSection, { mesh }))
+
+  await vi.waitFor(() => {
+    expect(document.querySelector('[data-update-node="box-update"]')?.textContent).toContain('Update 2.35.0')
+  })
+  // Never queried for offline peer; never shown when update_status is null.
+  expect(engineCall).not.toHaveBeenCalledWith('peer-offline', 'update_status', expect.anything())
+  expect(document.querySelector('[data-update-node="box-current"]')).toBeNull()
+  expect(document.querySelector('[data-update-node="box-offline"]')).toBeNull()
+
+  // Click Update -> calls engine_call(peerId, 'update_apply', {}), shows RPC error in the row on failure.
+  await click(document.querySelector<HTMLButtonElement>('[data-update-node="box-update"]')!)
+  await vi.waitFor(() => expect(engineCall).toHaveBeenCalledWith('peer-ready-1', 'update_apply', {}))
+  await vi.waitFor(() => {
+    const err = document.querySelector('[data-update-error="peer-ready-1"]')
+    expect(err?.getAttribute('role')).toBe('alert')
+    expect(err?.textContent).toContain('binary directory is read-only')
+  })
+})
+

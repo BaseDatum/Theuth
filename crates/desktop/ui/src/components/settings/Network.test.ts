@@ -704,3 +704,88 @@ test('useRotation: retry calls vault_rotate', async () => {
   expect(api.vault_rotate).toHaveBeenCalledOnce()
   expect(rot.rotate.error?.message).toBe('disk full')
 })
+
+test('Link / Devices row labels relay failures as "relay disconnected" or "not connected to the relay", never a bare "Disconnected"', async () => {
+  const { DevicesTab, relayFailureText, relayPresenceText } = await import('./Link')
+  expect(relayFailureText({ kind: 'idle', title: 'Disconnected after inactivity', detail: 'Reconnecting.' }).title).toBe('Relay disconnected after inactivity')
+  expect(relayFailureText({ kind: 'queue-full', title: 'Disconnected: the relay queue for this device overflowed', detail: 'Reconnecting.' }).title).toBe('Relay disconnected: the relay queue for this device overflowed')
+  expect(relayFailureText({ kind: 'engine-offline', title: 'Studio Mac is not connected to the relay', detail: 'Waiting…' }).title).toBe('Studio Mac is not connected to the relay')
+  expect(relayPresenceText('mesh', 'offline')).toBe('relay disconnected')
+  expect(relayPresenceText('engine', 'offline')).toBe('relay disconnected')
+  expect(relayPresenceText('engine', 'online')).toBe('relay connected')
+
+  // NodeSide Relay row when enabled but disconnected says "relay disconnected", never bare "Disconnected".
+  ;(api as Record<string, unknown>).link_status = vi.fn(async () => ({
+    enabled: true,
+    connected: false,
+    relay: 'https://relay.theuth.io',
+    name: 'laptop',
+    harness_id: 'abcd1234efgh5678',
+    mesh: null,
+    devices: [],
+    pairing: null,
+  }))
+  ;(api as Record<string, unknown>).devices_list = vi.fn(async () => [])
+  try {
+    await mount(createElement(DevicesTab))
+    await settle()
+    expect(document.body.textContent).toContain('relay disconnected')
+    expect(document.body.innerHTML).not.toMatch(/>Disconnected</)
+  } finally {
+    delete (api as Record<string, unknown>).link_status
+    delete (api as Record<string, unknown>).devices_list
+  }
+})
+
+test('MachinesTab queries update_status only for reachable peers without blocking, shows Update button calling update_apply, and displays RPC error in row', async () => {
+  let resolveXeus!: (v: unknown) => void
+  const engineCall = vi.fn((peerId: string, method: string, _params: unknown) => {
+    if (method === 'update_status') {
+      if (peerId === 'xeus') return new Promise((r) => { resolveXeus = r })
+      if (peerId === 'cloud') return Promise.resolve(null)
+      return Promise.reject(new Error(`should not query offline peer ${peerId}`))
+    }
+    if (method === 'update_apply') {
+      return Promise.reject(new Error('update_apply: checksum mismatch'))
+    }
+    return Promise.resolve(null)
+  })
+  ;(api as Record<string, unknown>).engine_call = engineCall
+  try {
+    useConnection.setState({ state: 'open' })
+    await mount(createElement(MachinesTab))
+    await settle()
+
+    // List renders immediately without blocking on pending update_status.
+    expect(document.body.textContent).toContain('xeus')
+    expect(document.body.textContent).toContain('cloud-1')
+    expect(document.body.textContent).toContain('studio')
+    // Only online peers (xeus, cloud) were queried; offline peer (studio) was never queried.
+    expect(engineCall).toHaveBeenCalledWith('xeus', 'update_status', {})
+    expect(engineCall).toHaveBeenCalledWith('cloud', 'update_status', {})
+    expect(engineCall).not.toHaveBeenCalledWith('studio', 'update_status', expect.anything())
+    expect(document.querySelector('[data-update-peer="xeus"]')).toBeNull()
+    expect(document.querySelector('[data-update-peer="cloud"]')).toBeNull()
+
+    // Resolve xeus with an available newer release -> visible Update button appears only on xeus.
+    await run(async () => resolveXeus({ version: '2.35.0', applied: false }))
+    await vi.waitFor(() => {
+      const btn = document.querySelector<HTMLButtonElement>('[data-update-peer="xeus"]')
+      expect(btn?.textContent).toContain('Update 2.35.0')
+    })
+    expect(document.querySelector('[data-update-peer="cloud"]')).toBeNull()
+    expect(document.querySelector('[data-update-peer="studio"]')).toBeNull()
+
+    // Clicking calls engine_call('xeus', 'update_apply', {}) and displays the RPC error in the row on failure.
+    await run(async () => document.querySelector<HTMLButtonElement>('[data-update-peer="xeus"]')!.click())
+    await vi.waitFor(() => expect(engineCall).toHaveBeenCalledWith('xeus', 'update_apply', {}))
+    await vi.waitFor(() => {
+      const err = document.querySelector('[data-update-error="xeus"]')
+      expect(err?.getAttribute('role')).toBe('alert')
+      expect(err?.textContent).toContain('update_apply: checksum mismatch')
+    })
+  } finally {
+    delete (api as Record<string, unknown>).engine_call
+  }
+})
+

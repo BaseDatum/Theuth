@@ -833,9 +833,30 @@ export function StageList({ rows }: { rows: readonly StageRow[] }) {
   )
 }
 
-export function ProgressView({ name, rows, pct, eta, error, retrying, phone, onRetry }: { name: string; rows: readonly StageRow[]; pct: number; eta: number | null; error: string | null; retrying: boolean; phone: boolean; onRetry: () => void }) {
+export function ProgressView({
+  name,
+  rows,
+  pct,
+  eta,
+  error,
+  lines = [],
+  retrying,
+  phone,
+  onRetry,
+}: {
+  name: string
+  rows: readonly StageRow[]
+  pct: number
+  eta: number | null
+  error: string | null
+  lines?: readonly string[]
+  retrying: boolean
+  phone: boolean
+  onRetry: () => void
+}) {
   const failed = rows.some((r) => r.status === 'failed')
   const left = etaText(eta)
+  const latestLine = [...lines].reverse().find((l) => l.trim().length > 0) ?? null
   return (
     <>
       {phone && <Muted>Step 3 of 3</Muted>}
@@ -846,10 +867,24 @@ export function ProgressView({ name, rows, pct, eta, error, retrying, phone, onR
       {!failed && <Muted>{left ? `${left} · you can leave this screen` : 'You can leave this screen'}</Muted>}
       <Card>
         <StageList rows={rows} />
+        {!failed && latestLine && (
+          <p data-progress-line="" className="mt-2 border-t border-border-subtle pt-2 font-mono text-xs whitespace-pre-wrap break-words text-fg-secondary">
+            {latestLine}
+          </p>
+        )}
       </Card>
       {failed ? (
         <div className="flex flex-col gap-2">
-          {error && <p className="rounded-lg border border-danger-border/50 bg-danger-bg px-3 py-2 text-xs text-danger">{error}</p>}
+          {error && (
+            <p role="alert" className="rounded-lg border border-danger-border/50 bg-danger-bg px-3 py-2 font-mono text-xs whitespace-pre-wrap break-words text-danger">
+              {error}
+            </p>
+          )}
+          {lines.length > 0 && (
+            <pre data-progress-lines="" className="max-h-48 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap break-words text-fg-secondary">
+              {lines.join('\n')}
+            </pre>
+          )}
           <Muted>Destroying removes everything this attempt made at the provider, then you can try again.</Muted>
           <div className={cn(phone ? 'mt-auto' : 'self-start')}>
             <Button variant="destructive" className={cn(phone && 'h-11 w-full')} disabled={retrying} onClick={onRetry}>

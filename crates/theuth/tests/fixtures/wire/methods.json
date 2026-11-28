@@ -738,6 +738,7 @@
   "unsubscribe_pty",
   "unsubscribe_shell",
   "unsubscribe_topics",
+  "update_apply",
   "update_status",
   "upsert_tool_category",
   "usage_limits",

@@ -188,18 +188,28 @@ impl ExecOutput {
         String::from_utf8_lossy(&self.stdout).trim().to_owned()
     }
 
-    /// The last non-empty line of stderr, else of stdout, else the status — for failure messages.
+    /// Exit status plus up to the last 8 non-empty lines of stderr (else stdout) — for failure
+    /// messages.
     pub fn reason(&self) -> String {
-        let last = |b: &[u8]| {
-            String::from_utf8_lossy(b)
+        let tail = |b: &[u8]| -> Option<String> {
+            let text = String::from_utf8_lossy(b);
+            let mut lines: Vec<&str> = text
                 .lines()
                 .rev()
-                .find(|l| !l.trim().is_empty())
-                .map(|l| l.trim().to_owned())
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .take(8)
+                .collect();
+            if lines.is_empty() {
+                return None;
+            }
+            lines.reverse();
+            Some(lines.join("\n"))
         };
-        last(&self.stderr)
-            .or_else(|| last(&self.stdout))
-            .unwrap_or_else(|| format!("exit status {}", self.status))
+        match tail(&self.stderr).or_else(|| tail(&self.stdout)) {
+            Some(msg) => format!("exit status {}: {msg}", self.status),
+            None => format!("exit status {}", self.status),
+        }
     }
 }
 
@@ -275,12 +285,18 @@ pub async fn detect_with_timeout(
     {
         return Ok(p);
     }
+    if out.status == 255 {
+        anyhow::bail!("cannot detect os/arch: {}", out.reason());
+    }
     let ps = "powershell -NoProfile -Command \"[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture\"";
     let ps_out = sb.exec(h, Cmd::new(ps).timeout(timeout)).await?;
     if ps_out.ok()
         && let Some(arch) = parse_arch(&ps_out.stdout_str())
     {
         return Ok(("windows".into(), arch));
+    }
+    if ps_out.status == 255 {
+        anyhow::bail!("cannot detect os/arch: {}", ps_out.reason());
     }
     let cmd_out = sb
         .exec(
@@ -293,9 +309,13 @@ pub async fn detect_with_timeout(
     {
         return Ok(("windows".into(), arch));
     }
-    let reason = if !out.reason().starts_with("exit status") {
+    let has_output = |o: &ExecOutput| {
+        !String::from_utf8_lossy(&o.stderr).trim().is_empty()
+            || !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+    };
+    let reason = if has_output(&out) {
         out.reason()
-    } else if !ps_out.reason().starts_with("exit status") {
+    } else if has_output(&ps_out) {
         ps_out.reason()
     } else {
         cmd_out.reason()
@@ -535,13 +555,28 @@ mod tests {
     }
 
     #[test]
-    fn reason_prefers_stderr_last_line() {
+    fn reason_keeps_status_and_up_to_last_8_stderr_lines() {
         let out = ExecOutput {
             status: 2,
             stdout: b"ok\n".to_vec(),
             stderr: b"warn\nfatal: no\n\n".to_vec(),
         };
-        assert_eq!(out.reason(), "fatal: no");
+        assert_eq!(out.reason(), "exit status 2: warn\nfatal: no");
+
+        let ten_lines = (1..=10)
+            .map(|i| format!("  line {i}  "))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let out = ExecOutput {
+            status: 255,
+            stdout: Vec::new(),
+            stderr: ten_lines.into_bytes(),
+        };
+        assert_eq!(
+            out.reason(),
+            "exit status 255: line 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10"
+        );
+
         let out = ExecOutput {
             status: 3,
             ..Default::default()
@@ -553,6 +588,18 @@ mod tests {
         uname: ExecOutput,
         ps: ExecOutput,
         cmd: ExecOutput,
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl DetectMock {
+        fn new(uname: ExecOutput, ps: ExecOutput, cmd: ExecOutput) -> Self {
+            Self {
+                uname,
+                ps,
+                cmd,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -564,6 +611,7 @@ mod tests {
             Ok(Handle { id: "m".into() })
         }
         async fn exec(&self, _: &Handle, cmd: Cmd) -> anyhow::Result<ExecOutput> {
+            self.calls.lock().unwrap().push(cmd.line.clone());
             if cmd.line == "uname -sm" {
                 Ok(self.uname.clone())
             } else if cmd.line.starts_with("powershell ") {
@@ -600,39 +648,68 @@ mod tests {
             ..Default::default()
         };
 
-        let ps_ok = DetectMock {
-            uname: fail.clone(),
-            ps: ExecOutput {
+        let ps_ok = DetectMock::new(
+            fail.clone(),
+            ExecOutput {
                 status: 0,
                 stdout: b"Arm64\r\n".to_vec(),
                 ..Default::default()
             },
-            cmd: fail.clone(),
-        };
+            fail.clone(),
+        );
         assert_eq!(
             detect(&ps_ok, &h).await.unwrap(),
             ("windows".into(), "aarch64".into())
         );
 
-        let cmd_ok = DetectMock {
-            uname: fail.clone(),
-            ps: fail.clone(),
-            cmd: ExecOutput {
+        let cmd_ok = DetectMock::new(
+            fail.clone(),
+            fail.clone(),
+            ExecOutput {
                 status: 0,
                 stdout: b"AMD64\r\n".to_vec(),
                 ..Default::default()
             },
-        };
+        );
         assert_eq!(
             detect(&cmd_ok, &h).await.unwrap(),
             ("windows".into(), "x86_64".into())
         );
 
-        let all_fail = DetectMock {
-            uname: fail.clone(),
-            ps: fail.clone(),
-            cmd: fail,
+        let all_fail = DetectMock::new(fail.clone(), fail.clone(), fail);
+        let err = detect(&all_fail, &h).await.unwrap_err();
+        assert!(format!("{err:#}").contains("exit status 1: not found"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn detect_fails_immediately_on_ssh_exit_255_without_probing_windows() {
+        let h = Handle { id: "m".into() };
+        let ssh_fail = ExecOutput {
+            status: 255,
+            stderr: b"ssh: connect to host box port 22: Connection refused\n".to_vec(),
+            ..Default::default()
         };
-        assert!(detect(&all_fail, &h).await.is_err());
+        let mock = DetectMock::new(
+            ssh_fail,
+            ExecOutput {
+                status: 0,
+                stdout: b"X64\r\n".to_vec(),
+                ..Default::default()
+            },
+            ExecOutput {
+                status: 0,
+                stdout: b"AMD64\r\n".to_vec(),
+                ..Default::default()
+            },
+        );
+        let err = detect(&mock, &h).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("exit status 255"), "{msg}");
+        assert!(msg.contains("Connection refused"), "{msg}");
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            vec!["uname -sm".to_owned()],
+            "must not probe Windows after SSH exit 255"
+        );
     }
 }

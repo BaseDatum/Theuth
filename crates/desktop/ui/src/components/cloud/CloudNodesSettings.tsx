@@ -2,11 +2,13 @@
 // version and monthly price, and the ⋯ menu (Restart · Resize · Update now · Open terminal · View desktop · View logs · Destroy…).
 // Provider errors from `cloud_list` show inline here; every other status goes to the status bar (`notify`).
 
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Cloud, Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Terminal } from '@/components/chat/TerminalViewer'
 import { Empty, Section, useAction } from '@/components/settings/shared'
+import { keys as meshKeys } from '@/components/tasks/queries'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,10 +31,12 @@ import { isPeerBootstrapping, usePeerSync } from '@/lib/peer-sync'
 import { canPopout, openPopout } from '@/lib/popout'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { Capability } from '@/rpc/capabilities'
+import type { MeshStatus } from '@/rpc/bindings/method.nodes.output'
+import { Capability, useQuerySupport } from '@/rpc/capabilities'
 import { CloudNodeWizard, specFromNode } from './CloudNodeWizard'
 import { NodeDesktopPanel } from './NodeDesktop'
-import { type Tone, destroySaving, diskUsd, localQuote, sizesOf, statusOf, usd, vaultRow } from './format'
+import { type LivePeer, type Tone, destroySaving, diskUsd, localQuote, sizesOf, statusOf, usd, vaultRow } from './format'
+import { isNewerUpdate, usePeerUpdateApply, usePeerUpdates } from './nodeUpdate'
 import { CLOUD_REQUIRED, cloudKeys, useCloudActions, useCloudEvents, useCloudList, useCloudLogs, useCloudProviders, useCloudSizes, useVaultSupport } from './queries'
 import { PriceNote, ProviderBadge, SizeCards, VAULT_HINT } from './steps'
 import { type CloudNode, DEFAULT_VOLUME_GB, type NodeDesktop, type ProviderInfo, type ProviderKind, type TerminalOpen } from './types'
@@ -41,11 +45,26 @@ export const PROVIDER_LABEL: Record<ProviderKind, string> = { digitalocean: 'Dig
 
 export type CloudDialog = 'destroy' | 'resize' | 'logs' | 'terminal' | 'desktop' | 'vault' | 'progress'
 
+export type NodeUpdateControl = {
+  version: string
+  applied: boolean
+  pending: boolean
+  onApply: () => void
+}
+
 /** The section, shown only on an engine with `cloudnodes` (the rest of the Machines tab never depends on it). */
-export function CloudNodesSettings({ initial, progress }: { initial?: { dialog: CloudDialog; node: string; adding?: boolean } | { adding: true }; progress?: string | null }) {
+export function CloudNodesSettings({
+  initial,
+  progress,
+  mesh,
+}: {
+  initial?: { dialog: CloudDialog; node: string; adding?: boolean } | { adding: true }
+  progress?: string | null
+  mesh?: MeshStatus
+}) {
   return (
     <Capability required={CLOUD_REQUIRED} hide>
-      <CloudNodesSection initial={initial} progress={progress} />
+      <CloudNodesSection initial={initial} progress={progress} mesh={mesh} />
     </Capability>
   )
 }
@@ -59,10 +78,10 @@ const DOT: Record<Tone, string> = {
   muted: 'bg-fg-tertiary/40',
 }
 
-function Status({ node, bootstrapping = false }: { node: CloudNode; bootstrapping?: boolean }) {
+function Status({ node, bootstrapping = false, livePeer }: { node: CloudNode; bootstrapping?: boolean; livePeer?: LivePeer | null }) {
   // `sealed` is honoured only where the engine has the sealed vault (feat/sealed-vault).
   const vault = useVaultSupport()
-  const s = statusOf({ ...node, sealed: vault && node.sealed }, bootstrapping)
+  const s = statusOf({ ...node, sealed: vault && node.sealed }, bootstrapping, livePeer)
   return (
     <span
       data-syncing={s.tone === 'sync' ? '' : undefined}
@@ -71,6 +90,7 @@ function Status({ node, bootstrapping = false }: { node: CloudNode; bootstrappin
         'inline-flex min-w-0 items-center gap-1.5 truncate text-[13px] whitespace-nowrap',
         s.tone === 'bad' && 'text-danger',
         (s.tone === 'warn' || s.tone === 'sync') && 'text-warning',
+        s.tone === 'muted' && 'text-fg-secondary',
       )}
     >
       <span className={cn('inline-block size-[7px] shrink-0 rounded-full', DOT[s.tone])} />
@@ -101,10 +121,28 @@ export function dispatchTerminalOpen(
   openSheet({ ...t, name })
 }
 
-export function CloudNodesSection({ initial, progress }: { initial?: { dialog?: CloudDialog; node?: string; adding?: boolean }; progress?: string | null }) {
+export function CloudNodesSection({ initial, progress, mesh }: { initial?: { dialog?: CloudDialog; node?: string; adding?: boolean }; progress?: string | null; mesh?: MeshStatus }) {
   useCloudEvents()
   const mobile = useIsMobile()
   const navigate = useNavigate()
+  const api = useApi()
+  const canMesh = useQuerySupport(['mesh_status'])
+  const meshQ = useQuery<MeshStatus>({
+    enabled: !mesh && canMesh && typeof api.mesh_status === 'function',
+    queryKey: meshKeys.mesh,
+    queryFn: () => api.mesh_status(),
+  })
+  const meshData = mesh ?? meshQ.data
+  const peersById = useMemo(() => {
+    if (!meshData) return undefined
+    const map = new Map<string, LivePeer>()
+    for (const p of meshData.peers) map.set(p.id, p)
+    if (meshData.self_id && !map.has(meshData.self_id)) {
+      map.set(meshData.self_id, { reachable: true, path: 'offline', rtt_ms: null, last_seen_ms: 0 })
+    }
+    return map
+  }, [meshData])
+
   const list = useCloudList()
   const { byPeer } = usePeerSync()
   const providers = useCloudProviders()
@@ -123,6 +161,20 @@ export function CloudNodesSection({ initial, progress }: { initial?: { dialog?: 
   }, [progress])
 
   const nodes = list.data?.nodes ?? []
+  const onlinePeerIds = useMemo(
+    () =>
+      nodes
+        .filter((n) => {
+          if (n.state !== 'ready' || !n.peer_id || n.peer_id === meshData?.self_id) return false
+          if (peersById) return peersById.get(n.peer_id)?.reachable === true
+          return n.reachable !== false && n.path !== 'offline'
+        })
+        .map((n) => n.peer_id as string),
+    [nodes, peersById, meshData?.self_id],
+  )
+  const peerUpdates = usePeerUpdates(onlinePeerIds)
+  const peerUpdateApply = usePeerUpdateApply()
+
   const target = open ? nodes.find((n) => n.name === open.node) : undefined
   const infoOf = (k: ProviderKind): ProviderInfo | undefined => providers.data?.find((p) => p.provider === k)
 
@@ -185,19 +237,37 @@ export function CloudNodesSection({ initial, progress }: { initial?: { dialog?: 
         <Empty>No cloud nodes yet. One keeps working when this machine sleeps, and gives your phone a full-power engine.</Empty>
       ) : (
         <ul>
-          {nodes.map((n) => (
-            <NodeRow
-              key={n.name}
-              node={n}
-              bootstrapping={!!n.peer_id && isPeerBootstrapping(byPeer.get(n.peer_id))}
-              onRestart={() => actions.restart.mutate(n.name, { onSuccess: () => notify(`Restarting ${n.name}`) })}
-              onUpdate={() => actions.update.mutate(n.name, { onSuccess: () => notify(`Updating ${n.name}`) })}
-              onTerminal={() => openTerminal(n.name)}
-              onDesktop={() => openDesktop(n.name)}
-              opening={(actions.terminal.isPending && actions.terminal.variables === n.name) || (actions.desktop.isPending && actions.desktop.variables === n.name)}
-              onOpen={(dialog) => openDialog(dialog, n.name)}
-            />
-          ))}
+          {nodes.map((n) => {
+            const livePeer: LivePeer | null | undefined = peersById ? (n.peer_id ? (peersById.get(n.peer_id) ?? null) : null) : undefined
+            const rawUpdate = n.state === 'ready' && n.peer_id ? peerUpdates.get(n.peer_id) : null
+            const available = isNewerUpdate(rawUpdate, n.version) ? rawUpdate : null
+            const updateControl: NodeUpdateControl | null =
+              available && n.peer_id
+                ? {
+                    version: available.version,
+                    applied: available.applied,
+                    pending: peerUpdateApply.isPending(n.peer_id),
+                    onApply: () => peerUpdateApply.apply(n.peer_id!, n.name),
+                  }
+                : null
+            const updateError = n.peer_id ? peerUpdateApply.errorOf(n.peer_id) : null
+            return (
+              <NodeRow
+                key={n.name}
+                node={n}
+                livePeer={livePeer}
+                bootstrapping={!!n.peer_id && isPeerBootstrapping(byPeer.get(n.peer_id))}
+                update={updateControl}
+                updateError={updateError}
+                onRestart={() => actions.restart.mutate(n.name, { onSuccess: () => notify(`Restarting ${n.name}`) })}
+                onUpdate={() => actions.update.mutate(n.name, { onSuccess: () => notify(`Updating ${n.name}`) })}
+                onTerminal={() => openTerminal(n.name)}
+                onDesktop={() => openDesktop(n.name)}
+                opening={(actions.terminal.isPending && actions.terminal.variables === n.name) || (actions.desktop.isPending && actions.desktop.variables === n.name)}
+                onOpen={(dialog) => openDialog(dialog, n.name)}
+              />
+            )
+          })}
         </ul>
       )}
 
@@ -277,7 +347,10 @@ export function CloudNodesSection({ initial, progress }: { initial?: { dialog?: 
 
 export function NodeRow({
   node,
+  livePeer,
   bootstrapping = false,
+  update = null,
+  updateError = null,
   onRestart,
   onUpdate,
   onTerminal,
@@ -286,7 +359,10 @@ export function NodeRow({
   onOpen,
 }: {
   node: CloudNode
+  livePeer?: LivePeer | null
   bootstrapping?: boolean
+  update?: NodeUpdateControl | null
+  updateError?: string | null
   onRestart: () => void
   onUpdate: () => void
   onTerminal: () => void
@@ -348,7 +424,7 @@ export function NodeRow({
           <span className="truncate">{placeChip(node)}</span>
         </span>
       </div>
-      <Status node={node} bootstrapping={bootstrapping} />
+      <Status node={node} livePeer={livePeer} bootstrapping={bootstrapping} />
       <span className="text-xs whitespace-nowrap text-fg-secondary max-md:hidden">{node.version ? `${node.version}${node.auto_update ? ' · auto-update' : ''}` : '—'}</span>
       <span className="text-right text-xs whitespace-nowrap text-fg-secondary">{node.monthly_usd != null ? `${usd(node.monthly_usd)}/mo` : ''}</span>
       {orphan ? (
@@ -366,8 +442,41 @@ export function NodeRow({
           </Button>
           {menu}
         </div>
+      ) : update ? (
+        <div className="flex items-center justify-end gap-1 justify-self-end">
+          <Button
+            size="xs"
+            variant="outline"
+            data-update-node={node.name}
+            aria-label={`Update ${node.name}`}
+            disabled={update.pending}
+            onClick={update.onApply}
+          >
+            {update.pending && <Loader2 className="animate-spin" />}
+            {update.pending ? 'Updating…' : `Update ${update.version}`}
+          </Button>
+          {menu}
+        </div>
       ) : (
         menu
+      )}
+      {failed && node.error && (
+        <p
+          data-node-error=""
+          role="alert"
+          className="w-full min-w-0 font-mono text-xs whitespace-pre-wrap break-words text-danger md:col-span-5 md:col-start-2"
+        >
+          {node.error}
+        </p>
+      )}
+      {updateError && (
+        <p
+          data-update-error={node.peer_id ?? node.name}
+          role="alert"
+          className="w-full min-w-0 font-mono text-xs whitespace-pre-wrap break-words text-danger md:col-span-5 md:col-start-2"
+        >
+          {updateError}
+        </p>
       )}
       {vault && (
         <div data-vault={node.vault} className="flex w-full min-w-0 items-center gap-2 text-xs md:col-span-5 md:col-start-2">

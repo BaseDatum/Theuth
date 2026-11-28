@@ -524,3 +524,84 @@ test('Open terminal opens a node-terminal popout window (never a session route) 
   expect(mockNavigate).not.toHaveBeenCalled()
 })
 
+test('ready cloud node status comes from live mesh peer; absent peer says "not in the mesh"; lifecycle words stay on the cloud record', () => {
+  const now = Date.now()
+  const staleOffline = node({ name: 'lan-box', peer_id: 'peer-lan-1', state: 'ready', reachable: false, path: 'offline' })
+  // Live LAN peer overrides stale cloud_list "offline".
+  expect(statusOf(staleOffline, false, { reachable: true, path: 'lan', rtt_ms: 12, last_seen_ms: now }, now)).toEqual({ text: 'LAN 12 ms', tone: 'ok' })
+  expect(statusOf(staleOffline, false, { reachable: true, path: 'relay', rtt_ms: 41, last_seen_ms: now }, now)).toEqual({ text: 'Relay 41 ms', tone: 'ok' })
+  expect(statusOf(staleOffline, false, { reachable: false, path: 'offline', rtt_ms: null, last_seen_ms: now - 3 * 3_600_000 }, now)).toEqual({ text: 'offline 3h', tone: 'bad' })
+  // Mesh list loaded, but peer is absent: "not in the mesh", never "offline".
+  expect(statusOf(staleOffline, false, null, now)).toEqual({ text: 'not in the mesh', tone: 'muted' })
+  // Lifecycle words stay on the cloud record regardless of live peer.
+  expect(statusOf(node({ state: 'creating', stage: 'install' }), false, null, now)).toEqual({ text: 'creating · installing', tone: 'busy' })
+  expect(statusOf(node({ state: 'failed', error: 'boom' }), false, null, now)).toEqual({ text: 'failed', tone: 'bad' })
+  expect(statusOf(node({ state: 'destroying' }), false, null, now)).toEqual({ text: 'destroying…', tone: 'busy' })
+  expect(statusOf(node({ state: 'ready', sealed: true }), false, { reachable: true, path: 'lan', rtt_ms: 12, last_seen_ms: now }, now)).toMatchObject({ text: 'sealed', tone: 'warn' })
+
+  // CloudNodesSection matches by peer_id against live mesh status and renders "LAN 12 ms" / "not in the mesh".
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  qc.setQueryData(cloudKeys.providers, PROVIDERS)
+  const missingPeerNode = node({ name: 'orphan-peer', peer_id: 'peer-missing', state: 'ready', reachable: false, path: 'offline' })
+  qc.setQueryData<CloudList>(cloudKeys.list, { nodes: [staleOffline, missingPeerNode], errors: [] })
+  const mesh = {
+    self_id: 'self-1',
+    self_name: 'laptop',
+    mesh_name: 'home',
+    peers: [{ id: 'peer-lan-1', name: 'lan-box', addrs: [], reachable: true, last_seen_ms: now, hub_pref: 'eligible' as const, path: 'lan' as const, rtt_ms: 12 }],
+    lease: { holder: 'self-1', since_ms: now, reason: 'prefer' },
+    traffic: [],
+    replica: null,
+    stats: [],
+    relay: null,
+    messaging_off: [],
+    nearby: false,
+    quarantined: [],
+    docs_homes_on: false,
+  }
+  const rendered = html(createElement(QueryClientProvider, { client: qc }, createElement(CloudNodesSection, { mesh })))
+  expect(rendered).toContain('LAN 12 ms')
+  expect(rendered).toContain('not in the mesh')
+  expect(rendered).not.toContain('>offline<')
+
+  // State event that clears peer_id on a ready node preserves the known peer_id.
+  applyCloudEvent(qc, { type: 'CloudNodeChanged', node: { ...staleOffline, peer_id: null } })
+  expect(qc.getQueryData<CloudList>(cloudKeys.list)?.nodes.find((n) => n.name === 'lan-box')?.peer_id).toBe('peer-lan-1')
+})
+
+test('ready cloud NodeRow renders visible Update button when a newer release is available, hides it when null, and shows updateError visibly', () => {
+  const ready = node({ name: 'prod-1', peer_id: 'peer-prod-1', state: 'ready', version: '2.31.2' })
+  const withoutUpdate = html(
+    createElement(NodeRow, {
+      node: ready,
+      update: null,
+      onRestart: () => {},
+      onUpdate: () => {},
+      onTerminal: () => {},
+      onDesktop: () => {},
+      opening: false,
+      onOpen: () => {},
+    }),
+  )
+  expect(withoutUpdate).not.toContain('data-update-node=')
+
+  const withUpdate = html(
+    createElement(NodeRow, {
+      node: ready,
+      update: { version: '2.35.0', applied: false, pending: false, onApply: () => {} },
+      updateError: 'update_apply: permission denied',
+      onRestart: () => {},
+      onUpdate: () => {},
+      onTerminal: () => {},
+      onDesktop: () => {},
+      opening: false,
+      onOpen: () => {},
+    }),
+  )
+  expect(withUpdate).toContain('data-update-node="prod-1"')
+  expect(withUpdate).toContain('Update 2.35.0')
+  expect(withUpdate).toContain('data-update-error="peer-prod-1"')
+  expect(withUpdate).toContain('update_apply: permission denied')
+})
+
+

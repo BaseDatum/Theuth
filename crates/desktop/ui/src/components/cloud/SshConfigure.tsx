@@ -99,7 +99,13 @@ export function SshConfigure({
   const hostReady = ssh.host.trim().length > 0 && !portError
   const canCreate = hostReady && !nameError && (!vault || vaultError(vault.password, vault.confirm) === null) && hosts?.ssh_available !== false
   const probeLabel = probe.result?.ok ? formatSshOsArch(probe.result.os, probe.result.arch) : null
-  const probeError = probe.error ?? (probe.result && !probe.result.ok ? (probe.result.error ?? 'Could not reach server') : null)
+  const probeError = probe.error?.trim()
+    ? probe.error
+    : probe.result && !probe.result.ok
+      ? probe.result.error?.trim()
+        ? probe.result.error
+        : 'Could not reach server'
+      : null
 
   return (
     <>
@@ -239,12 +245,16 @@ export function SshConfigure({
               {probeLabel}
             </span>
           )}
-          {probeError && (
-            <span data-ssh-probe="error" role="alert" className="text-xs text-danger">
-              {probeError}
-            </span>
-          )}
         </div>
+        {probeError && (
+          <p
+            data-ssh-probe="error"
+            role="alert"
+            className="w-full rounded-lg border border-danger-border/50 bg-danger-bg px-3 py-2 font-mono text-xs whitespace-pre-wrap break-words text-danger"
+          >
+            {probeError}
+          </p>
+        )}
       </Card>
 
       <Card>
