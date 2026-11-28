@@ -6,7 +6,7 @@ import { DestroyBody, NodeRow, placeChip } from './CloudNodesSettings'
 import { formatSshOsArch, stageRows } from './format'
 import { SshConfigure, hostSubtitle, parseSshPort, suggestSshNodeName } from './SshConfigure'
 import { sshApi } from './sshApi'
-import { ConnectPanel, providerAction, providerDetail } from './steps'
+import { ConnectPanel, ProgressView, providerAction, providerDetail } from './steps'
 import type { CloudNode, NodeSpec, ProviderInfo, SshHostEntry, SshHosts, SshOptions, SshProbe } from './types'
 
 const html = (el: ReactNode) => renderToStaticMarkup(el as never)
@@ -278,3 +278,102 @@ test('SSH stageRows, placeChip, NodeRow (no Resize), and DestroyBody (no droplet
   expect(wipeHtml).toContain('removes ~/.theuth')
   expect(wipeHtml.toLowerCase()).not.toContain('droplet')
 })
+
+test('ProgressView renders latest line while running and full collected lines in a whitespace-pre-wrap pre when failed', () => {
+  const lines = ['Checking prod-box', 'Detected Linux x86_64', 'Uploading engine 2.31.2']
+  const runningRows = stageRows({
+    node: sshNode({ state: 'creating', stage: 'install' }),
+    progress: { stage: 'install', pct: 55, eta_secs: 45, lines },
+    version: '2.31.2',
+  })
+  const runningHtml = html(
+    createElement(ProgressView, {
+      name: 'prod-box',
+      rows: runningRows,
+      pct: 55,
+      eta: 45,
+      error: null,
+      lines,
+      retrying: false,
+      phone: false,
+      onRetry: () => {},
+    }),
+  )
+  expect(runningHtml).toContain('data-progress-line=""')
+  expect(runningHtml).toContain('Uploading engine 2.31.2')
+  expect(runningHtml).not.toContain('<pre')
+
+  const failedRows = stageRows({
+    node: sshNode({ state: 'failed', stage: 'install', error: 'scp exited with status 1' }),
+    progress: { stage: 'install', pct: 55, eta_secs: null, lines },
+    version: '2.31.2',
+  })
+  const failedHtml = html(
+    createElement(ProgressView, {
+      name: 'prod-box',
+      rows: failedRows,
+      pct: 55,
+      eta: null,
+      error: 'scp exited with status 1',
+      lines,
+      retrying: false,
+      phone: false,
+      onRetry: () => {},
+    }),
+  )
+  expect(failedHtml).toContain('scp exited with status 1')
+  expect(failedHtml).toMatch(/<pre[^>]*data-progress-lines=""[^>]*whitespace-pre-wrap[^>]*>Checking prod-box\nDetected Linux x86_64\nUploading engine 2\.31\.2<\/pre>/)
+})
+
+test('SshConfigure renders Check server error as full-width font-mono whitespace-pre-wrap role=alert without replacing real errors', () => {
+  const base = {
+    hosts: SSH_HOSTS,
+    mode: 'config' as const,
+    onMode: () => {},
+    ssh: { host: 'prod-box', user: null, port: null, identity: null, name: null },
+    onChange: () => {},
+    onPickHost: () => {},
+    portText: '',
+    onPortText: () => {},
+    portError: null,
+    name: 'prod-box',
+    nameError: null,
+    onName: () => {},
+    vault: null,
+    busy: false,
+    onCreate: () => {},
+  }
+
+  const realErr = 'ssh: connect to host 10.0.0.10 port 2222: Permission denied (publickey)\nCheck ~/.ssh/id_prod'
+  const rpcErrHtml = html(createElement(SshConfigure, { ...base, probe: { result: null, error: realErr, pending: false, onCheck: () => {} } }))
+  expect(rpcErrHtml).toMatch(/<p[^>]*data-ssh-probe="error"[^>]*role="alert"[^>]*w-full[^>]*font-mono[^>]*whitespace-pre-wrap[^>]*>/)
+  expect(rpcErrHtml).not.toMatch(/<span[^>]*data-ssh-probe="error"/)
+  expect(rpcErrHtml).toContain(realErr)
+  expect(rpcErrHtml).not.toContain('Could not reach server')
+
+  const probeErrHtml = html(
+    createElement(SshConfigure, {
+      ...base,
+      probe: { result: { os: null, arch: null, ok: false, error: 'Host key verification failed' }, error: null, pending: false, onCheck: () => {} },
+    }),
+  )
+  expect(probeErrHtml).toContain('Host key verification failed')
+  expect(probeErrHtml).not.toContain('Could not reach server')
+})
+
+test('CloudNodesSettings failed row renders node.error visibly under the row, not only in a title tooltip', () => {
+  const failed = sshNode({ state: 'failed', stage: 'install', error: 'ssh: Permission denied (publickey)' })
+  const rowHtml = html(
+    createElement(NodeRow, {
+      node: failed,
+      onRestart: () => {},
+      onUpdate: () => {},
+      onTerminal: () => {},
+      onDesktop: () => {},
+      opening: false,
+      onOpen: () => {},
+    }),
+  )
+  expect(rowHtml).toMatch(/<p[^>]*data-node-error=""[^>]*role="alert"[^>]*>ssh: Permission denied \(publickey\)<\/p>/)
+})
+

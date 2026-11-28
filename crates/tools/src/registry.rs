@@ -14,7 +14,7 @@ use std::time::Duration;
 
 #[cfg(not(target_os = "ios"))]
 use brush_core::Shell;
-use kameo::actor::{ActorRef, Recipient, ReplyRecipient, Spawn};
+use kameo::actor::{ActorRef, Recipient, ReplyRecipient, Spawn, WeakActorRef};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::{Runtime, SessionId};
@@ -144,6 +144,11 @@ pub struct ToolRegistry {
     /// The MCP allowlist source (67 §6.3), from [`InstallMcpAccess`]. `None`:
     /// every MCP tool is offered to every session.
     mcp_access: Option<Arc<dyn McpAccess>>,
+    /// The [`crate::mcp::Mcp`] actor attached to this registry (weak, so a
+    /// dropped test actor never stays pinned). Notified off-mailbox via
+    /// [`crate::mcp::ReRegister`] whenever a non-MCP tool blocks or displaces
+    /// an MCP tool.
+    mcp: Option<WeakActorRef<crate::mcp::Mcp>>,
     /// The caller's execution bound (50 §8), from [`InstallExecutionGate`];
     /// `None`: waits are not reported to anyone.
     gate: Option<Arc<dyn ExecutionGate>>,
@@ -561,11 +566,31 @@ pub struct ToolInspection {
     pub action: PolicyAction,
 }
 
-/// `ask` → `()`. Replaces an existing tool with the same name.
+/// `ask` → `()`. Replaces an existing tool with the same name, except an MCP
+/// tool never overwrites a non-MCP tool (it is relocated to `<server>__<name>`)
+/// and a non-MCP tool that displaces an MCP tool relocates it to `<server>__<name>`.
 pub struct RegisterTool(pub DynTool);
 
 /// `ask` → `()`. Removes a tool by name; unknown name is a no-op.
 pub struct UnregisterTool(pub String);
+
+/// `ask` → `()`: attach the [`crate::mcp::Mcp`] actor owning this registry's MCP
+/// tools so [`RegisterTool`] can ask it to re-run registration after a collision.
+pub(crate) struct AttachMcp(pub WeakActorRef<crate::mcp::Mcp>);
+
+/// `ask` → `HashSet<String>`: every currently registered non-MCP tool name
+/// (`Native` and `Plugin`), queried live by MCP registration so MCP never
+/// shadows a tool registered by any plugin regardless of startup order.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct NonMcpToolNames;
+
+/// `ask` → `()`: remove every currently registered `ToolSource::Mcp` tool whose
+/// name is not in `.0`. Non-MCP (`Native` and `Plugin`) tools are never touched.
+pub(crate) struct PruneMcpTools(pub HashSet<String>);
+
+/// `ask` → `()`: remove every currently registered `ToolSource::Mcp` tool owned
+/// by server `.0`. Non-MCP tools and other servers' tools are never touched.
+pub(crate) struct UnregisterMcpServer(pub String);
 
 /// `ask` → `Option<ToolSource>`: who registered `name`, `None` when nothing is. 216 §8: a plugin
 /// tool never replaces a native, MCP or other plugin's tool, and unregisters only its own names.
@@ -3192,14 +3217,162 @@ impl Message<HiddenTools> for ToolRegistry {
     }
 }
 
+/// Wrapper exposing a displaced or colliding MCP tool under `<server>__<remote>`
+/// while delegating execution and metadata to the underlying tool until
+/// [`crate::mcp::Mcp`] re-registers it directly under the prefixed name.
+struct PrefixedMcpTool {
+    inner: DynTool,
+    name: String,
+}
+
+impl crate::ErasedTool for PrefixedMcpTool {
+    fn spec(&self) -> ToolSpec {
+        let mut spec = self.inner.spec();
+        spec.name = self.name.clone();
+        spec
+    }
+
+    fn source(&self) -> ToolSource {
+        self.inner.source()
+    }
+
+    fn origin(&self) -> String {
+        self.inner.origin()
+    }
+
+    fn consumes_secrets(&self) -> bool {
+        self.inner.consumes_secrets()
+    }
+
+    fn promotable(&self) -> bool {
+        self.inner.promotable()
+    }
+
+    fn credentialed(&self, session: SessionId, args: &serde_json::Value) -> bool {
+        self.inner.credentialed(session, args)
+    }
+
+    fn approved_by_card(&self) -> bool {
+        self.inner.approved_by_card()
+    }
+
+    fn human_only(&self) -> bool {
+        self.inner.human_only()
+    }
+
+    fn human_only_for(&self, args: &serde_json::Value) -> bool {
+        self.inner.human_only_for(args)
+    }
+
+    fn approval_preview(
+        &self,
+        args: &serde_json::Value,
+        cx: PreviewCx,
+    ) -> futures::future::BoxFuture<'_, anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>>>
+    {
+        self.inner.approval_preview(args, cx)
+    }
+
+    fn call(
+        &self,
+        args: serde_json::Value,
+        cx: ToolCx,
+    ) -> futures::future::BoxFuture<'_, anyhow::Result<ToolOutput>> {
+        self.inner.call(args, cx)
+    }
+}
+
+impl ToolRegistry {
+    /// Relocate an MCP tool from `server` under `<server>__<bare>` when `bare`
+    /// is owned by a non-MCP tool. Skips if `bare` is already prefixed for
+    /// `server` or if the prefixed slot is itself owned by a non-MCP tool.
+    fn park_mcp_prefixed(&mut self, server: &str, bare: &str, tool: DynTool) {
+        let prefix = format!("{server}__");
+        if bare.starts_with(&prefix) {
+            return;
+        }
+        let prefixed = format!("{prefix}{bare}");
+        if self
+            .tools
+            .get(&prefixed)
+            .is_some_and(|existing| !existing.source().is_mcp())
+        {
+            tracing::warn!(
+                tool = %prefixed,
+                server = %server,
+                "prefixed MCP tool name also held by non-MCP tool; skipped"
+            );
+            return;
+        }
+        tracing::info!(
+            tool = %prefixed,
+            server = %server,
+            "relocated MCP tool under prefixed name"
+        );
+        self.validators.remove(&prefixed);
+        self.tools.insert(
+            prefixed.clone(),
+            Arc::new(PrefixedMcpTool {
+                inner: tool,
+                name: prefixed,
+            }),
+        );
+    }
+
+    /// Notify the attached [`crate::mcp::Mcp`] actor to re-run registration
+    /// without ever awaiting `Mcp` inside this mailbox (preventing deadlock).
+    fn notify_mcp_reregister(&self) {
+        let Some(mcp) = self.mcp.as_ref().and_then(WeakActorRef::upgrade) else {
+            return;
+        };
+        if mcp.tell(crate::mcp::ReRegister).try_send().is_err() {
+            tokio::spawn(async move {
+                let _ = mcp.tell(crate::mcp::ReRegister).await;
+            });
+        }
+    }
+}
+
 impl Message<RegisterTool> for ToolRegistry {
     type Reply = ();
 
     async fn handle(&mut self, m: RegisterTool, _: &mut Context<Self, Self::Reply>) {
         let name = m.0.spec().name;
+        if let ToolSource::Mcp { server, .. } = m.0.source() {
+            if self
+                .tools
+                .get(&name)
+                .is_some_and(|existing| !existing.source().is_mcp())
+            {
+                tracing::warn!(
+                    tool = %name,
+                    server = %server,
+                    "refusing to overwrite non-MCP tool with MCP tool"
+                );
+                self.park_mcp_prefixed(&server, &name, m.0);
+                self.notify_mcp_reregister();
+                return;
+            }
+            tracing::info!(tool = %name, "registered tool");
+            self.validators.remove(&name);
+            self.tools.insert(name, m.0);
+            return;
+        }
+
         tracing::info!(tool = %name, "registered tool");
         self.validators.remove(&name);
-        self.tools.insert(name, m.0);
+        let displaced = self.tools.insert(name.clone(), m.0);
+        if let Some(displaced) = displaced
+            && let ToolSource::Mcp { server, .. } = displaced.source()
+        {
+            tracing::info!(
+                tool = %name,
+                server = %server,
+                "non-MCP tool displaced MCP tool; relocating MCP tool to prefixed name"
+            );
+            self.park_mcp_prefixed(&server, &name, displaced);
+            self.notify_mcp_reregister();
+        }
     }
 }
 
@@ -3210,6 +3383,68 @@ impl Message<UnregisterTool> for ToolRegistry {
         if self.tools.remove(&m.0).is_some() {
             self.validators.remove(&m.0);
             tracing::info!(tool = %m.0, "unregistered tool");
+        }
+    }
+}
+
+impl Message<AttachMcp> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: AttachMcp, _: &mut Context<Self, Self::Reply>) {
+        self.mcp = Some(m.0);
+    }
+}
+
+impl Message<NonMcpToolNames> for ToolRegistry {
+    type Reply = HashSet<String>;
+
+    async fn handle(
+        &mut self,
+        _: NonMcpToolNames,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> HashSet<String> {
+        self.tools
+            .iter()
+            .filter(|(_, t)| !t.source().is_mcp())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+}
+
+impl Message<PruneMcpTools> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: PruneMcpTools, _: &mut Context<Self, Self::Reply>) {
+        let stale: Vec<String> = self
+            .tools
+            .iter()
+            .filter(|(name, tool)| tool.source().is_mcp() && !m.0.contains(*name))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in stale {
+            self.tools.remove(&name);
+            self.validators.remove(&name);
+            tracing::info!(tool = %name, "unregistered mcp tool");
+        }
+    }
+}
+
+impl Message<UnregisterMcpServer> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: UnregisterMcpServer, _: &mut Context<Self, Self::Reply>) {
+        let stale: Vec<String> = self
+            .tools
+            .iter()
+            .filter(|(_, tool)| {
+                matches!(tool.source(), ToolSource::Mcp { server, .. } if server == m.0)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in stale {
+            self.tools.remove(&name);
+            self.validators.remove(&name);
+            tracing::info!(tool = %name, server = %m.0, "unregistered mcp tool");
         }
     }
 }
@@ -4027,6 +4262,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             untracked: Arc::default(),
             communication: None,
             mcp_access: None,
+            mcp: None,
             gate: None,
             journal: Arc::new(NoopJournal),
             participants: Vec::new(),
@@ -4108,6 +4344,7 @@ pub(crate) mod tests {
             untracked: Arc::default(),
             communication: None,
             mcp_access: None,
+            mcp: None,
             gate: None,
             journal: Arc::new(NoopJournal),
             participants: Vec::new(),
@@ -8790,5 +9027,196 @@ pub(crate) mod tests {
             1,
             "<nonexistent>/.. config.yaml write must force approval card"
         );
+    }
+
+    struct NativeDirectApp;
+
+    #[async_trait::async_trait]
+    impl Tool for NativeDirectApp {
+        const NAME: &'static str = "app";
+        const RISK: Risk = Risk::ReadOnly;
+        const DIRECT: bool = true;
+        type Args = serde_json::Value;
+
+        fn description(&self) -> String {
+            "native app".into()
+        }
+
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("native:app"))
+        }
+    }
+
+    struct FakeMcpTool {
+        server: &'static str,
+        name: &'static str,
+        reply: &'static str,
+    }
+
+    impl crate::ErasedTool for FakeMcpTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: self.name.to_owned(),
+                description: String::new(),
+                schema: serde_json::json!({"type": "object"}),
+                risk: Risk::ReadOnly,
+                direct: false,
+                returns: "Any".to_owned(),
+            }
+        }
+
+        fn source(&self) -> ToolSource {
+            ToolSource::Mcp {
+                server: self.server.to_owned(),
+                entry: crate::McpEntry::Http {
+                    url: format!("http://127.0.0.1/{}", self.server),
+                },
+            }
+        }
+
+        fn call(
+            &self,
+            _: serde_json::Value,
+            _: ToolCx,
+        ) -> futures::future::BoxFuture<'_, anyhow::Result<ToolOutput>> {
+            let reply = self.reply;
+            Box::pin(async move { Ok(ToolOutput::ok(reply)) })
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_cannot_overwrite_native_and_relocates_to_prefixed() {
+        let reg = registry(vec![Arc::new(NativeDirectApp)], None);
+        reg.ask(RegisterTool(Arc::new(FakeMcpTool {
+            server: "windows-build-b",
+            name: "app",
+            reply: "mcp:app",
+        })))
+        .await
+        .unwrap();
+
+        assert_eq!(
+            reg.ask(ToolSourceOf("app".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert!(matches!(
+            reg.ask(ToolSourceOf("windows-build-b__app".into()))
+                .await
+                .unwrap(),
+            Some(ToolSource::Mcp { ref server, .. }) if server == "windows-build-b"
+        ));
+
+        let specs = reg.ask(ListTools(None)).await.unwrap();
+        let app = specs.iter().find(|s| s.name == "app").unwrap();
+        let prefixed = specs
+            .iter()
+            .find(|s| s.name == "windows-build-b__app")
+            .unwrap();
+        assert!(app.direct);
+        assert!(!prefixed.direct);
+
+        let session = SessionId::new();
+        assert_eq!(
+            reg.ask(Invoke(call("app", session))).await.unwrap().content,
+            "native:app"
+        );
+        assert_eq!(
+            reg.ask(Invoke(call("windows-build-b__app", session)))
+                .await
+                .unwrap()
+                .content,
+            "mcp:app"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_tool_displaces_bare_mcp_tool_to_prefixed() {
+        let reg = registry(Vec::new(), None);
+        reg.ask(RegisterTool(Arc::new(FakeMcpTool {
+            server: "windows-build-b",
+            name: "app",
+            reply: "mcp:app",
+        })))
+        .await
+        .unwrap();
+        assert!(matches!(
+            reg.ask(ToolSourceOf("app".into())).await.unwrap(),
+            Some(ToolSource::Mcp { ref server, .. }) if server == "windows-build-b"
+        ));
+
+        reg.ask(RegisterTool(Arc::new(NativeDirectApp)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reg.ask(ToolSourceOf("app".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert!(matches!(
+            reg.ask(ToolSourceOf("windows-build-b__app".into()))
+                .await
+                .unwrap(),
+            Some(ToolSource::Mcp { ref server, .. }) if server == "windows-build-b"
+        ));
+
+        let specs = reg.ask(ListTools(None)).await.unwrap();
+        assert!(specs.iter().find(|s| s.name == "app").unwrap().direct);
+        assert!(
+            !specs
+                .iter()
+                .find(|s| s.name == "windows-build-b__app")
+                .unwrap()
+                .direct
+        );
+
+        let session = SessionId::new();
+        assert_eq!(
+            reg.ask(Invoke(call("app", session))).await.unwrap().content,
+            "native:app"
+        );
+        assert_eq!(
+            reg.ask(Invoke(call("windows-build-b__app", session)))
+                .await
+                .unwrap()
+                .content,
+            "mcp:app"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_prune_and_server_unregister_never_remove_native_tools() {
+        let reg = registry(vec![Arc::new(NativeDirectApp)], None);
+        reg.ask(RegisterTool(Arc::new(FakeMcpTool {
+            server: "win",
+            name: "app",
+            reply: "mcp:win",
+        })))
+        .await
+        .unwrap();
+        reg.ask(RegisterTool(Arc::new(FakeMcpTool {
+            server: "other",
+            name: "ping",
+            reply: "mcp:other",
+        })))
+        .await
+        .unwrap();
+
+        reg.ask(UnregisterMcpServer("win".into())).await.unwrap();
+        assert_eq!(
+            reg.ask(ToolSourceOf("app".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert_eq!(reg.ask(ToolSourceOf("win__app".into())).await.unwrap(), None);
+        assert!(matches!(
+            reg.ask(ToolSourceOf("ping".into())).await.unwrap(),
+            Some(ToolSource::Mcp { ref server, .. }) if server == "other"
+        ));
+
+        reg.ask(PruneMcpTools(HashSet::new())).await.unwrap();
+        assert_eq!(
+            reg.ask(ToolSourceOf("app".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert_eq!(reg.ask(ToolSourceOf("ping".into())).await.unwrap(), None);
     }
 }

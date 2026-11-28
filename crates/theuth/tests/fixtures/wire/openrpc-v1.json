@@ -43901,6 +43901,75 @@
         ],
         "type": "object"
       },
+      "method.agent.input.TaskGraphContextItem": {
+        "description": "One task row carried by [`TaskGraphSendContext`].",
+        "properties": {
+          "blockers": {
+            "default": [],
+            "description": "Blocker task ids or external blockers.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "Task id.",
+            "type": "string"
+          },
+          "parent": {
+            "default": null,
+            "description": "Parent task id, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "Current state (`backlog`, `todo`, `doing`, `review`, `blocked`, `done`, `cancelled`).",
+            "type": "string"
+          },
+          "title": {
+            "description": "One-line task title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "state"
+        ],
+        "type": "object"
+      },
+      "method.agent.input.TaskGraphSendContext": {
+        "description": "Ephemeral view context handed over by the Task Graph floating composer right before `send_input`/`steer`.",
+        "properties": {
+          "project": {
+            "default": null,
+            "description": "Active project filter on the graph; `None` means all projects.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "selected": {
+            "default": null,
+            "description": "Currently selected task id on the graph, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tasks": {
+            "default": [],
+            "description": "Tasks currently visible on the graph (up to [`MAX_TASKS`] are emitted).",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.input.TaskGraphContextItem"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "method.agent.input.WbSendContext": {
         "description": "What the owner's send carried (218 §4.2): rendered into the next `<whiteboard_changes>` note.",
         "properties": {
@@ -120754,7 +120823,7 @@
         ]
       },
       "method.roster.input.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -120794,6 +120863,16 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (`DocId`, 218 §5).",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -120908,6 +120987,14 @@
       "method.roster.input.TaskCreate": {
         "description": "`task_create` input. Missing `owner` = `user`; `reviewer` defaults per 67 §7.1;\n`state` (`backlog` | `todo`) defaults to `backlog` on the wire.",
         "properties": {
+          "accent": {
+            "default": null,
+            "description": "Accent colour: a name from [`ACCENTS`]; `\"\"` or `\"none\"` clears it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "attachments": {
             "default": [],
             "description": "Attached references (design 66 refs), deduplicated by kind + id.",
@@ -122840,7 +122927,7 @@
         "type": "object"
       },
       "method.roster.output.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -122880,6 +122967,16 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (`DocId`, 218 §5).",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -125286,7 +125383,7 @@
         "type": "object"
       },
       "method.roster.receiver.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -125326,6 +125423,16 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (`DocId`, 218 §5).",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -145740,7 +145847,7 @@
         "type": "object"
       },
       "method.tasks.output.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -145780,6 +145887,16 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (`DocId`, 218 §5).",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -146249,7 +146366,7 @@
         "type": "object"
       },
       "method.tasks.receiver.Kind": {
-        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`.",
+        "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`, `attachments/<sha16>[.<ext>]` for a local file, or\n`<engine>:<shell>` for an open terminal.",
         "oneOf": [
           {
             "const": "note",
@@ -146289,6 +146406,16 @@
           {
             "const": "whiteboard",
             "description": "A whiteboard (`DocId`, 218 §5).",
+            "type": "string"
+          },
+          {
+            "const": "file",
+            "description": "An attached local file (canonical key `attachments/<sha16>[.<ext>]` under `<data_dir>`).",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "An open owner-created node terminal (`<engine>:<shell>`).",
             "type": "string"
           }
         ]
@@ -147650,6 +147777,55 @@
         ],
         "type": "object"
       },
+      "method.update.output.UpdateApplyResult": {
+        "description": "Result of the `update_apply` RPC.",
+        "properties": {
+          "from": {
+            "description": "Running version before applying.",
+            "type": "string"
+          },
+          "restarting": {
+            "description": "`true` when the managed daemon is draining and exiting (`75`) to restart.",
+            "type": "boolean"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.update.output.UpdateApplyStatus"
+              }
+            ],
+            "description": "Whether an update was applied or the engine is already up to date."
+          },
+          "to": {
+            "description": "Version installed on disk (`None` when `up_to_date`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "from",
+          "restarting"
+        ],
+        "type": "object"
+      },
+      "method.update.output.UpdateApplyStatus": {
+        "description": "Outcome status for `update_apply`.",
+        "oneOf": [
+          {
+            "const": "up_to_date",
+            "description": "Already running the latest same-major release.",
+            "type": "string"
+          },
+          {
+            "const": "applied",
+            "description": "A newer release is in place on disk and the managed daemon is restarting into it.",
+            "type": "string"
+          }
+        ]
+      },
       "method.update.output.UpdateReady": {
         "description": "Event: a newer version was verified and is on disk (`applied: true`), or\nexists but the binary's directory is not writable (`applied: false`)\n(39 §3.2). Published once per version.",
         "properties": {
@@ -147672,6 +147848,55 @@
           "type"
         ],
         "type": "object"
+      },
+      "method.update.receiver.UpdateApplyResult": {
+        "description": "Result of the `update_apply` RPC.",
+        "properties": {
+          "from": {
+            "description": "Running version before applying.",
+            "type": "string"
+          },
+          "restarting": {
+            "description": "`true` when the managed daemon is draining and exiting (`75`) to restart.",
+            "type": "boolean"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.update.receiver.UpdateApplyStatus"
+              }
+            ],
+            "description": "Whether an update was applied or the engine is already up to date."
+          },
+          "to": {
+            "description": "Version installed on disk (`None` when `up_to_date`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "from",
+          "restarting"
+        ],
+        "type": "object"
+      },
+      "method.update.receiver.UpdateApplyStatus": {
+        "description": "Outcome status for `update_apply`.",
+        "oneOf": [
+          {
+            "const": "up_to_date",
+            "description": "Already running the latest same-major release.",
+            "type": "string"
+          },
+          {
+            "const": "applied",
+            "description": "A newer release is in place on disk and the managed daemon is restarting into it.",
+            "type": "string"
+          }
+        ]
       },
       "method.update.receiver.UpdateReady": {
         "description": "Event: a newer version was verified and is on disk (`applied: true`), or\nexists but the binary's directory is not writable (`applied: false`)\n(39 §3.2). Published once per version.",
@@ -173077,6 +173302,41 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "shells_list",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "shutdown",
       "paramStructure": "by-position",
       "params": [],
@@ -174417,6 +174677,40 @@
       "x-theuth-owner": "roster"
     },
     {
+      "name": "task_graph_send_context",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.TaskGraphSendContext"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "task_move",
       "paramStructure": "by-position",
       "params": [
@@ -175181,6 +175475,23 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": false,
       "x-theuth-owner": "rpc-compose"
+    },
+    {
+      "name": "update_apply",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.update.output.UpdateApplyResult"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.update.receiver.UpdateApplyResult"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "update"
     },
     {
       "name": "update_status",

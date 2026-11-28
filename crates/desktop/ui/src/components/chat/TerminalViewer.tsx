@@ -15,8 +15,8 @@ import type { PressDragProps } from '@/hooks/use-press-drag'
 import { decode, utf8ToB64 } from '@/lib/base64'
 import { isApple } from '@/lib/chord'
 import { runsElsewhere } from '@/lib/front-door'
+import { useNeedsTerminalKeys } from '@/lib/mobile'
 import { useEngineLabel } from '@/lib/owner'
-import { touch } from '@/lib/platform'
 import { canPopout, isPopout, openPopout, popoutLabel, popoutOpen } from '@/lib/popout'
 import { isTauri, onPopoutClosed } from '@/lib/tauri'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -312,7 +312,9 @@ export type TerminalProps = {
 export function Terminal({ session, job, engine, label, popped = false, source, onExit, onElsewhere, onDisconnect, hideStatus = false, className }: TerminalProps) {
   const api = useApi()
   const client = useConnection((s) => s.client)
-  const mobile = useIsMobile()
+  const keys = useNeedsTerminalKeys()
+  const keysRef = useRef(keys)
+  keysRef.current = keys
   const host = useRef<HTMLDivElement>(null)
   const termRef = useRef<Xterm>(null)
   const sendRef = useRef<(d: string) => void>(null)
@@ -383,8 +385,8 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
       }
     }
     fitNow()
-    // A phone's keyboard covers half the terminal: tap (or the keyboard button) asks for it.
-    if (!mobile) term.focus()
+    // A touch/software keyboard covers half the terminal: tap (or the keyboard button) asks for it.
+    if (!keysRef.current) term.focus()
     const ta = term.textarea!
     const focused = () => setKeyboard(true)
     const blurred = () => setKeyboard(false)
@@ -503,7 +505,7 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
       term.dispose()
       setKeyboard(false)
     }
-  }, [src, client, api, mobile, popped])
+  }, [src, client, api, popped])
 
   const status = [label, size, exit && exitText(exit), disconnected && `disconnected (${disconnected})`, elsewhere !== null && `live output on ${elsewhereLabel}`]
     .filter(Boolean)
@@ -513,7 +515,6 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
   }, [popped, src.kind, status])
 
   const resizable = src.kind === 'pty' || src.kind === 'shell'
-  const keys = resizable ? mobile : touch()
   return (
     <>
       <div
@@ -541,9 +542,11 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
           <Button
             variant={keyboard ? 'secondary' : 'outline'}
             size="sm"
-            className={resizable ? 'h-11 min-w-11' : 'h-12 min-w-12'}
+            tabIndex={-1}
+            className={cn('touch-manipulation', resizable ? 'h-11 min-w-11' : 'h-12 min-w-12')}
             aria-pressed={keyboard}
             aria-label={keyboard ? 'Hide keyboard' : 'Show keyboard'}
+            onPointerDown={(e) => e.preventDefault()}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => (keyboard ? termRef.current?.blur() : termRef.current?.focus())}
           >
@@ -555,7 +558,9 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
                   key={text}
                   variant="outline"
                   size="sm"
-                  className="h-11 min-w-11 font-mono"
+                  tabIndex={-1}
+                  className="h-11 min-w-11 touch-manipulation font-mono"
+                  onPointerDown={(e) => e.preventDefault()}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => void api.pty_input(src.session, src.job, null, [k], ...onEngine(src.engine)).catch(() => undefined)}
                 >
@@ -568,7 +573,9 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
                     key={text}
                     variant="outline"
                     size="sm"
-                    className="h-11 min-w-11 font-mono"
+                    tabIndex={-1}
+                    className="h-11 min-w-11 touch-manipulation font-mono"
+                    onPointerDown={(e) => e.preventDefault()}
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => void api.shell_input(src.shell, null, [k], ...onEngine(src.engine)).catch(() => undefined)}
                   >
@@ -580,7 +587,9 @@ export function Terminal({ session, job, engine, label, popped = false, source, 
                     key={text}
                     variant="outline"
                     size="sm"
-                    className="h-12 min-w-12 font-mono"
+                    tabIndex={-1}
+                    className="h-12 min-w-12 touch-manipulation font-mono"
+                    onPointerDown={(e) => e.preventDefault()}
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => sendRef.current?.(seq(termRef.current?.modes.applicationCursorKeysMode ?? false))}
                   >
@@ -767,7 +776,7 @@ export function TerminalViewer({ session, open, onOpenChange }: { session: strin
     )
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[85vh] max-w-[95vw] flex-col gap-0 p-0 pt-10 sm:max-w-[95vw]" onOpenAutoFocus={(e) => e.preventDefault()}>
+      <DialogContent className="top-[calc(var(--visible-band,100dvh)/2)] flex h-[min(85vh,calc(var(--visible-band,100dvh)-2rem))] max-w-[95vw] flex-col gap-0 p-0 pt-10 sm:max-w-[95vw]" onOpenAutoFocus={(e) => e.preventDefault()}>
         <DialogTitle className="sr-only">Terminals</DialogTitle>
         {open && <Body session={session} />}
       </DialogContent>

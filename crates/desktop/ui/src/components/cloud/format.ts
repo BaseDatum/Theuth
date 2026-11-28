@@ -2,8 +2,10 @@
 // No React, no RPC: the wizard, Settings › Machines and the tests share them. No price lives here: every number comes
 // from the provider at runtime (`cloud_sizes`, `cloud_list`'s `monthly_usd`, `ProviderInfo.volume_usd_per_gb`).
 
+import { age } from '@/components/tasks/helpers'
 import { MIN_PASSWORD } from '@/components/vault/strength'
 import { BOOTSTRAPPING_HINT, BOOTSTRAPPING_LABEL } from '@/lib/peer-sync'
+import type { Peer } from '@/rpc/bindings/method.nodes.output'
 import { type CloudNode, DEFAULT_VOLUME_GB, type K8sOptions, type NodeSpec, type ProviderInfo, type ProviderKind, type Quote, type SizeList, type SizeOption, STAGES, type Stage } from './types'
 
 /** The provider badges of the mockup: the brands' own colours (the only hard-coded colours of the cloud UI). */
@@ -233,17 +235,40 @@ export type Tone = 'ok' | 'warn' | 'bad' | 'muted' | 'busy' | 'sync'
 /** The row's word for the create job's current stage (`creating · installing`). */
 const STAGE_WORD: Record<Stage, string> = { server: 'server', storage: 'storage', install: 'installing', join: 'joining', vault: 'protecting the vault', ready: 'ready' }
 
-/** Settings › Machines status: `online · direct`, `Syncing mesh history…`, `offline`, `creating · installing`, `not on this engine`. */
+export type LivePeer = Pick<Peer, 'reachable' | 'path' | 'rtt_ms' | 'last_seen_ms'>
+
+/**
+ * Settings › Machines status:
+ * - Lifecycle words (`creating`, `failed`, `sealed`, `destroying`, `working…`, `not on this engine`, `destroyed · disk kept`) stay on the cloud record.
+ * - For a `ready` cloud node when `livePeer` comes from `mesh_status` (`Peer | null`), the connection chip matches the live Machines row (`LAN 12 ms`, `Relay 41 ms`, `offline 3h`, `online`); when `livePeer === null` (not present in `mesh_status`), it says `not in the mesh` rather than `offline`.
+ */
 export function statusOf(
   n: Pick<CloudNode, 'state' | 'stage' | 'reachable' | 'path' | 'sealed'>,
   bootstrapping = false,
+  livePeer?: LivePeer | null,
+  now = Date.now(),
 ): { text: string; tone: Tone; hint?: string } {
   switch (n.state) {
-    case 'ready':
+    case 'ready': {
+      if (livePeer !== undefined) {
+        if (livePeer === null) {
+          if (n.sealed) return { text: 'sealed', tone: 'warn', hint: 'Vault locked: unlock it from one of your devices or with the master password' }
+          return { text: 'not in the mesh', tone: 'muted' }
+        }
+        if (!livePeer.reachable) {
+          return { text: livePeer.last_seen_ms > 0 ? `offline ${age(livePeer.last_seen_ms, now)}` : 'offline', tone: 'bad' }
+        }
+        if (n.sealed) return { text: 'sealed', tone: 'warn', hint: 'Vault locked: unlock it from one of your devices or with the master password' }
+        if (bootstrapping) return { text: BOOTSTRAPPING_LABEL, tone: 'sync', hint: BOOTSTRAPPING_HINT }
+        const rtt = livePeer.rtt_ms !== null ? ` ${livePeer.rtt_ms} ms` : ''
+        if (livePeer.path === 'relay') return { text: `Relay${rtt}`, tone: 'ok' }
+        return { text: livePeer.path === 'lan' ? `LAN${rtt}` : 'online', tone: 'ok' }
+      }
       if (n.reachable === false || n.path === 'offline') return { text: 'offline', tone: 'bad' }
       if (n.sealed) return { text: 'sealed', tone: 'warn', hint: 'Vault locked: unlock it from one of your devices or with the master password' }
       if (bootstrapping) return { text: BOOTSTRAPPING_LABEL, tone: 'sync', hint: BOOTSTRAPPING_HINT }
       return { text: n.path ? `online · ${n.path}` : 'online', tone: 'ok' }
+    }
     case 'creating':
       return { text: n.stage ? `creating · ${STAGE_WORD[n.stage]}` : 'creating', tone: 'busy' }
     case 'failed':

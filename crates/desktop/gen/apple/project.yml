@@ -78,6 +78,7 @@ targets:
       - sdk: MetalKit.framework
       - sdk: QuartzCore.framework
       - sdk: AuthenticationServices.framework
+      - sdk: GameController.framework
       - sdk: JavaScriptCore.framework
       - sdk: SafariServices.framework
       - sdk: Security.framework

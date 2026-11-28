@@ -6,7 +6,7 @@ import type { HistorySearchHit } from "@/rpc/bindings/method.rpc_2dcompose.outpu
 import type { MeetingSummary } from "@/rpc/bindings/method.meeting.output"
 import type { Meta } from "@/rpc/bindings/method.knowledge.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
-import { type AttachRef, atTrigger, chatName, cleanTitle, compose, marker, parse, size, subtitle, title, toRef, whiteboardRef } from './attach'
+import { type AttachRef, KIND_LABEL, atTrigger, chatName, cleanTitle, compose, fileMeta, marker, normalizeFileAttachId, parse, size, subtitle, terminalRef, title, toRef, whiteboardRef } from './attach'
 // One grammar, one fixture (66 §3.3): the same file drives `agent::attach::tests`.
 import fixtures from '../../../../agent/tests/fixtures/attach_markers.json'
 
@@ -37,11 +37,25 @@ test('marker round-trips every kind, with `"`, `\\` and `·` in titles', () => {
     { kind: 'artifact', id: 'toolu_01HZ3v7Q', title: 'Q3 "pipeline" report', meta: '' },
     { kind: 'session', id: '0192a4c1-7e3b-7c0e-9c1f-2b6d1e8f4a10', title: 'Relay · reconnect', meta: 'chat · updated Sep 19' },
     { kind: 'meeting', id: '0192b0f2-0a1d-7e55-8d3a-6f2c9e1b7d44', title: 'C:\\weekly\\planning', meta: 'Sep 23 · 42 min' },
+    { kind: 'file', id: 'attachments/0192_spec.pdf', title: 'Spec "v2".pdf', meta: 'pdf · 420 KB' },
   ]
   for (const r of refs) expect(parse(marker(r))).toEqual({ refs: [r], body: '' })
   const body = 'fold it in\n\n[attached note x "not a marker"]\nthe end'
   expect(parse(compose(refs, body))).toEqual({ refs, body })
   expect(compose([], body)).toBe(body)
+})
+
+test('file kind helpers: KIND_LABEL, normalizeFileAttachId, fileMeta, and GB size', () => {
+  expect(KIND_LABEL.file).toBe('File')
+  expect(normalizeFileAttachId('/Users/sky/.theuth/attachments/abc_spec.pdf')).toBe('attachments/abc_spec.pdf')
+  expect(normalizeFileAttachId('C:\\data\\attachments\\abc_dump.sql')).toBe('attachments/abc_dump.sql')
+  expect(normalizeFileAttachId('attachments/abc_my file.zip')).toBe('attachments/abc_my_file.zip')
+  expect(normalizeFileAttachId('plain_archive.tar.gz')).toBe('attachments/plain_archive.tar.gz')
+  expect(fileMeta({ name: 'report.pdf', size: 420 * 1024 })).toBe('pdf · 420 KB')
+  expect(fileMeta({ name: 'ARCHIVE.ZIP', size: 1536 })).toBe('zip · 1.5 KB')
+  expect(fileMeta({ name: 'Makefile', size: 14 * 1024 })).toBe('14 KB')
+  expect(fileMeta({ name: '.env', size: 128 })).toBe('128 B')
+  expect(size(2.5 * 1024 * 1024 * 1024)).toBe('2.5 GB')
 })
 
 test('legacy [doc …] parses as note/knowledge; new sends use the new form', () => {
@@ -65,6 +79,17 @@ test('218 §1: the whiteboard marker parses, round-trips and counts cards in the
   expect(marker(whiteboardRef(id, 'Attention inbox', 1))).toBe(`[attached whiteboard ${id} "Attention inbox" · 1 card]`)
   expect(marker(whiteboardRef(id, 'Attention inbox', 0))).toBe(`[attached whiteboard ${id} "Attention inbox" · 0 cards]`)
   expect(whiteboardRef(id, '', 2).title).toBe('Untitled whiteboard')
+})
+
+test('terminal marker parses, round-trips, and uses label "Terminal"', () => {
+  const terminal = { engine: 'node-a', shell: 'term-1234', name: 'mac-studio terminal', node: 'mac-studio' }
+  const line = '[attached terminal node-a:term-1234 "mac-studio terminal" · mac-studio]'
+  const ref = { kind: 'terminal', id: 'node-a:term-1234', title: 'mac-studio terminal', meta: 'mac-studio' } as const
+  expect(KIND_LABEL.terminal).toBe('Terminal')
+  expect(terminalRef(terminal)).toEqual(ref)
+  expect(toRef({ kind: 'terminal', terminal })).toEqual(ref)
+  expect(marker(ref)).toBe(line)
+  expect(parse(`${line}\ncheck logs`)).toEqual({ refs: [ref], body: 'check logs' })
 })
 
 const NOW = new Date(2026, 8, 24, 12, 0, 0)

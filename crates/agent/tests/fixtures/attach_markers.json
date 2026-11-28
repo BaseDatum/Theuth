@@ -240,6 +240,18 @@
       "body": "which mock should we keep?"
     },
     {
+      "name": "file",
+      "input": "[attached file attachments/deadbeef12345678.pdf \"spec.pdf\" · pdf · 420 KB]\nreview section 2",
+      "refs": [{"kind": "file", "id": "attachments/deadbeef12345678.pdf", "title": "spec.pdf", "meta": "pdf · 420 KB"}],
+      "body": "review section 2"
+    },
+    {
+      "name": "terminal",
+      "input": "[attached terminal xeus:main \"Build shell\" · xeus]\nrun cargo check in there",
+      "refs": [{"kind": "terminal", "id": "xeus:main", "title": "Build shell", "meta": "xeus"}],
+      "body": "run cargo check in there"
+    },
+    {
       "name": "empty text",
       "input": "",
       "refs": [],

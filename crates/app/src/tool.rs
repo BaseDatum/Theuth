@@ -48,37 +48,88 @@ begin = Button(\"Begin drill\", @Set($stage, \"cutover\"))\n\
 reset = Button(\"Reset\", @Reset($stage), \"secondary\")\n\
 docs = Button(\"Runbook\", @OpenUrl(\"https://example.com/runbook\"))";
 
-/// Components whose compact signature the prompt block carries (46 §9 as-built): the
-/// ones a first attempt reaches for, including the explanatory set an inline ```openui
-/// reply fence uses; the rest live in the `apps` skill's full catalog.
-const PROMPT_COMPONENTS: [&str; 31] = [
+/// Layout, content, and action components included in the system prompt.
+const PROMPT_LAYOUT: &[&str] = &[
     "Stack",
     "Card",
     "CardHeader",
-    "TextContent",
-    "Image",
-    "Table",
-    "Col",
-    "BarChart",
-    "LineChart",
-    "Series",
+    "InlineHeader",
     "Tabs",
     "TabItem",
-    "Steps",
-    "StepsItem",
-    "Callout",
-    "MetricIndicatorInline",
-    "ListBlock",
-    "ListItem",
-    "Button",
-    "Buttons",
-    "Input",
-    "Select",
-    "SelectItem",
-    "Tag",
     "Accordion",
     "AccordionItem",
+    "Steps",
+    "StepsItem",
+    "Modal",
+    "SectionBlock",
+    "SectionItem",
+    "Carousel",
+    "Separator",
+    "TextContent",
+    "Callout",
+    "Image",
     "CodeBlock",
+    "Button",
+    "Buttons",
+];
+
+/// Rich card blocks and their inline building blocks included in the system prompt.
+const PROMPT_CARDS: &[&str] = &[
+    "OverviewCardBlock",
+    "OverviewCardItem",
+    "SnippetCardBlock",
+    "SnippetCardItem",
+    "CompositeCardBlock",
+    "CompositeCardItem",
+    "ContextCardBlock",
+    "ContextCardItem",
+    "Icon",
+    "IconText",
+    "ImageText",
+    "Text",
+    "BoldText",
+    "MetricIndicatorInline",
+];
+
+/// Data display, table, and chart components included in the system prompt.
+const PROMPT_DATA: &[&str] = &[
+    "Table",
+    "Col",
+    "EditableTable",
+    "EntityList",
+    "TagBlock",
+    "Tag",
+    "ListBlock",
+    "ListItem",
+    "BarChart",
+    "LineChart",
+    "AreaChart",
+    "HorizontalBarChart",
+    "PieChart",
+    "RadarChart",
+    "ScatterChart",
+    "ScatterSeries",
+    "Point",
+    "SingleStackedBarChart",
+    "Series",
+];
+
+/// Form container and input components included in the system prompt.
+const PROMPT_FORMS: &[&str] = &[
+    "Form",
+    "FormControl",
+    "Input",
+    "TextArea",
+    "Select",
+    "SelectItem",
+    "DatePicker",
+    "Slider",
+    "SwitchGroup",
+    "SwitchItem",
+    "CheckBoxGroup",
+    "CheckBoxItem",
+    "RadioGroup",
+    "RadioItem",
     "Chips",
     "ChipItem",
     "OptionCards",
@@ -88,22 +139,29 @@ const PROMPT_COMPONENTS: [&str; 31] = [
 /// Prompt block registered as `RegisterPrompt { plugin: "app" }` (46 §9):
 /// a function of the generated catalog only, so it never busts the system
 /// cache. Front-loads what a first attempt gets wrong without the skill —
-/// the exact component names and their positional arguments — as compact
-/// named signatures for [`PROMPT_COMPONENTS`], plus one complete example;
-/// the full catalog is the `apps` skill's.
+/// exact component names, positional signatures for high-value components,
+/// visual craft rules, interactive diagrams, and one complete example;
+/// full prop types and remaining components live in the `apps` skill.
 pub fn prompt() -> String {
-    let mut out = String::with_capacity(4096);
+    let mut out = String::with_capacity(8192);
     out.push_str("## Interactive screens: `app`\n\
-Use `app {name, source}` for a clickable prototype or a live interactive screen (desktop/web, progressive). Surface fences are for a static picture (an ```openui fence in a reply renders inline in the message flow exactly like a json-render block: `$state`, @Set/@Reset/@OpenUrl and inputs work, Query/Mutation/@ToAssistant are inert); apps are for live data and actions; `show` for files. OpenUI Lang: one `name = expression` per line; `root` is required and is a `Card([...])` (Stack only inside it, for rows/columns); components take POSITIONAL arguments in the signature order below (skip an optional one with `null`); `$name = literal` declares state; only the component names below exist (no Heading/Text/State/OpenURL). A button press approves its action: say the consequence in the label, never add a second confirmation. Links, external images and services are welcome. `Query(tool, args, defaults, refreshSeconds?)` reads an installed tool; `Mutation(tool, args)` runs only from `@Run` in an activated action. Prefer installed tools, then `http_get`/`http_post` for public HTTP APIs. Every statement must be complete on its own line; the receipt's `record_call_id` is what you pass back with `edit: true` to change the app instead of republishing it. Once the app is published, the user has it: do not describe it back.\n\
+Use `app {name, source}` for a clickable prototype or a live interactive screen (desktop/web, progressive). Surface fences are for inline visuals: an ```openui fence in a reply renders inline in the message flow exactly like a json-render block (`$state`, @Set/@Reset/@OpenUrl/@CopyToClipboard and inputs work; Query, Mutation and @ToAssistant belong in `app` tool calls, never in reply fences); `show` is for files and custom HTML pages. OpenUI Lang: one `name = expression` per line; `root` is required and is a `Card([...])` (Stack only inside it, for rows/columns); components take POSITIONAL arguments in the signature order below (skip an optional one with `null`); `$name = literal` declares state; only catalog component names exist (no Heading/State/OpenURL — use CardHeader/InlineHeader/TextContent for headings and prose). Visual craft: prefer OverviewCardBlock, SnippetCardBlock, or CompositeCardBlock with IconText (Lucide kebab-case Icon(name, category?)) over walls of TextContent; use Tabs for alternate views and Modal for edit forms. Text, BoldText, IconText, ImageText, and MetricIndicatorInline belong inside card items — never place them bare in a Card or Stack. A button press approves its action: say the consequence in the label, never add a second confirmation. Links, external images and services are welcome. `Query(tool, args, defaults, refreshSeconds?)` reads an installed tool; `Mutation(tool, args)` runs only from `@Run` in an activated action. Prefer installed tools, then `http_get`/`http_post` for public HTTP APIs. Every statement must be complete on its own line; pass the receipt's `record_call_id` back with `edit: true` to change the app instead of republishing it. Once the app is published, the user has it: do not describe it back.\n\
 Example:\n```openui\n");
     out.push_str(EXAMPLE);
-    out.push_str("\n```\nComponents (positional args, `?` optional): ");
-    out.push_str(&compact_signatures(&PROMPT_COMPONENTS).join("; "));
+    out.push_str("\n```\nComponents (positional args, `?` optional):\n- Layout & content: ");
+    out.push_str(&compact_signatures(PROMPT_LAYOUT).join("; "));
+    out.push_str("\n- Rich card blocks & inline pieces (inline pieces go inside card items only): ");
+    out.push_str(&compact_signatures(PROMPT_CARDS).join("; "));
+    out.push_str("\n- Data, tables & charts: ");
+    out.push_str(&compact_signatures(PROMPT_DATA).join("; "));
+    out.push_str("\n- Forms: ");
+    out.push_str(&compact_signatures(PROMPT_FORMS).join("; "));
     out.push_str(
-        "\nActions: one bare step as a button's action, Button(\"Go\", @OpenUrl(url)), or several in order with Action([@Run(m), @Set($var, value)]); steps are @Run(queryOrMutation), @Set($var, value), @Reset($var), @OpenUrl(url), @ToAssistant(message, context?), @CopyToClipboard(text). \
-         Builtins: @Each(array, item, template), @Count, @Sum, @Avg, @Min, @Max, @Sort(array, field, dir?), @Filter(array, field, op, value), @Round, @Abs, @Floor, @Ceil, @Percent(part, total), @FormatNumber(value), @FormatDate(value). \
-         Results: query value is the tool's structured result; mutation exposes .status/.data/.error. \
-         Full catalog (Carousel, ImageGallery, RadarChart, ScatterChart, forms…): the `apps` skill.",
+        "\n- Interactive diagrams: all 16 diagram types (Graph, StateMachine, Entities, Swimlane, GraphDelta, Waterfall, Funnel, Gantt, Quadrant, Treemap, Sankey, Venn, Loop, Layers, Journey, Fishbone) work inside OpenUI with `highlight` ($binding of active unit ids) and `onSelect` click binding (`@Set($sel, $value)`).\n\
+Actions: one bare step as a button's action, Button(\"Go\", @OpenUrl(url)), or several in order with Action([@Run(m), @Set($var, value)]); steps are @Run(queryOrMutation), @Set($var, value), @Reset($var), @OpenUrl(url), @ToAssistant(message, context?), @CopyToClipboard(text). \
+Builtins: @Each(array, item, template), @Count, @Sum, @Avg, @Min, @Max, @Sort(array, field, dir?), @Filter(array, field, op, value), @Round, @Abs, @Floor, @Ceil, @Percent(part, total), @FormatNumber(value), @FormatDate(value). \
+Results: query value is the tool's structured result; mutation exposes .status/.data/.error. \
+Full catalog (ImageGallery, ImageTextLarge, FollowUpBlock, IconButton, full prop types, diagram signatures & examples): the `apps` skill.",
     );
     out
 }
@@ -139,7 +197,7 @@ fn compact_signatures(only: &[&str]) -> Vec<String> {
 }
 
 /// Split a signature's parameter list on top-level commas, stopping at the
-/// matching `)`; nested `(`, `[`, `{` and quoted strings are skipped over.
+/// matching `)`; nested `(`, `[`, `{`, `<` and quoted strings are skipped over.
 fn top_level_params(rest: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0i32;
@@ -149,8 +207,8 @@ fn top_level_params(rest: &str) -> Vec<&str> {
         match c {
             '"' => quote = !quote,
             _ if quote => {}
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' if depth > 0 => depth -= 1,
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' if depth > 0 => depth -= 1,
             ')' => {
                 out.push(&rest[start..i]);
                 return out;
@@ -184,12 +242,13 @@ impl Tool for AppTool {
 
     fn description(&self) -> String {
         "Publish an interactive OpenUI Lang app the user can open and click: state, buttons, \
-         forms, tables, charts, live Query reads of installed tools and Mutation actions. \
-         Renders progressively while you write it. Pass the complete `source` for a new app, or \
-         `edit: true` with `base_call_id` from the receipt and a patch of statements to change \
-         (`name = null` deletes). Errors name the statement and the signature to fix. Use only \
-         the component names and positional signatures listed in the system prompt's `app` \
-         section; the `apps` skill has full types and examples."
+         rich card blocks, modals, forms, tables, charts, interactive diagrams, live Query reads \
+         of installed tools and Mutation actions. Renders progressively while you write it. Pass \
+         the complete `source` for a new app, or `edit: true` with `base_call_id` from the \
+         receipt and a patch of statements to change (`name = null` deletes). Errors name the \
+         statement and the signature to fix. Use only the component names and positional \
+         signatures listed in the system prompt's `app` section; the `apps` skill has full types \
+         and examples."
             .into()
     }
 
@@ -486,11 +545,16 @@ mod tests {
 
     #[test]
     fn prompt_front_loads_compact_signatures_and_a_complete_example() {
-        let sigs = compact_signatures(&PROMPT_COMPONENTS);
+        let all_prompt: Vec<&str> = [PROMPT_LAYOUT, PROMPT_CARDS, PROMPT_DATA, PROMPT_FORMS]
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
+        let sigs = compact_signatures(&all_prompt);
         assert_eq!(
             sigs.len(),
-            PROMPT_COMPONENTS.len(),
-            "every listed component is in the catalog: {sigs:?}"
+            all_prompt.len(),
+            "every listed component is unique and in the catalog: {sigs:?}"
         );
         assert!(
             sigs.contains(&"Stack(children, direction?, gap?, align?, justify?, wrap?)".to_owned()),
@@ -505,33 +569,88 @@ mod tests {
             "{sigs:?}"
         );
         assert!(sigs.contains(&"Steps(items)".to_owned()), "{sigs:?}");
-        // Nested types with commas/braces do not split a parameter.
+        assert!(
+            sigs.contains(&"Modal(title, open?, children, size?)".to_owned()),
+            "{sigs:?}"
+        );
+        assert!(
+            sigs.contains(
+                &"OverviewCardBlock(items, layout?, responsive?, action?, gap?)".to_owned()
+            ),
+            "{sigs:?}"
+        );
+        assert!(
+            sigs.contains(
+                &"CompositeCardBlock(items, layout?, responsive?, action?, gap?)".to_owned()
+            ),
+            "{sigs:?}"
+        );
+        assert!(
+            sigs.contains(&"Icon(name, category?)".to_owned()),
+            "{sigs:?}"
+        );
+        assert!(
+            sigs.contains(&"EditableTable(name?, columns?, data?)".to_owned()),
+            "{sigs:?}"
+        );
+        assert!(
+            sigs.contains(&"EntityList(rows?, size?, header?, footer?)".to_owned()),
+            "{sigs:?}"
+        );
+        assert!(
+            sigs.contains(&"PieChart(labels, values, variant?, appearance?)".to_owned()),
+            "{sigs:?}"
+        );
+        // Nested types with commas/braces/angle brackets do not split a parameter.
         assert!(
             sigs.iter()
                 .any(|s| s.starts_with("Input(name, placeholder?, type?, rules?, value?)")),
             "{sigs:?}"
         );
         assert!(
-            sigs.iter().all(|s| !s.contains(':') && !s.contains('"')),
+            sigs.contains(&"CheckBoxGroup(name, items, rules?, value?)".to_owned()),
+            "{sigs:?}"
+        );
+        assert!(
+            sigs.contains(&"SwitchGroup(name, items, variant?, value?)".to_owned()),
+            "{sigs:?}"
+        );
+        assert!(
+            sigs.iter()
+                .all(|s| !s.contains(':') && !s.contains('"') && !s.contains('<') && !s.contains('>')),
             "no types leak: {sigs:?}"
         );
-        // The explanatory set an inline reply fence reaches for is in the prompt; the rest is the skill's.
         assert!(sigs.contains(&"Accordion(items)".to_owned()), "{sigs:?}");
         assert!(
             sigs.iter().any(|s| s.starts_with("OptionCards(")),
             "{sigs:?}"
         );
-        assert!(!sigs.iter().any(|s| s.starts_with("Carousel(")), "{sigs:?}");
-        assert!(compact_signatures(&["Carousel"]).len() == 1);
+        assert!(
+            !sigs.iter().any(|s| s.starts_with("ImageGallery(")),
+            "{sigs:?}"
+        );
+        assert_eq!(compact_signatures(&["ImageGallery"]).len(), 1);
         let p = prompt();
         assert!(p.contains("```openui\nroot = Card(["));
-        assert!(p.contains("no Heading/Text/State/OpenURL"));
-        assert!(p.ends_with("Full catalog (Carousel, ImageGallery, RadarChart, ScatterChart, forms…): the `apps` skill."));
+        assert!(p.contains("no Heading/State/OpenURL"));
+        assert!(p.contains("never place them bare in a Card or Stack"));
+        assert!(p.contains(
+            "Query, Mutation and @ToAssistant belong in `app` tool calls, never in reply fences"
+        ));
+        assert!(p.contains(
+            "all 16 diagram types (Graph, StateMachine, Entities, Swimlane, GraphDelta, Waterfall, Funnel, Gantt, Quadrant, Treemap, Sankey, Venn, Loop, Layers, Journey, Fishbone)"
+        ));
+        assert!(p.contains(
+            "`highlight` ($binding of active unit ids) and `onSelect` click binding (`@Set($sel, $value)`)"
+        ));
+        assert!(p.ends_with(
+            "Full catalog (ImageGallery, ImageTextLarge, FollowUpBlock, IconButton, full prop types, diagram signatures & examples): the `apps` skill."
+        ));
         assert!(p.contains("renders inline in the message flow exactly like a json-render block"));
-        assert!(!p.contains("Carousel("));
-        assert!(crate::skill().contains("Carousel("));
+        assert!(!p.contains("ImageGallery("));
+        assert!(crate::skill().contains("ImageGallery("));
         assert!(
-            p.len() < 6 * 1024,
+            p.len() < 8 * 1024,
             "prompt stays compact: {} bytes",
             p.len()
         );

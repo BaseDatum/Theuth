@@ -24,6 +24,8 @@ export type CanvasProps = {
   onSelect(id: string | null): void
   /** The minimap gives way while the side panel covers the right edge. */
   panelOpen: boolean
+  /** Floating bottom-right composer dock is mounted: move MiniMap to bottom-left so it never overlaps `.wb-dock`. */
+  composerOpen?: boolean
 }
 
 const NODE_TYPES = { task: TaskNode, pill: PillNode }
@@ -254,6 +256,7 @@ function Flow(p: CanvasProps) {
         </Controls>
         {!p.panelOpen && nodes.length > 8 && (
           <MiniMap
+            position={p.composerOpen ? 'bottom-left' : 'bottom-right'}
             pannable
             zoomable
             nodeColor={miniColor}
@@ -264,7 +267,7 @@ function Flow(p: CanvasProps) {
             maskStrokeColor="var(--color-fg-accent)"
             maskStrokeWidth={2}
             ariaLabel="Task graph overview"
-            style={{ width: 168, height: 96 }}
+            style={p.composerOpen ? { width: 168, height: 96, marginLeft: 56 } : { width: 168, height: 96 }}
           />
         )}
       </ReactFlow>

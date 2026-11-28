@@ -119,7 +119,7 @@ test('148 R1: a draft model/effort pick opens through create_session with it (ne
   const r = await openDraftSession(api)
   expect(create_session).toHaveBeenCalledWith({ ...PLAIN_OPTIONS, model: 'openai/gpt-5.4', effort: 'high' })
   expect(new_session).not.toHaveBeenCalled()
-  expect(r).toEqual({ id: 's-new', open: opened, pick: { model: 'openai/gpt-5.4', effort: 'high' } })
+  expect(r).toEqual({ id: 's-new', open: opened, pick: { model: 'openai/gpt-5.4', effort: 'high' }, spend: expect.any(Function) })
   // Spent in the store and in storage: the next draft starts on the engine default.
   expect(useDrafts.getState().pick).toEqual(NO_PICK)
   expect(load().pick).toEqual(NO_PICK)
@@ -132,7 +132,7 @@ test('148 R1: a draft model/effort pick opens through create_session with it (ne
 
 test('148 R1: no pick and no switch → new_session(); a switch (the composer\'s options) → create_session with them', async () => {
   const { api, create_session, new_session } = apiFor()
-  expect(await openDraftSession(api)).toEqual({ id: 's-plain', open: null, pick: NO_PICK })
+  expect(await openDraftSession(api)).toEqual({ id: 's-plain', open: null, pick: NO_PICK, spend: expect.any(Function) })
   expect(create_session).not.toHaveBeenCalled()
   const options = { ...PLAIN_OPTIONS, project: 'lab', model: 'openai/gpt-5.4' }
   useDrafts.getState().setPick({ model: 'openai/gpt-5.4' })
@@ -249,4 +249,91 @@ test('a create failure retains pending settings; explicit inherit and cleared su
     ['set_session_compactor_model', ['s-new', null]],
     ['set_session_compactor_effort', ['s-new', null]],
   ])
+})
+
+test('openDraftSession with deferSpend keeps pick, settings, and target intact until spend() is called; spend() is idempotent', async () => {
+  const { api } = firstApi()
+  useDrafts.getState().setPick({ model: 'openai/gpt-5.4', effort: 'high' })
+  useDrafts.getState().setSettings({ approvals: false })
+  useDraftTarget.getState().set({ engine: 'xeus', cwd: '/work' })
+
+  const r = await openDraftSession(api, null, undefined, { deferSpend: true })
+  expect(r.id).toBe('s-new')
+  // Still intact before spend()
+  expect(useDrafts.getState().pick).toEqual({ model: 'openai/gpt-5.4', effort: 'high' })
+  expect(useDrafts.getState().settings).toEqual({ approvals: false })
+  expect(useDraftTarget.getState()).toMatchObject({ engine: 'xeus', cwd: '/work', reuse: null })
+
+  r.spend()
+  expect(useDrafts.getState().pick).toEqual(NO_PICK)
+  expect(useDrafts.getState().settings).toEqual({})
+  expect(useDraftTarget.getState()).toMatchObject({ engine: null, cwd: null, reuse: null })
+
+  // Idempotent: a second spend() does not clobber subsequent draft state.
+  useDrafts.getState().setPick({ model: 'anthropic/claude-opus-4-1', effort: 'low' })
+  useDraftTarget.getState().set({ engine: 'cloud', cwd: '/next' })
+  r.spend()
+  expect(useDrafts.getState().pick).toEqual({ model: 'anthropic/claude-opus-4-1', effort: 'low' })
+  expect(useDraftTarget.getState()).toMatchObject({ engine: 'cloud', cwd: '/next' })
+
+  // Default call without deferSpend still spends immediately.
+  await openDraftSession(api)
+  expect(useDrafts.getState().pick).toEqual(NO_PICK)
+  expect(useDraftTarget.getState()).toMatchObject({ engine: null, cwd: null, reuse: null })
+})
+
+test('sendFirst keeps pick, settings, and target intact while send is pending; spends on send resolve unless deferSpend is true', async () => {
+  const { api } = firstApi()
+
+  // Case 1: without deferSpend — intact while send is pending, spent once send resolves.
+  useDrafts.getState().setPick({ model: 'openai/gpt-5.4', effort: 'high' })
+  useDrafts.getState().setSettings({ approvals: false })
+  useDraftTarget.getState().set({ engine: 'xeus', cwd: '/work' })
+  let releaseSend!: () => void
+  let markSendStarted!: () => void
+  const sendStarted = new Promise<void>((r) => (markSendStarted = r))
+  const run1 = sendFirst({
+    api,
+    options: null,
+    input: 'i1',
+    machine: () => null,
+    created: async () => {},
+    send: async () => {
+      markSendStarted()
+      await new Promise<void>((r) => (releaseSend = r))
+    },
+  })
+  await sendStarted
+  expect(useDrafts.getState().pick).toEqual({ model: 'openai/gpt-5.4', effort: 'high' })
+  expect(useDrafts.getState().settings).toEqual({ approvals: false })
+  expect(useDraftTarget.getState()).toMatchObject({ engine: 'xeus', cwd: '/work' })
+  releaseSend()
+  await run1
+  expect(useDrafts.getState().pick).toEqual(NO_PICK)
+  expect(useDrafts.getState().settings).toEqual({})
+  expect(useDraftTarget.getState()).toMatchObject({ engine: null, cwd: null, reuse: null })
+
+  // Case 2: with deferSpend: true — stays intact even after send resolves, until created's spend callback is called.
+  useDrafts.getState().setPick({ model: 'openai/gpt-5.4', effort: 'high' })
+  useDrafts.getState().setSettings({ approvals: false })
+  useDraftTarget.getState().set({ engine: 'xeus', cwd: '/work' })
+  let capturedSpend: (() => void) | null = null
+  await sendFirst({
+    api,
+    options: null,
+    input: 'i2',
+    deferSpend: true,
+    machine: () => null,
+    created: async (_id, _open, _pick, spend) => {
+      capturedSpend = spend
+    },
+    send: async () => {},
+  })
+  expect(useDrafts.getState().pick).toEqual({ model: 'openai/gpt-5.4', effort: 'high' })
+  expect(useDrafts.getState().settings).toEqual({ approvals: false })
+  expect(useDraftTarget.getState()).toMatchObject({ engine: 'xeus', cwd: '/work' })
+  capturedSpend!()
+  expect(useDrafts.getState().pick).toEqual(NO_PICK)
+  expect(useDrafts.getState().settings).toEqual({})
+  expect(useDraftTarget.getState()).toMatchObject({ engine: null, cwd: null, reuse: null })
 })

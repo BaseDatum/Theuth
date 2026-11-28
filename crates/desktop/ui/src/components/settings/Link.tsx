@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { Dot as PresenceDot, meshChip, useMembersLine } from '@/components/link/EngineSwitcher'
 import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
+import type { LinkFailure } from '@/lib/link-status'
 import { Dot, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { ago } from '@/components/sidebar/AgentTree'
 import { DeviceList } from '@/components/settings/DeviceList'
@@ -121,7 +122,7 @@ function NodeSide() {
           description={
             <span className="flex items-center gap-1.5">
               <Dot on={s.connected} />
-              {s.enabled ? (s.connected ? 'connected' : 'connecting…') : 'off'}
+              {s.enabled ? (s.connected ? 'connected' : 'relay disconnected') : 'off'}
             </span>
           }
         >
@@ -381,20 +382,40 @@ function Reachable() {
   )
 }
 
+/** Ensure a Link / Devices relay failure never shows a bare "Disconnected" that could be misread as the mesh being down. */
+export function relayFailureText(f: LinkFailure): LinkFailure {
+  if (f.kind === 'idle') return { ...f, title: 'Relay disconnected after inactivity' }
+  if (f.kind === 'queue-full') return { ...f, title: 'Relay disconnected: the relay queue for this device overflowed' }
+  if (/^disconnected\b/i.test(f.title)) return { ...f, title: f.title.replace(/^disconnected\b/i, 'Relay disconnected') }
+  return f
+}
+
+/** Relay-scoped presence wording for a Link / Devices row when no named failure is active. */
+export function relayPresenceText(kind: Engine['kind'], presence: Presence): string | null {
+  if (kind === 'mesh') {
+    if (presence === 'offline') return 'relay disconnected'
+    return meshChip(presence)
+  }
+  if (presence === 'online') return 'relay connected'
+  if (presence === 'offline') return 'relay disconnected'
+  if (presence === 'connecting') return 'relay connecting…'
+  return 'relay refused — pair again'
+}
+
 /**
- * `relay · paired … · 2 of 3 nodes online · relay connected` (mesh) or `relay · paired … · online` (node) — with the
+ * `relay · paired … · 2 of 3 nodes online · relay connected` (mesh) or `relay · paired … · relay connected` (node) — with the
  * named failure and its Re-pair (LINK-MSG) instead of the trailing state while the socket is failing.
  */
-function EngineLine({ engine: h, presence, paired }: { engine: Engine; presence: Presence; paired: string }) {
+export function EngineLine({ engine: h, presence, paired }: { engine: Engine; presence: Presence; paired: string }) {
   const navigate = useNavigate()
   const members = useMembersLine(h.id)
   const failure = useLinkFailure(h.id)
-  const chip = h.kind === 'mesh' ? meshChip(presence) : presence
+  const chip = relayPresenceText(h.kind, presence)
   if (failure)
     return (
       <span className="flex flex-col gap-0.5">
         <span>{[h.relayHost, paired].join(' · ')}</span>
-        <FailureText compact failure={failure} onRepair={() => void navigate({ to: '/link', search: { repair: h.id } })} />
+        <FailureText compact failure={relayFailureText(failure)} onRepair={() => void navigate({ to: '/link', search: { repair: h.id } })} />
       </span>
     )
   return <>{[h.relayHost, paired, chip ?? members, h.kind === 'mesh' && !chip ? 'relay connected' : null].filter(Boolean).join(' · ')}</>

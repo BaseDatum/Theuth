@@ -11,6 +11,7 @@ import { notify as toast } from '@/lib/notify'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { createNote } from '@/components/notes/create'
+import { openNewTaskModal } from '@/components/tasks/TaskModal'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { canPopout, openPopout, popoutLabel, type PopoutTarget } from '@/lib/popout'
 import * as talk from '@/lib/talk'
@@ -32,6 +33,7 @@ vi.mock('@/lib/talk', async (original) => {
   return { ...actual, open: vi.fn(), useTalk: () => ({ ...actual.OFF, phase: env.phase, session: env.session }) }
 })
 vi.mock('@/components/notes/create', () => ({ createNote: vi.fn() }))
+vi.mock('@/components/tasks/TaskModal', () => ({ openNewTaskModal: vi.fn() }))
 vi.mock('@/rpc/discovery', async (original) => ({ ...(await original<typeof Discovery>()), supports: () => true }))
 vi.mock('@/rpc/capabilities', () => ({ Capability: ({ children }: { children: ReactNode }) => children, useQuerySupport: () => false }))
 vi.mock('@/components/link/EngineSwitcher', () => ({ EngineSwitcher: () => null }))
@@ -119,7 +121,7 @@ test('collapsed on a desktop: the icon rail, its toggle expanding it again; expa
   expect(document.querySelector('[data-sidebar="menu-item"]')).toBeNull()
   expect(document.querySelector('[data-rail-sections]')).not.toBeNull()
   const labels = [...document.querySelectorAll<HTMLElement>('[data-slot="sidebar"] [aria-label]')].map((el) => el.getAttribute('aria-label'))
-  for (const name of ['Expand sidebar', 'Broadcast…', 'New chat', 'Inbox', 'Talk (running)', 'New note', 'Meeting', 'Agents', 'Library', 'Costs', 'Settings'])
+  for (const name of ['Expand sidebar', 'Broadcast…', 'New chat', 'Inbox', 'Talk (running)', 'New note', 'New task', 'Meeting', 'Agents', 'Library', 'Costs', 'Settings'])
     expect(labels).toContain(name)
   // No popout buttons, no "New chat on" in the rail.
   expect(document.querySelector('button[aria-label="Open in new window"]')).toBeNull()
@@ -244,4 +246,19 @@ test('iOS (no second windows): no row has the button', async () => {
   await mount()
   expect(document.querySelector('button[aria-label="Open in new window"]')).toBeNull()
   vi.mocked(canPopout).mockReturnValue(true)
+})
+
+test('New task sits directly below Note and opens the global task modal from expanded sidebar and collapsed rail', async () => {
+  await mount()
+  const rows = [...document.querySelectorAll<HTMLElement>('[data-sidebar="menu-item"]')].map((el) => el.textContent?.trim() ?? '')
+  const noteIdx = rows.findIndex((t) => t.startsWith('Note'))
+  expect(noteIdx).toBeGreaterThanOrEqual(0)
+  expect(rows[noteIdx + 1]).toBe('Task')
+  await click(document.querySelector<HTMLButtonElement>('button[aria-label="New task"]')!)
+  expect(openNewTaskModal).toHaveBeenCalledTimes(1)
+
+  await unmount()
+  await mount({ open: false })
+  await click(document.querySelector<HTMLButtonElement>('button[aria-label="New task"]')!)
+  expect(openNewTaskModal).toHaveBeenCalledTimes(2)
 })

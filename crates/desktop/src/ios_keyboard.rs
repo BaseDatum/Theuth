@@ -17,13 +17,105 @@
 //! Located by class-name prefix (`WKContentView`, or a KVO subclass of it) under the web view's
 //! scroll view, so a renamed or re-parented class is a no-op rather than a crash.
 
+use std::cell::RefCell;
 use std::ffi::{CStr, c_void};
 use std::mem::transmute;
+use std::ptr::NonNull;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+use objc2::runtime::{AnyClass, AnyObject, Imp, ProtocolObject, Sel};
 use objc2::{class, ffi, msg_send, sel};
+use objc2_foundation::{
+    NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol,
+};
+use objc2_ui_kit::UIApplicationDidBecomeActiveNotification;
+use tauri::{AppHandle, Emitter};
+
+#[link(name = "GameController", kind = "framework")]
+unsafe extern "C" {
+    static GCKeyboardDidConnectNotification: &'static NSNotificationName;
+    static GCKeyboardDidDisconnectNotification: &'static NSNotificationName;
+}
+
+type Observer = (
+    Retained<NSNotificationCenter>,
+    Retained<ProtocolObject<dyn NSObjectProtocol>>,
+);
+
+const UNKNOWN: u8 = 2;
+static LAST_CONNECTED: AtomicU8 = AtomicU8::new(UNKNOWN);
+
+thread_local! {
+    static OBSERVERS: RefCell<Vec<Observer>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Returns whether an external hardware keyboard is currently connected (`GCKeyboard.coalescedKeyboard != nil`).
+pub fn is_hardware_keyboard_connected() -> bool {
+    let Some(cls) = AnyClass::get(c"GCKeyboard") else {
+        return false;
+    };
+    // SAFETY: `+[GCKeyboard coalescedKeyboard]` is a class getter returning a nullable `GCKeyboard*`.
+    let keyboard: *mut AnyObject = unsafe { msg_send![cls, coalescedKeyboard] };
+    !keyboard.is_null()
+}
+
+/// Tauri IPC query for whether an external hardware keyboard is attached on iOS.
+#[tauri::command]
+pub fn hardware_keyboard_connected() -> bool {
+    is_hardware_keyboard_connected()
+}
+
+/// Observe hardware keyboard connect/disconnect and app foregrounding, emitting `hardware-keyboard`
+/// whenever the connected state changes. Idempotent if called more than once.
+pub fn watch_hardware_keyboard(app: &AppHandle) {
+    unwatch_hardware_keyboard();
+    LAST_CONNECTED.store(u8::from(is_hardware_keyboard_connected()), Ordering::SeqCst);
+
+    let center = NSNotificationCenter::defaultCenter();
+    let emit = |app: AppHandle| {
+        move || {
+            let connected = is_hardware_keyboard_connected();
+            let next = u8::from(connected);
+            if LAST_CONNECTED.swap(next, Ordering::SeqCst) != next {
+                let _ = app.emit("hardware-keyboard", connected);
+            }
+        }
+    };
+
+    // SAFETY: GameController / UIKit static notification name constants.
+    observe(&center, unsafe { GCKeyboardDidConnectNotification }, emit(app.clone()));
+    observe(&center, unsafe { GCKeyboardDidDisconnectNotification }, emit(app.clone()));
+    observe(
+        &center,
+        unsafe { UIApplicationDidBecomeActiveNotification },
+        emit(app.clone()),
+    );
+}
+
+/// Remove registered hardware keyboard `NSNotificationCenter` observers (called on `RunEvent::Exit`).
+pub fn unwatch_hardware_keyboard() {
+    for (center, token) in OBSERVERS.take() {
+        // SAFETY: `token` was returned by `addObserverForName:object:queue:usingBlock:` on `center`.
+        unsafe { center.removeObserver(token.as_ref()) };
+    }
+    LAST_CONNECTED.store(UNKNOWN, Ordering::SeqCst);
+}
+
+fn observe(
+    center: &Retained<NSNotificationCenter>,
+    name: &NSNotificationName,
+    handler: impl Fn() + 'static,
+) {
+    let block = block2::RcBlock::new(move |_: NonNull<NSNotification>| handler());
+    // SAFETY: no object filter, posting queue; the observer token is kept in `OBSERVERS`
+    // until `unwatch_hardware_keyboard` removes it.
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+    };
+    OBSERVERS.with_borrow_mut(|o| o.push((center.clone(), token)));
+}
 
 type Getter = unsafe extern "C-unwind" fn(&AnyObject, Sel) -> *mut AnyObject;
 type Setter = unsafe extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject);

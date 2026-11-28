@@ -287,7 +287,8 @@ export async function openDraftSession(
   api: Api,
   options: CreateSessionOptions | null = null,
   input?: string,
-): Promise<{ id: string; open: SessionOpen | null; pick: DraftPick }> {
+  opts?: { deferSpend?: boolean },
+): Promise<{ id: string; open: SessionOpen | null; pick: DraftPick; spend: () => void }> {
   const draft = useDrafts.getState()
   const { pick, settings, opening } = draft
   const target = useDraftTarget.getState()
@@ -326,9 +327,15 @@ export async function openDraftSession(
   if (settings.knowledgeHarvester) await apply('knowledge harvester', () => api.set_session_knowledge_harvester(id, settings.knowledgeHarvester![0], settings.knowledgeHarvester![1]))
   if (settings.viewBytes !== undefined) await apply('memory view size', () => api.set_session_view_bytes(id, settings.viewBytes!))
   if (settings.scope !== undefined) await apply('messaging scope and alias', () => api.set_peer_scope(id, settings.scope!, settings.alias ?? null))
-  draft.spend()
-  target.set({ engine: null, cwd: null, reuse: null })
-  return { id, open, pick }
+  let spent = false
+  const spend = () => {
+    if (spent) return
+    spent = true
+    useDrafts.getState().spend()
+    useDraftTarget.getState().set({ engine: null, cwd: null, reuse: null })
+  }
+  if (!opts?.deferSpend) spend()
+  return { id, open, pick, spend }
 }
 
 /**
@@ -348,9 +355,11 @@ export async function sendFirstElsewhere(o: {
   open(): Promise<unknown>
   back(): Promise<unknown>
   send(): Promise<unknown>
+  onOpened?: () => void
 }): Promise<void> {
   useRemoteStart.getState().begin(o.session, o.machine)
   await o.open()
+  o.onOpened?.()
   await untilLive(o.session, LIVE_WAIT_MS)
   try {
     await o.send()
@@ -374,19 +383,35 @@ export async function sendFirst(o: {
   input: string
   /** The picked engine's name for errors and "Starting on …"; `null` for this machine. */
   machine(engine: string): string | null
-  created(id: string, open: SessionOpen | null, pick: DraftPick): Promise<void>
+  created(id: string, open: SessionOpen | null, pick: DraftPick, spend: () => void): Promise<void> | void
   send(id: string): Promise<unknown>
   open?: (id: string) => Promise<unknown>
   back?: (id: string) => Promise<unknown>
+  deferSpend?: boolean
 }): Promise<void> {
   const { engine, cwd } = useDraftTarget.getState()
   const machine = engine ? o.machine(engine) : null
-  const { id, open, pick } = await openDraftSession(o.api, o.options, o.input).catch((e: unknown) => {
+  const { id, open, pick, spend } = await openDraftSession(o.api, o.options, o.input, { deferSpend: true }).catch((e: unknown) => {
     throw machine ? new Error(`Could not start the chat on ${machine}: ${e instanceof Error ? e.message : String(e)}`, { cause: e }) : e
   })
-  await o.created(id, open, pick)
+  await o.created(id, open, pick, spend)
   const { open: show, back } = o
   if (engine && machine && show && back)
-    await sendFirstElsewhere({ session: id, machine, target: { engine, cwd }, input: o.input, open: () => show(id), back: () => back(id), send: () => o.send(id) })
-  else await o.send(id)
+    await sendFirstElsewhere({
+      session: id,
+      machine,
+      target: { engine, cwd },
+      input: o.input,
+      open: () => show(id),
+      back: () => back(id),
+      send: () => o.send(id),
+      onOpened: spend,
+    })
+  else {
+    try {
+      await o.send(id)
+    } finally {
+      if (!o.deferSpend) spend()
+    }
+  }
 }

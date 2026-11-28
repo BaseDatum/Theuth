@@ -577,9 +577,12 @@ pub fn macos_gui_session_error(output: &str) -> Option<String> {
         || lower.contains("could not find domain")
         || (lower.contains("launchctl") && lower.contains("input/output error"));
     is_gui_err.then(|| {
-        "macOS background service install failed because this user has no active GUI login session \
-         (launchctl bootstrap gui/<uid>). Sign in to the macOS desktop once as this user and try again."
-            .to_owned()
+        const CANNED: &str = "macOS background service install failed because this user has no active GUI login session \
+             (launchctl bootstrap gui/<uid>). Sign in to the macOS desktop once as this user and try again.";
+        match output.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
+            Some(last) => format!("{CANNED} ({last})"),
+            None => CANNED.to_owned(),
+        }
     })
 }
 
@@ -1354,6 +1357,11 @@ Match host something
         assert!(
             err.0.contains("GUI login session"),
             "expected clear GUI session error, got: {}",
+            err.0
+        );
+        assert!(
+            err.0.contains("Bootstrap failed: 5: Input/output error"),
+            "expected raw last line appended, got: {}",
             err.0
         );
     }

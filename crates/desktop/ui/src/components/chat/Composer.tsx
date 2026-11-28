@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import {
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   FileUp,
@@ -15,6 +16,7 @@ import {
   Sparkles,
   Square,
   StickyNote,
+  Terminal,
   X } from 'lucide-react'
 import {
   type ClipboardEvent,
@@ -39,7 +41,7 @@ import * as dictation from '@/lib/dictation'
 import * as dictationBuffer from '@/lib/dictation-buffer'
 import { extFor, putAttachment, seedFile } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
-import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRef } from '@/lib/attach'
+import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, terminalRef, toRef } from '@/lib/attach'
 import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-picker'
 import {
   type InlineTrigger,
@@ -80,6 +82,7 @@ import type { CancelScope } from '@/rpc/bindings/method.agent.input'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
+import { terminalKey, useUserTerminals, type UserTerminal } from '@/store/terminals'
 import { createNote } from '@/components/notes/create'
 import { useNotes } from '@/components/notes/useNotes'
 import { AttachPicker } from './AttachPicker'
@@ -621,6 +624,9 @@ export function Composer({
   const [suffixStep, setSuffixStep] = useState<'list' | Suffix | null>(null)
   /** The `+` menu's Skills step (`SkillPicker`). */
   const [skillStep, setSkillStep] = useState(false)
+  /** The `+` menu's Terminal step (`TerminalAttachMenu`). */
+  const [terminalStep, setTerminalStep] = useState(false)
+  const userTerminals = useUserTerminals((s) => s.terminals)
   const box = useRef<HTMLDivElement>(null)
   const qc = useQueryClient()
   const notes = useNotes()
@@ -1164,6 +1170,7 @@ export function Composer({
     let body = ''
     /** 183 §5.6: a new chat's first message went to another machine (`sendFirstElsewhere` took the user back on failure). */
     let elsewhere = false
+    let spendDraft: () => void = () => {}
     try {
       // D15: a harness command picked from the menu with its arguments typed after it — the harness's, sent as typed.
       if (!pick && session && rawCmd && (line === rawCmd || line.startsWith(`${rawCmd} `))) {
@@ -1253,10 +1260,12 @@ export function Composer({
           api,
           options: draftCreate && (draftCreate.private || draftCreate.project || draftCreate.endless || draftCreate.meshId !== undefined) ? createOptions(draftCreate, useDrafts.getState().pick) : null,
           input: clientId,
+          deferSpend: true,
           machine: (engine) => (engine !== mesh?.self_id ? engineLabel(engine, mesh?.peers) : null),
-          created: async (id, open, pick) => {
-            if (open?.retention === 'private') usePrivate.getState().open(open)
+          created: async (id, open, pick, spend) => {
             target = id
+            spendDraft = spend
+            if (open?.retention === 'private') usePrivate.getState().open(open)
             if (sessionTitle) await api.rename_session(id, sessionTitle)
             // Seed before sending: a fast failure can finish before the RPC reply.
             loadHistory(id, { ...FRESH, model: pick.model ?? defaultModel ?? '', effort: pick.effort ?? defaultEffort ?? null }, 'replace')
@@ -1297,8 +1306,12 @@ export function Composer({
       if (!pick && unsent && target && !steered) useSessions.getState().unmarkSent(target, body)
       if (deliver) onSent?.(target ?? '')
       else if (target && !session && !elsewhere) {
-        if (onCreated) onCreated(target)
-        else await navigate({ to: '/c/$session', params: { session: target } })
+        try {
+          if (onCreated) onCreated(target)
+          else await navigate({ to: '/c/$session', params: { session: target } })
+        } finally {
+          spendDraft()
+        }
       } else if (session) onSent?.(session)
     } catch (e) {
       // The row shown at once comes back off; the text is still in the box, flagged `unsent` for the banner.
@@ -1311,8 +1324,12 @@ export function Composer({
         drafts.set(`${onCreated ? 'panel:' : ''}${target}`, drafts.by[draftKey] ?? EMPTY)
         drafts.set(draftKey, EMPTY)
         useSuffixes.getState().carry(suffixChat, target)
-        if (onCreated) onCreated(target)
-        else await navigate({ to: '/c/$session', params: { session: target } })
+        try {
+          if (onCreated) onCreated(target)
+          else await navigate({ to: '/c/$session', params: { session: target } })
+        } finally {
+          spendDraft()
+        }
       }
       if ((elsewhere && e instanceof Error ? e.cause : e) instanceof SendTimeout) useConnection.getState().client?.probe('send-timeout')
       const unreachable = ownerUnreachable(e)
@@ -1798,6 +1815,7 @@ export function Composer({
               if (!open) {
                 setSuffixStep(null)
                 setSkillStep(false)
+                setTerminalStep(false)
               }
             }}
           >
@@ -1810,9 +1828,20 @@ export function Composer({
                 <Plus className={COMPOSER_ICON} strokeWidth={COMPOSER_ICON_STROKE} />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="start" className={cn('p-1', skillStep ? 'w-72' : 'w-52')}>
+            <PopoverContent align="start" className={cn('p-1', skillStep ? 'w-72' : terminalStep ? 'w-64' : 'w-52')}>
               {skillStep ? (
                 <SkillPicker skills={skillIndex} parked={skills} onPick={pickSkill} onBack={() => setSkillStep(false)} />
+              ) : terminalStep ? (
+                <TerminalAttachMenu
+                  terminals={userTerminals}
+                  onPick={(terminal) => {
+                    addRef(terminalRef(terminal))
+                    setMenu(false)
+                    setTerminalStep(false)
+                    ref.current?.focus()
+                  }}
+                  onBack={() => setTerminalStep(false)}
+                />
               ) : suffixStep === 'list' ? (
                 <SuffixList
                   suffixes={suffixes}
@@ -1859,6 +1888,10 @@ export function Composer({
                     }}
                   >
                     <FileUp /> Attach file
+                  </Button>
+                  <Button variant="ghost" className="w-full justify-start" onClick={() => setTerminalStep(true)}>
+                    <Terminal /> Terminal
+                    <ChevronRight className="ml-auto" />
                   </Button>
                   <Button
                     variant="ghost"
@@ -2070,3 +2103,38 @@ export function SendButton({
     </Tooltip>
   )
 }
+
+/** The `+` menu's Terminal step: lists terminals created this session and attaches the chosen one's marker. */
+export function TerminalAttachMenu({
+  terminals,
+  onPick,
+  onBack,
+}: {
+  terminals: readonly UserTerminal[]
+  onPick(terminal: UserTerminal): void
+  onBack(): void
+}) {
+  return (
+    <div role="menu" aria-label="Terminal">
+      <Button variant="ghost" className="w-full justify-start text-fg-secondary pointer-coarse:min-h-11" onClick={onBack}>
+        <ChevronLeft /> Terminal
+      </Button>
+      {terminals.length === 0 && <p className="px-3 py-1.5 text-sm text-fg-tertiary">No terminals created yet.</p>}
+      {terminals.map((t) => (
+        <Button
+          key={terminalKey(t)}
+          variant="ghost"
+          role="menuitem"
+          data-attach-terminal={terminalKey(t)}
+          className="w-full justify-start gap-2 pointer-coarse:min-h-11"
+          onClick={() => onPick(t)}
+        >
+          <Terminal className="size-4 shrink-0 text-fg-secondary" aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-left">{t.name}</span>
+          <span className="shrink-0 text-xs text-fg-tertiary">{t.node}</span>
+        </Button>
+      ))}
+    </div>
+  )
+}
+

@@ -175,6 +175,8 @@ mod mobile {
                 // 218 §7: the whiteboard's snapshot of a rect of the main webview.
                 #[cfg(target_os = "ios")]
                 crate::apple_tile::wb_capture,
+                #[cfg(target_os = "ios")]
+                crate::ios_keyboard::hardware_keyboard_connected,
                 #[cfg(not(target_os = "ios"))]
                 crate::wb_capture
             ])
@@ -194,6 +196,8 @@ mod mobile {
                 let window = builder.build()?;
                 #[cfg(target_os = "ios")]
                 window.with_webview(|webview| crate::ios_keyboard::strip(webview.inner()))?;
+                #[cfg(target_os = "ios")]
+                crate::ios_keyboard::watch_hardware_keyboard(app.handle());
                 #[cfg(not(target_os = "ios"))]
                 let _ = window;
                 Ok(())
@@ -236,6 +240,7 @@ mod mobile {
                 ..
             } => background::release(),
             RunEvent::Exit => {
+                crate::ios_keyboard::unwatch_hardware_keyboard();
                 crate::ios_engine::shutdown(app);
                 crate::apple_cookies::unwatch(app);
             }

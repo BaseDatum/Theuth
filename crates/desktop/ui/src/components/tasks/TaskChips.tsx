@@ -19,6 +19,7 @@ export function TaskChips({
   disabled,
   onAdd,
   onRemove,
+  onOpen,
 }: {
   title: string
   tasks: readonly Task[]
@@ -27,22 +28,29 @@ export function TaskChips({
   disabled?: boolean
   onAdd(t: Task): void
   onRemove(t: Task): void
+  onOpen?(id: string): void
 }) {
   const [picking, setPicking] = useState(false)
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {tasks.map((b) => (
         <Badge key={b.id} variant="secondary" className="max-w-full gap-1 pr-1">
-          <Link to="/tasks/$id" params={{ id: b.id }} className="truncate hover:underline">
-            {b.title}
-          </Link>
+          {onOpen ? (
+            <button type="button" className="truncate hover:underline" onClick={() => onOpen(b.id)}>
+              {b.title}
+            </button>
+          ) : (
+            <Link to="/tasks/$id" params={{ id: b.id }} className="truncate hover:underline">
+              {b.title}
+            </Link>
+          )}
           <span className="text-fg-tertiary">{shortId(b.id)}</span>
           <button type="button" aria-label={`Remove ${b.title}`} className="rounded-full hover:bg-layer-2" disabled={disabled} onClick={() => onRemove(b)}>
             <X className="size-3" />
           </button>
         </Badge>
       ))}
-      <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => setPicking(true)}>
+      <Button type="button" variant="outline" size="xs" disabled={disabled} onClick={() => setPicking(true)}>
         Add task…
       </Button>
       <TaskPicker

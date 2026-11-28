@@ -1,31 +1,25 @@
 // 214 D6/D7: the project task graph — toolbar (project, filter chips, the "under" filter, + task, pop-out), the
-// blocker-cycle warning, the lazily loaded canvas and the inline editor at its right edge. The same component is the
-// `/tasks/graph` page, its pop-out window and the `tasks-graph` tile; only the chrome around it differs (`variant`).
-// Live through `useLiveTasks` (D5).
-import { useMutation } from '@tanstack/react-query'
+// blocker-cycle warning, the lazily loaded canvas, the centered task modal for creating/reviewing tasks, and the
+// floating bottom-right glass chat composer on the page variant. The same component is the `/tasks/graph` page,
+// its pop-out window and the `tasks-graph` tile; only the chrome around it differs (`variant`). Live through
+// `useLiveTasks` (D5).
 import { Link } from '@tanstack/react-router'
 import { AppWindow, KanbanSquare, ListTree, Plus, TriangleAlert, X } from 'lucide-react'
-import { type KeyboardEvent, lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { notify as toast } from '@/lib/notify'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { SectionRow } from '@/components/nav/SectionRow'
-import { errorText } from '@/components/settings/shared'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Switch } from '@/components/ui/switch'
 import { Toggle } from '@/components/ui/toggle'
 import { canPopout, isPopout, openPopout } from '@/lib/popout'
-import { useApi } from '@/lib/rpc'
 import { Unavailable } from '@/rpc/capabilities'
-import { shortId, USER } from '../helpers'
+import { shortId } from '../helpers'
 import { useBoardProjects, useInvalidateTasks, useLiveTasks, useTasks } from '../queries'
+import { TaskModal } from '../TaskModal'
 import { TaskPicker } from '../TaskPicker'
 import { blockerCycles, DEFAULT_OPTS, type GraphOpts, graphPopout, underScope } from './model'
-import { TaskPanel } from './TaskPanel'
+import { TaskGraphComposer } from './TaskGraphComposer'
 
 const Canvas = lazy(() => import('./Canvas'))
 
@@ -58,15 +52,14 @@ function useOpts(): [GraphOpts, (o: GraphOpts) => void] {
   return [opts, set]
 }
 
-/** A dismissible layer the Escape belongs to (an open select, the picker, a menu, the + Task popover). */
-const LAYER = '[role="dialog"],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]'
-
 export function TaskGraph({ project, onProject, variant }: { project: string | null; onProject(p: string | null): void; variant: 'page' | 'tile' }) {
   useLiveTasks()
+  const invalidate = useInvalidateTasks()
   const projects = useBoardProjects()
   const tasks = useTasks({ owner: null, state: null, engine: null, project })
   const [opts, setOpts] = useOpts()
   const [selected, setSelected] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
   const [under, setUnder] = useState<string | null>(null)
   const [pickingUnder, setPickingUnder] = useState(false)
   useEffect(() => {
@@ -74,19 +67,15 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
     setUnder(null)
   }, [project])
   const underTask = under === null ? undefined : tasks.data?.find((t) => t.id === under)
+  const activeUnder = underTask ? under : null
+  const shown = useMemo(() => {
+    const scoped = underScope(tasks.data ?? [], activeUnder)
+    return opts.hideDone ? scoped.filter((t) => t.state !== 'done' && t.state !== 'cancelled') : scoped
+  }, [tasks.data, activeUnder, opts.hideDone])
   // Blocker cycles among what is shown: drawn and flagged, never a blank graph — the warning says which tasks.
-  const cycles = useMemo(() => (tasks.data ? blockerCycles(underScope(tasks.data, under)) : []), [tasks.data, under])
+  const cycles = useMemo(() => (tasks.data ? blockerCycles(underScope(tasks.data, activeUnder)) : []), [tasks.data, activeUnder])
   const titleOf = (id: string) => tasks.data?.find((t) => t.id === id)?.title ?? `#${shortId(id)}`
-  // Esc inside the graph (never a key pressed elsewhere — the chat beside a tile keeps its own Esc): a field in the
-  // editor gives up focus first, then the editor closes. An open layer handles its own Escape.
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'Escape' || selected === null || e.defaultPrevented) return
-    const el = e.target instanceof HTMLElement ? e.target : null
-    if (el?.closest(LAYER)) return
-    e.stopPropagation()
-    if (el?.matches('input,textarea,[contenteditable="true"]')) el.blur()
-    else setSelected(null)
-  }
+  const showComposer = variant === 'page'
 
   const toolbar = (
     <>
@@ -143,7 +132,9 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
             </Link>
           </Button>
         )}
-        <NewTask project={project} selected={selected} onCreated={setSelected} />
+        <Button variant="ghost" size="sm" onClick={() => setCreating(true)}>
+          <Plus /> Task
+        </Button>
         {variant === 'page' && canPopout() && !isPopout() && (
           <Button variant="ghost" size="icon-sm" className="text-fg-secondary" aria-label="Open in new window" title="Open in new window" onClick={() => void openPopout(graphPopout(project))}>
             <AppWindow />
@@ -153,7 +144,7 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
     </>
   )
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onKeyDown}>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {variant === 'page' ? (
         <SectionRow className="h-auto min-h-11 flex-wrap gap-2 py-1">{toolbar}</SectionRow>
       ) : (
@@ -193,63 +184,38 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
         {tasks.data && tasks.data.length > 0 && (
           <Suspense fallback={<div className="size-full bg-background" />}>
             {/* Keyed by project: another project is a fresh drawing, fitted on its first layout. */}
-            <Canvas key={project ?? ''} tasks={tasks.data} opts={opts} under={underTask ? under : null} selected={selected} onSelect={setSelected} panelOpen={selected !== null} />
+            <Canvas
+              key={project ?? ''}
+              tasks={tasks.data}
+              opts={opts}
+              under={activeUnder}
+              selected={selected}
+              onSelect={setSelected}
+              panelOpen={false}
+              composerOpen={showComposer}
+            />
           </Suspense>
         )}
-        {selected !== null && <TaskPanel id={selected} known={tasks.data ?? []} onSelect={setSelected} onClose={() => setSelected(null)} />}
+        {showComposer && <TaskGraphComposer project={project} tasks={shown} selected={selected} />}
       </div>
+      <TaskModal
+        mode="create"
+        open={creating}
+        onOpenChange={setCreating}
+        project={project}
+        onCreated={() => {
+          invalidate()
+        }}
+      />
+      <TaskModal
+        mode="edit"
+        taskId={selected}
+        open={selected !== null}
+        onOpenChange={(v) => {
+          if (!v) setSelected(null)
+        }}
+        onSelectTask={(id) => setSelected(id)}
+      />
     </div>
-  )
-}
-
-/** "+ Task" (D7): a title in the current project, in backlog, owned by you; optionally blocked by the selected task. */
-function NewTask({ project, selected, onCreated }: { project: string | null; selected: string | null; onCreated(id: string): void }) {
-  const api = useApi()
-  const invalidate = useInvalidateTasks()
-  const [open, setOpen] = useState(false)
-  const [title, setTitle] = useState('')
-  const [blocked, setBlocked] = useState(true)
-  const after = blocked && selected !== null ? selected : null
-  const create = useMutation({
-    mutationFn: () => api.task_create({ state: 'backlog', title: title.trim(), brief: '', owner: USER, project, blockers: after ? [after] : [] }),
-    onSuccess: (t) => {
-      invalidate()
-      setTitle('')
-      setOpen(false)
-      onCreated(t.id)
-    },
-    onError: (e) => toast.error(errorText(e)),
-  })
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm">
-          <Plus /> Task
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-80">
-        <form
-          className="flex flex-col gap-3"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (title.trim() && !create.isPending) create.mutate()
-          }}
-        >
-          <Label htmlFor="tg-new-title" className="text-[13px] text-fg-secondary">
-            New task {project ? <>in {project}</> : '(no project)'}
-          </Label>
-          <Input id="tg-new-title" autoFocus placeholder="One line" value={title} onChange={(e) => setTitle(e.target.value)} />
-          {selected !== null && (
-            <Label className="flex items-center gap-2 text-[13px] text-fg-secondary">
-              <Switch checked={blocked} onCheckedChange={setBlocked} />
-              Blocked by the selected task
-            </Label>
-          )}
-          <Button type="submit" size="sm" disabled={!title.trim() || create.isPending}>
-            Create in backlog
-          </Button>
-        </form>
-      </PopoverContent>
-    </Popover>
   )
 }

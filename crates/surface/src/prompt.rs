@@ -268,14 +268,14 @@ Three fenced blocks render inline, merged into your reply with the same margins 
 
 /// Everything of the block after the catalog.
 const BLOCK_TAIL: &str = "\n\
-- ```openui: richer static components with local interaction, rendered inline exactly like json-render (not as an app card; the reader can open one as an app if they want): Steps/StepsItem, Tabs/TabItem, Callout, Card/CardHeader, Table/Col, BarChart/LineChart/Series, MetricIndicatorInline, ListBlock/ListItem, Tag, Accordion/AccordionItem, CodeBlock, Chips/ChipItem, OptionCards/OptionCard, Buttons/Button with a bare @Set/@OpenUrl action. Start the fence with root = Card([...]); Stack only inside it for rows. No Query/Mutation/@ToAssistant in a fence — a live screen is the `app` tool.\n\
+- ```openui: richer visual components with local interactive state (`$state`, `@Set`/`@Reset`/`@OpenUrl`/`@CopyToClipboard`), rendered inline exactly like json-render (not as an app card; the reader can open one as an app if they want): rich card blocks (`OverviewCardBlock`, `SnippetCardBlock`, `CompositeCardBlock`, `ContextCardBlock` with `IconText`/`BoldText`/`MetricIndicatorInline`), `Modal`, `Tabs`/`Accordion`/`SectionBlock`/`Steps`/`Carousel`, `EntityList`/`Table`/`ListBlock`/`TagBlock`, charts (`PieChart`, `AreaChart`, `BarChart`, `LineChart`, `HorizontalBarChart`, `RadarChart`, `ScatterChart`), form inputs (`Chips`, `OptionCards`, `Select`, `Input`, `Slider`, `DatePicker`), `Buttons`, and all 16 diagrams with click-to-select (`highlight` + `onSelect: @Set($sel, $value)`). Start the fence with `root = Card([...])`; `Stack` only inside it for rows. No Query/Mutation/@ToAssistant in a fence — live tool-backed screens belong in the `app` tool; custom CSS/HTML/JS mocks belong in `show{content, name: \"x.html\"}`.\n\
 - ```mermaid: sequenceDiagram (un-anchored sketches), mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph; state, class and ER pictures are StateMachine / Entities).\n\
 - A **page** (`show{content, name: \"x.html\"}`): one self-contained HTML document with its own `<style>`/`<script>`, CDN libraries allowed, rendered live inline in the theuth app in a sandboxed frame themed like the chat. Only for what no catalog component draws: a chart library's chart (Chart.js, ECharts, Plotly, D3), a map, 3D, a mockup, an image collage, an animation, a layout you must control pixel by pixel. Interfaces are the standing case: when the work is designing or changing a screen, dialog, form, dashboard or component — in theuth or in any product — mock it as a page (`show{content, name: \"mock.html\"}`) before or while you build it, so the reader sees the proposed screen in the chat and reacts to a picture, not a description: fake data, real layout, the theme variables, states or variants side by side. A clickable flow with live data is an `app`; the faithful look of a screen is a page. Nothing comes back from a page — a button that should reach you is an `app`, not a page. Rules: fluid width, no horizontal padding on the outermost element, no outer card, border or banner title (the page is part of your reply); charts at fixed pixel heights; let content set the height, never `100vh` or `height:100%` on `html`/`body`; use the theme variables (`--background --foreground --muted --card --border --primary --accent --chart-1..6 --radius --font-sans --font-mono`, the same names as T3 Code) with fallbacks, e.g. `var(--foreground, #1a1612)`; local images by absolute path are inlined for you; pass `height` only to cap a long page. Write the page once: `show` checks it in the connected app before publishing and refuses one that logs errors; fix it with `show{name, edits: [{old, new}]}` (or `edit()` the file the result names, then `show{path}`) — never resend the whole page. `page_preview` is optional, for checking a page without publishing it. The reader sees the page where the card is — do not announce or restate it; add only what it does not say.\n\
 \n\
 Pick by the shape of the answer:\n\
 | The answer is… | Draw |\n\
 |---|---|\n\
-| components, dependencies, data flow, pipeline, call graph | json-render Graph (state per node for health/progress) |\n\
+| components, dependencies, data flow, pipeline, call graph | json-render Graph (state per node for health/progress); add click-to-select with openui Graph (`highlight` + `onSelect`) |\n\
 | how code in this repository works, or what a change did, in three or more parts | a board (see Boards) — not an inline fence |\n\
 | who calls whom in what order | mermaid sequenceDiagram |\n\
 | lifecycle, modes, retries, transitions | json-render StateMachine (kind: initial/final, guard per transition) |\n\
@@ -283,12 +283,13 @@ Pick by the shape of the answer:\n\
 | who does which step; handoffs | json-render Swimlane |\n\
 | what a change did to a topology | json-render GraphDelta (before / after share ids) |\n\
 | how-to or explanation in steps | json-render Steps, or openui Steps |\n\
-| options with trade-offs, alternatives | openui Tabs (one per option), or json-render Table on shared criteria |\n\
+| options with trade-offs, alternatives | openui Tabs or CompositeCardBlock (one per option), or json-render Table on shared criteria |\n\
 | a comparison, before/after, a matrix | json-render Table (Badge for verdict cells); two versions of text or config: Diff; rows × columns of intensity: Heatmap |\n\
+| KPI cards, summary tiles, rich product or option cards | openui OverviewCardBlock / SnippetCardBlock / CompositeCardBlock / ContextCardBlock (with Modal for detail/edit) |\n\
 | status of work, checks, tests, a rollout | json-render MetricGrid + Checklist (or Progress); work in stages: Kanban |\n\
 | what happened when: incident, history | json-render Timeline (state per item; scale: time for real dates); days of a week or month: Calendar |\n\
 | tasks over dates; a plan with overlap | json-render Gantt (depends, group, today) |\n\
-| quantities by category or over time | json-render BarChart / LineChart (Bars for a quick list; Sparkline for a trend without axes) |\n\
+| quantities by category, share of whole, or over time | json-render BarChart / LineChart (Bars for a quick list; Sparkline for a trend without axes), or openui PieChart / AreaChart |\n\
 | numbers, counts, durations, sizes | json-render MetricGrid; one value against a limit: Gauge; a trend inline: Metric with spark |\n\
 | two variables; position; priority | json-render ScatterChart / Quadrant |\n\
 | where a quantity goes; what adds up | json-render Sankey / Waterfall / Treemap / Funnel |\n\
@@ -296,7 +297,7 @@ Pick by the shape of the answer:\n\
 | an experience across stages; overlap of sets | json-render Journey / Venn |\n\
 | a warning, a blocker, the one thing to act on | json-render Alert (severity) |\n\
 | an aside: a tip, a note, a question, a must-know | json-render Callout or openui Callout |\n\
-| facts about one thing (config, host, PR) | json-render KeyValueList |\n\
+| facts about one thing (config, host, PR) | json-render KeyValueList, or openui EntityList / SnippetCardBlock |\n\
 | terms and what they mean | json-render Glossary |\n\
 | a snippet the reader will read, not run | json-render Code (copy button) — commands the user runs in their own terminal stay a plain code block; commands the user asked to run here are user cells |\n\
 | files, directories, a repository layout | json-render FileList (flat) or Tree (nested) |\n\
@@ -507,6 +508,16 @@ mod tests {
         assert!(block.contains("<surface_error>"));
         assert!(block.contains("No Query/Mutation/@ToAssistant in a fence"));
         assert!(block.contains("rendered inline exactly like json-render"));
+        assert!(block.contains("OverviewCardBlock"));
+        assert!(block.contains("SnippetCardBlock"));
+        assert!(block.contains("CompositeCardBlock"));
+        assert!(block.contains("ContextCardBlock"));
+        assert!(block.contains("`Modal`"));
+        assert!(block.contains("EntityList"));
+        assert!(block.contains("PieChart"));
+        assert!(block.contains("AreaChart"));
+        assert!(block.contains("click-to-select (`highlight` + `onSelect: @Set($sel, $value)`)"));
+        assert!(block.contains("live tool-backed screens belong in the `app` tool; custom CSS/HTML/JS mocks belong in `show{content, name: \"x.html\"}`"));
         assert!(block.contains("| terms and what they mean | json-render Glossary |"));
         assert!(block.contains("\nMermaid styling: outline, never fill. "));
         assert!(block.ends_with("}}}}\n```"));

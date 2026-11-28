@@ -163,7 +163,7 @@ Before the block leaves the draft:
 ## Which fence
 
 - **`json-render`** — a static picture: every diagram above. Draws on every surface (SVG on desktop, text on the TUI, Slack, Signal); a board or app can highlight its units.
-- **`openui` fence** — the reader flips `Tabs`/`Steps` or picks `OptionCards` locally, no live data (`Query`/`Mutation`/`@ToAssistant` are inert there). It starts `root = Card([...])` (`Stack` only inside it, for rows); one action is a bare step, `Button("Next", @Set($step, 1))`, several go in `Action([...])`.
+- **`openui` fence** — rich card blocks (`OverviewCardBlock`, `SnippetCardBlock`, `CompositeCardBlock`, `ContextCardBlock`), `Modal`, `EntityList`, `PieChart`/`AreaChart`, interactive click-to-select diagrams (`highlight` + `onSelect`), or local `Tabs`/`Steps`/`OptionCards` with `$state` and `@Set`/`@Reset`/`@OpenUrl`/`@CopyToClipboard` (`Query`/`Mutation`/`@ToAssistant` are inert there). It starts `root = Card([...])` (`Stack` only inside it, for rows); one action is a bare step, `Button("Next", @Set($step, 1))`, several go in `Action([...])`.
 - **`app`** — live data feeds the props (`Query`), a press must do something (`Action`), or the reader steps through states (`$step` → `highlight`). Recipes: the apps skill.
 - **a board** — three or more parts about code in this repository, `ref` on every unit (board.md).
 

@@ -37,6 +37,7 @@ import { MoveButton, TaskMenu } from './MoveHome'
 import { OwnerSelect } from './OwnerSelect'
 import { AccentField, ChildrenList, ParentBreadcrumb, ParentField } from './HierarchyFields'
 import { TaskChips } from './TaskChips'
+import { blockersOf, dependentsOf } from './TaskModal'
 import { askSecs, engineName, homeLine } from './home'
 import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId, stateChip, wakePhrase } from './helpers'
 import { doneBecause, useAgents, useCloseDone, useInvalidateTasks, useMesh, useMoveTask, useTask, useTaskEvents, useTasks } from './queries'
@@ -234,11 +235,14 @@ function Relations({ task: t }: { task: Task }) {
   const api = useApi()
   const invalidate = useInvalidateTasks()
   const all = useTasks()
-  const byId = Object.fromEntries((all.data ?? []).map((x) => [x.id, x]))
+  const tasks = all.data ?? []
+  const byId = Object.fromEntries(tasks.map((x) => [x.id, x]))
   const taskBlockers = t.blockers.filter((raw) => parseBlocker(raw).kind === 'task')
   const otherBlockers = t.blockers.filter((raw) => parseBlocker(raw).kind !== 'task')
   const blockedBy = taskBlockers.flatMap((id) => (byId[id] ? [byId[id]] : []))
   const blocks = t.blocks.flatMap((id) => (byId[id] ? [byId[id]] : []))
+  const depIds = useMemo(() => [...dependentsOf(tasks, t.id)], [tasks, t.id])
+  const blockerIds = useMemo(() => [...blockersOf(tasks, t.id)], [tasks, t.id])
   const patch = useMutation({
     mutationFn: ({ id, blockers }: { id: string; blockers: string[] }) => api.task_update(id, { blockers }),
     onSuccess: () => invalidate(t.id),
@@ -252,7 +256,7 @@ function Relations({ task: t }: { task: Task }) {
           title="Blocked by"
           tasks={blockedBy}
           project={t.project}
-          exclude={[t.id, ...t.blocks]}
+          exclude={[t.id, ...t.blocks, ...depIds]}
           disabled={busy}
           onAdd={(b) => patch.mutate({ id: t.id, blockers: [...t.blockers, b.id] })}
           onRemove={(b) => patch.mutate({ id: t.id, blockers: t.blockers.filter((x) => x !== b.id) })}
@@ -272,7 +276,7 @@ function Relations({ task: t }: { task: Task }) {
           title="Blocks"
           tasks={blocks}
           project={t.project}
-          exclude={[t.id, ...taskBlockers]}
+          exclude={[t.id, ...taskBlockers, ...blockerIds]}
           disabled={busy}
           onAdd={(b) => patch.mutate({ id: b.id, blockers: [...b.blockers, t.id] })}
           onRemove={(b) => patch.mutate({ id: b.id, blockers: b.blockers.filter((x) => x !== t.id) })}

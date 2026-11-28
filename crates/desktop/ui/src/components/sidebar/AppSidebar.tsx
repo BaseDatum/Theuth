@@ -11,7 +11,7 @@ import { requirements as costsRequirements } from '@/components/costs/requiremen
 import { broadcastRequirements } from '@/components/chat/requirements'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { AudioLines, Bot, ChartColumn, FolderKanban, Inbox, Library, Megaphone, PanelLeft, Plus, Settings, SquarePen, StickyNote, Users } from 'lucide-react'
+import { AudioLines, Bot, ChartColumn, FolderKanban, Inbox, Library, ListTodo, Megaphone, PanelLeft, Plus, Settings, SquarePen, StickyNote, Users } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
@@ -31,6 +31,7 @@ import { BroadcastDialog } from '@/components/chat/BroadcastDialog'
 import { openBroadcastDialog } from '@/components/chat/broadcast'
 import { NewChatOnMenu, machineRows, openNewChat } from '@/components/chat/NewChatPane'
 import { useMesh } from '@/components/tasks/queries'
+import { openNewTaskModal } from '@/components/tasks/TaskModal'
 import { createNote } from '@/components/notes/create'
 import { useSessionDrag, useViewDrag } from '@/components/chat/Panes'
 import { AttentionBadge } from '@/components/hud/AttentionBadge'
@@ -51,6 +52,7 @@ import { useUpdate } from '@/lib/update'
 import { takeReveal, useSidebarReveal } from '@/lib/sidebar-reveal'
 import { cn } from '@/lib/utils'
 import type { DocSummary } from "@/rpc/bindings/method.agent.output"
+import { CreateTerminalButton, CreateTerminalRail } from './CreateTerminal'
 import { Desks } from './Desks'
 import { ICON_COUNT, ICON_MARK, ICON_PLUS, RAIL_ITEM, RailSections, useSettledRail } from './Rail'
 import { SearchTrigger } from './SearchTrigger'
@@ -64,6 +66,8 @@ declare const __APP_VERSION__: string
 
 /** 143 D2: the plus on the Note row — malachite (`--status-success-fg`); one token to swap for `text-project-nile` (olive). */
 export const NOTE_PLUS = 'text-success'
+/** The plus on the Task row — lapis (`--primary`), paired with `NOTE_PLUS`. */
+export const TASK_PLUS = 'text-primary'
 
 /** A rail icon's name, to its right on hover (the rail shows no labels). */
 function RailTip({ label, children }: { label: string; children: ReactNode }) {
@@ -206,6 +210,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 <SquarePen />
               </Link>
             </RailTip>
+            <CreateTerminalRail itemClass={RAIL_ITEM} wrap={(t) => <RailTip label="Create terminal">{t}</RailTip>} />
             <Capability required={attentionRequirements} hide>
               <RailTip label="Inbox">
                 <Link to="/attention" aria-label="Inbox" className={RAIL_ITEM} data-active={section === 'attention' || undefined} data-tour="nav-inbox" {...dragInbox}>
@@ -238,6 +243,16 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                   <span className="relative inline-flex">
                     <StickyNote className="size-[18px]" />
                     <Plus className={cn(ICON_PLUS, NOTE_PLUS)} strokeWidth={3.5} aria-hidden />
+                  </span>
+                </button>
+              </RailTip>
+            </Capability>
+            <Capability required={{ methods: ['task_create'] }} hide>
+              <RailTip label="New task">
+                <button type="button" aria-label="New task" className={RAIL_ITEM} onClick={() => openNewTaskModal()}>
+                  <span className="relative inline-flex">
+                    <ListTodo className="size-[18px]" />
+                    <Plus className={cn(ICON_PLUS, TASK_PLUS)} strokeWidth={3.5} aria-hidden />
                   </span>
                 </button>
               </RailTip>
@@ -345,28 +360,31 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       </SidebarHeader>
       <SidebarContent ref={setScrollEl} className="gap-0 overflow-y-auto">
         <SidebarMenu className="px-1.5">
-          <SidebarMenuItem className="group/popout-row">
-            <SidebarMenuButton asChild className={cn('h-9 rounded-[10px] px-2.5', canPopout() && (peers ? 'pointer-fine:pr-14' : 'pointer-fine:pr-8'))}>
-              <Link
-                to="/new"
-                aria-label="New chat"
-                {...dragNew}
-                onClick={(e) => {
-                  e.preventDefault()
-                  openNewChat(navigate)
-                }}
-              >
-                <SquarePen /> Chat
-                <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
-              </Link>
-            </SidebarMenuButton>
-            {/* New chat creates nothing until its first send (`/new`), so its window is that page; every press a new
-             * window (`key`), since the last one may already be the chat its first send made. */}
-            <SidebarPopoutButton
-              target={() => void openPopout({ kind: 'page', path: '/new', key: crypto.randomUUID().slice(0, 8) })}
-              className={cn('top-2', peers ? 'right-8' : 'right-2')}
-            />
-            <NewChatOnMenu />
+          <SidebarMenuItem className="flex items-center gap-1">
+            <div className="group/popout-row relative min-w-0 flex-1">
+              <SidebarMenuButton asChild className={cn('h-9 rounded-[10px] px-2.5', canPopout() && (peers ? 'pointer-fine:pr-14' : 'pointer-fine:pr-8'))}>
+                <Link
+                  to="/new"
+                  aria-label="New chat"
+                  {...dragNew}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    openNewChat(navigate)
+                  }}
+                >
+                  <SquarePen /> Chat
+                  <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
+                </Link>
+              </SidebarMenuButton>
+              {/* New chat creates nothing until its first send (`/new`), so its window is that page; every press a new
+               * window (`key`), since the last one may already be the chat its first send made. */}
+              <SidebarPopoutButton
+                target={() => void openPopout({ kind: 'page', path: '/new', key: crypto.randomUUID().slice(0, 8) })}
+                className={cn('top-2', peers ? 'right-8' : 'right-2')}
+              />
+              <NewChatOnMenu />
+            </div>
+            <CreateTerminalButton />
           </SidebarMenuItem>
           <Capability required={attentionRequirements} hide><SidebarMenuItem className="group/popout-row" data-tour="nav-inbox">
             <SidebarMenuButton asChild isActive={section === 'attention'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
@@ -408,6 +426,24 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </button>
             </SidebarMenuButton>
             <SidebarPopoutButton target={() => { if (!createNoteAndOpen.isPending) createNoteAndOpen.mutate(true) }} className="top-2 right-2" />
+          </SidebarMenuItem></Capability>
+          <Capability required={{ methods: ['task_create'] }} hide><SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <button
+                type="button"
+                aria-label="New task"
+                onClick={() => {
+                  if (isMobile) setOpenMobile(false)
+                  openNewTaskModal()
+                }}
+              >
+                <span className="relative inline-flex">
+                  <ListTodo className="size-4" />
+                  <Plus className={cn(ICON_PLUS, TASK_PLUS)} strokeWidth={3.5} aria-hidden />
+                </span>
+                <span>Task</span>
+              </button>
+            </SidebarMenuButton>
           </SidebarMenuItem></Capability>
           <Capability required={whiteboardRequirements} hide><WhiteboardsRow className="h-9 rounded-[10px] px-2.5" /></Capability>
           <Capability required={deckRequirements} hide><DecksRow className="h-9 rounded-[10px] px-2.5" /></Capability>

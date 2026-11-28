@@ -68,7 +68,7 @@ test('TERMS-FIRST: a terms refusal is the engine’s text or a raw edge terms_re
   expect(termsRefusal('accept the terms of tun.zip first (https://tun.zip/terms, revision 2): x')).toEqual({ ask: { edge: 'tun.zip', url: 'https://tun.zip/terms', rev: '2' } })
   expect(termsRefusal('edge answered 403: terms_required')).toEqual({ ask: null })
   expect(termsRefusal('edge answered 409: name_taken')).toBeNull()
-  expect(termsToast(null)).toBe('Accept the terms of the sharing edge first: Settings › Sharing › Public shares › Terms')
+  expect(termsToast(null)).toBe('Accept the terms of the sharing edge first: Settings › Sharing › Domains › Terms')
 })
 
 test('notifications: newly live (not offline → live) and first visitor', () => {

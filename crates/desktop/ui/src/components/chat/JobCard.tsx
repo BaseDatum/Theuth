@@ -183,7 +183,7 @@ export function JobCard({ job, bodyOnly = false, onJump }: { job: JobView; bodyO
       {!expanded && <div className="col-span-2 truncate font-mono text-xs text-fg-tertiary">{ansiToPlainText(job.tail).trimEnd().split('\n').at(-1) || '(no output)'}</div>}
     </div>
     {expanded && <Output key={`${job.session}/${job.id}`} job={job} />}
-    {terminal && <Dialog open={terminal} onOpenChange={setTerminal}><DialogContent className="flex h-[75dvh] max-w-[95vw] flex-col sm:max-w-5xl"><DialogHeader><DialogTitle>Terminal · {job.id}</DialogTitle><DialogDescription className="truncate">{job.name ?? job.command}</DialogDescription></DialogHeader><Terminal session={job.session} job={job.id} label={job.name ?? job.command} /></DialogContent></Dialog>}
+    {terminal && <Dialog open={terminal} onOpenChange={setTerminal}><DialogContent className="top-[calc(var(--visible-band,100dvh)/2)] flex h-[min(75dvh,calc(var(--visible-band,100dvh)-2rem))] max-w-[95vw] flex-col sm:max-w-5xl"><DialogHeader><DialogTitle>Terminal · {job.id}</DialogTitle><DialogDescription className="truncate">{job.name ?? job.command}</DialogDescription></DialogHeader><Terminal session={job.session} job={job.id} label={job.name ?? job.command} /></DialogContent></Dialog>}
   </section>
 }
 
