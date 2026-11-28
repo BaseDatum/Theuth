@@ -315,7 +315,7 @@ pub fn validate_view_path(raw: &str) -> Result<String, String> {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ShowViewArgs {
     /// App route path starting with `/`, e.g. `/tasks`, `/notebooks`, `/notes`, `/knowledge`,
-    /// `/agents`, `/routines`, `/meetings`, `/whiteboards`, `/artifacts`, `/autoresearch`,
+    /// `/agents`, `/routines`, `/meetings`, `/whiteboards`, `/decks`, `/artifacts`, `/autoresearch`,
     /// `/skills`, `/attention`, `/costs`, or `/settings/appearance`.
     pub path: String,
     /// Optional pane title override.
@@ -346,7 +346,7 @@ impl Tool for ShowViewTool {
     fn description(&self) -> String {
         "Open any theuth app view in a workspace pane beside the chat (or at a chosen placement). \
          Pass an app route path starting with `/`, such as `/tasks`, `/notebooks`, `/notes`, \
-         `/knowledge`, `/agents`, `/routines`, `/meetings`, `/whiteboards`, `/artifacts`, \
+         `/knowledge`, `/agents`, `/routines`, `/meetings`, `/whiteboards`, `/decks`, `/artifacts`, \
          `/autoresearch`, `/skills`, `/attention`, `/costs`, or `/settings/appearance`. \
          Optional `placement` (`beside`, `left`, `right`, `top`, `bottom`, `tab`, `replace`), \
          `target` pane id (from `pane_list`), `title`, and `focus`. Call `pane_list()` for \
@@ -406,10 +406,10 @@ impl Tool for ShowViewTool {
     }
 }
 
-/// `show_view`'s receipt. The first line, `view opened · <title> · <path> · tile <pane>` (`view reused · …` when the
+/// `show_view` / `show_deck` receipt. The first line, `view opened · <title> · <path> · tile <pane>` (`view reused · …` when the
 /// pane already showed the path), is pinned: the transcript card (`ViewOpenedCard.tsx`) reads the path and the pane
 /// from it, since the transcript keeps the content, not `structured`. The second line is the human text.
-fn view_receipt(title: &str, path: &str, pane: &str, reused: bool) -> String {
+pub fn view_receipt(title: &str, path: &str, pane: &str, reused: bool) -> String {
     let title = clean_title(title);
     let (state, verb) = if reused {
         ("reused", "Reused")
