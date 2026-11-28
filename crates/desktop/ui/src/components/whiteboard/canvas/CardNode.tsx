@@ -193,8 +193,9 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
     if (c.kind === 'page') return pageViewport(c, c.frame ? b.frames[c.frame]?.preset : undefined)
     return l && fitBox.current ? measureBody(fitBox.current) : null
   }, [])
+  const canFit = fitsContent(card)
   useEffect(() => {
-    if (!card.fit || readOnly || !live) return
+    if (!card.fit || !canFit || readOnly || !live) return
     const t0 = performance.now()
     let last = ''
     let same = 0
@@ -211,8 +212,8 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
       applyFit(doc, b, c.id, fitSize(n, headerOf(c)), LOCAL, false)
     }, 250)
     return () => clearInterval(timer)
-  }, [card.fit, readOnly, live, doc, naturalOf])
-  const fitNow = fitsContent(card)
+  }, [card.fit, canFit, readOnly, live, doc, naturalOf])
+  const fitNow = canFit
     ? () => {
         const n = naturalOf()
         if (n) applyFit(doc, board, card.id, fitSize(n, headerOf(card)), OWNER, true)

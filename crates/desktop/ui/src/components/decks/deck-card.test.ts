@@ -41,6 +41,7 @@ vi.mock('@/components/decks/useDeckLive', () => ({
 import type { CanvasHost } from '@/components/whiteboard/canvas/api'
 import Canvas from '@/components/whiteboard/canvas/Canvas'
 import { fitsContent } from '@/components/whiteboard/canvas/fit'
+import { BUDGETED } from '@/components/whiteboard/canvas/lod'
 import { readBoard } from '@/components/whiteboard/canvas/model'
 import { addCard, IN_PLACE } from '@/components/whiteboard/canvas/ops'
 import { createWhiteboardStore } from '@/components/whiteboard/canvas/store'
@@ -163,8 +164,9 @@ describe('whiteboard Deck card', () => {
     document.body.innerHTML = ''
   })
 
-  it('is reference-only, in-place, and excluded from fitsContent', () => {
+  it('is reference-only, in-place, budgeted in LOD, and excluded from fitsContent', () => {
     expect(IN_PLACE).toContain('deck')
+    expect(BUDGETED).toContain('deck')
     expect(fitsContent({ kind: 'deck' })).toBe(false)
 
     const doc = new Y.Doc()

@@ -25,6 +25,8 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { deckControlAvailability } from '@/components/decks/types'
+import { notify } from '@/lib/notify'
 import { useSnapshot } from '@/lib/snapshot-mode'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
@@ -653,17 +655,19 @@ const components: Components<typeof catalog> = {
   ResultBanner: ({ props }) => <DeckResultBannerView props={props} />,
 }
 
-function parseActionArgs(raw: string | undefined): Record<string, unknown> {
-  if (!raw || !raw.trim()) return {}
+export function parseActionArgs(
+  raw: string | undefined,
+): { ok: true; args: Record<string, unknown> } | { ok: false; error: string } {
+  if (!raw || !raw.trim()) return { ok: true, args: {} }
   try {
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
+      return { ok: true, args: parsed as Record<string, unknown> }
     }
+    return { ok: false, error: 'Invalid action args_json: expected a JSON object' }
   } catch {
-    // Ignore malformed args; server-side schema validation also enforces shape.
+    return { ok: false, error: 'Invalid action args_json: malformed JSON' }
   }
-  return {}
 }
 
 function DeckActionButtonView({
@@ -680,8 +684,20 @@ function DeckActionButtonView({
 }) {
   const deck = useDeckInteractContext()
   const inert = deck === null
-  const disabled = inert || Boolean(props.disabled) || Boolean(deck?.busy)
+  const parsed = parseActionArgs(props.args_json)
+  const hasScript = Boolean(deck?.scriptRev)
+  const pinned = Boolean(deck?.pinned)
+  const disabled = inert || !hasScript || pinned || !parsed.ok || Boolean(props.disabled) || Boolean(deck?.busy)
   const variant = props.tone === 'danger' ? 'destructive' : props.tone === 'primary' ? 'default' : 'outline'
+  const title = inert
+    ? 'Interactive Deck buttons are disabled outside a Deck'
+    : !parsed.ok
+      ? parsed.error
+      : !hasScript
+        ? 'Approve a Deck script before running actions'
+        : pinned
+          ? 'Actions are disabled while viewing a pinned snapshot'
+          : props.action
   return (
     <Button
       type="button"
@@ -690,11 +706,17 @@ function DeckActionButtonView({
       disabled={disabled}
       data-deck-action={props.action}
       data-deck-inert={inert ? 'true' : undefined}
-      title={inert ? 'Interactive Deck buttons are disabled outside a Deck' : props.action}
+      data-deck-args-error={!parsed.ok ? 'true' : undefined}
+      title={title}
       onClick={() => {
-        if (!deck || disabled) return
+        if (!deck) return
+        if (!parsed.ok) {
+          notify.error(parsed.error)
+          return
+        }
+        if (disabled) return
         if (props.confirm && typeof window !== 'undefined' && !window.confirm(props.confirm)) return
-        void deck.invokeAction(props.action, parseActionArgs(props.args_json))
+        void deck.invokeAction(props.action, parsed.args)
       }}
     >
       {props.label}
@@ -711,6 +733,10 @@ function DeckStreamControlsView({
   const inert = deck === null
   const state = deck?.runtimeState ?? 'stopped'
   const busy = Boolean(deck?.busy)
+  const pinned = Boolean(deck?.pinned)
+  const hasScript = Boolean(deck?.scriptRev)
+  const controls = deckControlAvailability(state, hasScript)
+  const locked = inert || busy || pinned
   return (
     <div
       className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-layer-1 px-3 py-2 text-xs"
@@ -739,23 +765,58 @@ function DeckStreamControlsView({
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         {state === 'paused' ? (
-          <Button type="button" size="sm" variant="default" data-deck-control="resume" disabled={inert || busy} onClick={() => deck && void deck.controlRuntime('resume')}>
+          <Button
+            type="button"
+            size="sm"
+            variant="default"
+            data-deck-control="resume"
+            disabled={locked || !controls.resume}
+            onClick={() => deck && void deck.controlRuntime('resume')}
+          >
             <Play className="mr-1 size-3" /> Resume
           </Button>
         ) : state === 'streaming' ? (
-          <Button type="button" size="sm" variant="outline" data-deck-control="pause" disabled={inert || busy} onClick={() => deck && void deck.controlRuntime('pause')}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-deck-control="pause"
+            disabled={locked || !controls.pause}
+            onClick={() => deck && void deck.controlRuntime('pause')}
+          >
             <Pause className="mr-1 size-3" /> Pause
           </Button>
         ) : (
-          <Button type="button" size="sm" variant="default" data-deck-control="start" disabled={inert || busy} onClick={() => deck && void deck.controlRuntime('start')}>
+          <Button
+            type="button"
+            size="sm"
+            variant="default"
+            data-deck-control="start"
+            disabled={locked || !controls.start}
+            onClick={() => deck && void deck.controlRuntime('start')}
+          >
             <Play className="mr-1 size-3" /> Start
           </Button>
         )}
-        <Button type="button" size="sm" variant="outline" data-deck-control="stop" disabled={inert || busy || state === 'stopped'} onClick={() => deck && void deck.controlRuntime('stop')}>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          data-deck-control="stop"
+          disabled={locked || !controls.stop}
+          onClick={() => deck && void deck.controlRuntime('stop')}
+        >
           <Square className="mr-1 size-3" /> Stop
         </Button>
         {props.show_run_once && (
-          <Button type="button" size="sm" variant="ghost" data-deck-control="run_once" disabled={inert || busy} onClick={() => deck && void deck.controlRuntime('run_once')}>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            data-deck-control="run_once"
+            disabled={locked || !controls.runOnce}
+            onClick={() => deck && void deck.controlRuntime('run_once')}
+          >
             <RefreshCw className="mr-1 size-3" /> Run once
           </Button>
         )}

@@ -7,6 +7,7 @@ export type DeckInteractContextValue = {
   runtimeState: RuntimeState
   stale: boolean
   busy: boolean
+  pinned?: boolean
   lastResult: InteractResponse | null
   invokeAction(action: string, args: Record<string, unknown>): Promise<InteractResponse | null>
   controlRuntime(op: RuntimeControlOp): Promise<void>

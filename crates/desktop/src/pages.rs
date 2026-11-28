@@ -31,10 +31,13 @@ pub enum PageProfile {
 }
 
 impl PageProfile {
-    pub fn parse(raw: Option<&str>) -> Self {
+    /// Parse an optional profile selector, failing closed on unknown or empty explicit values.
+    /// Omitting `profile` (`None`) preserves the legacy `Standard` artifact profile.
+    pub fn parse(raw: Option<&str>) -> Result<Self, String> {
         match raw.map(str::trim) {
-            Some("deck") | Some("deck_strict") => Self::DeckStrict,
-            _ => Self::Standard,
+            None | Some("standard") => Ok(Self::Standard),
+            Some("deck") | Some("deck_strict") => Ok(Self::DeckStrict),
+            Some(other) => Err(format!("unknown page profile: {other}")),
         }
     }
 
@@ -42,7 +45,7 @@ impl PageProfile {
         match self {
             Self::Standard => "sandbox allow-scripts allow-forms",
             Self::DeckStrict => {
-                "sandbox allow-scripts; default-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+                "sandbox allow-scripts; default-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; media-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
             }
         }
     }
@@ -157,7 +160,7 @@ pub fn page_put(
     html: String,
     profile: Option<String>,
 ) -> Result<String, String> {
-    let policy = PageProfile::parse(profile.as_deref());
+    let policy = PageProfile::parse(profile.as_deref())?;
     Ok(page_url(&pages.put_with_profile(
         call_id,
         html.into_bytes(),
@@ -188,13 +191,17 @@ fn respond(pages: &Pages, req: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>
     let Some(entry) = pages.get_entry(token) else {
         return status(StatusCode::NOT_FOUND);
     };
-    Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::CONTENT_SECURITY_POLICY, entry.profile.csp())
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::CACHE_CONTROL, "no-store")
-        .header(header::REFERRER_POLICY, "no-referrer")
+        .header(header::REFERRER_POLICY, "no-referrer");
+    if entry.profile == PageProfile::DeckStrict {
+        builder = builder.header("x-dns-prefetch-control", "off");
+    }
+    builder
         .body(Cow::Owned(entry.body.to_vec()))
         .expect("static headers")
 }
@@ -409,6 +416,16 @@ mod tests {
         assert!(csp.contains("form-action 'none'"));
         assert!(csp.contains("object-src 'none'"));
         assert!(csp.contains("frame-src 'none'"));
+        assert!(csp.contains("child-src 'none'"));
+        assert!(csp.contains("worker-src 'none'"));
+        assert!(csp.contains("media-src 'none'"));
+        assert_eq!(
+            deck_res
+                .headers()
+                .get("x-dns-prefetch-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("off")
+        );
         assert!(
             deck_res
                 .headers()
@@ -423,5 +440,29 @@ mod tests {
             header(&std_res, header::CONTENT_SECURITY_POLICY),
             "sandbox allow-scripts allow-forms"
         );
+        assert!(std_res.headers().get("x-dns-prefetch-control").is_none());
+    }
+
+    #[test]
+    fn page_profile_parse_fails_closed_on_unknown_values() {
+        assert_eq!(PageProfile::parse(None), Ok(PageProfile::Standard));
+        assert_eq!(
+            PageProfile::parse(Some("standard")),
+            Ok(PageProfile::Standard)
+        );
+        assert_eq!(
+            PageProfile::parse(Some(" deck ")),
+            Ok(PageProfile::DeckStrict)
+        );
+        assert_eq!(
+            PageProfile::parse(Some("deck_strict")),
+            Ok(PageProfile::DeckStrict)
+        );
+        for bad in ["", "   ", "deck-strict", "DECK", "Standard", "relaxed", "none"] {
+            assert!(
+                PageProfile::parse(Some(bad)).is_err(),
+                "expected Err for unknown profile {bad:?}"
+            );
+        }
     }
 }

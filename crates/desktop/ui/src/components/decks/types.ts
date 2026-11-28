@@ -82,6 +82,8 @@ export type ScriptRevision = {
   rev: number
   code: string
   code_sha256: string
+  /** Canonical SHA-256 revision digest over (code, declared_actions, mode, interval_secs, schedule_cron). */
+  revision_sha256: string
   declared_actions: DeclaredAction[]
   mode: ScriptMode
   interval_secs?: number | null
@@ -185,3 +187,38 @@ export type DeckRuntimeEvent =
   | { type: 'approval_pending'; approval: PendingApproval }
   | { type: 'approval_cleared'; approval_id: string; approved: boolean }
   | { type: 'closed'; reason: string }
+
+export type DeckControlAvailability = {
+  start: boolean
+  pause: boolean
+  resume: boolean
+  stop: boolean
+  runOnce: boolean
+}
+
+/** Shared runtime-control button enablement across `DeckView` chrome and `StreamControls` widgets. */
+export function deckControlAvailability(
+  state: RuntimeState,
+  hasApprovedScript: boolean,
+): DeckControlAvailability {
+  if (!hasApprovedScript) {
+    return { start: false, pause: false, resume: false, stop: false, runOnce: false }
+  }
+  return {
+    start: state === 'stopped' || state === 'error' || state === 'scheduled_idle',
+    pause: state === 'streaming',
+    resume: state === 'paused',
+    stop:
+      state === 'starting' ||
+      state === 'streaming' ||
+      state === 'paused' ||
+      state === 'scheduled_idle' ||
+      state === 'waiting_approval',
+    runOnce:
+      state === 'stopped' ||
+      state === 'streaming' ||
+      state === 'paused' ||
+      state === 'scheduled_idle' ||
+      state === 'error',
+  }
+}

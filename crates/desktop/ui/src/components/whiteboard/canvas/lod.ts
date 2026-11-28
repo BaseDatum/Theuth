@@ -9,8 +9,8 @@ export type Lod = 'live' | 'snapshot' | 'chip'
 export const LIVE_PX = 240
 export const CHIP_PX = 60
 export const IDLE_MS = 30_000
-/** Kinds whose live view is costly (an iframe, a terminal, a live app route) and therefore budgeted. */
-export const BUDGETED: readonly CardKind[] = ['page', 'terminal', 'view']
+/** Kinds whose live view is costly (an iframe, a terminal, a live app route, a live deck) and therefore budgeted. */
+export const BUDGETED: readonly CardKind[] = ['page', 'terminal', 'view', 'deck']
 /**
  * Kinds whose live view is plain DOM with no state to lose (text, a cached SVG, an image): live from the chip
  * threshold up, so a sticky reads as text at any legible size (a 220 px sticky at zoom 1 would otherwise be a chip).

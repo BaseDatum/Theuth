@@ -83,14 +83,22 @@ export function DecksMenu({
   )
 }
 
+/** Extract the open deck's id from a pathname (`/decks/<id>`), `''` on `/decks`, undefined elsewhere. */
+export function deckIdFromPath(path: string): string | undefined {
+  if (path === '/decks') return ''
+  if (!path.startsWith('/decks/')) return undefined
+  const raw = path.slice('/decks/'.length)
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
 /** The open deck's id (`/decks/<id>`), `''` on the list page, undefined elsewhere. */
 function useDeckHere(): string | undefined {
   const path = useRouterState({ select: (s) => s.location.pathname })
-  return path === '/decks'
-    ? ''
-    : path.startsWith('/decks/')
-      ? decodeURIComponent(path.slice('/decks/'.length))
-      : undefined
+  return deckIdFromPath(path)
 }
 
 /** One popover listing recent decks around `trigger` (expanded row or collapsed rail button). */

@@ -25,7 +25,7 @@ vi.mock('@/components/decks/useDeckLive', () => ({
   useCreateDeck: () => ({ mutate: decksMock.mutate, isPending: false }),
 }))
 
-import { DecksMenu, DecksRail } from './Decks'
+import { deckIdFromPath, DecksMenu, DecksRail } from './Decks'
 
 const deck = (i: number): DeckSummary => ({
   id: `deck-${i}`,
@@ -105,5 +105,13 @@ describe('Decks sidebar rail & popover', () => {
     expect(html).toContain('Workspace Pulse (Example)')
     expect(html).not.toContain('data-deck="')
     expect(html).toContain('All decks')
+  })
+
+  it('decodes /decks/<id> paths safely and does not throw on malformed % sequences (L2)', () => {
+    expect(deckIdFromPath('/chat')).toBeUndefined()
+    expect(deckIdFromPath('/decks')).toBe('')
+    expect(deckIdFromPath('/decks/deck%20pulse')).toBe('deck pulse')
+    expect(() => deckIdFromPath('/decks/%E0%A4%A')).not.toThrow()
+    expect(deckIdFromPath('/decks/%E0%A4%A')).toBe('%E0%A4%A')
   })
 })
