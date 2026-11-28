@@ -59,10 +59,16 @@ async def on_action(action, args, ctx):
 
 ### Cooperative Builtins Available in Every Deck
 - `deck_emit(data, durable=False, section=None)` — push transient live frame (`durable=False`) or persist durable last-good snapshot (`durable=True`). Secrets are automatically redacted.
+- `deck_metric(name, value, meta=None)` — emit a typed metric sample (finite number or bool, optional small redacted metadata dict) evaluated by host-side sustained triggers on the approved script revision.
 - `deck_checkpoint(state)` — persist compact JSON state for cold `on_start(last_state)` recovery across upgrades/restarts.
 - `deck_sleep(seconds)` — request cooperative pause before the next `on_step()` (clamped `0.1..=3600`s).
 - `deck_state()` / `deck_last_snapshot()` — read the pre-turn persisted state / last-good snapshot (values are captured at the start of each turn).
 - `tools(query=None)` / `help(name)` — inspect live session & MCP tools exposed to this Deck's `SessionId`.
+
+### Sustained Triggers Firing Existing Routines
+- Pass `triggers` on `deck_script_propose(...)` to wire `deck_metric(...)` conditions (`op`, `threshold`, optional `reset_threshold`, `min_samples`, `sustain_secs`, `cooldown_secs`, `reset_mode`) to an **existing** owner-approved routine (`routine`).
+- Routine creation still goes through `routine_draft`; triggers never create routines or bypass routine approvals/caps, and HTML sections cannot fire triggers.
+- Triggers are included in the canonical revision digest and displayed in the Deck script approval UI for owner review.
 
 ### Collaborative Editing Discipline
 - Always edit individual sections with `deck_section_patch(deck_id, section_id, expected_rev=...)` — never rewrite unrelated sections.

@@ -15,9 +15,10 @@ use sqlx::{Row, SqliteConnection, SqlitePool};
 use crate::model::{
     DeckSnapshot, DeclaredAction, InteractErrorCode, InteractResponse, MAX_ACTION_NAME_BYTES,
     MAX_CHANGE_SUMMARY_BYTES, MAX_DECLARED_ACTIONS, MAX_INTERVAL_SECS, MAX_SCRIPT_CODE_BYTES,
-    MIN_INTERVAL_SECS, ScriptMode, ScriptRevision, ScriptStatus, canonical_json_string,
-    clamp_interval_secs,
+    MIN_INTERVAL_SECS, ScriptMode, ScriptRevision, ScriptStatus, TriggerSpec,
+    canonical_json_string, clamp_interval_secs,
 };
+use crate::triggers::{TriggerState, normalize_triggers, validate_triggers};
 
 /// Durable Deck record tying a `DocKind::Deck` doc ID to its dedicated persisted `SessionId`.
 #[derive(Clone, Debug)]
@@ -85,21 +86,37 @@ pub fn sha256_hex(input: &str) -> String {
 }
 
 /// Canonical SHA-256 digest over every executable/review-gated field of a script revision (229 B2/B3).
+///
+/// Backward-compatible: preserves exact `v: 1` digest when `triggers` is empty, and uses
+/// `v: 2` including normalized `triggers` when non-empty.
 pub fn canonical_revision_sha256(
     code: &str,
     declared_actions: &[DeclaredAction],
+    triggers: &[TriggerSpec],
     mode: ScriptMode,
     interval_secs: Option<u64>,
     schedule_cron: Option<&str>,
 ) -> String {
-    let payload = serde_json::json!({
-        "v": 1,
-        "code": code,
-        "declared_actions": declared_actions,
-        "mode": mode.as_str(),
-        "interval_secs": interval_secs,
-        "schedule_cron": schedule_cron,
-    });
+    let payload = if triggers.is_empty() {
+        serde_json::json!({
+            "v": 1,
+            "code": code,
+            "declared_actions": declared_actions,
+            "mode": mode.as_str(),
+            "interval_secs": interval_secs,
+            "schedule_cron": schedule_cron,
+        })
+    } else {
+        serde_json::json!({
+            "v": 2,
+            "code": code,
+            "declared_actions": declared_actions,
+            "triggers": normalize_triggers(triggers),
+            "mode": mode.as_str(),
+            "interval_secs": interval_secs,
+            "schedule_cron": schedule_cron,
+        })
+    };
     sha256_hex(&canonical_json_string(&payload))
 }
 
@@ -107,6 +124,7 @@ pub fn canonical_revision_sha256(
 pub fn validate_script_proposal(
     code: &str,
     declared_actions: &[DeclaredAction],
+    triggers: &[TriggerSpec],
     change_summary: &str,
 ) -> Result<()> {
     if code.len() > MAX_SCRIPT_CODE_BYTES {
@@ -143,6 +161,7 @@ pub fn validate_script_proposal(
             anyhow::bail!("duplicate declared action name `{name}`");
         }
     }
+    validate_triggers(triggers)?;
     Ok(())
 }
 
@@ -231,6 +250,7 @@ impl DeckStore {
                 code_sha256 TEXT NOT NULL,
                 revision_sha256 TEXT NOT NULL DEFAULT '',
                 declared_actions_json TEXT NOT NULL,
+                triggers_json TEXT NOT NULL DEFAULT '[]',
                 mode TEXT NOT NULL,
                 interval_secs INTEGER,
                 schedule_cron TEXT,
@@ -287,6 +307,31 @@ impl DeckStore {
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (deck_id, caller_id, request_id)
             )",
+            "CREATE TABLE IF NOT EXISTS deck_trigger_state (
+                deck_id TEXT NOT NULL,
+                trigger_id TEXT NOT NULL,
+                script_rev INTEGER NOT NULL,
+                spec_sha256 TEXT NOT NULL,
+                first_match_at_ms INTEGER,
+                consecutive_matches INTEGER NOT NULL DEFAULT 0,
+                latched INTEGER NOT NULL DEFAULT 0,
+                last_fired_at_ms INTEGER,
+                episode_seq INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (deck_id, trigger_id)
+            )",
+            "CREATE TABLE IF NOT EXISTS deck_trigger_fires (
+                dedup_key TEXT PRIMARY KEY,
+                deck_id TEXT NOT NULL,
+                trigger_id TEXT NOT NULL,
+                script_rev INTEGER NOT NULL,
+                routine TEXT NOT NULL,
+                fired_at_ms INTEGER NOT NULL,
+                target TEXT,
+                created_at TEXT NOT NULL
+            )",
+            "CREATE INDEX IF NOT EXISTS idx_deck_trigger_fires_deck_fired
+                ON deck_trigger_fires (deck_id, fired_at_ms DESC, dedup_key DESC)",
         ];
         for sql in ddl {
             sqlx::query(sql).execute(&self.pool).await?;
@@ -313,6 +358,11 @@ impl DeckStore {
         .await;
         let _ = sqlx::query(
             "ALTER TABLE deck_script_revisions ADD COLUMN revision_sha256 TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(&self.pool)
+        .await;
+        let _ = sqlx::query(
+            "ALTER TABLE deck_script_revisions ADD COLUMN triggers_json TEXT NOT NULL DEFAULT '[]'",
         )
         .execute(&self.pool)
         .await;
@@ -353,7 +403,7 @@ impl DeckStore {
 
         // Backfill empty revision_sha256 on legacy rows (never mutates already populated digests).
         let legacy_rows = sqlx::query(
-            "SELECT deck_id, rev, code, declared_actions_json, mode, interval_secs, schedule_cron
+            "SELECT deck_id, rev, code, declared_actions_json, triggers_json, mode, interval_secs, schedule_cron
              FROM deck_script_revisions WHERE revision_sha256 = ''",
         )
         .fetch_all(&self.pool)
@@ -363,15 +413,20 @@ impl DeckStore {
             let rev: i64 = r.get(1);
             let code: String = r.get(2);
             let actions_raw: String = r.get(3);
-            let mode = ScriptMode::parse(&r.get::<String, _>(4));
+            let triggers_raw: String = r.get(4);
+            let mode = ScriptMode::parse(&r.get::<String, _>(5));
             let interval_secs = r
-                .get::<Option<i64>, _>(5)
+                .get::<Option<i64>, _>(6)
                 .map(|v| clamp_interval_secs(v.max(0) as u64));
-            let schedule_cron: Option<String> = r.get(6);
-            if let Ok(actions) = serde_json::from_str::<Vec<DeclaredAction>>(&actions_raw) {
+            let schedule_cron: Option<String> = r.get(7);
+            if let (Ok(actions), Ok(triggers)) = (
+                serde_json::from_str::<Vec<DeclaredAction>>(&actions_raw),
+                serde_json::from_str::<Vec<TriggerSpec>>(&triggers_raw),
+            ) {
                 let digest = canonical_revision_sha256(
                     &code,
                     &actions,
+                    &triggers,
                     mode,
                     interval_secs,
                     schedule_cron.as_deref(),
@@ -516,6 +571,8 @@ impl DeckStore {
                 .map(SessionId);
 
             for sql in [
+                "DELETE FROM deck_trigger_fires WHERE deck_id = ?1",
+                "DELETE FROM deck_trigger_state WHERE deck_id = ?1",
                 "DELETE FROM deck_action_idempotency WHERE deck_id = ?1",
                 "DELETE FROM deck_run_log WHERE deck_id = ?1",
                 "DELETE FROM deck_state_checkpoints WHERE deck_id = ?1",
@@ -548,23 +605,27 @@ impl DeckStore {
         deck_id: &str,
         code: String,
         declared_actions: Vec<DeclaredAction>,
+        triggers: Vec<TriggerSpec>,
         mode: ScriptMode,
         interval_secs: Option<u64>,
         schedule_cron: Option<String>,
         proposed_by: String,
         change_summary: String,
     ) -> Result<ScriptRevision> {
-        validate_script_proposal(&code, &declared_actions, &change_summary)?;
+        validate_script_proposal(&code, &declared_actions, &triggers, &change_summary)?;
+        let triggers = normalize_triggers(&triggers);
         let interval_secs = interval_secs.map(clamp_interval_secs);
         let code_sha256 = sha256_hex(&code);
         let revision_sha256 = canonical_revision_sha256(
             &code,
             &declared_actions,
+            &triggers,
             mode,
             interval_secs,
             schedule_cron.as_deref(),
         );
         let actions_json = serde_json::to_string(&declared_actions)?;
+        let triggers_json = serde_json::to_string(&triggers)?;
         let now = Utc::now().to_rfc3339();
 
         let mut conn = self.pool.acquire().await?;
@@ -590,10 +651,10 @@ impl DeckStore {
 
             sqlx::query(
                 "INSERT INTO deck_script_revisions
-                 (deck_id, rev, code, code_sha256, revision_sha256, declared_actions_json, mode,
+                 (deck_id, rev, code, code_sha256, revision_sha256, declared_actions_json, triggers_json, mode,
                   interval_secs, schedule_cron, status, proposed_by, approved_by, approved_at,
                   rejected_reason, change_summary, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending_review', ?10, NULL, NULL, NULL, ?11, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending_review', ?11, NULL, NULL, NULL, ?12, ?13)",
             )
             .bind(deck_id)
             .bind(next_rev)
@@ -601,6 +662,7 @@ impl DeckStore {
             .bind(&code_sha256)
             .bind(&revision_sha256)
             .bind(&actions_json)
+            .bind(&triggers_json)
             .bind(mode.as_str())
             .bind(interval_secs.map(|v| v as i64))
             .bind(&schedule_cron)
@@ -624,6 +686,7 @@ impl DeckStore {
                 code_sha256,
                 revision_sha256,
                 declared_actions,
+                triggers,
                 mode,
                 interval_secs,
                 schedule_cron,
@@ -842,8 +905,8 @@ impl DeckStore {
     pub async fn get_latest_script(&self, deck_id: &str) -> Result<Option<ScriptRevision>> {
         let row = sqlx::query(
             "SELECT deck_id, rev, code, code_sha256, revision_sha256, declared_actions_json,
-                    mode, interval_secs, schedule_cron, status, proposed_by, approved_by,
-                    approved_at, rejected_reason, change_summary, created_at
+                    triggers_json, mode, interval_secs, schedule_cron, status, proposed_by,
+                    approved_by, approved_at, rejected_reason, change_summary, created_at
              FROM deck_script_revisions WHERE deck_id = ?1 ORDER BY rev DESC LIMIT 1",
         )
         .bind(deck_id)
@@ -1209,8 +1272,170 @@ impl DeckStore {
         Ok(())
     }
 
+    /// Load persisted trigger evaluation state for one `(deck_id, trigger_id)`.
+    pub async fn load_trigger_state(
+        &self,
+        deck_id: &str,
+        trigger_id: &str,
+    ) -> Result<Option<TriggerState>> {
+        let row = sqlx::query(
+            "SELECT deck_id, trigger_id, script_rev, spec_sha256, first_match_at_ms,
+                    consecutive_matches, latched, last_fired_at_ms, episode_seq
+             FROM deck_trigger_state WHERE deck_id = ?1 AND trigger_id = ?2",
+        )
+        .bind(deck_id)
+        .bind(trigger_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| TriggerState {
+            deck_id: r.get(0),
+            trigger_id: r.get(1),
+            script_rev: r.get::<i64, _>(2).max(0) as u64,
+            spec_sha256: r.get(3),
+            first_match_at_ms: r.get(4),
+            consecutive_matches: r.get::<i64, _>(5).max(0) as u32,
+            latched: r.get::<i64, _>(6) != 0,
+            last_fired_at_ms: r.get(7),
+            episode_seq: r.get::<i64, _>(8).max(0) as u64,
+        }))
+    }
+
+    /// Upsert persisted trigger evaluation state.
+    pub async fn save_trigger_state(&self, state: &TriggerState) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO deck_trigger_state
+             (deck_id, trigger_id, script_rev, spec_sha256, first_match_at_ms,
+              consecutive_matches, latched, last_fired_at_ms, episode_seq, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(deck_id, trigger_id) DO UPDATE SET
+               script_rev = excluded.script_rev,
+               spec_sha256 = excluded.spec_sha256,
+               first_match_at_ms = excluded.first_match_at_ms,
+               consecutive_matches = excluded.consecutive_matches,
+               latched = excluded.latched,
+               last_fired_at_ms = excluded.last_fired_at_ms,
+               episode_seq = excluded.episode_seq,
+               updated_at = excluded.updated_at",
+        )
+        .bind(&state.deck_id)
+        .bind(&state.trigger_id)
+        .bind(state.script_rev as i64)
+        .bind(&state.spec_sha256)
+        .bind(state.first_match_at_ms)
+        .bind(i64::from(state.consecutive_matches))
+        .bind(i64::from(state.latched))
+        .bind(state.last_fired_at_ms)
+        .bind(state.episode_seq as i64)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete all persisted trigger states for a Deck (e.g. when a new script revision is approved).
+    pub async fn reset_trigger_states_for_deck(&self, deck_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM deck_trigger_state WHERE deck_id = ?1")
+            .bind(deck_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Remove trigger states whose `trigger_id` is no longer present in the active revision.
+    pub async fn prune_obsolete_trigger_states(
+        &self,
+        deck_id: &str,
+        active_trigger_ids: &[String],
+    ) -> Result<()> {
+        if active_trigger_ids.is_empty() {
+            return self.reset_trigger_states_for_deck(deck_id).await;
+        }
+        let existing: Vec<String> =
+            sqlx::query_scalar("SELECT trigger_id FROM deck_trigger_state WHERE deck_id = ?1")
+                .bind(deck_id)
+                .fetch_all(&self.pool)
+                .await?;
+        for tid in existing {
+            if !active_trigger_ids.iter().any(|a| a == &tid) {
+                sqlx::query(
+                    "DELETE FROM deck_trigger_state WHERE deck_id = ?1 AND trigger_id = ?2",
+                )
+                .bind(deck_id)
+                .bind(&tid)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Atomically reserve a trigger fire dedup key before dispatching to `schedule::FireTrigger`.
+    /// Returns `Ok(true)` if reserved (first fire), or `Ok(false)` if already recorded (deduped).
+    pub async fn reserve_trigger_fire(
+        &self,
+        dedup_key: &str,
+        deck_id: &str,
+        trigger_id: &str,
+        script_rev: u64,
+        routine: &str,
+        fired_at_ms: i64,
+    ) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        let res = sqlx::query(
+            "INSERT OR IGNORE INTO deck_trigger_fires
+             (dedup_key, deck_id, trigger_id, script_rev, routine, fired_at_ms, target, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
+        )
+        .bind(dedup_key)
+        .bind(deck_id)
+        .bind(trigger_id)
+        .bind(script_rev as i64)
+        .bind(routine)
+        .bind(fired_at_ms)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    /// Mark a reserved trigger fire with its dispatched target and prune history to 500 rows/Deck.
+    pub async fn finalize_trigger_fire(
+        &self,
+        dedup_key: &str,
+        deck_id: &str,
+        target: &str,
+    ) -> Result<()> {
+        sqlx::query("UPDATE deck_trigger_fires SET target = ?2 WHERE dedup_key = ?1")
+            .bind(dedup_key)
+            .bind(target)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            "DELETE FROM deck_trigger_fires
+             WHERE deck_id = ?1 AND rowid NOT IN (
+                SELECT rowid FROM deck_trigger_fires
+                WHERE deck_id = ?1
+                ORDER BY fired_at_ms DESC, rowid DESC LIMIT 500
+             )",
+        )
+        .bind(deck_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Release a reserved trigger fire row when `schedule::FireTrigger` rejects/fails dispatch.
+    pub async fn release_trigger_fire(&self, dedup_key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM deck_trigger_fires WHERE dedup_key = ?1")
+            .bind(dedup_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Expose raw pool in unit tests for direct SQLite forgery regression tests.
-    #[cfg(all(test, feature = "inproc-monty"))]
+    #[cfg(test)]
     pub(crate) fn pool_for_test(&self) -> &SqlitePool {
         &self.pool
     }
@@ -1263,8 +1488,8 @@ async fn get_script_revision_tx(
 ) -> Result<Option<ScriptRevision>> {
     let row = sqlx::query(
         "SELECT deck_id, rev, code, code_sha256, revision_sha256, declared_actions_json,
-                mode, interval_secs, schedule_cron, status, proposed_by, approved_by,
-                approved_at, rejected_reason, change_summary, created_at
+                triggers_json, mode, interval_secs, schedule_cron, status, proposed_by,
+                approved_by, approved_at, rejected_reason, change_summary, created_at
          FROM deck_script_revisions WHERE deck_id = ?1 AND rev = ?2",
     )
     .bind(deck_id)
@@ -1299,11 +1524,13 @@ fn parse_script_row(r: sqlx::sqlite::SqliteRow) -> Result<ScriptRevision> {
     let stored_rev_sha: String = r.get(4);
     let actions_raw: String = r.get(5);
     let declared_actions: Vec<DeclaredAction> = serde_json::from_str(&actions_raw)?;
-    let mode = ScriptMode::parse(&r.get::<String, _>(6));
+    let triggers_raw: String = r.get(6);
+    let triggers: Vec<TriggerSpec> = serde_json::from_str(&triggers_raw)?;
+    let mode = ScriptMode::parse(&r.get::<String, _>(7));
     let interval_secs = r
-        .get::<Option<i64>, _>(7)
+        .get::<Option<i64>, _>(8)
         .map(|v| v.clamp(MIN_INTERVAL_SECS as i64, MAX_INTERVAL_SECS as i64) as u64);
-    let schedule_cron: Option<String> = r.get(8);
+    let schedule_cron: Option<String> = r.get(9);
 
     // 229 B2: recompute both source and canonical revision digests on every load.
     let actual_code_sha = sha256_hex(&code);
@@ -1315,6 +1542,7 @@ fn parse_script_row(r: sqlx::sqlite::SqliteRow) -> Result<ScriptRevision> {
     let actual_rev_sha = canonical_revision_sha256(
         &code,
         &declared_actions,
+        &triggers,
         mode,
         interval_secs,
         schedule_cron.as_deref(),
@@ -1332,16 +1560,17 @@ fn parse_script_row(r: sqlx::sqlite::SqliteRow) -> Result<ScriptRevision> {
         code_sha256: stored_code_sha,
         revision_sha256: stored_rev_sha,
         declared_actions,
+        triggers,
         mode,
         interval_secs,
         schedule_cron,
-        status: ScriptStatus::parse(&r.get::<String, _>(9)),
-        proposed_by: r.get(10),
-        approved_by: r.get(11),
-        approved_at: r.get(12),
-        rejected_reason: r.get(13),
-        change_summary: r.get(14),
-        created_at: r.get(15),
+        status: ScriptStatus::parse(&r.get::<String, _>(10)),
+        proposed_by: r.get(11),
+        approved_by: r.get(12),
+        approved_at: r.get(13),
+        rejected_reason: r.get(14),
+        change_summary: r.get(15),
+        created_at: r.get(16),
     })
 }
 

@@ -14,6 +14,7 @@ platform = { workspace = true }
 rpc-core = { workspace = true }
 rpc-core-macros = { workspace = true }
 runtime = { workspace = true }
+schedule = { workspace = true }
 surface = { workspace = true }
 tools = { workspace = true }
 wire = { workspace = true }

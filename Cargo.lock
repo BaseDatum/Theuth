@@ -5580,6 +5580,7 @@ dependencies = [
  "rpc-core",
  "rpc-core-macros",
  "runtime",
+ "schedule",
  "schemars 1.2.3",
  "serde",
  "serde_json",

@@ -93938,6 +93938,18 @@
         ],
         "type": "object"
       },
+      "method.decks.input.MetricValue": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "format": "double",
+            "type": "number"
+          }
+        ],
+        "description": "Typed finite metric value reported by `deck_metric(name, value, meta=None)` or used as a trigger threshold."
+      },
       "method.decks.input.RuntimeControlOp": {
         "description": "Lifecycle control operations on a Deck runtime.",
         "oneOf": [
@@ -94012,6 +94024,112 @@
             "type": "string"
           }
         ]
+      },
+      "method.decks.input.TriggerOp": {
+        "description": "Comparison operator for a host-evaluated Deck trigger.",
+        "enum": [
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "eq",
+          "ne"
+        ],
+        "type": "string"
+      },
+      "method.decks.input.TriggerResetMode": {
+        "description": "How a Deck trigger re-arms after firing.",
+        "oneOf": [
+          {
+            "const": "re_arm_on_clear",
+            "description": "After firing, stay latched until the metric clears (or crosses `reset_threshold`) and cooldown expires.",
+            "type": "string"
+          },
+          {
+            "const": "cooldown_only",
+            "description": "After firing, reset condition state immediately and allow re-firing once cooldown expires and condition is met again.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.input.TriggerSpec": {
+        "description": "Owner-reviewed host trigger attached to a [`ScriptRevision`].\nEvaluated strictly host-side on `deck_metric(...)` samples; dispatches only an existing routine.",
+        "properties": {
+          "cooldown_secs": {
+            "default": 0,
+            "description": "Minimum cooldown in seconds after a fire before the trigger may fire again (default `0`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Unique trigger identifier within this script revision.",
+            "type": "string"
+          },
+          "metric": {
+            "description": "Metric name reported by `deck_metric(name, value, meta=None)`.",
+            "type": "string"
+          },
+          "min_samples": {
+            "default": 1,
+            "description": "Consecutive matching samples required (ANDed with `sustain_secs`; default `1`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "op": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.input.TriggerOp"
+              }
+            ],
+            "description": "Comparison operator (`gt`, `gte`, `lt`, `lte`, `eq`, `ne`)."
+          },
+          "reset_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.input.TriggerResetMode"
+              }
+            ],
+            "default": "re_arm_on_clear",
+            "description": "Re-arming behavior after firing (`re_arm_on_clear` or `cooldown_only`)."
+          },
+          "reset_threshold": {
+            "description": "Optional numeric hysteresis reset threshold (numeric ops only; re-arms once metric clears past it).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "routine": {
+            "description": "Existing owner-approved routine name (`schedules/<routine>.md`) to fire.",
+            "type": "string"
+          },
+          "sustain_secs": {
+            "default": 0,
+            "description": "Minimum sustained wall-clock duration in seconds (default `0`). Requires a confirming matching sample at/after `first_match + sustain_secs`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "threshold": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.input.MetricValue"
+              }
+            ],
+            "description": "Threshold value (finite number or boolean)."
+          }
+        },
+        "required": [
+          "id",
+          "metric",
+          "op",
+          "threshold",
+          "routine"
+        ],
+        "type": "object"
       },
       "method.decks.output.ApprovalId": {
         "description": "Correlates a request with its resolution.",
@@ -94798,6 +94916,18 @@
         ],
         "type": "object"
       },
+      "method.decks.output.MetricValue": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "format": "double",
+            "type": "number"
+          }
+        ],
+        "description": "Typed finite metric value reported by `deck_metric(name, value, meta=None)` or used as a trigger threshold."
+      },
       "method.decks.output.PendingApproval": {
         "description": "Pending tool approval surfaced when a Deck's Monty checkout invokes a gated tool.",
         "properties": {
@@ -94939,7 +95069,7 @@
             "type": "integer"
           },
           "revision_sha256": {
-            "description": "Canonical SHA-256 digest over `(code, declared_actions, mode, interval_secs, schedule_cron)`.\nBound into `deck_script_approve(deck_id, rev, expected_digest)` to prevent mid-review swap.",
+            "description": "Canonical SHA-256 digest over `(code, declared_actions, mode, interval_secs, schedule_cron)`\n(`v=1` when `triggers` is empty; `v=2` including `triggers` when non-empty).\nBound into `deck_script_approve(deck_id, rev, expected_digest)` to prevent mid-review swap.",
             "type": "string"
           },
           "schedule_cron": {
@@ -94950,6 +95080,14 @@
           },
           "status": {
             "$ref": "#/components/schemas/method.decks.output.ScriptStatus"
+          },
+          "triggers": {
+            "default": [],
+            "description": "Owner-reviewed host triggers evaluated on `deck_metric(...)` samples.",
+            "items": {
+              "$ref": "#/components/schemas/method.decks.output.TriggerSpec"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -94959,6 +95097,7 @@
           "code_sha256",
           "revision_sha256",
           "declared_actions",
+          "triggers",
           "mode",
           "status",
           "proposed_by",
@@ -95052,6 +95191,116 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "method.decks.output.TriggerOp": {
+        "description": "Comparison operator for a host-evaluated Deck trigger.",
+        "enum": [
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "eq",
+          "ne"
+        ],
+        "type": "string"
+      },
+      "method.decks.output.TriggerResetMode": {
+        "description": "How a Deck trigger re-arms after firing.",
+        "oneOf": [
+          {
+            "const": "re_arm_on_clear",
+            "description": "After firing, stay latched until the metric clears (or crosses `reset_threshold`) and cooldown expires.",
+            "type": "string"
+          },
+          {
+            "const": "cooldown_only",
+            "description": "After firing, reset condition state immediately and allow re-firing once cooldown expires and condition is met again.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.output.TriggerSpec": {
+        "description": "Owner-reviewed host trigger attached to a [`ScriptRevision`].\nEvaluated strictly host-side on `deck_metric(...)` samples; dispatches only an existing routine.",
+        "properties": {
+          "cooldown_secs": {
+            "default": 0,
+            "description": "Minimum cooldown in seconds after a fire before the trigger may fire again (default `0`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Unique trigger identifier within this script revision.",
+            "type": "string"
+          },
+          "metric": {
+            "description": "Metric name reported by `deck_metric(name, value, meta=None)`.",
+            "type": "string"
+          },
+          "min_samples": {
+            "default": 1,
+            "description": "Consecutive matching samples required (ANDed with `sustain_secs`; default `1`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "op": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.TriggerOp"
+              }
+            ],
+            "description": "Comparison operator (`gt`, `gte`, `lt`, `lte`, `eq`, `ne`)."
+          },
+          "reset_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.TriggerResetMode"
+              }
+            ],
+            "default": "re_arm_on_clear",
+            "description": "Re-arming behavior after firing (`re_arm_on_clear` or `cooldown_only`)."
+          },
+          "reset_threshold": {
+            "description": "Optional numeric hysteresis reset threshold (numeric ops only; re-arms once metric clears past it).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "routine": {
+            "description": "Existing owner-approved routine name (`schedules/<routine>.md`) to fire.",
+            "type": "string"
+          },
+          "sustain_secs": {
+            "default": 0,
+            "description": "Minimum sustained wall-clock duration in seconds (default `0`). Requires a confirming matching sample at/after `first_match + sustain_secs`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "threshold": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.output.MetricValue"
+              }
+            ],
+            "description": "Threshold value (finite number or boolean)."
+          }
+        },
+        "required": [
+          "id",
+          "metric",
+          "op",
+          "threshold",
+          "min_samples",
+          "sustain_secs",
+          "cooldown_secs",
+          "reset_mode",
+          "routine"
+        ],
+        "type": "object"
       },
       "method.decks.receiver.ApprovalId": {
         "description": "Correlates a request with its resolution.",
@@ -95831,6 +96080,18 @@
         ],
         "type": "object"
       },
+      "method.decks.receiver.MetricValue": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "format": "double",
+            "type": "number"
+          }
+        ],
+        "description": "Typed finite metric value reported by `deck_metric(name, value, meta=None)` or used as a trigger threshold."
+      },
       "method.decks.receiver.PendingApproval": {
         "description": "Pending tool approval surfaced when a Deck's Monty checkout invokes a gated tool.",
         "properties": {
@@ -95972,7 +96233,7 @@
             "type": "integer"
           },
           "revision_sha256": {
-            "description": "Canonical SHA-256 digest over `(code, declared_actions, mode, interval_secs, schedule_cron)`.\nBound into `deck_script_approve(deck_id, rev, expected_digest)` to prevent mid-review swap.",
+            "description": "Canonical SHA-256 digest over `(code, declared_actions, mode, interval_secs, schedule_cron)`\n(`v=1` when `triggers` is empty; `v=2` including `triggers` when non-empty).\nBound into `deck_script_approve(deck_id, rev, expected_digest)` to prevent mid-review swap.",
             "type": "string"
           },
           "schedule_cron": {
@@ -95983,6 +96244,14 @@
           },
           "status": {
             "$ref": "#/components/schemas/method.decks.receiver.ScriptStatus"
+          },
+          "triggers": {
+            "default": [],
+            "description": "Owner-reviewed host triggers evaluated on `deck_metric(...)` samples.",
+            "items": {
+              "$ref": "#/components/schemas/method.decks.receiver.TriggerSpec"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -96085,6 +96354,112 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "method.decks.receiver.TriggerOp": {
+        "description": "Comparison operator for a host-evaluated Deck trigger.",
+        "enum": [
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "eq",
+          "ne"
+        ],
+        "type": "string"
+      },
+      "method.decks.receiver.TriggerResetMode": {
+        "description": "How a Deck trigger re-arms after firing.",
+        "oneOf": [
+          {
+            "const": "re_arm_on_clear",
+            "description": "After firing, stay latched until the metric clears (or crosses `reset_threshold`) and cooldown expires.",
+            "type": "string"
+          },
+          {
+            "const": "cooldown_only",
+            "description": "After firing, reset condition state immediately and allow re-firing once cooldown expires and condition is met again.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.decks.receiver.TriggerSpec": {
+        "description": "Owner-reviewed host trigger attached to a [`ScriptRevision`].\nEvaluated strictly host-side on `deck_metric(...)` samples; dispatches only an existing routine.",
+        "properties": {
+          "cooldown_secs": {
+            "default": 0,
+            "description": "Minimum cooldown in seconds after a fire before the trigger may fire again (default `0`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Unique trigger identifier within this script revision.",
+            "type": "string"
+          },
+          "metric": {
+            "description": "Metric name reported by `deck_metric(name, value, meta=None)`.",
+            "type": "string"
+          },
+          "min_samples": {
+            "default": 1,
+            "description": "Consecutive matching samples required (ANDed with `sustain_secs`; default `1`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "op": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.TriggerOp"
+              }
+            ],
+            "description": "Comparison operator (`gt`, `gte`, `lt`, `lte`, `eq`, `ne`)."
+          },
+          "reset_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.TriggerResetMode"
+              }
+            ],
+            "default": "re_arm_on_clear",
+            "description": "Re-arming behavior after firing (`re_arm_on_clear` or `cooldown_only`)."
+          },
+          "reset_threshold": {
+            "description": "Optional numeric hysteresis reset threshold (numeric ops only; re-arms once metric clears past it).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "routine": {
+            "description": "Existing owner-approved routine name (`schedules/<routine>.md`) to fire.",
+            "type": "string"
+          },
+          "sustain_secs": {
+            "default": 0,
+            "description": "Minimum sustained wall-clock duration in seconds (default `0`). Requires a confirming matching sample at/after `first_match + sustain_secs`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "threshold": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.decks.receiver.MetricValue"
+              }
+            ],
+            "description": "Threshold value (finite number or boolean)."
+          }
+        },
+        "required": [
+          "id",
+          "metric",
+          "op",
+          "threshold",
+          "routine"
+        ],
+        "type": "object"
       },
       "method.document.input.DocId": {
         "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
@@ -154121,6 +154496,20 @@
           "x-theuth-aliases": [
             "changeSummary"
           ]
+        },
+        {
+          "name": "triggers",
+          "required": false,
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/method.decks.input.TriggerSpec"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {

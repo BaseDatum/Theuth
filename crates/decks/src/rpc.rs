@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::hub::DeckHub;
 use crate::model::{
     DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary, DeclaredAction,
-    InteractResponse, RuntimeControlOp, ScriptMode, ScriptRevision,
+    InteractResponse, RuntimeControlOp, ScriptMode, ScriptRevision, TriggerSpec,
 };
 use crate::owner::{
     ApproveScriptMsg, CreateDeckMsg, DECKS_ACTOR, DeckSupervisor, FocusSectionMsg, GetDeck,
@@ -238,6 +238,7 @@ pub trait DecksApi {
         interval_secs: Option<u64>,
         schedule_cron: Option<String>,
         change_summary: Option<String>,
+        triggers: Option<Vec<TriggerSpec>>,
     ) -> RpcResult<ScriptRevision>;
 
     /// Owner approval gate: approve a `pending_review` script revision matching `expected_digest`
@@ -511,6 +512,7 @@ impl DecksApiServer for Server {
         interval_secs: Option<u64>,
         schedule_cron: Option<String>,
         change_summary: Option<String>,
+        triggers: Option<Vec<TriggerSpec>>,
     ) -> RpcResult<ScriptRevision> {
         let (caller_id, _) = owner_only(ext)?;
         let actor = decks_actor()?;
@@ -519,6 +521,7 @@ impl DecksApiServer for Server {
                 deck_id,
                 code,
                 declared_actions,
+                triggers: triggers.unwrap_or_default(),
                 mode,
                 interval_secs,
                 schedule_cron,

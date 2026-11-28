@@ -21,8 +21,12 @@ use serde_json::Value;
 use tools::{Invoke, ToolCall, ToolOutput, ToolRegistry, ToolSpec};
 
 use crate::hub::{MAX_LIVE_FRAME_BYTES, MAX_SNAPSHOT_BYTES};
-use crate::model::{MAX_ACTION_RESULT_BYTES, ScriptRevision};
+use crate::model::{
+    MAX_ACTION_RESULT_BYTES, MAX_METRIC_META_BYTES, MAX_METRICS_PER_TURN, MetricSample,
+    MetricValue, ScriptRevision,
+};
 use crate::store::{StateCheckpoint, sha256_bytes};
+use crate::triggers::is_safe_metric_name;
 
 /// Maximum concurrent Deck Monty workers in the dedicated Deck pool.
 pub const DECK_POOL_MAX: usize = 16;
@@ -50,6 +54,7 @@ pub const MAX_STDOUT_BYTES: usize = 16_000;
 /// Type-checking `.pyi` stubs appended to the live session tool stubs for Deck cooperative builtins.
 pub const DECK_BUILTIN_STUBS: &str = "\
 def deck_emit(data: Any, durable: bool = False, section: str | None = None) -> None: ...
+def deck_metric(name: str, value: float | int | bool, meta: Any = None) -> None: ...
 def deck_checkpoint(state: Any) -> None: ...
 def deck_sleep(seconds: float) -> None: ...
 def deck_state() -> Any: ...
@@ -88,6 +93,7 @@ pub struct EmittedPayload {
 #[derive(Clone, Debug, Default)]
 pub struct TurnEffects {
     pub emits: Vec<EmittedPayload>,
+    pub metrics: Vec<MetricSample>,
     pub checkpoint_state: Option<Value>,
     pub next_sleep_secs: Option<f64>,
     pub stdout: String,
@@ -586,8 +592,8 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                 TurnEvent::Complete(v) => break v,
                 TurnEvent::NameLookup { name, .. } => {
                     let answer = match name.as_str() {
-                        "deck_emit" | "deck_checkpoint" | "deck_sleep" | "deck_state"
-                        | "deck_last_snapshot" | "tools" | "help" | "bindings" => {
+                        "deck_emit" | "deck_metric" | "deck_checkpoint" | "deck_sleep"
+                        | "deck_state" | "deck_last_snapshot" | "tools" | "help" | "bindings" => {
                             NameLookupResult::Value(MontyObject::function(name, None))
                         }
                         blocked if is_blocked_deck_tool(blocked) => {
@@ -619,6 +625,7 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                 } => {
                     let answer = match function_name.as_str() {
                         "deck_emit" => handle_deck_emit(&args, &mut effects, on_emit),
+                        "deck_metric" => handle_deck_metric(&args, &mut effects),
                         "deck_checkpoint" => handle_deck_checkpoint(&args, &mut effects),
                         "deck_sleep" => handle_deck_sleep(&args, &mut effects),
                         "deck_state" => ResumeValue::Return(to_monty(&turn_cx.last_state)),
@@ -631,6 +638,7 @@ await _deck_action_fn(_deck_action_name, _deck_action_args, _deck_action_ctx)
                                 "deck_checkpoint",
                                 "deck_emit",
                                 "deck_last_snapshot",
+                                "deck_metric",
                                 "deck_sleep",
                                 "deck_state",
                                 "help",
@@ -935,8 +943,103 @@ fn handle_deck_sleep(args: &CallArgs, effects: &mut TurnEffects) -> ResumeValue 
     ResumeValue::Return(MontyObject::none())
 }
 
+fn handle_deck_metric(args: &CallArgs, effects: &mut TurnEffects) -> ResumeValue {
+    if effects.metrics.len() >= MAX_METRICS_PER_TURN {
+        return ResumeValue::Error(MontyException::new(
+            ExcType::ValueError,
+            Some(format!(
+                "deck_metric per-turn cap ({MAX_METRICS_PER_TURN}) exceeded"
+            )),
+        ));
+    }
+    let Some(name_ref) = first_arg(args, "name") else {
+        return ResumeValue::Error(MontyException::new(
+            ExcType::TypeError,
+            Some("deck_metric(name, value, meta=None) requires name".into()),
+        ));
+    };
+    let Some(raw_name) = name_ref.as_str() else {
+        return ResumeValue::Error(MontyException::new(
+            ExcType::TypeError,
+            Some("deck_metric name must be a str".into()),
+        ));
+    };
+    let name = tools::secrets::redact(raw_name).into_owned();
+    if name.trim() != name || !is_safe_metric_name(&name) {
+        return ResumeValue::Error(MontyException::new(
+            ExcType::ValueError,
+            Some(format!(
+                "deck_metric name {name:?} must be 1..=64 ASCII chars [A-Za-z0-9_.:/-]"
+            )),
+        ));
+    }
+
+    let Some(val_ref) = args.arg(1).or_else(|| args.kwarg("value")) else {
+        return ResumeValue::Error(MontyException::new(
+            ExcType::TypeError,
+            Some("deck_metric(name, value, meta=None) requires value".into()),
+        ));
+    };
+    let value = if let Some(b) = val_ref.as_bool() {
+        MetricValue::Bool(b)
+    } else if let Some(i) = val_ref.as_int() {
+        let f = i as f64;
+        if !f.is_finite() {
+            return ResumeValue::Error(MontyException::new(
+                ExcType::ValueError,
+                Some("deck_metric value must be finite".into()),
+            ));
+        }
+        MetricValue::Number(f).normalized()
+    } else if val_ref.type_name() == "float" {
+        match val_ref.as_float() {
+            Some(f) if f.is_finite() => MetricValue::Number(f).normalized(),
+            _ => {
+                return ResumeValue::Error(MontyException::new(
+                    ExcType::ValueError,
+                    Some("deck_metric float value must be finite (NaN/Inf forbidden)".into()),
+                ));
+            }
+        }
+    } else {
+        return ResumeValue::Error(MontyException::new(
+            ExcType::TypeError,
+            Some("deck_metric value must be a finite int, float, or bool".into()),
+        ));
+    };
+
+    let meta = match args.arg(2).or_else(|| args.kwarg("meta")) {
+        Some(m) if m.type_name() != "NoneType" => {
+            let mut v = from_monty(m);
+            tools::secrets::redact_value(&mut v);
+            let encoded_len = serde_json::to_vec(&v)
+                .map(|b| b.len())
+                .unwrap_or(usize::MAX);
+            if encoded_len > MAX_METRIC_META_BYTES {
+                return ResumeValue::Error(MontyException::new(
+                    ExcType::ValueError,
+                    Some(format!(
+                        "deck_metric meta ({encoded_len} bytes) exceeds cap ({MAX_METRIC_META_BYTES} bytes)"
+                    )),
+                ));
+            }
+            Some(v)
+        }
+        _ => None,
+    };
+
+    effects.metrics.push(MetricSample {
+        name,
+        value,
+        meta,
+        observed_at_ms: chrono::Utc::now().timestamp_millis(),
+    });
+    ResumeValue::Return(MontyObject::none())
+}
+
 fn merge_effects(dst: &mut TurnEffects, src: TurnEffects) {
     dst.emits.extend(src.emits);
+    dst.metrics.extend(src.metrics);
     if src.checkpoint_state.is_some() {
         dst.checkpoint_state = src.checkpoint_state;
     }

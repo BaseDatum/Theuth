@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 
-use crate::model::{DeclaredAction, RuntimeControlOp, ScriptMode};
+use crate::model::{DeclaredAction, RuntimeControlOp, ScriptMode, TriggerSpec};
 use crate::owner::{
     CreateDeckMsg, DeckSupervisor, FocusSectionMsg, GetDeck, InteractMsg, ListDecks,
     ProposeScriptMsg, ReadScriptMsg, RuntimeControlMsg, SectionAddMsg, SectionArchiveMsg,
@@ -602,6 +602,9 @@ pub struct DeckScriptProposeArgs {
     /// Declared interactive actions accepted by `on_action`, each with a JSON Schema for `args`.
     #[serde(default)]
     pub declared_actions: Vec<DeclaredAction>,
+    /// Optional owner-reviewed host triggers evaluated on `deck_metric(name, value, meta=None)` samples. Each trigger targets an existing owner-approved routine.
+    #[serde(default)]
+    pub triggers: Vec<TriggerSpec>,
     /// Execution mode: `oneshot`, `streaming`, or `hybrid`.
     #[serde(default = "default_hybrid")]
     pub mode: ScriptMode,
@@ -630,7 +633,7 @@ impl Tool for DeckScriptProposeTool {
     type Args = DeckScriptProposeArgs;
 
     fn description(&self) -> String {
-        "Propose a new Monty script revision for a Deck. Always enters `pending_review` and cannot run recurring/streaming until the owner approves it in the Deck UI.".into()
+        "Propose a new Monty script revision (with optional declared actions and host triggers targeting existing routines) for a Deck. Always enters `pending_review` and cannot run recurring/streaming until the owner approves it in the Deck UI.".into()
     }
 
     async fn call(&self, a: DeckScriptProposeArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -641,6 +644,7 @@ impl Tool for DeckScriptProposeTool {
                 deck_id: clean_deck_id(&a.deck_id),
                 code: a.code,
                 declared_actions: a.declared_actions,
+                triggers: a.triggers,
                 mode: a.mode,
                 interval_secs: a.interval_secs,
                 schedule_cron: a.schedule_cron,
@@ -654,8 +658,10 @@ impl Tool for DeckScriptProposeTool {
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(structured(
             format!(
-                "Proposed script rev {} for deck {} (status: pending_review). Ask the owner to review and approve it in the Deck UI.",
-                rev.rev, rev.deck_id
+                "Proposed script rev {} for deck {} (status: pending_review, {} trigger(s)). Ask the owner to review and approve it in the Deck UI.",
+                rev.rev,
+                rev.deck_id,
+                rev.triggers.len()
             ),
             &rev,
         ))
@@ -934,7 +940,7 @@ impl Tool for ShowDeckTool {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let path = format!("/decks/{deck_id}");
-        let outcome = layout::call(
+        match layout::call(
             &self.0.rt,
             cx.session,
             LayoutOp::OpenView {
@@ -945,28 +951,35 @@ impl Tool for ShowDeckTool {
                 focus: Some(true),
             },
         )
-        .await;
-        let status_msg = match outcome {
-            Outcome::Done(_) => format!("Opened Deck {:?} at {path}", detail.doc.title),
-            Outcome::NoClient => format!(
-                "Deck {:?} is ready at {path} (no desktop client connected)",
-                detail.doc.title
-            ),
-            Outcome::Failed(r) => format!(
-                "Deck {:?} at {path} (UI could not open pane: {r})",
-                detail.doc.title
-            ),
-            Outcome::TimedOut => {
-                format!("Deck {:?} at {path} (UI open timed out)", detail.doc.title)
+        .await
+        {
+            Outcome::Done(mut result) => {
+                let pane = result["pane"].as_str().unwrap_or("?").to_owned();
+                let shown_path = result["path"].as_str().unwrap_or(&path).to_owned();
+                let shown_title = result["title"]
+                    .as_str()
+                    .unwrap_or(&detail.doc.title)
+                    .to_owned();
+                let reused = result["reused"].as_bool().unwrap_or(false);
+                if let Some(obj) = result.as_object_mut() {
+                    obj.entry("deck_id".to_owned())
+                        .or_insert_with(|| json!(deck_id));
+                    obj.entry("title".to_owned())
+                        .or_insert_with(|| json!(shown_title));
+                    obj.entry("path".to_owned())
+                        .or_insert_with(|| json!(shown_path));
+                }
+                let content = layout::view_receipt(&shown_title, &shown_path, &pane, reused);
+                Ok(ToolOutput {
+                    structured: Some(result),
+                    ..ToolOutput::ok(content)
+                })
             }
-        };
-        Ok(structured(
-            status_msg,
-            &json!({
-                "deck_id": deck_id,
-                "title": detail.doc.title,
-                "path": path,
-            }),
-        ))
+            Outcome::Failed(reason) => Ok(ToolOutput::err(format!("show_deck: {reason}"))),
+            Outcome::NoClient => Ok(ToolOutput::err("show_deck: no desktop app connected")),
+            Outcome::TimedOut => Ok(ToolOutput::err(
+                "show_deck: timed out waiting for the desktop app to answer",
+            )),
+        }
     }
 }

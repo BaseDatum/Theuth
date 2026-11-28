@@ -469,6 +469,7 @@ pub async fn create_workspace_pulse_example(
             &deck_id,
             WORKSPACE_PULSE_SCRIPT.to_owned(),
             workspace_pulse_declared_actions(),
+            Vec::new(),
             ScriptMode::Hybrid,
             Some(3),
             None,

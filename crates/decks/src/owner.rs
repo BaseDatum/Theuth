@@ -41,12 +41,16 @@ use crate::hub::{DeckHub, MAX_SNAPSHOT_BYTES};
 use crate::model::{
     DeckChanged, DeckDetail, DeckRuntimeEvent, DeckRuntimeStatus, DeckSnapshot, DeckSummary,
     DeclaredAction, InteractErrorCode, InteractResponse, LiveFrame, MAX_INTERVAL_SECS,
-    PendingApproval, RuntimeControlOp, RuntimeState, ScriptMode, ScriptRevision, ScriptStatus,
-    canonical_json_string, clamp_interval_secs,
+    MetricSample, PendingApproval, RuntimeControlOp, RuntimeState, ScriptMode, ScriptRevision,
+    ScriptStatus, TriggerSpec, canonical_json_string, clamp_interval_secs,
 };
 use crate::runtime::{DECK_POOL_MAX, DeckCheckout, EmittedPayload, TurnContext, TurnEffects};
 use crate::store::{
     DeckRecord, DeckStore, IdempotencyLookup, sha256_hex, validate_script_proposal,
+};
+use crate::triggers::{
+    TriggerDecision, TriggerState, build_trigger_event, commit_fire_state, dispatch_trigger,
+    evaluate_sample, mark_missing_metric, trigger_spec_sha256, verify_routines_exist,
 };
 
 /// Actor registry name for [`DeckSupervisor`].
@@ -896,6 +900,11 @@ impl DeckOwner {
         if self.checkout.is_some() {
             let _ = self.stop_checkout().await;
         }
+        let _ = self
+            .shared
+            .store
+            .reset_trigger_states_for_deck(&self.deck_id)
+            .await;
         self.live_frame = None;
         self.bump_epoch().await;
         self.state = RuntimeState::Stopped;
@@ -1263,7 +1272,7 @@ impl DeckOwner {
                 dump_meta,
             )
             .await;
-        self.apply_turn_effects(script, turn_epoch, effects, None)
+        self.apply_turn_effects(script, turn_epoch, effects, None, false)
             .await;
         Ok(())
     }
@@ -1340,7 +1349,7 @@ impl DeckOwner {
                 } else {
                     None
                 };
-                self.apply_turn_effects(script, turn_epoch, outcome.effects, fallback_return)
+                self.apply_turn_effects(script, turn_epoch, outcome.effects, fallback_return, true)
                     .await;
                 if matches!(
                     self.state,
@@ -1365,6 +1374,7 @@ impl DeckOwner {
             }
             Err(err) => {
                 self.record_failure(&err).await;
+                self.reset_trigger_streaks_on_gap(script, turn_epoch).await;
                 Some(err)
             }
         }
@@ -1376,6 +1386,7 @@ impl DeckOwner {
         turn_epoch: u64,
         effects: TurnEffects,
         fallback_snapshot: Option<Value>,
+        is_step_turn: bool,
     ) {
         if self.is_fenced(turn_epoch, script.rev).await {
             return;
@@ -1420,7 +1431,234 @@ impl DeckOwner {
                 .await;
             }
         }
+        self.process_turn_triggers(script, turn_epoch, &effects.metrics, is_step_turn)
+            .await;
         self.sync_live_cache();
+    }
+
+    async fn resolve_deck_title(&mut self) -> String {
+        let by = Principal::Owner { device: None };
+        match self
+            .shared
+            .document
+            .ask(DeckCall {
+                doc: DocId(self.deck_id.clone()),
+                op: DeckOp::Read,
+                by,
+            })
+            .send()
+            .await
+        {
+            Ok(DeckCallReply::Snapshot(snap)) => snap.title,
+            _ => self.deck_id.clone(),
+        }
+    }
+
+    /// Break in-progress consecutive streaks when a step fails to run (treated as a sample gap).
+    async fn reset_trigger_streaks_on_gap(&mut self, script: &ScriptRevision, turn_epoch: u64) {
+        if script.triggers.is_empty() || self.is_fenced(turn_epoch, script.rev).await {
+            return;
+        }
+        for spec in &script.triggers {
+            let spec_sha = trigger_spec_sha256(spec);
+            let Ok(Some(mut state)) = self
+                .shared
+                .store
+                .load_trigger_state(&self.deck_id, &spec.id)
+                .await
+            else {
+                continue;
+            };
+            if mark_missing_metric(script.rev, &spec_sha, &mut state) {
+                let _ = self.shared.store.save_trigger_state(&state).await;
+            }
+        }
+    }
+
+    /// Host-side evaluation and dispatch of `deck_metric(...)` samples strictly after epoch/rev fence.
+    async fn process_turn_triggers(
+        &mut self,
+        script: &ScriptRevision,
+        turn_epoch: u64,
+        metrics: &[MetricSample],
+        is_step_turn: bool,
+    ) {
+        if script.triggers.is_empty() || self.is_fenced(turn_epoch, script.rev).await {
+            return;
+        }
+
+        let active_ids: Vec<String> = script.triggers.iter().map(|t| t.id.clone()).collect();
+        let _ = self
+            .shared
+            .store
+            .prune_obsolete_trigger_states(&self.deck_id, &active_ids)
+            .await;
+
+        let mut deck_title_cache: Option<String> = None;
+        let mut reported_metrics: HashSet<&str> = HashSet::with_capacity(metrics.len());
+
+        for sample in metrics {
+            reported_metrics.insert(sample.name.as_str());
+            for spec in &script.triggers {
+                if spec.metric != sample.name {
+                    continue;
+                }
+                if self.is_fenced(turn_epoch, script.rev).await {
+                    return;
+                }
+                let spec_sha = trigger_spec_sha256(spec);
+                let mut state = match self
+                    .shared
+                    .store
+                    .load_trigger_state(&self.deck_id, &spec.id)
+                    .await
+                {
+                    Ok(Some(st)) => st,
+                    Ok(None) => {
+                        TriggerState::fresh(&self.deck_id, &spec.id, script.rev, spec_sha.clone())
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            deck = %self.deck_id,
+                            trigger = %spec.id,
+                            "load_trigger_state failed: {e:#}"
+                        );
+                        continue;
+                    }
+                };
+
+                match evaluate_sample(spec, script.rev, &spec_sha, &mut state, sample) {
+                    TriggerDecision::Hold | TriggerDecision::Cleared => {
+                        if let Err(e) = self.shared.store.save_trigger_state(&state).await {
+                            tracing::warn!(
+                                deck = %self.deck_id,
+                                trigger = %spec.id,
+                                "save_trigger_state failed: {e:#}"
+                            );
+                        }
+                    }
+                    TriggerDecision::Fire(plan) => {
+                        let reserved = match self
+                            .shared
+                            .store
+                            .reserve_trigger_fire(
+                                &plan.dedup_key,
+                                &self.deck_id,
+                                &spec.id,
+                                script.rev,
+                                &spec.routine,
+                                plan.fired_at_ms,
+                            )
+                            .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::warn!(
+                                    deck = %self.deck_id,
+                                    trigger = %spec.id,
+                                    "reserve_trigger_fire failed: {e:#}"
+                                );
+                                continue;
+                            }
+                        };
+
+                        if !reserved {
+                            // Already recorded (e.g. crash/restart replay): advance state without double-firing.
+                            commit_fire_state(spec, &mut state, &plan);
+                            let _ = self.shared.store.save_trigger_state(&state).await;
+                            continue;
+                        }
+
+                        if self.is_fenced(turn_epoch, script.rev).await {
+                            let _ = self
+                                .shared
+                                .store
+                                .release_trigger_fire(&plan.dedup_key)
+                                .await;
+                            return;
+                        }
+
+                        let title = match &deck_title_cache {
+                            Some(t) => t.clone(),
+                            None => {
+                                let t = self.resolve_deck_title().await;
+                                deck_title_cache = Some(t.clone());
+                                t
+                            }
+                        };
+                        let event = build_trigger_event(
+                            &self.deck_id,
+                            &title,
+                            script.rev,
+                            spec,
+                            sample,
+                            &plan,
+                        );
+                        match dispatch_trigger(&spec.routine, event).await {
+                            Ok(target) => {
+                                let target_str = match target {
+                                    schedule::TriggerTarget::Session(s) => format!("session:{s}"),
+                                    schedule::TriggerTarget::Task(id) => format!("task:{id}"),
+                                };
+                                let _ = self
+                                    .shared
+                                    .store
+                                    .finalize_trigger_fire(
+                                        &plan.dedup_key,
+                                        &self.deck_id,
+                                        &target_str,
+                                    )
+                                    .await;
+                                commit_fire_state(spec, &mut state, &plan);
+                                let _ = self.shared.store.save_trigger_state(&state).await;
+                                tracing::info!(
+                                    deck = %self.deck_id,
+                                    trigger = %spec.id,
+                                    routine = %spec.routine,
+                                    target = %target_str,
+                                    "deck trigger fired routine"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    deck = %self.deck_id,
+                                    trigger = %spec.id,
+                                    routine = %spec.routine,
+                                    "deck trigger dispatch refused/failed: {err}"
+                                );
+                                let _ = self
+                                    .shared
+                                    .store
+                                    .release_trigger_fire(&plan.dedup_key)
+                                    .await;
+                                let _ = self.shared.store.save_trigger_state(&state).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // On step/collection turns, any trigger whose metric was omitted experiences a sample gap.
+        if is_step_turn && !self.is_fenced(turn_epoch, script.rev).await {
+            for spec in &script.triggers {
+                if reported_metrics.contains(spec.metric.as_str()) {
+                    continue;
+                }
+                let spec_sha = trigger_spec_sha256(spec);
+                let Ok(Some(mut state)) = self
+                    .shared
+                    .store
+                    .load_trigger_state(&self.deck_id, &spec.id)
+                    .await
+                else {
+                    continue;
+                };
+                if mark_missing_metric(script.rev, &spec_sha, &mut state) {
+                    let _ = self.shared.store.save_trigger_state(&state).await;
+                }
+            }
+        }
     }
 
     async fn handle_emit(&mut self, script: &ScriptRevision, emit: EmittedPayload) {
@@ -1696,7 +1934,7 @@ impl DeckOwner {
             Ok(out) => {
                 // Only explicit `deck_emit(...)` calls inside Python broadcast to shared subscribers!
                 // The return value is strictly private to this caller.
-                self.apply_turn_effects(&script, turn_epoch, out.effects, None)
+                self.apply_turn_effects(&script, turn_epoch, out.effects, None, false)
                     .await;
                 if decl.mutates_state
                     && let Some(c) = self.checkout.as_mut()
@@ -2283,6 +2521,7 @@ pub struct ProposeScriptMsg {
     pub deck_id: String,
     pub code: String,
     pub declared_actions: Vec<DeclaredAction>,
+    pub triggers: Vec<TriggerSpec>,
     pub mode: ScriptMode,
     pub interval_secs: Option<u64>,
     pub schedule_cron: Option<String>,
@@ -2299,7 +2538,7 @@ impl Message<ProposeScriptMsg> for DeckSupervisor {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let doc = self.verify_deck_exists(&m.deck_id).await?;
-        validate_script_proposal(&m.code, &m.declared_actions, &m.change_summary)
+        validate_script_proposal(&m.code, &m.declared_actions, &m.triggers, &m.change_summary)
             .map_err(|e| format!("{e:#}"))?;
         if let Some(expr) = m.schedule_cron.as_deref() {
             croner::Cron::from_str(expr)
@@ -2309,6 +2548,7 @@ impl Message<ProposeScriptMsg> for DeckSupervisor {
             jsonschema::validator_for(&a.schema)
                 .map_err(|e| format!("invalid JSON schema for action {:?}: {e}", a.name))?;
         }
+        verify_routines_exist(&m.triggers).await?;
         let rev = self
             .shared
             .store
@@ -2316,6 +2556,7 @@ impl Message<ProposeScriptMsg> for DeckSupervisor {
                 &m.deck_id,
                 m.code,
                 m.declared_actions,
+                m.triggers,
                 m.mode,
                 m.interval_secs,
                 m.schedule_cron,
@@ -2356,12 +2597,28 @@ impl Message<ApproveScriptMsg> for DeckSupervisor {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let doc = self.verify_deck_exists(&m.deck_id).await?;
+        // Re-validate trigger routine targets at approval time before mutating status.
+        if let Some(candidate) = self
+            .shared
+            .store
+            .get_script_revision(&m.deck_id, m.rev)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            && !candidate.triggers.is_empty()
+        {
+            verify_routines_exist(&candidate.triggers).await?;
+        }
         let script = self
             .shared
             .store
             .approve_script(&m.deck_id, m.rev, &m.expected_digest, &m.approved_by)
             .await
             .map_err(|e| format!("{e:#}"))?;
+        let _ = self
+            .shared
+            .store
+            .reset_trigger_states_for_deck(&m.deck_id)
+            .await;
         self.mirror_script_ref(&m.deck_id).await;
 
         // Update live_cache immediately and notify DeckOwner non-blockingly (FIFO channel, 229 B4).

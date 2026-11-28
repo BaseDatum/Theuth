@@ -18,6 +18,17 @@ pub const MIN_INTERVAL_SECS: u64 = 1;
 pub const MAX_INTERVAL_SECS: u64 = 86_400 * 30;
 pub const MAX_ACTION_RESULT_BYTES: usize = 256 * 1024;
 
+/// Upper bounds for Deck triggers and `deck_metric(...)` ingestion.
+pub const MAX_TRIGGERS_PER_REVISION: usize = 16;
+pub const MAX_TRIGGER_ID_BYTES: usize = 64;
+pub const MAX_METRIC_NAME_BYTES: usize = 64;
+pub const MAX_ROUTINE_NAME_BYTES: usize = 40;
+pub const MAX_TRIGGER_MIN_SAMPLES: u32 = 10_000;
+pub const MAX_TRIGGER_SUSTAIN_SECS: u64 = 86_400 * 7;
+pub const MAX_TRIGGER_COOLDOWN_SECS: u64 = 86_400 * 30;
+pub const MAX_METRICS_PER_TURN: usize = 64;
+pub const MAX_METRIC_META_BYTES: usize = 2048;
+
 /// Clamp a script's polling/step interval into the safe bounded range `[1s, 30d]`.
 pub fn clamp_interval_secs(secs: u64) -> u64 {
     secs.clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS)
@@ -133,6 +144,119 @@ fn default_true() -> bool {
     true
 }
 
+fn default_min_samples() -> u32 {
+    1
+}
+
+/// Comparison operator for a host-evaluated Deck trigger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerOp {
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    Eq,
+    Ne,
+}
+
+impl TriggerOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Gt => ">",
+            Self::Gte => ">=",
+            Self::Lt => "<",
+            Self::Lte => "<=",
+            Self::Eq => "==",
+            Self::Ne => "!=",
+        }
+    }
+}
+
+/// Typed finite metric value reported by `deck_metric(name, value, meta=None)` or used as a trigger threshold.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum MetricValue {
+    Bool(bool),
+    Number(f64),
+}
+
+impl MetricValue {
+    /// Normalize `-0.0` to `0.0` so serialization and canonical hashes stay deterministic.
+    pub fn normalized(self) -> Self {
+        match self {
+            Self::Number(n) if n == 0.0 => Self::Number(0.0),
+            other => other,
+        }
+    }
+
+    pub fn is_finite(self) -> bool {
+        match self {
+            Self::Bool(_) => true,
+            Self::Number(n) => n.is_finite(),
+        }
+    }
+
+    pub fn to_json(self) -> Value {
+        match self.normalized() {
+            Self::Bool(b) => Value::Bool(b),
+            Self::Number(n) => serde_json::json!(n),
+        }
+    }
+}
+
+/// How a Deck trigger re-arms after firing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerResetMode {
+    /// After firing, stay latched until the metric clears (or crosses `reset_threshold`) and cooldown expires.
+    #[default]
+    ReArmOnClear,
+    /// After firing, reset condition state immediately and allow re-firing once cooldown expires and condition is met again.
+    CooldownOnly,
+}
+
+/// Owner-reviewed host trigger attached to a [`ScriptRevision`].
+/// Evaluated strictly host-side on `deck_metric(...)` samples; dispatches only an existing routine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerSpec {
+    /// Unique trigger identifier within this script revision.
+    pub id: String,
+    /// Metric name reported by `deck_metric(name, value, meta=None)`.
+    pub metric: String,
+    /// Comparison operator (`gt`, `gte`, `lt`, `lte`, `eq`, `ne`).
+    pub op: TriggerOp,
+    /// Threshold value (finite number or boolean).
+    pub threshold: MetricValue,
+    /// Optional numeric hysteresis reset threshold (numeric ops only; re-arms once metric clears past it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_threshold: Option<f64>,
+    /// Consecutive matching samples required (ANDed with `sustain_secs`; default `1`).
+    #[serde(default = "default_min_samples")]
+    pub min_samples: u32,
+    /// Minimum sustained wall-clock duration in seconds (default `0`). Requires a confirming matching sample at/after `first_match + sustain_secs`.
+    #[serde(default)]
+    pub sustain_secs: u64,
+    /// Minimum cooldown in seconds after a fire before the trigger may fire again (default `0`).
+    #[serde(default)]
+    pub cooldown_secs: u64,
+    /// Re-arming behavior after firing (`re_arm_on_clear` or `cooldown_only`).
+    #[serde(default)]
+    pub reset_mode: TriggerResetMode,
+    /// Existing owner-approved routine name (`schedules/<routine>.md`) to fire.
+    pub routine: String,
+}
+
+/// One metric sample emitted by `deck_metric(name, value, meta=None)` during a Monty turn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MetricSample {
+    pub name: String,
+    pub value: MetricValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
+    pub observed_at_ms: i64,
+}
+
 /// One immutable revision of a Deck's executable Monty script.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ScriptRevision {
@@ -140,10 +264,14 @@ pub struct ScriptRevision {
     pub rev: u64,
     pub code: String,
     pub code_sha256: String,
-    /// Canonical SHA-256 digest over `(code, declared_actions, mode, interval_secs, schedule_cron)`.
+    /// Canonical SHA-256 digest over `(code, declared_actions, mode, interval_secs, schedule_cron)`
+    /// (`v=1` when `triggers` is empty; `v=2` including `triggers` when non-empty).
     /// Bound into `deck_script_approve(deck_id, rev, expected_digest)` to prevent mid-review swap.
     pub revision_sha256: String,
     pub declared_actions: Vec<DeclaredAction>,
+    /// Owner-reviewed host triggers evaluated on `deck_metric(...)` samples.
+    #[serde(default)]
+    pub triggers: Vec<TriggerSpec>,
     pub mode: ScriptMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval_secs: Option<u64>,
