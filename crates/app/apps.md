@@ -18,13 +18,16 @@ receipt plus source. Library `{{hash}}`.
 
 An ```` ```openui ```` fence in a reply renders inline in the message flow, exactly like a
 json-render block: no card, no title bar, the reader hovers for "Open as app" and "Show source".
-It is static: `$state`, `@Set`/`@Reset`/`@OpenUrl` and inputs work; `Query`, `Mutation` and
-`@ToAssistant` are inert until the user opens it as an app. Reach for the explanatory components:
-`Steps`/`StepsItem`, `Tabs`/`TabItem`, `Callout`, `Card`/`CardHeader`, `Table`/`Col`,
-`BarChart`/`LineChart`/`Series`, `MetricIndicatorInline`, `ListBlock`/`ListItem`, `Tag`,
-`Accordion`/`AccordionItem`, `SectionBlock`/`SectionItem`, `InlineHeader`, `EntityList`, `CodeBlock`,
-`Chips`/`ChipItem`, `OptionCards`/`OptionCard`, and `Buttons` with `@Set`/`@OpenUrl`. Start the fence with
-`root = Card([...])`. Use the `app` tool instead when the screen needs live data or actions that run tools.
+It supports local interactive state: `$state`, `@Set`/`@Reset`/`@OpenUrl`/`@CopyToClipboard` and
+inputs work; `Query`, `Mutation` and `@ToAssistant` are inert until the user opens it as an app.
+Reach for rich card blocks (`OverviewCardBlock`, `SnippetCardBlock`, `CompositeCardBlock`,
+`ContextCardBlock` with `IconText`/`BoldText`/`MetricIndicatorInline`), `Modal`,
+`Tabs`/`Accordion`/`SectionBlock`/`Steps`/`Carousel`, `Card`/`CardHeader`/`InlineHeader`,
+`Callout`, `Table`/`Col`/`EntityList`/`ListBlock`/`TagBlock`/`Tag`, charts (`PieChart`,
+`AreaChart`, `BarChart`, `LineChart`, `HorizontalBarChart`, `RadarChart`, `ScatterChart`),
+`CodeBlock`, `Chips`/`OptionCards`, `Buttons`, and any of the 16 diagrams with click-to-select
+(`highlight` + `onSelect: @Set($sel, $value)`). Start the fence with `root = Card([...])`. Use
+the `app` tool instead when the screen needs live tool data or actions (`Query`/`Mutation`/`@ToAssistant`).
 
 ## Syntax in one screen
 
