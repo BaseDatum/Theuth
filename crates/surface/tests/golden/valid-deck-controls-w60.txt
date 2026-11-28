@@ -2,4 +2,4 @@
 
 [Action: Refresh Metrics]
 
-No action invoked yet.
+Action Result: No action invoked yet.

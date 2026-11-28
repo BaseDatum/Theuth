@@ -119,7 +119,7 @@ fn fields(schema: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// The contract's fifty-seven names, in catalog order.
+    /// The contract's sixty names, in catalog order.
     const NAMES: [&str; 60] = [
         "Card",
         "Stack",

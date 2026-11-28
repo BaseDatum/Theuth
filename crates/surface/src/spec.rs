@@ -30,7 +30,7 @@ pub struct Element {
     pub children: Vec<String>,
 }
 
-/// Catalog v1: fifty-seven components, adjacently tagged as `{"type": Name, "props": {...}}`.
+/// Catalog v1: sixty components, adjacently tagged as `{"type": Name, "props": {...}}`.
 ///
 /// Declaration order is the catalog order shown to the model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

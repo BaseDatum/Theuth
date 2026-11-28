@@ -924,20 +924,34 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
         Component::Journey(p) => journey_lines(p, width),
         Component::Fishbone(p) => fishbone_lines(p, width),
         // ---- 229 Deck-scoped interactive controls (inert static fallback in TUI) ----
-        Component::ActionButton(p) => vec![vec![span(format!("[Action: {}]", p.label), DIM)]],
-        Component::StreamControls(p) => vec![vec![span(
-            format!(
+        Component::ActionButton(p) => wrap(&format!("[Action: {}]", p.label), width)
+            .into_iter()
+            .map(|l| vec![span(l, DIM)])
+            .collect(),
+        Component::StreamControls(p) => wrap(
+            &format!(
                 "[Stream controls: {}]",
                 p.title.as_deref().unwrap_or("Deck")
             ),
-            DIM,
-        )]],
-        Component::ResultBanner(p) => vec![vec![span(
-            p.empty_text
+            width,
+        )
+        .into_iter()
+        .map(|l| vec![span(l, DIM)])
+        .collect(),
+        Component::ResultBanner(p) => {
+            let body = p
+                .empty_text
                 .as_deref()
-                .unwrap_or("Action results appear in the Deck view"),
-            DIM,
-        )]],
+                .unwrap_or("Action results appear in the Deck view");
+            let text = match p.title.as_deref().filter(|t| !t.trim().is_empty()) {
+                Some(title) => format!("{title}: {body}"),
+                None => body.to_owned(),
+            };
+            wrap(&text, width)
+                .into_iter()
+                .map(|l| vec![span(l, DIM)])
+                .collect()
+        }
     }
 }
 
@@ -1876,5 +1890,26 @@ mod tests {
         );
         let plain = text("valid-heatmap", 100);
         assert!(!plain.contains('+'), "sequential stays unsigned:\n{plain}");
+    }
+
+    #[test]
+    fn deck_controls_wrap_to_narrow_width() {
+        let body = r#"{
+            "root": "r",
+            "elements": {
+                "r": { "type": "Stack", "props": { "direction": "vertical" }, "children": ["s", "a", "b"] },
+                "s": { "type": "StreamControls", "props": { "title": "Very Long Production Incident Triage Stream Controls Header Name" } },
+                "a": { "type": "ActionButton", "props": { "label": "Trigger Comprehensive Multi-Region Production Failover Verification", "action": "verify_failover" } },
+                "b": { "type": "ResultBanner", "props": { "title": "Latest Failover Action Result", "empty_text": "No failover verification action has been executed yet in this Deck session." } }
+            }
+        }"#;
+        let spec = parse(body).unwrap().spec;
+        let lines = spec_lines(&spec, 60).expect("must fit 60 cols");
+        let rendered = plain_text(&lines);
+        assert!(
+            rendered.lines().all(|l| l.width() <= 60),
+            "deck controls must wrap within 60 cols:\n{rendered}"
+        );
+        assert!(rendered.contains("Latest Failover Action Result:"));
     }
 }
